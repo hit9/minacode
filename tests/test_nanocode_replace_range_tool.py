@@ -36,6 +36,17 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     )
 
 
+def test_replace_range_tool_adds_line_break_before_following_content(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+
+    ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA"]).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
 def test_replace_range_tool_relocates_cached_fingerprint_after_line_shift(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
@@ -183,6 +194,18 @@ def test_replace_ranges_tool_applies_multiple_ranges_against_one_snapshot(tmp_pa
     assert "* edits: 2" in result
     assert "* range 1: 1:2" in result
     assert "* range 2: 3:4" in result
+
+
+def test_replace_ranges_tool_adds_line_break_before_following_content(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    beta = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    edits = json.dumps([{"start": 1, "end": 2, "fingerprint": beta, "content": "BETA"}])
+
+    BatchReplaceRangesTool.make(session, ["sample.txt", edits]).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
 def test_replace_ranges_tool_rejects_overlapping_ranges(tmp_path):

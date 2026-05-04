@@ -65,7 +65,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tok:last:- session:1k"
+    assert snapshot == "model (medium) | ctx:0/9 | tok:last:- session:1k | bb:0"
     assert ">" not in snapshot
 
 
@@ -197,7 +197,7 @@ def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
         def prompt(self, prompt, **kwargs):
             calls.append((prompt, kwargs))
             return next(self.inputs)
- 
+
     class FakeAgent:
         def __init__(self):
             self.session = Session(cwd=str(tmp_path), model="model")

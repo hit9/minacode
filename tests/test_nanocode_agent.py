@@ -113,9 +113,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps(
-                {"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}
-            ).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         captured["payload"] = json.loads(request.data.decode("utf-8"))
@@ -145,9 +143,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps(
-                {"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}
-            ).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}).encode("utf-8")
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     session = Session(
@@ -182,13 +178,7 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": "```json\n{\"message_to_user\": \"ok\", \"tool_calls\": null}\n```"
-                            }
-                        }
-                    ],
+                    "choices": [{"message": {"content": '```json\n{"message_to_user": "ok", "tool_calls": null}\n```'}}],
                     "usage": {},
                 }
             ).encode("utf-8")
@@ -246,9 +236,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
             return None
 
         def read(self):
-            return json.dumps(
-                {"choices": [{"message": {"content": "plain answer"}}], "usage": {}}
-            ).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": "plain answer"}}], "usage": {}}).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         return FakeResponse()
@@ -310,9 +298,7 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
         }
     )
 
-    assert session.current.known == [
-        KnownItem(fact="Search only supports rg and Python fallback.", details=["grep was removed"])
-    ]
+    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", details=["grep was removed"])]
 
     prompt = agent.build_user_prompt()
     assert "<KnownItem>" in prompt
@@ -338,9 +324,7 @@ def test_agent_keeps_current_context_separate_from_known(tmp_path):
     )
 
     assert session.current.known == []
-    assert session.current.current_context == [
-        CurrentContextItem(note="pytest failed in tests/test_nanocode_agent.py", details=["updated failure"])
-    ]
+    assert session.current.current_context == [CurrentContextItem(note="pytest failed in tests/test_nanocode_agent.py", details=["updated failure"])]
 
     assert "  Context\n" in agent.state_updater.latest_report
     assert "    1. pytest failed in tests/test_nanocode_agent.py | updated failure" in agent.state_updater.latest_report
@@ -465,6 +449,23 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert "please inspect tests first" in agent.build_user_prompt()
 
 
+def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    confirmations = []
+
+    latest = agent.execute_tool_calls(
+        [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", "0", "1", "bad", "new"]}],
+        confirm=lambda call, tool: confirmations.append((call.executed, tool.display())) or True,
+    )
+
+    assert confirmations == []
+    assert "ToolCallError: preview unavailable: fingerprint mismatch" in latest
+    assert path.read_text(encoding="utf-8") == "old\n"
+
+
 def test_agent_execute_tool_calls_logs_malformed_tool_call(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -509,11 +510,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {
-                    "tool_calls": [
-                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
-                    ]
-                },
+                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
                     "last_tool_calls_summaries": [
                         {
@@ -546,7 +543,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
 
     assert response["message_to_user"] == "done"
     assert messages[0].startswith("Tool Calls\n")
-    assert "1. [success] Read(\"sample.txt\", \"0\", \"1\")" in messages[0]
+    assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
     assert "log: .nanocode/tool_results/" in messages[0]
     assert messages[-1] == "done"
@@ -564,11 +561,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {
-                    "tool_calls": [
-                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
-                    ]
-                },
+                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
                 {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
             ]
@@ -597,11 +590,7 @@ def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {
-                    "tool_calls": [
-                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
-                    ]
-                },
+                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
             ]
 
@@ -699,9 +688,7 @@ def test_tool_result_file_read_does_not_create_conversation_event_or_new_log(tmp
         encoding="utf-8",
     )
 
-    latest = agent.execute_tool_calls(
-        [{"name": "Read", "intention": "read old result log", "args": [".nanocode/tool_results/result.log"]}]
-    )
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read old result log", "args": [".nanocode/tool_results/result.log"]}])
 
     assert "nanocode.py" in latest
     assert agent.latest_tool_call_events == []
@@ -737,18 +724,8 @@ def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_p
 
     assert "Needs raw read:" in gate
     assert "Read(.nanocode/tool_results/result.log)" in gate
-    assert (
-        agent._format_tool_summary_gate(
-            [{"name": "Read", "intention": "read result log", "args": [event.result_file]}]
-        )
-        == ""
-    )
-    assert (
-        agent._format_tool_summary_gate(
-            [{"name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]
-        )
-        == ""
-    )
+    assert agent._format_tool_summary_gate([{"name": "Read", "intention": "read result log", "args": [event.result_file]}]) == ""
+    assert agent._format_tool_summary_gate([{"name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]) == ""
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):

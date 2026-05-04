@@ -86,12 +86,7 @@ def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkey
 def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
     path = tmp_path / "sample.py"
     path.write_text(
-        "class One:\n"
-        "    def __init__(self):\n"
-        "        pass\n"
-        "class Two:\n"
-        "    def __init__(self, name):\n"
-        "        pass\n",
+        "class One:\n    def __init__(self):\n        pass\nclass Two:\n    def __init__(self, name):\n        pass\n",
         encoding="utf-8",
     )
     session = Session(cwd=str(tmp_path))
@@ -119,6 +114,14 @@ def test_search_tool_supports_context_option_without_glob(tmp_path, monkeypatch)
     assert "    5: five" in result
     assert "    6: six" in result
     assert "    7: seven" in result
+
+
+def test_search_tool_accepts_context_30(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["needle", ".", "context=30"])
+
+    assert tool.context_lines == 30
 
 
 def test_search_tool_supports_numeric_context_option_with_glob(tmp_path, monkeypatch):

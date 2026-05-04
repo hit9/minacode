@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 class Error(Exception): ...
@@ -436,6 +436,7 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
+    blackboard: list[str] = field(default_factory=list)
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -552,6 +553,13 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     if end:
         end = max(end, start)
     return start, end
+
+
+def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
+    lines = content.splitlines(keepends=True)
+    if content and has_following_line and not content.endswith("\n"):
+        lines[-1] += "\n"
+    return lines
 
 
 def _range_fingerprint(content: str) -> str:
@@ -733,7 +741,7 @@ class ListDirTool(Tool):
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: []', 'Example args: ["."]', 'Example args: ["src", "*.py"]']
+        return ["Example args: []", 'Example args: ["."]', 'Example args: ["src", "*.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -793,7 +801,7 @@ class SearchTool(Tool):
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 4
-    MAX_CONTEXT_LINES: ClassVar[int] = 20
+    MAX_CONTEXT_LINES: ClassVar[int] = 30
 
     @dataclass(frozen=True)
     class Match:
@@ -822,13 +830,13 @@ class SearchTool(Tool):
             "Prefix pattern with re: for regex search.",
             "Search is line-oriented; regex patterns must not contain newlines.",
             "Use A|B|C for literal OR search in fixed mode.",
-            "Optional context=N or N sets nearby context lines.",
+            "Optional context=N or N sets nearby context lines, from 0 to 30.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern, path[, option...]) -> SearchToolResult<matches>; option is context=N|N or glob_pattern"
+        return "Search(pattern, path[, option...]) -> SearchToolResult<matches>; option is context=N|N (0..30) or glob_pattern"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -1218,6 +1226,13 @@ class ReplaceRangeTool(Tool):
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
 
+    def preview_error(self) -> str:
+        try:
+            self._preview()
+        except (OSError, ToolCallError) as error:
+            return str(error)
+        return ""
+
     def call(self) -> str:
         original, new_content, resolved, _ = self._preview()
         if new_content == original:
@@ -1248,7 +1263,7 @@ class ReplaceRangeTool(Tool):
             end=self.end,
             fingerprint=self.fingerprint,
         )
-        replacement = self.content.splitlines(keepends=True)
+        replacement = _replacement_lines(self.content, has_following_line=resolved.end < len(lines))
         new_lines = lines[: resolved.start] + replacement + lines[resolved.end :]
         return original, "".join(new_lines), resolved, replacement
 
@@ -1331,6 +1346,13 @@ class BatchReplaceRangesTool(Tool):
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
 
+    def preview_error(self) -> str:
+        try:
+            self._preview()
+        except (OSError, ToolCallError) as error:
+            return str(error)
+        return ""
+
     def call(self) -> str:
         original, new_content, resolved_edits = self._preview()
         if new_content == original:
@@ -1365,7 +1387,7 @@ class BatchReplaceRangesTool(Tool):
                 end=edit.end,
                 fingerprint=edit.fingerprint,
             )
-            resolved_edits.append((resolved, edit.content.splitlines(keepends=True)))
+            resolved_edits.append((resolved, _replacement_lines(edit.content, has_following_line=resolved.end < len(lines))))
         self._ensure_non_overlapping(resolved_edits)
 
         new_lines = list(lines)
@@ -1677,6 +1699,67 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
+@final
+@dataclass
+class BlackboardTool(Tool):
+    action: str
+    content: str
+    blackboard: list[str]
+
+    @classmethod
+    def name(cls) -> str:
+        return "Blackboard"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return [
+            "Scratchpad for hypotheses, intermediate analysis, or task state.",
+            "Stores temporary data outside main context; cleared when the session ends. Actions: read, append, clear.",
+        ]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Blackboard(action[, content]) -> BlackboardToolResult<content>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return [
+            '{"name": "Blackboard", "intention": "Record progress", "args": ["append", "Step 1 done"]}',
+            '{"name": "Blackboard", "intention": "Clear it", "args": ["clear"]}',
+        ]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        action = args[0] if args else "read"
+        content = args[1] if len(args) > 1 else ""
+        return cls(action=action, content=content, blackboard=session.blackboard)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return False
+
+    def display(self) -> str:
+        if self.action == "append":
+            preview = self.content.replace("\n", " ")[:80]
+            return f"Blackboard append: {preview}"
+        return f"Blackboard {self.action}"
+
+    def call(self) -> str:
+        if self.action == "read":
+            content = "\n".join(self.blackboard)
+            return f"<BlackboardToolResult>\n{content}\n</BlackboardToolResult>"
+
+        if self.action == "append":
+            if self.content:
+                self.blackboard.append(self.content.rstrip())
+            return "<BlackboardToolResult>appended</BlackboardToolResult>"
+
+        if self.action == "clear":
+            self.blackboard.clear()
+            return "<BlackboardToolResult>cleared</BlackboardToolResult>"
+
+        raise ToolCallError("Blackboard action must be one of: read, append, clear")
+
+
 TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.name(): ReadTool,
     LineCountTool.name(): LineCountTool,
@@ -1688,13 +1771,14 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
+    BlackboardTool.name(): BlackboardTool,
 }
 
 
 #######################
 # Prompt
-#######################
 
+#######################
 MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a minimal coding agent.
 
 Core:
@@ -2168,6 +2252,9 @@ class ToolCallRunner:
             try:
                 call = self.parse_tool_call(item)
                 tool = self._make_tool(call)
+                preview_error = self._preview_error(tool)
+                if preview_error:
+                    raise ToolCallError("preview unavailable: " + preview_error)
                 if tool.requires_confirmation(self.session):
                     if self.session.yolo:
                         if on_auto_approve is not None:
@@ -2259,6 +2346,12 @@ class ToolCallRunner:
         if tool_class is None:
             raise ToolCallError("tool not found: " + call.name)
         return tool_class.make(self.session, call.args)
+
+    def _preview_error(self, tool: Tool) -> str:
+        preview_error = getattr(tool, "preview_error", None)
+        if not callable(preview_error):
+            return ""
+        return str(preview_error())
 
     def _is_tool_result_file_read(self, call: ParsedToolCall) -> bool:
         if call.name != ReadTool.name() or not call.args:
@@ -2740,19 +2833,14 @@ class Agent:
                 if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                     self._report_gate(
                         on_message,
-                        "Stopped: model returned invalid output "
-                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                        + " times in a row.",
+                        "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
                         "Format_Gate: stopped after "
                         + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
                         + " consecutive invalid model outputs. "
                         + _shorten(format_error, 180),
                     )
                     raise LLMError(
-                        "model returned invalid output "
-                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                        + " times in a row: "
-                        + _shorten(format_error, 300)
+                        "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
                     )
                 self._report_gate(
                     on_message,
@@ -2934,6 +3022,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
+    CommandSpec("/blackboard", "View or clear the blackboard", "Control", "/blackboard [status|clear]"),
 )
 
 
@@ -2950,6 +3039,7 @@ class CommandDispatcher:
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
+        self.blackboard = agent.session.blackboard
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
@@ -2959,6 +3049,7 @@ class CommandDispatcher:
             "/reason": self._reason,
             "/reason_effort": self._reason_effort,
             "/yolo": self._yolo,
+            "/blackboard": self._blackboard,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -3023,6 +3114,7 @@ class CommandDispatcher:
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
+                "blackboard: " + str(len(session.blackboard)) + " items",
                 "goal: " + (session.current.goal or "(empty)"),
                 "verification: " + session.current.verification.status,
             ]
@@ -3093,6 +3185,17 @@ class CommandDispatcher:
         if args in {"", "status"}:
             return "YOLO is " + ("on" if self.agent.session.yolo else "off")
         return "Usage: /yolo [on|off|status]"
+
+    def _blackboard(self, args: str) -> str:
+        if args == "clear":
+            self.blackboard.clear()
+            return "Blackboard cleared"
+        if args in {"", "status"}:
+            content = "\n".join(self.blackboard)
+            if content:
+                return "Blackboard:\n" + content
+            return "Blackboard is empty"
+        return "Usage: /blackboard [status|clear]"
 
 
 def _format_count(value: int) -> str:
@@ -3201,7 +3304,8 @@ class StatusBar:
         yolo = " | yolo" if session.yolo else ""
         context = str(len(session.conversation)) + "/" + str(session.compact_at)
         tokens = "last:" + self._format_count(session.last_total_tokens) + " session:" + self._format_count(session.session_total_tokens)
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens]
+        blackboard = "bb:" + str(len(session.blackboard))
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens, blackboard]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
