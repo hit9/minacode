@@ -755,13 +755,13 @@ class SearchTool(Tool):
             "Search files or directories before Read; default is fixed text.",
             "Prefix pattern with re: for regex search.",
             "Use A|B|C for literal OR search in fixed mode.",
-            "Optional context=N sets nearby context lines.",
+            "Optional context=N or N sets nearby context lines.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern, path[, glob_pattern][, context=N]) -> SearchToolResult<matches>"
+        return "Search(pattern, path[, glob_pattern][, context=N|N]) -> SearchToolResult<matches>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -769,6 +769,7 @@ class SearchTool(Tool):
             'Example args: ["class Foo", "code.py"]',
             'Example args: ["TODO", ".", "*.py"]',
             'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
+            'Example args: ["TODO", ".", "*.py", "8"]',
             'Example args: ["re:def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
         ]
 
@@ -787,7 +788,7 @@ class SearchTool(Tool):
         context_lines = cls.CONTEXT_LINES
         for raw_option in args[2:]:
             option = str(raw_option)
-            if option.startswith("context="):
+            if option.startswith("context=") or option.isdigit():
                 try:
                     context_lines = cls._parse_context_arg(option)
                 except ValueError:
@@ -817,9 +818,8 @@ class SearchTool(Tool):
 
     @classmethod
     def _parse_context_arg(cls, value: str) -> int:
-        if not value.startswith("context="):
-            raise ValueError
-        context = int(value[len("context=") :])
+        raw_context = value[len("context=") :] if value.startswith("context=") else value
+        context = int(raw_context)
         if context < 0 or context > cls.MAX_CONTEXT_LINES:
             raise ValueError
         return context

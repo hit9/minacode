@@ -121,6 +121,23 @@ def test_search_tool_supports_context_option_without_glob(tmp_path, monkeypatch)
     assert "    7: seven" in result
 
 
+def test_search_tool_supports_numeric_context_option_with_glob(tmp_path, monkeypatch):
+    (tmp_path / "keep.txt").write_text("zero\none\nneedle\nthree\nfour\n", encoding="utf-8")
+    (tmp_path / "skip.py").write_text("zero\none\nneedle\nthree\nfour\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, ["needle", ".", "*.txt", "2"]).call()
+
+    assert "* keep.txt:3: needle" in result
+    assert "    1: zero" in result
+    assert "    2: one" in result
+    assert "  > 3: needle" in result
+    assert "    4: three" in result
+    assert "    5: four" in result
+    assert "skip.py" not in result
+
+
 def test_search_tool_supports_glob_and_context_option(tmp_path, monkeypatch):
     (tmp_path / "keep.txt").write_text("before\nneedle\nafter\n", encoding="utf-8")
     (tmp_path / "skip.py").write_text("before\nneedle\nafter\n", encoding="utf-8")
