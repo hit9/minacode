@@ -116,6 +116,7 @@ class ToolCallEvent(ConversationItem):
     result_file: str = ""
     result_file_lines: int = 0
     key_details: list[str] = field(default_factory=list)
+    needs_raw_read: bool = False
 
     @override
     def format(self, indent: str = "") -> str:
@@ -131,6 +132,8 @@ class ToolCallEvent(ConversationItem):
             for detail in self.key_details:
                 lines.append("    <detail>" + detail + "</detail>")
             lines.append("  </key_details>")
+        if self.needs_raw_read:
+            lines.append("  <needs_raw_read>true</needs_raw_read>")
         if self.result_file:
             lines.append("  <result_file>" + self.result_file + "</result_file>")
             lines.append("  <result_file_lines>" + str(self.result_file_lines) + "</result_file_lines>")
@@ -2323,6 +2326,7 @@ class AgentStateUpdater:
                 continue
             event.summary = self._format_tool_call_summary(summary)
             event.key_details = self._key_details_from_summary(summary)
+            event.needs_raw_read = summary.get("needs_raw_read") is True
             if event in pending:
                 pending.remove(event)
 
@@ -2533,6 +2537,9 @@ class ConversationCompactor:
 
 @final
 class Agent:
+    EVIDENCE_OUTPUT_LINES: ClassVar[int] = 40
+    EVIDENCE_OUTPUT_CHARS: ClassVar[int] = 4000
+
     def __init__(self, session: Session):
         self.session = session
         self.prompt_builder = PromptBuilder(session)
@@ -2585,9 +2592,10 @@ class Agent:
                 self.latest_tool_call_results = format_error
                 continue
             tool_calls = _json_list(response.get("tool_calls"))
-            if self._missing_tool_summaries():
+            summary_gate = self._format_tool_summary_gate(tool_calls)
+            if summary_gate:
                 self.state_updater.latest_report = ""
-                self.latest_tool_call_results = self._format_missing_tool_summaries()
+                self.latest_tool_call_results = summary_gate
                 continue
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
@@ -2652,12 +2660,56 @@ class Agent:
     def _missing_tool_summaries(self) -> list[ToolCallEvent]:
         return [event for event in self.tool_runner.latest_events if not event.summary]
 
-    def _format_missing_tool_summaries(self) -> str:
-        lines = ["Tool_Summary_Gate: summarize every latest tool result before continuing.", "Missing:"]
-        for event in self._missing_tool_summaries():
+    def _format_tool_summary_gate(self, tool_calls: list[JsonValue]) -> str:
+        missing = self._missing_tool_summaries()
+        missing_evidence = []
+        needs_read = []
+        for event, execution in zip(self.tool_runner.latest_events, self.tool_runner.latest_executions):
+            if not event.summary:
+                continue
+            if event.needs_raw_read and not self._has_read_result_file_call(tool_calls, event.result_file):
+                needs_read.append(event)
+            if event.outcome in {"failure", "partial"}:
+                if not event.key_details:
+                    missing_evidence.append(event)
+                continue
+            if self._is_large_tool_output(execution.output) and not event.key_details and not event.needs_raw_read:
+                missing_evidence.append(event)
+        if not missing and not missing_evidence and not needs_read:
+            return ""
+
+        lines = ["Tool_Summary_Gate: extract durable evidence before continuing.", "Raw tool results are visible only once."]
+        if missing:
+            lines.append("Missing summaries:")
+        for event in missing:
             lines.append("- " + event.executed + " -> " + event.result_file)
-        lines.append("Next_Action: return last_tool_calls_summaries for every missing result.")
+        if missing_evidence:
+            lines.append("Missing key_evidence:")
+        for event in missing_evidence:
+            lines.append("- " + event.executed + " -> " + event.result_file)
+        if needs_read:
+            lines.append("Needs raw read:")
+        for event in needs_read:
+            lines.append("- Read(" + event.result_file + ") before continuing")
+        lines.append(
+            "Next_Action: return last_tool_calls_summaries with key_evidence, update current_context_update for task-local facts, or call Read(result_file) for needs_raw_read logs."
+        )
         return "\n".join(lines)
+
+    def _is_large_tool_output(self, output: str) -> bool:
+        return len(output) > self.EVIDENCE_OUTPUT_CHARS or len(output.splitlines()) > self.EVIDENCE_OUTPUT_LINES
+
+    def _has_read_result_file_call(self, tool_calls: list[JsonValue], result_file: str) -> bool:
+        if not result_file:
+            return False
+        for raw_call in tool_calls:
+            call = _json_dict(raw_call)
+            if _json_str(call.get("name")) != ReadTool.name():
+                continue
+            args = [_json_str(arg) or "" for arg in _json_list(call.get("args"))]
+            if args and args[0] == result_file:
+                return True
+        return False
 
 
 ############################

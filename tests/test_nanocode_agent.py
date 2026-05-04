@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, CurrentContextItem, KnownItem, Session, ToolCallEvent, VerificationStatus
+from nanocode import Agent, CurrentContextItem, KnownItem, ParsedToolCall, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
 
 
 def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path):
@@ -535,8 +535,118 @@ def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
     assert "premature" not in messages
     assert all("premature" not in item.format() for item in session.conversation)
     assert len(agent.model_client.user_prompts) == 3
-    assert "Tool_Summary_Gate: summarize every latest tool result" in agent.model_client.user_prompts[2]
+    assert "Tool_Summary_Gate: extract durable evidence" in agent.model_client.user_prompts[2]
     assert "Read sample.txt and found alpha." in agent.latest_tool_call_events[0].summary
+
+
+def test_agent_summary_gate_requires_key_evidence_for_failure(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.execute_tool_calls(
+        [{"name": "Read", "intention": "read missing", "args": ["missing.txt"]}],
+    )
+    event = agent.latest_tool_call_events[0]
+
+    agent.state_updater.apply_tool_call_summaries(
+        {
+            "last_tool_calls_summaries": [
+                {
+                    "tool": "Read",
+                    "intention": "read missing",
+                    "outcome": "failure",
+                    "summary": "Read failed.",
+                    "key_evidence": None,
+                    "result_file": event.result_file,
+                    "needs_raw_read": False,
+                }
+            ]
+        }
+    )
+
+    gate = agent._format_tool_summary_gate([])
+
+    assert "Missing key_evidence:" in gate
+    assert event.result_file in gate
+
+    agent.state_updater.apply_tool_call_summaries(
+        {
+            "last_tool_calls_summaries": [
+                {
+                    "tool": "Read",
+                    "intention": "read missing",
+                    "outcome": "failure",
+                    "summary": "missing.txt could not be read.",
+                    "key_evidence": ["missing.txt: file not found"],
+                    "result_file": event.result_file,
+                    "needs_raw_read": False,
+                }
+            ]
+        }
+    )
+
+    assert agent._format_tool_summary_gate([]) == ""
+
+
+def test_agent_summary_gate_requires_evidence_for_large_success_output(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    event = ToolCallEvent(
+        intent="list many lines",
+        executed='Bash("printf many lines")',
+        outcome="success",
+        summary="outcome: success\nsummary: printed many lines",
+        result_file=".nanocode/tool_results/result.log",
+    )
+    agent.tool_runner.latest_events = [event]
+    agent.tool_runner.latest_executions = [
+        ToolCallExecution(
+            call=ParsedToolCall(name="Bash", intention="list many lines", args=["printf many lines"]),
+            outcome="success",
+            output="\n".join("line " + str(index) for index in range(45)),
+            result_file=event.result_file,
+            result_file_lines=45,
+        )
+    ]
+
+    gate = agent._format_tool_summary_gate([])
+
+    assert "Missing key_evidence:" in gate
+    assert event.result_file in gate
+
+
+def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    event = ToolCallEvent(
+        intent="inspect large result",
+        executed='Bash("pytest")',
+        outcome="success",
+        summary="outcome: success\nsummary: output needs inspection\nneeds_raw_read: true",
+        result_file=".nanocode/tool_results/result.log",
+        key_details=[],
+        needs_raw_read=True,
+    )
+    agent.tool_runner.latest_events = [event]
+    agent.tool_runner.latest_executions = [
+        ToolCallExecution(
+            call=ParsedToolCall(name="Bash", intention="inspect large result", args=["pytest"]),
+            outcome="success",
+            output="large output",
+            result_file=event.result_file,
+            result_file_lines=100,
+        )
+    ]
+
+    gate = agent._format_tool_summary_gate([])
+
+    assert "Needs raw read:" in gate
+    assert "Read(.nanocode/tool_results/result.log)" in gate
+    assert (
+        agent._format_tool_summary_gate(
+            [{"name": "Read", "intention": "read result log", "args": [event.result_file]}]
+        )
+        == ""
+    )
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
