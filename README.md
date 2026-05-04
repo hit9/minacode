@@ -1,5 +1,8 @@
 # nanocode
 
+A lightweight terminal-based AI coding assistant.
+
+nanocode is used to build itself, including features such as `@file` path completion.
 
 ## Screenshots
 
@@ -25,7 +28,7 @@ uv run nanocode
 Required:
 
 ```sh
-export NANOCODE_API_URL="https://api.example.com/v1/chat/completions"
+export NANOCODE_API_URL="https://api.example.com/v1"
 export NANOCODE_API_KEY="your-api-key"
 export NANOCODE_MODEL="your-model"
 ```
@@ -40,6 +43,26 @@ export NANOCODE_REASONING_EFFORT="medium"
 export NANOCODE_MODEL_TIMEOUT="60"
 export NANOCODE_SHELL_TIMEOUT="60"
 export NANOCODE_COMPACT_AT="100"
+```
+
+## Usage
+
+Start nanocode:
+
+```sh
+nanocode
+```
+
+Show available commands:
+
+```text
+/help
+```
+
+Ask a source-aware question about nanocode itself:
+
+```text
+/help how does compact work?
 ```
 
 ## Safety

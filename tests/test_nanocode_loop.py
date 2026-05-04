@@ -1,9 +1,9 @@
 import os
 
-from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
-from nanocode import AgentLoop, ParsedToolCall, Session, StatusBar
+from nanocode import AgentLoop, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
 
 
 def test_cleanup_old_logs_removes_only_logs_older_than_three_days(tmp_path):
@@ -125,6 +125,25 @@ def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
 
     assert "/help" in [completion.text for completion in slash_completions]
     assert "/compact-at" in [completion.text for completion in compact_completions]
+
+
+def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(tmp_path):
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
+
+    completer = ReferenceFileCompleter(str(tmp_path), WordCompleter(["/help"], WORD=True))
+    event = CompleteEvent(completion_requested=True)
+
+    file_completions = list(completer.get_completions(Document("see @READ"), event))
+    dir_completions = list(completer.get_completions(Document("see @sr"), event))
+    nested_completions = list(completer.get_completions(Document("see @src/ma"), event))
+    command_completions = list(completer.get_completions(Document("/he"), event))
+
+    assert "README.md" in [completion.text for completion in file_completions]
+    assert "src/" in [completion.text for completion in dir_completions]
+    assert "src/main.py" in [completion.text for completion in nested_completions]
+    assert "/help" in [completion.text for completion in command_completions]
 
 
 def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):

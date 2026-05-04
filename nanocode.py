@@ -32,7 +32,7 @@ from enum import StrEnum
 from typing import Any, Callable, ClassVar, final, Iterator, Protocol, Self, Type, TypeAlias
 from typing_extensions import override
 from prompt_toolkit import PromptSession, print_formatted_text
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class Error(Exception): ...
@@ -54,6 +54,34 @@ class LLMError(Exception): ...
 
 
 class Cancellation(Exception): ...
+
+
+class ReferenceFileCompleter(Completer):
+    def __init__(self, cwd: str, command_completer: WordCompleter):
+        self.cwd = cwd
+        self.command_completer = command_completer
+
+    def get_completions(self, document, complete_event):
+        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
+        if match is None:
+            yield from self.command_completer.get_completions(document, complete_event)
+            return
+
+        partial = match.group(1)
+        dirname, prefix = os.path.split(partial)
+        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
+        try:
+            names = sorted(os.listdir(base_dir))
+        except OSError:
+            return
+
+        for name in names:
+            if not name.startswith(prefix):
+                continue
+            full_path = os.path.join(base_dir, name)
+            suffix = "/" if os.path.isdir(full_path) else ""
+            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
+            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
 
 
 class PromptItem:
@@ -2806,6 +2834,8 @@ class CommandDispatcher:
                 current_category = spec.category
                 lines.append(current_category + ":")
             lines.append("  " + spec.display_name() + " - " + spec.description)
+        lines.append("")
+        lines.append("Tip: use @path to autocomplete file paths in prompts.")
         return "\n".join(lines)
 
     def _format_source_help_question(self, question: str) -> str:
@@ -3114,7 +3144,7 @@ class AgentLoop:
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=self._command_completer(),
+            completer=ReferenceFileCompleter(self.agent.session.cwd, self._command_completer()),
             complete_while_typing=True,
         )
 
