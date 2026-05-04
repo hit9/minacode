@@ -165,6 +165,13 @@ def test_search_tool_rejects_invalid_regex(tmp_path):
         SearchTool.make(session, ["re:[", "."])
 
 
+def test_search_tool_rejects_multiline_regex(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match="multiline regex is not supported"):
+        SearchTool.make(session, ["re:^@dataclass\nclass Session", "nanocode.py", "context=2"])
+
+
 def test_search_tool_rejects_invalid_context(tmp_path):
     session = Session(cwd=str(tmp_path))
 

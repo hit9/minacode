@@ -820,6 +820,7 @@ class SearchTool(Tool):
         return [
             "Search files or directories before Read; default is fixed text.",
             "Prefix pattern with re: for regex search.",
+            "Search is line-oriented; regex patterns must not contain newlines.",
             "Use A|B|C for literal OR search in fixed mode.",
             "Optional context=N or N sets nearby context lines.",
             "Optional glob matches file basename or path relative to cwd.",
@@ -827,7 +828,7 @@ class SearchTool(Tool):
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern, path[, glob_pattern][, context=N|N]) -> SearchToolResult<matches>"
+        return "Search(pattern, path[, option...]) -> SearchToolResult<matches>; option is context=N|N or glob_pattern"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -850,6 +851,8 @@ class SearchTool(Tool):
         pattern = raw_pattern[3:] if regex else raw_pattern
         if not pattern:
             raise ToolCallError("pattern cannot be empty")
+        if regex and "\n" in pattern:
+            raise ToolCallError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
         for raw_option in args[2:]:
