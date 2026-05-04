@@ -148,6 +148,15 @@ class PlanStatus(StrEnum):
     DONE = "done"
     BLOCKED = "blocked"
 
+    def __str__(self) -> str:
+        symbols = {
+            PlanStatus.TODO: "○",
+            PlanStatus.DOING: "◔",
+            PlanStatus.DONE: "✓",
+            PlanStatus.BLOCKED: "☒",
+        }
+        return f"{symbols.get(self, '')} {self.value}".strip()
+
 
 @final
 @dataclass
@@ -226,12 +235,31 @@ class KnownItem(PromptItem):
 
 @final
 @dataclass
+class CurrentContextItem(PromptItem):
+    note: str
+    details: list[str] = field(default_factory=list)
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = ["<CurrentContextItem>", "  <note>" + self.note + "</note>"]
+        if self.details:
+            lines.append("  <details>")
+            for detail in self.details:
+                lines.append("    <detail>" + detail + "</detail>")
+            lines.append("  </details>")
+        lines.append("</CurrentContextItem>")
+        return _format_lines(lines, indent)
+
+
+@final
+@dataclass
 class Current:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
+    current_context: list[CurrentContextItem] = field(default_factory=list)
     verification: Verification = field(default_factory=Verification)
 
 
@@ -1315,9 +1343,9 @@ Tools:
 - Call tools only by emitting JSON in tool_calls. Do not use native tool calls.
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
-- Summarize every latest tool result in last_tool_calls_summaries.
-- You have only this one chance to see each raw tool result; extract important facts, evidence, paths, line numbers, errors, and next-step details immediately.
-- If a prior tool result lacks detail, use ReadTool on its result_file.
+- Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so key_evidence keeps paths, lines, errors, decisions.
+- If a prior tool result lacks detail, use Read on its result_file.
+- known_append is stable memory; current_context_update is task-local memory.
 - tool_call.intention must state the question to answer, not just the action.
 
 Verification:
@@ -1331,6 +1359,7 @@ Available tools:
 Input:
 - Conversation_History: summarized recent events
 - Known: stable facts
+- Current_Context: task-local facts that may expire
 - Goal: current objective
 - Plan: ordered plan
 - Latest_Tool_Call_Results: latest raw tool call results
@@ -1367,6 +1396,16 @@ Schema:
       "details": null | ["string"]
     }
   ],
+
+  "current_context_update": null | {
+    "mode": "replace" | "append",
+    "items": [
+      {
+        "note": "string",
+        "details": null | ["string"]
+      }
+    ]
+  },
 
   "verification": {
     "method": null | "string",
@@ -1411,6 +1450,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 ----------- Known Begin ------
 {known}
 -------- Known End -----------
+
+----------- Current_Context Begin ------
+{current_context}
+-------- Current_Context End -----------
 
 ----------- Goal Begin ------
 {goal}
@@ -1484,6 +1527,7 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
+            current_context=self._format_current_context(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -1511,6 +1555,11 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
+
+    def _format_current_context(self) -> str:
+        if not self.session.current.current_context:
+            return "(empty)"
+        return "\n\n".join(item.format() for item in self.session.current.current_context)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -1836,6 +1885,7 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
+    CURRENT_CONTEXT_LIMIT: ClassVar[int] = 50
 
     def __init__(self, session: Session, tool_runner: ToolCallRunner):
         self.session = session
@@ -1846,15 +1896,25 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = [item.format() for item in self.session.current.known]
+        before_context = [item.format() for item in self.session.current.current_context]
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        if goal_changed:
+            self.session.current.current_context = []
         self._apply_known(response)
+        self._apply_current_context(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self._apply_tool_call_summaries(response)
-        self.latest_report = self._format_state_report(before_goal, before_plan, before_known, before_verification)
+        self.latest_report = self._format_state_report(
+            before_goal,
+            before_plan,
+            before_known,
+            before_context,
+            before_verification,
+        )
 
     def apply_tool_call_summaries(self, response: Json) -> None:
         self._apply_tool_call_summaries(response)
@@ -1864,6 +1924,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
+        before_context: list[str],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -1883,6 +1944,12 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
+        current_context = [item.format() for item in current.current_context]
+        if current_context != before_context:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Context")
+            lines.extend(self._format_context_rows())
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -1897,7 +1964,7 @@ class AgentStateUpdater:
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". [" + item.status + "] " + self._compact(item.text))
+            rows.append("    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text))
             if item.evidence:
                 rows.append("       evidence: " + self._compact(item.evidence))
         return rows
@@ -1910,6 +1977,19 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             text = self._compact(item.fact)
+            if item.details:
+                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
+            rows.append("    " + str(index) + ". " + text)
+        return rows
+
+    def _format_context_rows(self) -> list[str]:
+        items = self.session.current.current_context
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            text = self._compact(item.note)
             if item.details:
                 text += " | " + "; ".join(self._compact(detail) for detail in item.details)
             rows.append("    " + str(index) + ". " + text)
@@ -2041,6 +2121,27 @@ class AgentStateUpdater:
             details = [detail for detail in details if detail]
             if not any(known.fact == fact for known in self.session.current.known):
                 self.session.current.known.append(KnownItem(fact=fact, details=details))
+
+    def _apply_current_context(self, response: Json) -> None:
+        update = _json_dict(response.get("current_context_update"))
+        if not update:
+            return
+        if update.get("mode") == "replace":
+            self.session.current.current_context = []
+        for raw in _json_list(update.get("items")):
+            item = _json_dict(raw)
+            note = _json_str(item.get("note")) if item else _json_str(raw)
+            if not note:
+                continue
+            details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
+            details = [detail for detail in details if detail]
+            existing = next((context for context in self.session.current.current_context if context.note == note), None)
+            if existing:
+                existing.details = details
+            else:
+                self.session.current.current_context.append(CurrentContextItem(note=note, details=details))
+        if len(self.session.current.current_context) > self.CURRENT_CONTEXT_LIMIT:
+            self.session.current.current_context = self.session.current.current_context[-self.CURRENT_CONTEXT_LIMIT :]
 
     def _apply_verification(self, response: Json) -> None:
         data = _json_dict(response.get("verification"))
@@ -2870,6 +2971,8 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
+            elif line.startswith("  Context"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):
                 status = line[10:].strip().split(" ", 1)[0]
                 segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])

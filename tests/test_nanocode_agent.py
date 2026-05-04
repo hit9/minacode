@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, KnownItem, Session, ToolCallEvent, VerificationStatus
+from nanocode import Agent, CurrentContextItem, KnownItem, Session, ToolCallEvent, VerificationStatus
 
 
 def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path):
@@ -251,6 +251,63 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
     assert "<fact>Search only supports rg and Python fallback.</fact>" in prompt
     assert "  <details>\n    <detail>grep was removed</detail>\n  </details>" in prompt
     assert "duplicate ignored" not in prompt
+
+
+def test_agent_keeps_current_context_separate_from_known(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "current_context_update": {
+                "mode": "append",
+                "items": [
+                    {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["exit code 1"]},
+                    {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["updated failure"]},
+                ],
+            }
+        }
+    )
+
+    assert session.current.known == []
+    assert session.current.current_context == [
+        CurrentContextItem(note="pytest failed in tests/test_nanocode_agent.py", details=["updated failure"])
+    ]
+
+    assert "  Context\n" in agent.state_updater.latest_report
+    assert "    1. pytest failed in tests/test_nanocode_agent.py | updated failure" in agent.state_updater.latest_report
+
+
+def test_agent_clears_current_context_when_goal_changes(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.current.goal = "old goal"
+    session.current.current_context = [CurrentContextItem(note="old dirty state")]
+    agent = Agent(session)
+
+    agent.apply_response({"goal_update": "new goal", "goal_reached": False})
+
+    assert session.current.current_context == []
+    assert "  Goal    new goal" in agent.state_updater.latest_report
+    assert "  Context\n" in agent.state_updater.latest_report
+    assert "    (empty)" in agent.state_updater.latest_report
+
+
+def test_agent_keeps_last_fifty_current_context_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "current_context_update": {
+                "mode": "append",
+                "items": [{"note": "note " + str(index)} for index in range(55)],
+            }
+        }
+    )
+
+    assert len(session.current.current_context) == 50
+    assert session.current.current_context[0].note == "note 5"
+    assert session.current.current_context[-1].note == "note 54"
 
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
@@ -572,5 +629,3 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
 
     assert "Never answer outside JSON" in prompt
     assert "message_to_user" in prompt
-    assert "only this one chance to see each raw tool result" in prompt
-    assert "extract important facts, evidence, paths, line numbers, errors, and next-step details immediately" in prompt
