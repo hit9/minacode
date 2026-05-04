@@ -1,5 +1,12 @@
 # nanocode
 
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Screenshot 1](snapshots/nanocode-snapshot1.png) | ![Screenshot 2](snapshots/nanocode-snapshot2.png) |
+
 ## Install
 
 ```sh
@@ -42,3 +49,4 @@ nanocode does not provide sandbox protection. It can run shell commands and edit
 If you do not fully trust the model, tools, prompts, or workspace, run nanocode inside your own sandbox, container, VM, or other isolated environment.
 
 Use at your own risk.
+
