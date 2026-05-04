@@ -759,4 +759,5 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
     assert "Never answer outside JSON" in prompt
     assert "message_to_user" in prompt
     assert "Prefer Search before Read" in prompt
+    assert "Read returns at most 1000 lines" in prompt
     assert "use result_file logs only as a fallback when needed" in prompt

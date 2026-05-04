@@ -45,6 +45,37 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     assert "alpha\nbeta\n" in result
 
 
+def test_read_tool_truncates_full_file_reads_after_1000_lines(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("".join(f"line-{index:04d}\n" for index in range(1005)), encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    result = ReadTool.make(session, ["sample.txt"]).call()
+
+    assert "<range>0:1000</range>" in result
+    assert "<truncated>true</truncated>" in result
+    assert "<total_lines>1005</total_lines>" in result
+    assert "Read returned 1000 lines from 0:1000 of 1005 total lines" in result
+    assert "Use Search to locate relevant text or Read smaller ranges in batches." in result
+    assert "line-0999\n" in result
+    assert "line-1000\n" not in result
+
+
+def test_read_tool_truncates_large_bounded_ranges_after_1000_lines(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("".join(f"line-{index:04d}\n" for index in range(1100)), encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    result = ReadTool.make(session, ["sample.txt", "10", "1050"]).call()
+
+    assert "<range>10:1010</range>" in result
+    assert "<truncated>true</truncated>" in result
+    assert "<total_lines>1100</total_lines>" in result
+    assert "Read returned 1000 lines from 10:1010 of 1100 total lines" in result
+    assert "line-1009\n" in result
+    assert "line-1010\n" not in result
+
+
 def test_read_tool_bounded_read_stops_at_end(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")

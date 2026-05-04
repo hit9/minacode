@@ -566,6 +566,8 @@ def _range_fingerprint(content: str) -> str:
 @final
 @dataclass
 class ReadTool(Tool):
+    MAX_LINES: ClassVar[int] = 1000
+
     filepath: str = ""
     start: int = 0
     end: int = 0
@@ -581,7 +583,8 @@ class ReadTool(Tool):
         return [
             "Read exact file lines with a fingerprint.",
             "Optional range is 0-based [start,end); end=0 means EOF.",
-            "Prefer bounded reads over full-file reads; use LineCount first when unsure.",
+            "Returns at most 1000 lines; truncated results include total lines and next-step guidance.",
+            "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
             "For ReplaceRange, call Read with the exact same filepath/start/end and reuse that range fingerprint.",
         ]
 
@@ -608,26 +611,64 @@ class ReadTool(Tool):
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            lines = itertools.islice(f, self.start, self.end or None)
-            content = "".join(lines)
+        total_lines = 0
+        selected_lines = []
+        truncated = False
+        bounded_read_lines = self.end - self.start if self.end else 0
+        if self.end and bounded_read_lines <= self.MAX_LINES:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                selected_lines = list(itertools.islice(f, self.start, self.end))
+        else:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                for index, line in enumerate(f):
+                    total_lines = index + 1
+                    if index < self.start:
+                        continue
+                    if self.end and index >= self.end:
+                        continue
+                    if len(selected_lines) < self.MAX_LINES:
+                        selected_lines.append(line)
+                        continue
+                    truncated = True
+        content = "".join(selected_lines)
+        returned_end = self.start + len(selected_lines)
+        fingerprint_end = returned_end if truncated else self.end
         fingerprint = self.range_fingerprints.remember(
             filepath=self.filepath,
             start=self.start,
-            end=self.end,
+            end=fingerprint_end,
             content=content,
         )
-        return "\n".join(
+        lines = [
+            "<ReadToolResult>",
+            "  <range>" + str(self.start) + ":" + str(fingerprint_end) + "</range>",
+            "  <fingerprint>" + fingerprint + "</fingerprint>",
+        ]
+        if truncated:
+            lines.extend(
+                [
+                    "  <truncated>true</truncated>",
+                    "  <total_lines>" + str(total_lines) + "</total_lines>",
+                    "  <note>Read returned "
+                    + str(len(selected_lines))
+                    + " lines from "
+                    + str(self.start)
+                    + ":"
+                    + str(returned_end)
+                    + " of "
+                    + str(total_lines)
+                    + " total lines. Use Search to locate relevant text or Read smaller ranges in batches.</note>",
+                ]
+            )
+        lines.extend(
             [
-                "<ReadToolResult>",
-                "  <range>" + str(self.start) + ":" + str(self.end) + "</range>",
-                "  <fingerprint>" + fingerprint + "</fingerprint>",
                 "  <content no-indention>",
                 content,
                 "  </content>",
                 "</ReadToolResult>",
             ]
         )
+        return "\n".join(lines)
 
 
 @final
@@ -1667,6 +1708,7 @@ Tools:
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
+- Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
 - Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
