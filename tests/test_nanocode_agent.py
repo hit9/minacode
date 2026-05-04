@@ -600,6 +600,7 @@ def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
 
     assert response["message_to_user"] == "done"
     assert "premature" not in messages
+    assert "Retrying: model needs to summarize the latest tool results." in messages
     assert all("premature" not in item.format() for item in session.conversation)
     assert len(agent.model_client.user_prompts) == 3
     assert "Tool_Summary_Gate: summarize latest tool results" in agent.model_client.user_prompts[2]
@@ -758,7 +759,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     assert response["message_to_user"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "No tool calls and goal not reached" in agent.model_client.user_prompts[1]
-    assert "Continuation_Gate: goal not reached; retrying next useful action." in messages
+    assert "Continuing: goal is not complete yet." in messages
 
 
 def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
@@ -796,7 +797,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert "Verification_Gate: required before completion." in agent.model_client.user_prompts[1]
     assert session.current.verification.status == VerificationStatus.DONE
     assert session.current.verification.evidence == "tests passed"
-    assert "Verification_Gate: retrying until verification is passed or blocked." in messages
+    assert "Retrying: verification is required before completion." in messages
 
 
 def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
@@ -821,7 +822,28 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
 
     assert response["message_to_user"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
-    assert messages == ["Format_Gate: retrying model response. Invalid model output: plain answer", "done"]
+    assert messages == ["Retrying: model returned invalid output.", "done"]
+
+
+def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
+                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path), debug=True)
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    agent.run("answer", on_message=messages.append)
+
+    assert messages[0] == "Format_Gate: retrying model response. Invalid model output: plain answer"
 
 
 def test_agent_run_stops_after_repeated_format_errors(tmp_path):
@@ -847,7 +869,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
 
     assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
     assert "model returned invalid output 3 times in a row" in message
-    assert messages[-1].startswith("Format_Gate: stopped after 3 consecutive invalid model outputs.")
+    assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
 
 
 def test_agent_system_prompt_forbids_non_json_answers(tmp_path):

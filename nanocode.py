@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 
 class Error(Exception): ...
@@ -2725,6 +2725,9 @@ class Agent:
                 if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                     self._report_gate(
                         on_message,
+                        "Stopped: model returned invalid output "
+                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                        + " times in a row.",
                         "Format_Gate: stopped after "
                         + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
                         + " consecutive invalid model outputs. "
@@ -2736,7 +2739,11 @@ class Agent:
                         + " times in a row: "
                         + _shorten(format_error, 300)
                     )
-                self._report_gate(on_message, "Format_Gate: retrying model response. " + _shorten(format_error, 180))
+                self._report_gate(
+                    on_message,
+                    "Retrying: model returned invalid output.",
+                    "Format_Gate: retrying model response. " + _shorten(format_error, 180),
+                )
                 continue
             consecutive_format_errors = 0
             tool_calls = _json_list(response.get("tool_calls"))
@@ -2744,7 +2751,11 @@ class Agent:
             if summary_gate:
                 self.state_updater.latest_report = ""
                 self.latest_tool_call_results = summary_gate
-                self._report_gate(on_message, self._compact_gate_report(summary_gate))
+                self._report_gate(
+                    on_message,
+                    "Retrying: model needs to summarize the latest tool results.",
+                    self._compact_gate_report(summary_gate),
+                )
                 continue
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
@@ -2767,18 +2778,26 @@ class Agent:
             if self.session.current.verification.status == VerificationStatus.REQUIRED:
                 self.session.current.goal_reached = False
                 self.latest_tool_call_results = self._format_verification_gate()
-                self._report_gate(on_message, "Verification_Gate: retrying until verification is passed or blocked.")
+                self._report_gate(
+                    on_message,
+                    "Retrying: verification is required before completion.",
+                    "Verification_Gate: retrying until verification is passed or blocked.",
+                )
                 continue
             if not self.session.current.goal_reached:
                 self.latest_tool_call_results = self._format_continuation_hint()
-                self._report_gate(on_message, "Continuation_Gate: goal not reached; retrying next useful action.")
+                self._report_gate(
+                    on_message,
+                    "Continuing: goal is not complete yet.",
+                    "Continuation_Gate: goal not reached; retrying next useful action.",
+                )
                 continue
             return response
         raise LLMError("agent step limit reached")
 
-    def _report_gate(self, on_message: MessageCallback | None, message: str) -> None:
+    def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is not None:
-            on_message(message)
+            on_message(debug_message if self.session.debug else message)
 
     def _compact_gate_report(self, gate: str) -> str:
         lines = gate.splitlines()
