@@ -10,7 +10,7 @@
 ## Install
 
 ```sh
-uv tool install nanocode
+uv tool install nanocode-cli
 ```
 
 For local development:

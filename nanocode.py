@@ -3,6 +3,7 @@ nanocode
 ~~~~~~~~
 A lightweight terminal-based AI coding assistant
 https://github.com/hit9/nanocode
+Install: uv tool install nanocode-cli
 """
 
 import argparse
@@ -342,13 +343,7 @@ class RangeFingerprintStore:
         filepath = os.path.realpath(filepath)
         contents = []
         for entry in self._entries:
-            if (
-                entry.fingerprint != fingerprint
-                or entry.filepath != filepath
-                or entry.start != start
-                or entry.end != end
-                or not entry.content
-            ):
+            if entry.fingerprint != fingerprint or entry.filepath != filepath or entry.start != start or entry.end != end or not entry.content:
                 continue
             if entry.content not in contents:
                 contents.append(entry.content)
@@ -1180,7 +1175,7 @@ class ReplaceRangeTool(Tool):
             fingerprint=self.fingerprint,
         )
         replacement = self.content.splitlines(keepends=True)
-        new_lines = lines[:resolved.start] + replacement + lines[resolved.end :]
+        new_lines = lines[: resolved.start] + replacement + lines[resolved.end :]
         return original, "".join(new_lines), resolved, replacement
 
 
@@ -1218,9 +1213,7 @@ class BatchReplaceRangesTool(Tool):
 
     @classmethod
     def example(cls) -> list[str]:
-        return [
-            'Example args: ["code.py", "[{\\"start\\":10,\\"end\\":12,\\"fingerprint\\":\\"a1b2c3\\",\\"content\\":\\"new text\\\\n\\"}]"]'
-        ]
+        return ['Example args: ["code.py", "[{\\"start\\":10,\\"end\\":12,\\"fingerprint\\":\\"a1b2c3\\",\\"content\\":\\"new text\\\\n\\"}]"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2475,11 +2468,16 @@ class AgentStateUpdater:
         if verification.goal and verification.goal != self.session.current.goal:
             verification.reset()
             return
-        if plan_replaced and not _json_dict(response.get("verification")) and verification.status in {
-            VerificationStatus.REQUIRED,
-            VerificationStatus.DONE,
-            VerificationStatus.BLOCKED,
-        }:
+        if (
+            plan_replaced
+            and not _json_dict(response.get("verification"))
+            and verification.status
+            in {
+                VerificationStatus.REQUIRED,
+                VerificationStatus.DONE,
+                VerificationStatus.BLOCKED,
+            }
+        ):
             verification.reset()
 
     def _bind_verification_goal(self) -> None:
