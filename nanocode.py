@@ -319,7 +319,10 @@ class RangeFingerprintStore:
             return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
 
         matches = self._find_matches(lines, filepath=filepath, start=start, end=end, fingerprint=fingerprint)
-        message = f"fingerprint mismatch: expected {fingerprint}, current {current_fingerprint}"
+        message = (
+            f"fingerprint mismatch for range {start}:{end}: expected {fingerprint}, current {current_fingerprint}; "
+            f"call Read(filepath, {start}, {end}) and reuse that range fingerprint"
+        )
         if not matches:
             raise ToolCallError(message)
         if len(matches) > 1:
@@ -552,7 +555,7 @@ class ReadTool(Tool):
             "Read exact file lines with a fingerprint.",
             "Optional range is 0-based [start,end); end=0 means EOF.",
             "Prefer bounded reads over full-file reads; use LineCount first when unsure.",
-            "Call before line-range edits and reuse the returned fingerprint.",
+            "For ReplaceRange, call Read with the exact same filepath/start/end and reuse that range fingerprint.",
         ]
 
     @classmethod
@@ -590,6 +593,7 @@ class ReadTool(Tool):
         return "\n".join(
             [
                 "<ReadToolResult>",
+                "  <range>" + str(self.start) + ":" + str(self.end) + "</range>",
                 "  <fingerprint>" + fingerprint + "</fingerprint>",
                 "  <content no-indention>",
                 content,
@@ -1101,7 +1105,7 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based line range when its Read fingerprint matches.",
+            "Replace one 0-based line range when its fingerprint comes from Read(filepath, same start, same end).",
             "If earlier edits shifted lines, a cached Read fingerprint for the same original range can relocate only when old content still matches exactly once.",
         ]
 
@@ -1202,7 +1206,7 @@ class BatchReplaceRangesTool(Tool):
         return [
             "Replace multiple 0-based line ranges in one file against one snapshot.",
             "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
-            "Each edit can relocate by cached Read fingerprint for the same original range only when old content still matches exactly once.",
+            "Each edit fingerprint must come from Read(filepath, same start, same end); same-range cached fingerprints can relocate shifted old content.",
         ]
 
     @classmethod

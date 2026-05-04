@@ -14,6 +14,7 @@ def test_read_tool_reads_requested_line_range(tmp_path):
 
     assert tool.requires_confirmation(session) is False
     assert result.startswith("<ReadToolResult>")
+    assert "<range>1:3</range>" in result
     assert "<fingerprint>" in result
     assert "beta\ngamma\n" in result
     assert "alpha" not in result
@@ -40,6 +41,7 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
 
     assert tool.start == 0
     assert tool.end == 0
+    assert "<range>0:0</range>" in result
     assert "alpha\nbeta\n" in result
 
 

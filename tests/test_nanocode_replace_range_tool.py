@@ -75,8 +75,9 @@ def test_replace_range_tool_rejects_full_file_fingerprint_for_partial_range(tmp_
 
     assert display.startswith("ReplaceRange(")
     assert "# preview unavailable: fingerprint mismatch" in display
+    assert "call Read(filepath, 1, 2)" in display
     assert "--- " not in display
-    with pytest.raises(ToolCallError, match="fingerprint mismatch"):
+    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 2\)"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
@@ -93,7 +94,8 @@ def test_replace_range_tool_rejects_fingerprint_mismatch(tmp_path):
     assert display.startswith("ReplaceRange(")
     assert "# preview unavailable: fingerprint mismatch" in display
     assert "current " in display
-    with pytest.raises(ToolCallError, match="fingerprint mismatch"):
+    assert "call Read(filepath, 1, 2)" in display
+    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 2\)"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
@@ -215,7 +217,8 @@ def test_replace_ranges_tool_rejects_full_file_fingerprint_for_partial_range(tmp
 
     assert display.startswith("BatchReplaceRanges(")
     assert "# preview unavailable: fingerprint mismatch" in display
+    assert "call Read(filepath, 1, 2)" in display
     assert "--- " not in display
-    with pytest.raises(ToolCallError, match="fingerprint mismatch"):
+    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 2\)"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
