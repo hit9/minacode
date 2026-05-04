@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| ![Screenshot 1](https://raw.githubusercontent.com/hit9/nanocode/main/snapshots/nanocode-snapshot1.png) | ![Screenshot 2](https://raw.githubusercontent.com/hit9/nanocode/main/snapshots/nanocode-snapshot2.png) |
+| ![Screenshot 1](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot1.png) | ![Screenshot 2](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot2.png) |
 
 ## Install
 
