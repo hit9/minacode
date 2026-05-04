@@ -556,7 +556,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert session.current.goal_reached is True
 
 
-def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
+def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -568,58 +568,6 @@ def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
                         {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
                     ]
                 },
-                {"goal_reached": True, "message_to_user": "premature", "tool_calls": None},
-                {
-                    "last_tool_calls_summaries": [
-                        {
-                            "tool": "Read",
-                            "intention": "read sample",
-                            "outcome": "success",
-                            "summary": "Read sample.txt and found alpha.",
-                            "key_evidence": ["alpha"],
-                            "result_file": None,
-                            "needs_raw_read": False,
-                        }
-                    ],
-                    "goal_reached": True,
-                    "message_to_user": "done",
-                    "tool_calls": None,
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.model_client = FakeModelClient()
-    messages = []
-
-    response = agent.run("read sample", on_message=messages.append)
-
-    assert response["message_to_user"] == "done"
-    assert "premature" not in messages
-    assert "Retrying: model needs to summarize the latest tool results." in messages
-    assert all("premature" not in item.format() for item in session.conversation)
-    assert len(agent.model_client.user_prompts) == 3
-    assert "Tool_Summary_Gate: summarize latest tool results" in agent.model_client.user_prompts[2]
-    assert "Read sample.txt and found alpha." in agent.latest_tool_call_events[0].summary
-
-
-def test_agent_run_allows_missing_tool_summary_after_one_retry(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "tool_calls": [
-                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
-                    ]
-                },
-                {"goal_reached": True, "message_to_user": "premature", "tool_calls": None},
                 {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
             ]
 
@@ -635,9 +583,8 @@ def test_agent_run_allows_missing_tool_summary_after_one_retry(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["message_to_user"] == "done"
-    assert "premature" not in messages
-    assert "Retrying: model needs to summarize the latest tool results." in messages
-    assert "Continuing: model did not summarize tool results after one retry." in messages
+    assert "Retrying: model needs to summarize the latest tool results." not in messages
+    assert len(agent.model_client.user_prompts) == 2
     assert agent.latest_tool_call_events[0].summary == ""
 
 
@@ -911,7 +858,8 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
 def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
     prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
 
-    assert "Never answer outside JSON" in prompt
+    assert "Output MUST be exactly one JSON object" in prompt
+    assert "No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON" in prompt
     assert "message_to_user" in prompt
     assert "MUST use JSON tool_calls" in prompt
     assert "Agent_Feedback" in prompt

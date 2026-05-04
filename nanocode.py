@@ -1734,8 +1734,10 @@ Input:
 - Latest_User_Input: latest user message
 - Tools: available tool specs
 
-Output strict JSON only. No markdown. No comments. No extra text.
-Never answer outside JSON, including help/status/explanation requests; put user-facing text only in message_to_user.
+Output MUST be exactly one JSON object.
+No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON.
+Put normal replies in message_to_user.
+Put tool calls only in JSON tool_calls.
 
 Schema:
 {
@@ -2675,7 +2677,6 @@ class ConversationCompactor:
 @final
 class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
-    MAX_CONSECUTIVE_SUMMARY_GATES: ClassVar[int] = 1
 
     def __init__(self, session: Session):
         self.session = session
@@ -2725,7 +2726,6 @@ class Agent:
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
         consecutive_format_errors = 0
-        consecutive_summary_gates = 0
 
         for _ in range(self.session.max_agent_steps):
             response = self.step()
@@ -2758,25 +2758,6 @@ class Agent:
                 continue
             consecutive_format_errors = 0
             tool_calls = _json_list(response.get("tool_calls"))
-            summary_gate = self._format_tool_summary_gate(tool_calls)
-            if summary_gate:
-                consecutive_summary_gates += 1
-                if consecutive_summary_gates <= self.MAX_CONSECUTIVE_SUMMARY_GATES:
-                    self.state_updater.latest_report = ""
-                    self.latest_agent_feedback = summary_gate
-                    self._report_gate(
-                        on_message,
-                        "Retrying: model needs to summarize the latest tool results.",
-                        self._compact_gate_report(summary_gate),
-                    )
-                    continue
-                self._report_gate(
-                    on_message,
-                    "Continuing: model did not summarize tool results after one retry.",
-                    "Tool_Summary_Gate: allowing continuation after one missing-summary retry.",
-                )
-            else:
-                consecutive_summary_gates = 0
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
