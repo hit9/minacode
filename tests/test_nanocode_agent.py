@@ -567,6 +567,18 @@ def test_agent_summary_gate_requires_key_evidence_for_failure(tmp_path):
 
     assert "Missing key_evidence:" in gate
     assert event.result_file in gate
+    assert (
+        agent._format_tool_summary_gate(
+            [
+                {
+                    "name": "Read",
+                    "intention": "read result log for evidence",
+                    "args": [str(tmp_path / event.result_file)],
+                }
+            ]
+        )
+        == ""
+    )
 
     agent.state_updater.apply_tool_call_summaries(
         {
@@ -612,6 +624,12 @@ def test_agent_summary_gate_requires_evidence_for_large_success_output(tmp_path)
 
     assert "Missing key_evidence:" in gate
     assert event.result_file in gate
+    assert (
+        agent._format_tool_summary_gate(
+            [{"name": "Read", "intention": "read result log for evidence", "args": [event.result_file]}]
+        )
+        == ""
+    )
 
 
 def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_path):
@@ -644,6 +662,12 @@ def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_p
     assert (
         agent._format_tool_summary_gate(
             [{"name": "Read", "intention": "read result log", "args": [event.result_file]}]
+        )
+        == ""
+    )
+    assert (
+        agent._format_tool_summary_gate(
+            [{"name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]
         )
         == ""
     )

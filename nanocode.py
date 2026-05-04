@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 class Error(Exception): ...
@@ -2693,13 +2693,19 @@ class Agent:
         for event, execution in zip(self.tool_runner.latest_events, self.tool_runner.latest_executions):
             if not event.summary:
                 continue
-            if event.needs_raw_read and not self._has_read_result_file_call(tool_calls, event.result_file):
+            is_reading_result_file = self._has_read_result_file_call(tool_calls, event.result_file)
+            if event.needs_raw_read and not is_reading_result_file:
                 needs_read.append(event)
             if event.outcome in {"failure", "partial"}:
-                if not event.key_details:
+                if not event.key_details and not is_reading_result_file:
                     missing_evidence.append(event)
                 continue
-            if self._is_large_tool_output(execution.output) and not event.key_details and not event.needs_raw_read:
+            if (
+                self._is_large_tool_output(execution.output)
+                and not event.key_details
+                and not event.needs_raw_read
+                and not is_reading_result_file
+            ):
                 missing_evidence.append(event)
         if not missing and not missing_evidence and not needs_read:
             return ""
@@ -2728,12 +2734,13 @@ class Agent:
     def _has_read_result_file_call(self, tool_calls: list[JsonValue], result_file: str) -> bool:
         if not result_file:
             return False
+        expected = self.session.resolve_path(result_file)
         for raw_call in tool_calls:
             call = _json_dict(raw_call)
             if _json_str(call.get("name")) != ReadTool.name():
                 continue
             args = [_json_str(arg) or "" for arg in _json_list(call.get("args"))]
-            if args and args[0] == result_file:
+            if args and self.session.resolve_path(args[0]) == expected:
                 return True
         return False
 

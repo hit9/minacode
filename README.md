@@ -16,6 +16,12 @@ nanocode is used to help building itself, including features such as `@file` pat
 uv tool install nanocode-cli
 ```
 
+Upgrade an existing install:
+
+```sh
+uv tool upgrade nanocode-cli
+```
+
 For local development:
 
 ```sh
