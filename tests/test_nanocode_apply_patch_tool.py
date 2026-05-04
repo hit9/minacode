@@ -57,6 +57,23 @@ def test_apply_patch_tool_finds_unique_context_when_hunk_line_number_is_stale(tm
     assert "* hunks: 1" in result
 
 
+def test_apply_patch_tool_applies_bare_fuzzy_hunk_and_previews_diff(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = "@@\n-beta\n+BETA\n"
+
+    tool = ApplyPatchTool.make(session, ["sample.txt", patch])
+    display = tool.display()
+    result = tool.call()
+
+    assert "# preview unavailable" not in display
+    assert "-beta\n" in display
+    assert "+BETA\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+    assert "* hunks: 1" in result
+
+
 def test_apply_patch_tool_rejects_ambiguous_context_when_hunk_line_number_is_stale(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\nalpha\nbeta\n", encoding="utf-8")
@@ -106,11 +123,11 @@ def test_apply_patch_tool_display_reports_unavailable_preview_for_invalid_patch(
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ApplyPatchTool.make(session, ["sample.txt", "@@\n-alpha\n+beta\n"])
+    tool = ApplyPatchTool.make(session, ["sample.txt", "@@bad\n-alpha\n+beta\n"])
 
     display = tool.display()
 
     assert display.startswith("ApplyPatch(")
     assert "unified_diff=..." in display
-    assert "# preview unavailable: patch has no hunks" in display
+    assert "# preview unavailable: invalid hunk header" in display
     assert "-alpha" not in display

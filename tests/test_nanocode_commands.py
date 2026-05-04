@@ -41,6 +41,18 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert exit_result.status == CommandStatus.EXIT
 
 
+def test_status_reports_tokens_in_human_readable_format(tmp_path):
+    session = Session(cwd=str(tmp_path), model="model")
+    session.last_total_tokens = 1200
+    session.session_total_tokens = 2_345_678
+    dispatcher = CommandDispatcher(Agent(session))
+
+    result = dispatcher.dispatch("/status")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "tokens: last=1k session=2m" in result.message
+
+
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
     session = Session(cwd=str(tmp_path), compact_at=2)
     agent = Agent(session)

@@ -52,7 +52,9 @@ def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path
     )
 
     assert "Read sample.txt line 1." in event.summary
-    assert "sample.txt:1 alpha" in event.summary
+    assert event.key_details == ["sample.txt:1 alpha"]
+    assert "sample.txt:1 alpha" in event.format()
+    assert "<key_details>\n    <detail>sample.txt:1 alpha</detail>\n  </key_details>" in event.format()
     assert "alpha\n  </content>" not in event.format()
 
 
@@ -570,3 +572,5 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
 
     assert "Never answer outside JSON" in prompt
     assert "message_to_user" in prompt
+    assert "only this one chance to see each raw tool result" in prompt
+    assert "extract important facts, evidence, paths, line numbers, errors, and next-step details immediately" in prompt

@@ -1060,21 +1060,32 @@ class ApplyPatchTool(Tool):
 
         while i < len(patch_lines):
             header = patch_lines[i].strip()
-            if not header.startswith("@@ "):
+            if header == "@@":
+                old_start = 0
+                fuzzy = True
+            elif header.startswith("@@ "):
+                fuzzy = False
+                parts = header.split()
+                if len(parts) < 3 or not parts[1].startswith("-"):
+                    raise ToolCallError("invalid hunk header")
+                try:
+                    old_start = int(parts[1][1:].split(",", 1)[0])
+                except ValueError:
+                    raise ToolCallError("invalid hunk header")
+            elif header.startswith("@@"):
+                raise ToolCallError("invalid hunk header")
+            else:
                 i += 1
                 continue
 
-            parts = header.split()
-            if len(parts) < 3 or not parts[1].startswith("-"):
-                raise ToolCallError("invalid hunk header")
-            try:
-                old_start = int(parts[1][1:].split(",", 1)[0])
-            except ValueError:
-                raise ToolCallError("invalid hunk header")
-
             i += 1
             hunk_lines = []
-            while i < len(patch_lines) and not patch_lines[i].startswith("@@ "):
+            while i < len(patch_lines):
+                next_header = patch_lines[i].strip()
+                if next_header == "@@" or next_header.startswith("@@ "):
+                    break
+                if next_header.startswith("@@"):
+                    raise ToolCallError("invalid hunk header")
                 hunk_lines.append(patch_lines[i])
                 i += 1
 
@@ -1097,7 +1108,8 @@ class ApplyPatchTool(Tool):
                 else:
                     raise ToolCallError("invalid hunk line")
 
-            index = ApplyPatchTool._find_hunk_position(lines, expected, max(old_start - 1, 0) + offset)
+            target = -1 if fuzzy else max(old_start - 1, 0) + offset
+            index = ApplyPatchTool._find_hunk_position(lines, expected, target)
             lines[index : index + len(expected)] = replacement
             offset += len(replacement) - len(expected)
             hunks += 1
@@ -1304,7 +1316,7 @@ Tools:
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Summarize every latest tool result in last_tool_calls_summaries.
-- Raw tool results may disappear after this turn; preserve only useful facts/summaries.
+- You have only this one chance to see each raw tool result; extract important facts, evidence, paths, line numbers, errors, and next-step details immediately.
 - If a prior tool result lacks detail, use ReadTool on its result_file.
 - tool_call.intention must state the question to answer, not just the action.
 
@@ -1932,6 +1944,7 @@ class AgentStateUpdater:
             if event is None:
                 continue
             event.summary = self._format_tool_call_summary(summary)
+            event.key_details = self._key_details_from_summary(summary)
             if event in pending:
                 pending.remove(event)
 
@@ -1957,13 +1970,13 @@ class AgentStateUpdater:
             parts.append("outcome: " + outcome)
         if text:
             parts.append("summary: " + text)
-        evidence = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
-        evidence = [item for item in evidence if item]
-        if evidence:
-            parts.append("key_evidence: " + "; ".join(evidence))
         if summary.get("needs_raw_read") is True:
             parts.append("needs_raw_read: true")
         return "\n".join(parts)
+
+    def _key_details_from_summary(self, summary: Json) -> list[str]:
+        details = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
+        return [detail for detail in details if detail]
 
     def _apply_goal(self, response: Json) -> bool:
         update = _json_str(response.get("goal_update"))
@@ -2375,7 +2388,7 @@ class CommandDispatcher:
                 "reasoning: " + reasoning,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "tokens: last=" + str(session.last_total_tokens) + " session=" + str(session.session_total_tokens),
+                "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "goal: " + (session.current.goal or "(empty)"),
                 "verification: " + session.current.verification.status,
             ]
@@ -2446,6 +2459,16 @@ class CommandDispatcher:
         if args in {"", "status"}:
             return "YOLO is " + ("on" if self.agent.session.yolo else "off")
         return "Usage: /yolo [on|off|status]"
+
+
+def _format_count(value: int) -> str:
+    if value <= 0:
+        return "-"
+    if value >= 1_000_000:
+        return str(value // 1_000_000) + "m"
+    if value >= 1_000:
+        return str(value // 1_000) + "k"
+    return str(value)
 
 
 ############################
@@ -2574,13 +2597,7 @@ class StatusBar:
         return "".join(text for _, text in fragments)
 
     def _format_count(self, value: int) -> str:
-        if value <= 0:
-            return "-"
-        if value >= 1_000_000:
-            return str(value // 1_000_000) + "m"
-        if value >= 1_000:
-            return str(value // 1_000) + "k"
-        return str(value)
+        return _format_count(value)
 
 
 @final
