@@ -93,6 +93,20 @@ def test_replace_range_tool_rejects_full_file_fingerprint_for_partial_range(tmp_
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
+def test_replace_range_tool_reports_fingerprint_cached_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0", "3"]).call())
+
+    tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
+
+    display = tool.display()
+    assert "this fingerprint was cached for exact range(s): 0:3" in display
+    with pytest.raises(ToolCallError, match=r"cached for exact range\(s\): 0:3"):
+        tool.call()
+
+
 def test_replace_range_tool_rejects_fingerprint_mismatch(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")

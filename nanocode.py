@@ -355,6 +355,9 @@ class RangeFingerprintStore:
             f"fingerprint mismatch for range {start}:{end}: expected {fingerprint}, current {current_fingerprint}; "
             f"call Read(filepath, {start}, {end}) and reuse that range fingerprint"
         )
+        other_ranges = self._ranges_for_fingerprint(filepath=filepath, fingerprint=fingerprint)
+        if other_ranges:
+            message += "; this fingerprint was cached for exact range(s): " + ", ".join(f"{range_start}:{range_end}" for range_start, range_end in other_ranges)
         if not matches:
             raise ToolCallError(message)
         if len(matches) > 1:
@@ -388,6 +391,17 @@ class RangeFingerprintStore:
                     if len(matches) > 1:
                         return matches
         return matches
+
+    def _ranges_for_fingerprint(self, *, filepath: str, fingerprint: str) -> list[tuple[int, int]]:
+        filepath = os.path.realpath(filepath)
+        ranges = []
+        for entry in self._entries:
+            if entry.fingerprint != fingerprint or entry.filepath != filepath:
+                continue
+            item = (entry.start, entry.end)
+            if item not in ranges:
+                ranges.append(item)
+        return ranges
 
 
 @final
@@ -593,7 +607,7 @@ class ReadTool(Tool):
             "Optional range is 0-based [start,end); end=0 means EOF.",
             "Returns at most 1000 lines; truncated results include total lines and next-step guidance.",
             "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
-            "For ReplaceRange, call Read with the exact same filepath/start/end and reuse that range fingerprint.",
+            "For ReplaceRange, the fingerprint is valid only for this exact filepath/start/end; read the exact edit range immediately before replacing.",
         ]
 
     @classmethod
@@ -1185,7 +1199,8 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based line range when its fingerprint comes from Read(filepath, same start, same end).",
+            "Replace one 0-based line range when its fingerprint comes from Read(filepath, exact same start, exact same end).",
+            "Never use a wider Read fingerprint for a narrower edit; if mismatch happens, Read the exact target range and retry once.",
             "If earlier edits shifted lines, a cached Read fingerprint for the same original range can relocate only when old content still matches exactly once.",
         ]
 
@@ -1293,7 +1308,8 @@ class BatchReplaceRangesTool(Tool):
         return [
             "Replace multiple 0-based line ranges in one file against one snapshot.",
             "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
-            "Each edit fingerprint must come from Read(filepath, same start, same end); same-range cached fingerprints can relocate shifted old content.",
+            "Each edit fingerprint must come from Read(filepath, exact same start, exact same end); never reuse a wider Read fingerprint for a narrower edit.",
+            "Same-range cached fingerprints can relocate shifted old content.",
         ]
 
     @classmethod
@@ -1796,6 +1812,7 @@ Tools:
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
 - Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
+- ReplaceRange/BatchReplaceRanges fingerprints are valid only for the exact filepath/start/end returned by Read. Never use a wider Read fingerprint for a narrower edit. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
 - Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
