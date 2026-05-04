@@ -2061,13 +2061,24 @@ class ModelClient:
         return text
 
     def _invalid_model_response(self, content: str) -> Json:
+        guidance = ""
+        if self._looks_like_native_tool_call(content):
+            guidance = (
+                " Native tool_call syntax is not supported; return one JSON object with tool_calls entries like "
+                '{"name":"Read","intention":"...","args":["nanocode.py","0","100"]}.'
+            )
         return {
             "goal_reached": False,
             "tool_calls": None,
             "message_to_user": None,
             "_format_error": "Invalid model output: expected one JSON object matching the Output JSON schema. Return strict JSON only. Bad output: "
-            + _shorten(content),
+            + _shorten(content)
+            + guidance,
         }
+
+    def _looks_like_native_tool_call(self, content: str) -> bool:
+        text = self._strip_leaked_think_tags(content.strip())
+        return text.startswith("<tool_call>")
 
     def _chat_completions_url(self) -> str:
         url = self.session.api_url.rstrip("/")

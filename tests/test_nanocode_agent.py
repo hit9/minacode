@@ -225,6 +225,17 @@ def test_agent_request_does_not_extract_json_after_arbitrary_prefix(tmp_path):
     assert "expected one JSON object" in response["_format_error"]
 
 
+def test_agent_request_guides_native_tool_call_syntax_back_to_json(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
+
+    assert response["tool_calls"] is None
+    assert "Native tool_call syntax is not supported" in response["_format_error"]
+    assert '"name":"Read"' in response["_format_error"]
+    assert '"args":["nanocode.py","0","100"]' in response["_format_error"]
+
+
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
     class FakeResponse:
         def __enter__(self):
