@@ -1,0 +1,11 @@
+build
+*.egg-info
+__pycache__/
+*.pyc
+.env*
+.nanocode
+.venv/
+.mypy_cache/
+.ruff_cache/
+uv.lock
+.python-version

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanocode"
+version = "0.1.0"
+description = "A lightweight terminal-based AI coding assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "hit9", email = "hit9@icloud.com" },
+]
+keywords = ["ai", "coding-assistant", "cli", "terminal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Terminals",
+]
+dependencies = [
+    "prompt-toolkit>=3.0",
+    "typing-extensions>=4.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/hit9/nanocode"
+Repository = "https://github.com/hit9/nanocode"
+Issues = "https://github.com/hit9/nanocode/issues"
+
+[project.scripts]
+nanocode = "nanocode:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4.0",
+]
+
+[tool.setuptools]
+py-modules = ["nanocode"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"

@@ -1,0 +1,2968 @@
+"""
+nanocode
+~~~~~~~~
+A lightweight terminal-based AI coding assistant
+https://github.com/hit9/nanocode
+"""
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import platform
+import shutil
+import signal
+import socket
+import subprocess
+import tempfile
+import threading
+import difflib
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import datetime
+from abc import abstractmethod
+from enum import StrEnum
+from typing import Any, Callable, ClassVar, final, Iterator, Protocol, Self, Type, TypeAlias
+from typing_extensions import override
+from prompt_toolkit import PromptSession, print_formatted_text
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.output.defaults import create_output
+from prompt_toolkit.patch_stdout import patch_stdout
+
+
+JsonValue: TypeAlias = Any
+Json: TypeAlias = dict[str, JsonValue]
+__version__ = "0.1.0"
+MAX_AGENT_STEPS = 50
+
+
+class Error(Exception): ...
+
+
+class ToolCallError(Exception): ...
+
+
+class LLMError(Exception): ...
+
+
+class Cancellation(Exception): ...
+
+
+class PromptItem:
+    @abstractmethod
+    def format(self, indent: str = "") -> str:
+        raise NotImplementedError
+
+
+############################
+# Conversation (dataclasses)
+############################
+
+
+class Role(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL_CALL = "tool_call"
+
+
+@dataclass
+class ConversationItem(PromptItem):
+    role: Role
+    time: datetime = field(default_factory=datetime.now)
+
+    def format_ts(self) -> str:
+        return self.time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@final
+@dataclass
+class UserMessage(ConversationItem):
+    role: Role = Role.USER
+    content: str = ""
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = [f'<UserMessage at="{self.format_ts()}">', f"{self.content}", "</UserMessage>"]
+        return _format_lines(lines, indent)
+
+
+@final
+@dataclass
+class AssistantMessage(ConversationItem):
+    role: Role = Role.ASSISTANT
+    content: str = ""
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = [f'<AssistantMessage at="{self.format_ts()}">', self.content, "</AssistantMessage>"]
+        return _format_lines(lines, indent)
+
+
+@final
+@dataclass
+class ToolCallEvent(ConversationItem):
+    role: Role = Role.TOOL_CALL
+    intent: str = ""
+    executed: str = ""
+    outcome: str = ""
+    summary: str = ""
+    result_file: str = ""
+    result_file_lines: int = 0
+    key_details: list[str] = field(default_factory=list)
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = [
+            f'<ToolCall at="{self.format_ts()}">',
+            "  <intent>" + self.intent + "</intent>",
+            "  <executed>" + self.executed + "</executed>",
+            "  <outcome>" + self.outcome + "</outcome>",
+            "  <summary>" + self.summary + "</summary>",
+        ]
+        if self.key_details:
+            lines.append("  <key_details>")
+            for detail in self.key_details:
+                lines.append("    <detail>" + detail + "</detail>")
+            lines.append("  </key_details>")
+        if self.result_file:
+            lines.append("  <result_file>" + self.result_file + "</result_file>")
+            lines.append("  <result_file_lines>" + str(self.result_file_lines) + "</result_file_lines>")
+        lines.append("</ToolCall>")
+        return _format_lines(lines, indent)
+
+
+############################
+# Current (dataclasses)
+############################
+
+
+class PlanStatus(StrEnum):
+    TODO = "todo"
+    DOING = "doing"
+    DONE = "done"
+    BLOCKED = "blocked"
+
+
+@final
+@dataclass
+class PlanItem(PromptItem):
+    text: str
+    status: PlanStatus = PlanStatus.TODO
+    id: str = ""
+    evidence: str = ""
+
+    @override
+    def format(self, indent: str = "") -> str:
+        parts = [f"({self.status})"]
+        if self.id:
+            parts.append("id=" + self.id)
+        parts.append(self.text)
+        if self.evidence:
+            parts.append("evidence=" + self.evidence)
+        return indent + "<PlanItem>" + " ".join(parts) + "</PlanItem>"
+
+
+class VerificationStatus(StrEnum):
+    IDLE = "idle"
+    PLANNED = "planned"
+    REQUIRED = "required"
+    DONE = "done"
+    BLOCKED = "blocked"
+
+
+@final
+@dataclass
+class Verification(PromptItem):
+    goal: str = ""
+    status: VerificationStatus = VerificationStatus.IDLE
+    method: str = ""
+    evidence: str = ""
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = [
+            "<Verification>",
+            "  <goal>" + self.goal + "</goal>",
+            "  <status>" + self.status + "</status>",
+            "  <method>" + self.method + "</method>",
+            "  <evidence>" + self.evidence + "</evidence>",
+            "</Verification>",
+        ]
+        return _format_lines(lines, indent)
+
+    def reset(self) -> None:
+        self.goal = ""
+        self.status = VerificationStatus.IDLE
+        self.method = ""
+        self.evidence = ""
+
+    def has_context(self) -> bool:
+        return bool(self.goal or self.method or self.evidence or self.status != VerificationStatus.IDLE)
+
+
+@final
+@dataclass
+class KnownItem(PromptItem):
+    fact: str
+    details: list[str] = field(default_factory=list)
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
+        if self.details:
+            lines.append("  <details>")
+            for detail in self.details:
+                lines.append("<detail>" + detail + "</detail>")
+            lines.append("  </details>")
+        lines.append("</KnownItem>")
+        return _format_lines(lines, indent)
+
+
+@final
+@dataclass
+class Current:
+    user_input: str = ""
+    goal: str = ""
+    goal_reached: bool = False
+    plan: list[PlanItem] = field(default_factory=list)
+    known: list[KnownItem] = field(default_factory=list)
+    verification: Verification = field(default_factory=Verification)
+
+
+@final
+@dataclass
+class Session:
+    REQUIRED_ENVS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("NANOCODE_API_URL", "api_url"),
+        ("NANOCODE_API_KEY", "api_key"),
+        ("NANOCODE_MODEL", "model"),
+    )
+
+    # ---- system ----
+    system: str = field(default_factory=platform.system)
+    arch: str = field(default_factory=platform.machine)
+    cwd: str = field(default_factory=os.getcwd)
+    bash: str = field(default_factory=lambda: shutil.which("bash") or "")
+
+    # ---- env configs ----
+    api_url: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_URL", ""))  # reqiured
+    api_key: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_KEY", ""))  # reqiured
+    model: str = field(default_factory=lambda: os.environ.get("NANOCODE_MODEL", ""))  # reqiured
+    nanocode_dir: str = field(default_factory=lambda: os.environ.get("NANOCODE_DIR", ".nanocode"))
+    temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
+    reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
+    reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
+    model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
+    shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
+    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
+
+    # ---- runtime variables ----
+    yolo: bool = False
+    debug: bool = False
+    debug_prompt_count: int = 0
+
+    # ---- stats ---
+    last_prompt_tokens: int = 0
+    last_completion_tokens: int = 0
+    last_total_tokens: int = 0
+    session_prompt_tokens: int = 0
+    session_completion_tokens: int = 0
+    session_total_tokens: int = 0
+    current_model_call_started_at: float = 0.0
+
+    # ---- current and conversation ---
+    current: Current = field(default_factory=Current)
+    conversation: list[ConversationItem] = field(default_factory=list)
+
+    def resolve_path(self, path: str) -> str:
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            path = os.path.join(self.cwd, path)
+        return os.path.abspath(path)
+
+    def is_path_in_cwd(self, path: str) -> bool:
+        cwd = os.path.realpath(self.cwd)
+        path = os.path.realpath(path)
+        try:
+            return os.path.commonpath([cwd, path]) == cwd
+        except ValueError:
+            return False
+
+    def append_conversation(self, item: ConversationItem) -> None:
+        self.conversation.append(item)
+
+    def tool_results_dir(self) -> str:
+        return self.resolve_path(os.path.join(self.nanocode_dir, ToolCallRunner.TOOL_RESULTS_DIR))
+
+    def debug_dir(self) -> str:
+        return self.resolve_path(os.path.join(self.nanocode_dir, "debug"))
+
+    def cleanup_old_logs(self, *, days: int = 3, now: float | None = None) -> None:
+        directory = self.tool_results_dir()
+        if not os.path.isdir(directory):
+            return
+        cutoff = (time.time() if now is None else now) - days * 86400
+        for root, _, filenames in os.walk(directory):
+            for filename in filenames:
+                if not filename.endswith(".log"):
+                    continue
+                filepath = os.path.join(root, filename)
+                try:
+                    if os.path.getmtime(filepath) < cutoff:
+                        os.remove(filepath)
+                except OSError:
+                    pass
+
+    def missing_required_envs(self) -> list[str]:
+        return [env_name for env_name, attr_name in self.REQUIRED_ENVS if not getattr(self, attr_name)]
+
+
+###########
+# Tools
+###########
+
+
+class Tool(Protocol):
+    @classmethod
+    def name(cls) -> str: ...
+    @classmethod
+    def description(cls) -> list[str]: ...
+    @classmethod
+    def signature(cls) -> str: ...
+    @classmethod
+    def example(cls) -> list[str]: ...
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self: ...
+    def requires_confirmation(self, session: Session) -> bool: ...
+    def display(self) -> str: ...
+    def call(self) -> str: ...
+
+
+ToolClass: TypeAlias = Type[Tool]
+
+
+@final
+@dataclass
+class ParsedToolCall:
+    name: str
+    intention: str
+    args: list[str]
+
+    @property
+    def executed(self) -> str:
+        return self.name + "(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in self.args) + ")"
+
+
+@final
+@dataclass
+class ToolCallExecution:
+    call: ParsedToolCall
+    outcome: str
+    output: str
+    result_file: str
+    result_file_lines: int
+
+
+ConfirmationResult: TypeAlias = bool | str
+ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
+ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
+MessageCallback: TypeAlias = Callable[[str], None]
+StatusAction: TypeAlias = Callable[[], str]
+StatusRunner: TypeAlias = Callable[[StatusAction], str]
+
+
+####################
+# Tools Helpers
+####################
+
+
+def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
+    try:
+        start = max(0, int(start_arg))
+    except (ValueError, TypeError):
+        raise ToolCallError("invalid start: should be an integer")
+    try:
+        end = max(0, int(end_arg))
+    except (ValueError, TypeError):
+        raise ToolCallError("invalid end: should be an integer")
+    if end:
+        end = max(end, start)
+    return start, end
+
+
+def _range_fingerprint(content: str) -> str:
+    return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
+
+
+####################
+# Tools Impl
+####################
+
+
+@final
+@dataclass
+class ReadTool(Tool):
+    filepath: str = ""
+    start: int = 0
+    end: int = 0
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "Read"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return [
+            "Read exact file lines with a fingerprint.",
+            "Optional range is 0-based [start,end); end=0 means EOF.",
+            "Prefer bounded reads over full-file reads; use LineCount first when unsure.",
+            "Call before line-range edits and reuse the returned fingerprint.",
+        ]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Read(filepath, start?: 0-N, end?: 0-N) -> ReadToolResult<fingerprint, content>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example: ["code.py", "0", "120"]', 'Example: ["code.py"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) not in {1, 3}:
+            raise ToolCallError("requires 1 or 3 args: filepath[, start, end]")
+        filepath = session.resolve_path(args[0])
+        start, end = (0, 0) if len(args) == 1 else _parse_line_range(args[1], args[2])
+        return cls(filepath=filepath, start=start, end=end, cwd=session.cwd)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return not session.is_path_in_cwd(self.filepath)
+
+    def display(self) -> str:
+        return f"Read({self.filepath}, {self.start}, {self.end})"
+
+    def call(self) -> str:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        lc = len(lines)
+        end = lc if self.end == 0 else min(self.end, lc)
+        start = min(self.start, lc)
+        content = "".join(lines[start:end])
+        return "\n".join(
+            [
+                "<ReadToolResult>",
+                "  <fingerprint>" + _range_fingerprint(content) + "</fingerprint>",
+                "  <content no-indention>",
+                content,
+                "  </content>",
+                "</ReadToolResult>",
+            ]
+        )
+
+
+@final
+@dataclass
+class LineCountTool(Tool):
+    filepath: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "LineCount"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Count file lines before choosing a Read range."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "LineCount(filepath) -> LineCountToolResult<lines>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["code.py"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 1:
+            raise ToolCallError("requires exactly one arg: filepath")
+        return cls(filepath=session.resolve_path(args[0]))
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return not session.is_path_in_cwd(self.filepath)
+
+    def display(self) -> str:
+        return f"LineCount({self.filepath})"
+
+    def call(self) -> str:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            return "<LineCountToolResult>" + str(sum(1 for _ in f)) + "</LineCountToolResult>"
+
+
+@final
+@dataclass
+class ListDirTool(Tool):
+    dirpath: str = ""
+    glob_pattern: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "ListDir"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return [
+            "List immediate directory entries, optionally filtered by entry-name glob.",
+            "Returns entries sorted by type then name.",
+        ]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "ListDir(dir_path[, glob_pattern]) -> ListDirToolResult<entries>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["."]', 'Example args: ["src", "*.py"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) not in (1, 2):
+            raise ToolCallError("requires 1 or 2 args: dir_path[, glob_pattern]")
+        glob_pattern = str(args[1]) if len(args) == 2 else ""
+        return cls(dirpath=session.resolve_path(args[0]), glob_pattern=glob_pattern, cwd=session.cwd)
+
+    def display(self) -> str:
+        if self.glob_pattern:
+            return f'ListDir({self.dirpath}, "{self.glob_pattern}")'
+        return f"ListDir({self.dirpath})"
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return not session.is_path_in_cwd(self.dirpath)
+
+    def _dir_entry_type(self, entry: os.DirEntry[str]) -> str:
+        if entry.is_symlink():
+            return "symlink"
+        if entry.is_dir(follow_symlinks=False):
+            return "dir"
+        if entry.is_file(follow_symlinks=False):
+            return "file"
+        return "other"
+
+    def _entry_type_sort_key(self, entry_type: str) -> int:
+        return {"dir": 0, "file": 1, "symlink": 2, "other": 3}.get(entry_type, 4)
+
+    def call(self) -> str:
+        if not os.path.isdir(self.dirpath):
+            raise ToolCallError("not a directory")
+        entries = []
+        with os.scandir(self.dirpath) as scan:
+            for entry in scan:
+                if self.glob_pattern and not fnmatch.fnmatch(entry.name, self.glob_pattern):
+                    continue
+                entries.append(
+                    {
+                        "name": entry.name,
+                        "path": entry.path,
+                        "type": self._dir_entry_type(entry),
+                    }
+                )
+        entries.sort(key=lambda item: (self._entry_type_sort_key(str(item["type"])), str(item["name"])))
+        lines = ["<ListDirToolResult>"]
+        for e in entries:
+            lines.append(f"* ({e['type']}): {os.path.relpath(str(e['path']), self.cwd)}")
+        lines.append("</ListDirToolResult>")
+        return "\n".join(lines)
+
+
+@final
+@dataclass
+class SearchTool(Tool):
+    MAX_MATCHES: ClassVar[int] = 100
+    MAX_FILE_BYTES: ClassVar[int] = 2_000_000
+    RG_MAX_FILESIZE: ClassVar[str] = "2M"
+    CONTEXT_LINES: ClassVar[int] = 2
+
+    @dataclass(frozen=True)
+    class Match:
+        path: str
+        line_number: int
+        text: str
+        context: list[tuple[int, str]]
+
+    pattern: str = ""
+    patterns: list[str] = field(default_factory=list)
+    target_path: str = ""
+    glob_pattern: str = ""
+    cwd: str = ""
+    gitignore_patterns: list[str] = field(default_factory=list)
+
+    @classmethod
+    def name(cls) -> str:
+        return "Search"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return [
+            "Search files or directories by fixed text before Read.",
+            "Each match includes nearby context lines.",
+            "Use A|B|C for literal OR search; regex is not supported.",
+            "Optional glob matches file basename or path relative to cwd.",
+        ]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Search(pattern, path[, glob_pattern]) -> SearchToolResult<matches>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return [
+            'Example args: ["class Foo", "code.py"]',
+            'Example args: ["TODO", ".", "*.py"]',
+            'Example args: ["class Bar|def main", "nanocode.py"]',
+        ]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) not in (2, 3):
+            raise ToolCallError("requires 2 or 3 args: pattern, path[, glob_pattern]")
+        pattern = str(args[0])
+        if not pattern:
+            raise ToolCallError("pattern cannot be empty")
+        patterns = [part for part in pattern.split("|") if part]
+        if not patterns:
+            raise ToolCallError("no valid search patterns")
+        return cls(
+            pattern=pattern,
+            patterns=patterns,
+            target_path=session.resolve_path(args[1]),
+            glob_pattern=str(args[2]) if len(args) == 3 else "",
+            cwd=session.cwd,
+            gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
+        )
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return not session.is_path_in_cwd(self.target_path)
+
+    def display(self) -> str:
+        if self.glob_pattern:
+            return f'Search("{self.pattern}", {self.target_path}, "{self.glob_pattern}")'
+        return f'Search("{self.pattern}", {self.target_path})'
+
+    def _relpath(self, path: str) -> str:
+        try:
+            return os.path.relpath(path, self.cwd)
+        except ValueError:
+            return path
+
+    def _matches_glob(self, path: str) -> bool:
+        if not self.glob_pattern:
+            return True
+        return fnmatch.fnmatch(os.path.basename(path), self.glob_pattern) or fnmatch.fnmatch(self._relpath(path), self.glob_pattern)
+
+    @staticmethod
+    def _load_gitignore_patterns(cwd: str) -> list[str]:
+        path = os.path.join(cwd, ".gitignore")
+        patterns = []
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    pattern = line.strip()
+                    if not pattern or pattern.startswith("#") or pattern.startswith("!"):
+                        continue
+                    patterns.append(pattern.lstrip("/"))
+        except OSError:
+            pass
+        return patterns
+
+    def _is_hidden_path(self, path: str) -> bool:
+        return any(part.startswith(".") for part in self._relpath(path).split(os.sep) if part and part != ".")
+
+    def _is_gitignored(self, path: str, is_dir: bool = False) -> bool:
+        relpath = self._relpath(path).replace(os.sep, "/")
+        name = os.path.basename(path)
+        parts = relpath.split("/")
+        for pattern in self.gitignore_patterns:
+            directory_only = pattern.endswith("/")
+            pattern = pattern.rstrip("/")
+            if not pattern:
+                continue
+            if directory_only:
+                if "/" in pattern:
+                    matched = relpath == pattern or relpath.startswith(pattern + "/")
+                else:
+                    matched = pattern in parts
+                if matched:
+                    return True
+                continue
+            if "/" in pattern:
+                if fnmatch.fnmatch(relpath, pattern):
+                    return True
+            elif fnmatch.fnmatch(name, pattern) or any(fnmatch.fnmatch(part, pattern) for part in parts):
+                return True
+        return False
+
+    def _is_skipped_path(self, path: str, is_dir: bool = False) -> bool:
+        return self._is_hidden_path(path) or self._is_gitignored(path, is_dir)
+
+    def _iter_files(self) -> Iterator[str]:
+        if os.path.isfile(self.target_path):
+            if self._matches_glob(self.target_path) and not self._is_skipped_path(self.target_path):
+                yield self.target_path
+            return
+
+        for root, dirs, names in os.walk(self.target_path):
+            dirs[:] = [name for name in dirs if not self._is_skipped_path(os.path.join(root, name), is_dir=True)]
+            for name in names:
+                path = os.path.join(root, name)
+                if self._matches_glob(path) and not self._is_skipped_path(path):
+                    yield path
+
+    def _make_match(self, path: str, line_number: int, text: str) -> Match:
+        return self.Match(path=path, line_number=line_number, text=text[:300], context=self._read_match_context(path, line_number))
+
+    def _read_match_context(self, path: str, line_number: int) -> list[tuple[int, str]]:
+        if line_number <= 0:
+            return []
+        start = max(1, line_number - self.CONTEXT_LINES)
+        end = line_number + self.CONTEXT_LINES
+        context = []
+        try:
+            if os.path.getsize(path) > self.MAX_FILE_BYTES:
+                return []
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for lineno, line in enumerate(f, start=1):
+                    if lineno > end:
+                        break
+                    if lineno >= start:
+                        context.append((lineno, line.rstrip("\n")[:300]))
+        except OSError:
+            return []
+        return context
+
+    def _format_result(self, engine: str, matches: list[Match], truncated: bool) -> str:
+        lines = ["<SearchToolResult>"]
+        lines.append(f"* engine: {engine}")
+        if matches:
+            for match in matches:
+                lines.append(f"* {self._relpath(match.path)}:{match.line_number}: {match.text}")
+                for lineno, text in match.context:
+                    marker = ">" if lineno == match.line_number else " "
+                    lines.append(f"  {marker} {lineno}: {text}")
+        else:
+            lines.append("No matches.")
+        if truncated:
+            lines.append("* truncated: true")
+        lines.append("</SearchToolResult>")
+        return "\n".join(lines)
+
+    def _call_rg(self, rg: str) -> str:
+        cmd = [rg, "--json", "--fixed-strings", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        if self.glob_pattern:
+            cmd.extend(["--glob", self.glob_pattern])
+        for pattern in self.patterns:
+            cmd.extend(["-e", pattern])
+        cmd.extend(["--", self.target_path])
+
+        try:
+            proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        except subprocess.TimeoutExpired:
+            raise ToolCallError("rg timed out")
+        if proc.returncode not in (0, 1):
+            raise ToolCallError(proc.stderr.strip() or "rg failed")
+
+        matches = []
+        truncated = False
+        for line in proc.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "match":
+                continue
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            path_data = data.get("path")
+            lines_data = data.get("lines")
+            path = path_data.get("text", "") if isinstance(path_data, dict) else ""
+            text = lines_data.get("text", "") if isinstance(lines_data, dict) else ""
+            if not isinstance(path, str) or not self._matches_glob(path):
+                continue
+            if not isinstance(text, str):
+                text = ""
+            matches.append(self._make_match(path, int(data.get("line_number", 0)), text.rstrip("\n")))
+            if len(matches) >= self.MAX_MATCHES:
+                truncated = True
+                break
+        return self._format_result("rg", matches, truncated)
+
+    def _call_python(self) -> str:
+        matches = []
+        truncated = False
+        for path in self._iter_files():
+            try:
+                if os.path.getsize(path) > self.MAX_FILE_BYTES:
+                    continue
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    for lineno, line in enumerate(f, start=1):
+                        text = line.rstrip("\n")
+                        if not any(pattern in text for pattern in self.patterns):
+                            continue
+                        matches.append(self._make_match(path, lineno, text))
+                        if len(matches) >= self.MAX_MATCHES:
+                            truncated = True
+                            return self._format_result("python", matches, truncated)
+            except OSError:
+                continue
+
+        return self._format_result("python", matches, truncated)
+
+    def call(self) -> str:
+        if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
+            raise ToolCallError("not a file or directory")
+        if os.path.isfile(self.target_path) and not self._matches_glob(self.target_path):
+            return self._format_result("python", [], False)
+
+        rg = shutil.which("rg")
+        if rg:
+            return self._call_rg(rg)
+        return self._call_python()
+
+
+@final
+@dataclass
+class EditTool(Tool):
+    filepath: str = ""
+    find: str = ""
+    replace: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "Edit"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Replace the first exact text block in a file."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["code.py", "old text", "new text"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 3:
+            raise ToolCallError("requires exactly 3 args: filepath, find, replace")
+        find = str(args[1])
+        if not find:
+            raise ToolCallError("find text cannot be empty")
+        return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        label = f'Edit({self.filepath}, find="{self.find}")'
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return label
+        if self.find not in content:
+            return label
+        return _make_unified_diff(content, content.replace(self.find, self.replace, 1), self.filepath) or label
+
+    def call(self) -> str:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        if self.find not in content:
+            raise ToolCallError("target `find` text not found")
+
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write(content.replace(self.find, self.replace, 1))
+
+        return "\n".join(
+            [
+                "<EditToolResult>",
+                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+                "* replacements: 1",
+                "</EditToolResult>",
+            ]
+        )
+
+
+@final
+@dataclass
+class ReplaceRangeTool(Tool):
+    filepath: str = ""
+    start: int = 0
+    end: int = 0
+    fingerprint: str = ""
+    content: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "ReplaceRange"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Replace a 0-based line range when its Read fingerprint matches."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "ReplaceRange(filepath, start: 0-N, end: 0-N, fingerprint, content) -> ReplaceRangeToolResult<path, range>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["code.py", "10", "12", "a1b2c3", "new text\\n"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 5:
+            raise ToolCallError("requires exactly 5 args: filepath, start, end, fingerprint, content")
+        start, end = _parse_line_range(args[1], args[2])
+        fingerprint = str(args[3])
+        if not fingerprint:
+            raise ToolCallError("fingerprint cannot be empty")
+        return cls(
+            filepath=session.resolve_path(args[0]),
+            start=start,
+            end=end,
+            fingerprint=fingerprint,
+            content=str(args[4]),
+            cwd=session.cwd,
+        )
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        label = f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
+        try:
+            original, new_content, _, _, _ = self._preview()
+        except (OSError, ToolCallError) as error:
+            return label + "\n# preview unavailable: " + str(error)
+        return _make_unified_diff(original, new_content, self.filepath) or label
+
+    def call(self) -> str:
+        original, new_content, current_fingerprint, start, end = self._preview()
+        if new_content == original:
+            raise ToolCallError("range replacement produced no changes")
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
+
+        return "\n".join(
+            [
+                "<ReplaceRangeToolResult>",
+                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+                f"* range: {start}:{end}",
+                f"* fingerprint: {current_fingerprint}",
+                "</ReplaceRangeToolResult>",
+            ]
+        )
+
+    def _preview(self) -> tuple[str, str, str, int, int]:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            original = f.read()
+        lines = original.splitlines(keepends=True)
+        start = min(self.start, len(lines))
+        end = len(lines) if self.end == 0 else min(self.end, len(lines))
+        end = max(end, start)
+        current = "".join(lines[start:end])
+        current_fingerprint = _range_fingerprint(current)
+        if current_fingerprint != self.fingerprint:
+            raise ToolCallError(f"fingerprint mismatch: expected {self.fingerprint}, current {current_fingerprint}")
+
+        new_content = "".join(lines[:start] + self.content.splitlines(keepends=True) + lines[end:])
+        return original, new_content, current_fingerprint, start, end
+
+
+@final
+@dataclass
+class ApplyPatchTool(Tool):
+    filepath: str = ""
+    unified_diff: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "ApplyPatch"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Apply a simple single-file unified diff."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old\\n+new\\n"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 2:
+            raise ToolCallError("requires exactly 2 args: filepath, unified_diff")
+        unified_diff = str(args[1])
+        if not unified_diff.strip():
+            raise ToolCallError("unified_diff cannot be empty")
+        return cls(filepath=session.resolve_path(args[0]), unified_diff=unified_diff, cwd=session.cwd)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        label = f"ApplyPatch({self.filepath}, unified_diff=...)"
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                original = f.read()
+            new_content, _ = self._apply_unified_diff(original, self.unified_diff)
+        except (OSError, ToolCallError) as error:
+            return label + "\n# preview unavailable: " + str(error)
+        return _make_unified_diff(original, new_content, self.filepath) or label
+
+    def call(self) -> str:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            original = f.read()
+        new_content, hunks = self._apply_unified_diff(original, self.unified_diff)
+        if new_content == original:
+            raise ToolCallError("patch produced no changes")
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
+
+        return "\n".join(
+            [
+                "<ApplyPatchToolResult>",
+                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+                f"* hunks: {hunks}",
+                "</ApplyPatchToolResult>",
+            ]
+        )
+
+    @staticmethod
+    def _apply_unified_diff(content: str, unified_diff: str) -> tuple[str, int]:
+        lines = content.splitlines(keepends=True)
+        patch_lines = unified_diff.splitlines(keepends=True)
+        offset = 0
+        hunks = 0
+        i = 0
+
+        while i < len(patch_lines):
+            header = patch_lines[i].strip()
+            if not header.startswith("@@ "):
+                i += 1
+                continue
+
+            parts = header.split()
+            if len(parts) < 3 or not parts[1].startswith("-"):
+                raise ToolCallError("invalid hunk header")
+            try:
+                old_start = int(parts[1][1:].split(",", 1)[0])
+            except ValueError:
+                raise ToolCallError("invalid hunk header")
+
+            i += 1
+            hunk_lines = []
+            while i < len(patch_lines) and not patch_lines[i].startswith("@@ "):
+                hunk_lines.append(patch_lines[i])
+                i += 1
+
+            expected = []
+            replacement = []
+            for raw in hunk_lines:
+                if raw.startswith("\\"):
+                    continue
+                if not raw:
+                    continue
+                marker = raw[0]
+                text = raw[1:]
+                if marker == " ":
+                    expected.append(text)
+                    replacement.append(text)
+                elif marker == "-":
+                    expected.append(text)
+                elif marker == "+":
+                    replacement.append(text)
+                else:
+                    raise ToolCallError("invalid hunk line")
+
+            index = ApplyPatchTool._find_hunk_position(lines, expected, max(old_start - 1, 0) + offset)
+            lines[index : index + len(expected)] = replacement
+            offset += len(replacement) - len(expected)
+            hunks += 1
+
+        if hunks == 0:
+            raise ToolCallError("patch has no hunks")
+        return "".join(lines), hunks
+
+    @staticmethod
+    def _find_hunk_position(lines: list[str], expected: list[str], target: int) -> int:
+        if not expected:
+            if target < 0 or target > len(lines):
+                raise ToolCallError("hunk insertion target outside file")
+            return target
+        if 0 <= target <= len(lines) and lines[target : target + len(expected)] == expected:
+            return target
+        matches = []
+        last_start = len(lines) - len(expected)
+        for position in range(max(0, last_start + 1)):
+            if lines[position : position + len(expected)] == expected:
+                matches.append(position)
+                if len(matches) > 1:
+                    break
+        if not matches:
+            raise ToolCallError("hunk context did not match")
+        if len(matches) > 1:
+            raise ToolCallError("hunk context matched multiple locations; add more context")
+        return matches[0]
+
+
+@final
+@dataclass
+class BashTool(Tool):
+    command: str = ""
+    bash_path: str = ""
+    cwd: str = ""
+    timeout: int = 60
+
+    @classmethod
+    def name(cls) -> str:
+        return "Bash"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Run a shell command with bash -lc."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["python3 -m py_compile nanocode.py"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 1:
+            raise ToolCallError("requires exactly one arg: command")
+        if not session.bash:
+            raise ToolCallError("bash not found")
+        return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.shell_timeout)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        return f'Bash("{self.command}")'
+
+    def call(self) -> str:
+        stdout = tempfile.TemporaryFile("w+", encoding="utf-8")
+        stderr = tempfile.TemporaryFile("w+", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                [self.bash_path, "-lc", self.command],
+                cwd=self.cwd,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                proc.wait(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()
+                proc.wait()
+                stderr_text = self._read_temp_file(stderr)
+                if stderr_text:
+                    stderr_text += "\n"
+                return _format_process_result("BashToolResult", -1, self._read_temp_file(stdout), stderr_text + "timeout")
+            return _format_process_result("BashToolResult", proc.returncode, self._read_temp_file(stdout), self._read_temp_file(stderr))
+        finally:
+            stdout.close()
+            stderr.close()
+
+    @staticmethod
+    def _read_temp_file(file) -> str:
+        file.seek(0)
+        return file.read()
+
+
+@final
+@dataclass
+class GitTool(Tool):
+    args: list[str] = field(default_factory=list)
+    git_path: str = ""
+    cwd: str = ""
+    timeout: int = 60
+
+    @classmethod
+    def name(cls) -> str:
+        return "Git"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Run git without a shell; pass each argument separately."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Git(args...[, cwd=path]) -> GitToolResult<exit_code, stdout, stderr>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["status", "--short"]', 'Example args: ["diff", "--", "nanocode.py"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if not args:
+            raise ToolCallError("requires at least one git arg")
+        git_path = shutil.which("git")
+        if not git_path:
+            raise ToolCallError("git not found")
+
+        cwd = session.cwd
+        git_args = [str(arg) for arg in args]
+        if git_args[0].startswith("cwd="):
+            cwd_arg = git_args.pop(0)[len("cwd=") :]
+            if not cwd_arg:
+                raise ToolCallError("cwd= requires a path")
+            cwd = session.resolve_path(cwd_arg)
+            if not session.is_path_in_cwd(cwd):
+                raise ToolCallError(f"path outside cwd: {cwd_arg}")
+            if not os.path.isdir(cwd):
+                raise ToolCallError(f"cwd is not a directory: {cwd_arg}")
+        if not git_args:
+            raise ToolCallError("requires at least one git arg")
+        return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.shell_timeout)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
+        return not self.args or self.args[0] not in readonly
+
+    def display(self) -> str:
+        return "Git(" + " ".join(self.args) + ")"
+
+    def call(self) -> str:
+        try:
+            proc = subprocess.run(
+                [self.git_path, *self.args],
+                cwd=self.cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self.timeout,
+            )
+            return _format_process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
+        except subprocess.TimeoutExpired as error:
+            return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
+
+
+TOOL_REGISTRY: dict[str, ToolClass] = {
+    ReadTool.name(): ReadTool,
+    LineCountTool.name(): LineCountTool,
+    ListDirTool.name(): ListDirTool,
+    SearchTool.name(): SearchTool,
+    EditTool.name(): EditTool,
+    ReplaceRangeTool.name(): ReplaceRangeTool,
+    ApplyPatchTool.name(): ApplyPatchTool,
+    BashTool.name(): BashTool,
+    GitTool.name(): GitTool,
+}
+
+
+#######################
+# Prompt
+#######################
+
+MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a minimal coding agent.
+
+Core:
+- First determine the current Goal.
+- KEEP GOAL UNLESS IT IS DONE, CLEARLY WRONG, OR THE USER CHANGED IT.
+- Never guess without evidence.
+- Prefer the smallest correct change.
+- Define success criteria (verification). Loop until verified.
+- Plan before action.
+- Follow the plan, but revise it when facts require it.
+
+Tools:
+- Call tools only by emitting JSON in tool_calls. Do not use native tool calls.
+- Use multiple tool calls in one turn when they are independent.
+- Prefer specific tools first; use Bash only when no provided tool fits.
+- Summarize every latest tool result in last_tool_calls_summaries.
+- Raw tool results may disappear after this turn; preserve only useful facts/summaries.
+- If a prior tool result lacks detail, use ReadTool on its result_file.
+- tool_call.intention must state the question to answer, not just the action.
+
+Verification:
+- Verification_State belongs only to its <goal>.
+- If the user changed the goal, replace goal/plan and verify the new goal.
+
+Available tools:
+
+{ __tools__ }
+
+Input:
+- Conversation_History: summarized recent events
+- Known: stable facts
+- Goal: current objective
+- Plan: ordered plan
+- Latest_Tool_Call_Results: latest raw tool call results
+- Latest_User_Input: latest user message
+- Tools: available tool specs
+
+Output strict JSON only. No markdown. No comments. No extra text.
+Never answer outside JSON, including help/status/explanation requests; put user-facing text only in message_to_user.
+
+Schema:
+{
+  "user_language": "string",
+
+  "goal_update": null | "string",
+  "goal_reached": true | false,
+
+  "plan_update": null | {
+    "mode": "replace" | "patch",
+    "items": [
+      {
+        "op": "add|update|remove",
+        "id": "string",
+        "after": null | "string",
+        "text": null | "string",
+        "status": null | "todo|doing|done|blocked",
+        "evidence": null | "string"
+      }
+    ]
+  },
+
+  "known_append": null | [
+    {
+      "fact": "string",
+      "details": null | ["string"]
+    }
+  ],
+
+  "verification": {
+    "method": null | "string",
+    "status": "pending" | "passed" | "blocked",
+    "evidence": null | "string"
+  },
+
+  "tool_calls": null | [
+    {
+      "name": "string",
+      "intention": "string",
+      "args": ["string"]
+    }
+  ],
+
+  "last_tool_calls_summaries": [
+    {
+      "tool": "string",
+      "intention": "string",
+      "outcome": "success" | "failure" | "partial",
+      "summary": "string",
+      "key_evidence": null | ["string"],
+      "result_file": null | "string",
+      "needs_raw_read": true | false
+    }
+  ],
+
+  "message_to_user": null | "string"
+}
+"""
+
+MAIN_AGENT_USER_PROMPT_TEMPLATE = """
+
+----------- Environment Begin ------
+{environment}
+-------- Environment End -----------
+
+----------- Conversation_History Begin ------
+{conversation_history}
+-------- Conversation_History End -----------
+
+----------- Known Begin ------
+{known}
+-------- Known End -----------
+
+----------- Goal Begin ------
+{goal}
+-------- Goal End -----------
+
+----------- Plan Begin ------
+{plan}
+-------- Plan End -----------
+
+----------- Verification_State Begin ------
+{verification_state}
+-------- Verification_State End -----------
+
+----------- Latest_Tool_Call_Results Begin ------
+{latest_tool_call_results}
+-------- Latest_Tool_Call_Results End -----------
+
+----------- Latest_User_Input Begin ------
+{latest_user_input}
+-------- Latest_User_Input End -----------
+"""
+
+
+SUMMARIZER_AGENT_COMPACT_PROMPT = """You are nanocode's conversation-history compactor.
+
+Compress conversation history so the main coding agent can continue later.
+Do not solve the task or add unsupported facts.
+
+Preserve continuity-critical facts:
+- user requests and changes
+- decisions made
+- current goal and commitments
+- plan/status
+- files, paths, symbols, and APIs touched
+- commands run and outcomes
+- result_refs/log refs needed later
+- unresolved blockers and open questions
+- verification evidence
+
+Omit noise:
+- raw logs
+- repeated output
+- full stack traces
+- chatter
+- details already recoverable from result_refs unless needed for continuity
+
+Write the shortest complete continuation summary.
+
+Output strict JSON only: {"summary": "string"}
+"""
+
+
+COMPACT_USER_PROMPT_TEMPLATE = """
+----------- Conversation_To_Compact Begin ------
+{conversation}
+-------- Conversation_To_Compact End -----------
+"""
+
+
+@final
+class PromptBuilder:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def system_prompt(self) -> str:
+        return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
+
+    def user_prompt(self, latest_tool_call_results: str) -> str:
+        current = self.session.current
+        return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
+            environment=self._format_environment(),
+            conversation_history=self._format_conversation_history(),
+            known=self._format_known(),
+            goal=current.goal or "(empty)",
+            plan=self._format_plan(),
+            verification_state=current.verification.format(),
+            latest_tool_call_results=latest_tool_call_results or "(empty)",
+            latest_user_input=current.user_input or "(empty)",
+        ).strip()
+
+    def _format_tools(self) -> str:
+        lines = []
+        for tool in TOOL_REGISTRY.values():
+            lines.append("- " + tool.signature())
+            for item in tool.description():
+                lines.append("  - " + item)
+        return "\n".join(lines)
+
+    def _format_environment(self) -> str:
+        return "\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd])
+
+    def _format_conversation_history(self) -> str:
+        if not self.session.conversation:
+            return "(empty)"
+        return "\n\n".join(item.format() for item in self.session.conversation)
+
+    def _format_known(self) -> str:
+        if not self.session.current.known:
+            return "(empty)"
+        return "\n\n".join(item.format() for item in self.session.current.known)
+
+    def _format_plan(self) -> str:
+        if not self.session.current.plan:
+            return "(empty)"
+        return "\n".join(item.format() for item in self.session.current.plan)
+
+
+############################
+# LLM Request (ModelClient)
+############################
+
+
+@final
+class ModelClient:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+        if not self.session.api_url:
+            raise LLMError("NANOCODE_API_URL is required")
+        if not self.session.api_key:
+            raise LLMError("NANOCODE_API_KEY is required")
+        if not self.session.model:
+            raise LLMError("NANOCODE_MODEL is required")
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        payload: Json = {
+            "model": self.session.model,
+            "messages": messages,
+            "temperature": self.session.temperature,
+        }
+        extra_params = self._reasoning_params()
+        payload.update(extra_params)
+        self._write_debug_prompt(activity=activity, messages=messages)
+
+        request = urllib.request.Request(
+            url=self._chat_completions_url(),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer " + self.session.api_key,
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            self.session.current_model_call_started_at = time.monotonic()
+            try:
+                with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
+                    body = response.read().decode("utf-8")
+            finally:
+                self.session.current_model_call_started_at = 0.0
+        except socket.timeout:
+            raise LLMError("request model timeout")
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            raise LLMError("API request failed: HTTP " + str(error.code) + ": " + _shorten(body))
+        except Exception as error:
+            raise LLMError(str(error))
+
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            raise LLMError("API response is not JSON: " + _shorten(body))
+
+        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None))
+        content = self._message_content(result)
+        return self._parse_model_content(content)
+
+    def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
+        if not self.session.debug:
+            return ""
+        self.session.debug_prompt_count += 1
+        directory = self.session.debug_dir()
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        filepath = os.path.join(directory, f"{timestamp}-{self.session.debug_prompt_count:04d}-{activity or 'request'}.txt")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(self._format_debug_prompt(messages=messages))
+        return filepath
+
+    def _format_debug_prompt(self, *, messages: list[Json]) -> str:
+        lines = []
+        for index, message in enumerate(messages, start=1):
+            role = _json_str(message.get("role")) or "(unknown)"
+            content = message.get("content")
+            lines.append(f"--- {role} message {index} ---")
+            if isinstance(content, str):
+                lines.append(content)
+            else:
+                lines.append(json.dumps(content, ensure_ascii=False, indent=2))
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _parse_model_content(self, content: str) -> Json:
+        text = content.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return self._invalid_model_response(content)
+        if not isinstance(value, dict):
+            return self._invalid_model_response(content)
+        return value
+
+    def _invalid_model_response(self, content: str) -> Json:
+        return {
+            "goal_reached": False,
+            "tool_calls": None,
+            "message_to_user": None,
+            "_format_error": "Invalid model output: expected one JSON object matching the Output JSON schema. Return strict JSON only. Bad output: "
+            + _shorten(content),
+        }
+
+    def _chat_completions_url(self) -> str:
+        url = self.session.api_url.rstrip("/")
+        if url.endswith("/chat/completions"):
+            return url
+        return url + "/chat/completions"
+
+    def _reasoning_params(self) -> Json:
+        if not self.session.reasoning:
+            return {}
+        if "openrouter.ai" in self.session.api_url:
+            return {"reasoning": {"effort": self.session.reasoning_effort}}
+        return {"reasoning_effort": self.session.reasoning_effort}
+
+    def _message_content(self, result: JsonValue) -> str:
+        data = _json_dict(result)
+        choices = _json_list(data.get("choices"))
+        if not choices:
+            raise LLMError("API response missing choices")
+        message = _json_dict(_json_dict(choices[0]).get("message"))
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise LLMError("API response missing message content")
+        return content
+
+    def _record_usage(self, usage: Json) -> None:
+        prompt_tokens = _json_int(usage.get("prompt_tokens"))
+        completion_tokens = _json_int(usage.get("completion_tokens"))
+        total_tokens = _json_int(usage.get("total_tokens"))
+        self.session.last_prompt_tokens = prompt_tokens
+        self.session.last_completion_tokens = completion_tokens
+        self.session.last_total_tokens = total_tokens
+        self.session.session_prompt_tokens += prompt_tokens
+        self.session.session_completion_tokens += completion_tokens
+        self.session.session_total_tokens += total_tokens
+
+
+############################
+# ToolCallRunner
+############################
+
+
+@final
+class ToolCallRunner:
+    TOOL_RESULTS_DIR: ClassVar[str] = "tool_results"
+    DISPLAY_LIMIT: ClassVar[int] = 5
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.latest_events: list[ToolCallEvent] = []
+        self.latest_executions: list[ToolCallExecution] = []
+
+    def execute(
+        self,
+        tool_calls: list[JsonValue],
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+    ) -> str:
+        executions = []
+        events = []
+        for item in tool_calls:
+            call = self.parse_tool_call(item)
+            outcome = "success"
+            output = ""
+            try:
+                tool = self._make_tool(call)
+                if tool.requires_confirmation(self.session):
+                    if self.session.yolo:
+                        if on_auto_approve is not None:
+                            on_auto_approve(call, tool)
+                    elif confirm is None:
+                        raise Cancellation("user confirmation required")
+                    else:
+                        confirmation = confirm(call, tool)
+                        if confirmation is not True:
+                            reason = " ".join(confirmation.split()) if isinstance(confirmation, str) else ""
+                            if reason:
+                                raise Cancellation("user refused: " + reason)
+                            raise Cancellation("user refused")
+                output = tool.call()
+            except Cancellation as error:
+                outcome = "failure"
+                output = "Cancelled: " + str(error)
+            except Exception as error:
+                outcome = "failure"
+                output = "ToolCallError: " + str(error)
+
+            result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
+            execution = ToolCallExecution(
+                call=call,
+                outcome=outcome,
+                output=output,
+                result_file=result_file,
+                result_file_lines=result_file_lines,
+            )
+            event = ToolCallEvent(
+                intent=call.intention,
+                executed=call.executed,
+                outcome=outcome,
+                summary="",
+                result_file=result_file,
+                result_file_lines=result_file_lines,
+            )
+            self.session.append_conversation(event)
+            executions.append(execution)
+            events.append(event)
+
+        self.latest_events = events
+        self.latest_executions = executions
+        return self._format_latest_tool_call_results(executions)
+
+    def format_latest_report(self) -> str:
+        if not self.latest_executions:
+            return ""
+        offset = max(0, len(self.latest_executions) - self.DISPLAY_LIMIT)
+        visible = self.latest_executions[offset:]
+        lines = ["Tool Calls"]
+        if offset:
+            lines.append("  ... " + str(offset) + " older")
+        for index, execution in enumerate(visible, start=offset + 1):
+            lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
+            if execution.call.intention:
+                lines.append("     why: " + execution.call.intention)
+            lines.append("     log: " + execution.result_file + " (" + str(execution.result_file_lines) + " lines)")
+        return "\n".join(lines)
+
+    def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
+        item = _json_dict(value)
+        name = _json_str(item.get("name"))
+        if not name:
+            raise ToolCallError("tool call missing name")
+        intention = _json_str(item.get("intention")) or ""
+        args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
+        return ParsedToolCall(name=name, intention=intention, args=args)
+
+    def _make_tool(self, call: ParsedToolCall) -> Tool:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            raise ToolCallError("tool not found: " + call.name)
+        return tool_class.make(self.session, call.args)
+
+    def _write_tool_result_log(self, call: ParsedToolCall, outcome: str, output: str) -> tuple[str, int]:
+        directory = self.session.tool_results_dir()
+        os.makedirs(directory, exist_ok=True)
+        filepath = os.path.join(directory, datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
+        content = "\n".join(
+            [
+                "<Tool_Call_Result_Log>",
+                "  <tool>" + call.name + "</tool>",
+                "  <intention>" + call.intention + "</intention>",
+                "  <executed>" + call.executed + "</executed>",
+                "  <outcome>" + outcome + "</outcome>",
+                "  <raw_result>",
+                output,
+                "  </raw_result>",
+                "</Tool_Call_Result_Log>",
+            ]
+        )
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return os.path.relpath(filepath, self.session.cwd), len(content.splitlines())
+
+    def _format_latest_tool_call_results(self, executions: list[ToolCallExecution]) -> str:
+        if not executions:
+            return "(empty)"
+        blocks = []
+        for execution in executions:
+            blocks.append(
+                "\n".join(
+                    [
+                        "<Latest_Tool_Call_Result>",
+                        "  <tool>" + execution.call.name + "</tool>",
+                        "  <intention>" + execution.call.intention + "</intention>",
+                        "  <executed>" + execution.call.executed + "</executed>",
+                        "  <outcome>" + execution.outcome + "</outcome>",
+                        "  <result_file>" + execution.result_file + "</result_file>",
+                        "  <raw_result>",
+                        execution.output,
+                        "  </raw_result>",
+                        "</Latest_Tool_Call_Result>",
+                    ]
+                )
+            )
+        return "\n\n".join(blocks)
+
+
+############################
+# AgentStateUpdater
+############################
+
+
+@final
+class AgentStateUpdater:
+    DISPLAY_LIMIT: ClassVar[int] = 5
+
+    def __init__(self, session: Session, tool_runner: ToolCallRunner):
+        self.session = session
+        self.tool_runner = tool_runner
+        self.latest_report = ""
+
+    def apply(self, response: Json) -> None:
+        before_goal = self.session.current.goal
+        before_plan = [item.format() for item in self.session.current.plan]
+        before_known = [item.format() for item in self.session.current.known]
+        before_verification = self.session.current.verification.format()
+        goal_changed = self._apply_goal(response)
+        plan_replaced = self._apply_plan(response)
+        self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_known(response)
+        self._apply_verification(response)
+        self._bind_verification_goal()
+        self._apply_tool_call_summaries(response)
+        self.latest_report = self._format_state_report(before_goal, before_plan, before_known, before_verification)
+
+    def apply_tool_call_summaries(self, response: Json) -> None:
+        self._apply_tool_call_summaries(response)
+
+    def _format_state_report(
+        self,
+        before_goal: str,
+        before_plan: list[str],
+        before_known: list[str],
+        before_verification: str,
+    ) -> str:
+        current = self.session.current
+        lines = []
+        if current.goal != before_goal:
+            lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Goal    " + self._compact(current.goal or "(empty)"))
+        plan = [item.format() for item in current.plan]
+        if plan != before_plan:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Plan")
+            lines.extend(self._format_plan_rows())
+        known = [item.format() for item in current.known]
+        if known != before_known:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Known")
+            lines.extend(self._format_known_rows())
+        verification = current.verification.format()
+        if verification != before_verification:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Verify  " + self._format_verification())
+        return "\n".join(lines)
+
+    def _format_plan_rows(self) -> list[str]:
+        items = self.session.current.plan
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            rows.append("    " + str(index) + ". [" + item.status + "] " + self._compact(item.text))
+            if item.evidence:
+                rows.append("       evidence: " + self._compact(item.evidence))
+        return rows
+
+    def _format_known_rows(self) -> list[str]:
+        items = self.session.current.known
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            text = self._compact(item.fact)
+            if item.details:
+                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
+            rows.append("    " + str(index) + ". " + text)
+        return rows
+
+    def _format_verification(self) -> str:
+        verification = self.session.current.verification
+        parts = [verification.status]
+        if verification.method:
+            parts.append(self._compact(verification.method))
+        if verification.evidence:
+            parts.append("evidence: " + self._compact(verification.evidence))
+        return " | ".join(parts)
+
+    def _verification_badge(self) -> str:
+        return "VERIFY:" + self.session.current.verification.status
+
+    def _compact(self, text: str, limit: int = 140) -> str:
+        text = " ".join(text.split())
+        return text if len(text) <= limit else text[: limit - 3] + "..."
+
+    def _apply_tool_call_summaries(self, response: Json) -> None:
+        summaries = _json_list(response.get("last_tool_calls_summaries"))
+        if not summaries:
+            return
+        pending = [event for event in self.tool_runner.latest_events if not event.summary]
+        for raw_summary in summaries:
+            summary = _json_dict(raw_summary)
+            if not summary:
+                continue
+            event = self._find_summary_event(summary, pending)
+            if event is None:
+                continue
+            event.summary = self._format_tool_call_summary(summary)
+            if event in pending:
+                pending.remove(event)
+
+    def _find_summary_event(self, summary: Json, pending: list[ToolCallEvent]) -> ToolCallEvent | None:
+        result_file = _json_str(summary.get("result_file"))
+        if result_file:
+            for event in self.tool_runner.latest_events:
+                if event.result_file == result_file:
+                    return event
+        tool = _json_str(summary.get("tool"))
+        intention = _json_str(summary.get("intention"))
+        if tool or intention:
+            for event in pending:
+                if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
+                    return event
+        return pending[0] if pending else None
+
+    def _format_tool_call_summary(self, summary: Json) -> str:
+        parts = []
+        outcome = _json_str(summary.get("outcome"))
+        text = _json_str(summary.get("summary"))
+        if outcome:
+            parts.append("outcome: " + outcome)
+        if text:
+            parts.append("summary: " + text)
+        evidence = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
+        evidence = [item for item in evidence if item]
+        if evidence:
+            parts.append("key_evidence: " + "; ".join(evidence))
+        if summary.get("needs_raw_read") is True:
+            parts.append("needs_raw_read: true")
+        return "\n".join(parts)
+
+    def _apply_goal(self, response: Json) -> bool:
+        update = _json_str(response.get("goal_update"))
+        changed = False
+        if update is not None:
+            changed = update != self.session.current.goal
+            self.session.current.goal = update
+        reached = response.get("goal_reached")
+        if isinstance(reached, bool):
+            self.session.current.goal_reached = reached
+        return changed
+
+    def _apply_plan(self, response: Json) -> bool:
+        update = _json_dict(response.get("plan_update"))
+        if not update:
+            return False
+        items = _json_list(update.get("items"))
+        if update.get("mode") == "replace":
+            self.session.current.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+            return True
+        for raw in items:
+            patch = _json_dict(raw)
+            op = _json_str(patch.get("op")) or "add"
+            item_id = _json_str(patch.get("id")) or ""
+            if op == "remove":
+                self.session.current.plan = [item for item in self.session.current.plan if item.id != item_id]
+                continue
+            plan_item = self._plan_item_from_json(patch)
+            if plan_item is None:
+                continue
+            existing = next((item for item in self.session.current.plan if item.id == plan_item.id and item.id), None)
+            if existing:
+                existing.text = plan_item.text
+                existing.status = plan_item.status
+                existing.evidence = plan_item.evidence
+            else:
+                self.session.current.plan.append(plan_item)
+        return False
+
+    def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
+        item = _json_dict(value)
+        text = _json_str(item.get("text"))
+        if not text:
+            return None
+        status = _json_str(item.get("status")) or PlanStatus.TODO
+        if status not in {PlanStatus.TODO, PlanStatus.DOING, PlanStatus.DONE, PlanStatus.BLOCKED}:
+            status = PlanStatus.TODO
+        return PlanItem(
+            text=text,
+            status=PlanStatus(status),
+            id=_json_str(item.get("id")) or "",
+            evidence=_json_str(item.get("evidence")) or "",
+        )
+
+    def _apply_known(self, response: Json) -> None:
+        for raw in _json_list(response.get("known_append")):
+            item = _json_dict(raw)
+            fact = _json_str(item.get("fact")) if item else _json_str(raw)
+            if not fact:
+                continue
+            details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
+            details = [detail for detail in details if detail]
+            if not any(known.fact == fact for known in self.session.current.known):
+                self.session.current.known.append(KnownItem(fact=fact, details=details))
+
+    def _apply_verification(self, response: Json) -> None:
+        data = _json_dict(response.get("verification"))
+        if not data:
+            return
+        method = _json_str(data.get("method"))
+        if method is not None:
+            if method != self.session.current.verification.method:
+                self.session.current.verification.evidence = ""
+            self.session.current.verification.method = method
+        status = _json_str(data.get("status"))
+        if status == "pending":
+            self.session.current.verification.status = VerificationStatus.REQUIRED
+            if "evidence" not in data:
+                self.session.current.verification.evidence = ""
+        elif status == "passed":
+            self.session.current.verification.status = VerificationStatus.DONE
+        elif status == "blocked":
+            self.session.current.verification.status = VerificationStatus.BLOCKED
+        evidence = _json_str(data.get("evidence"))
+        if evidence is not None:
+            self.session.current.verification.evidence = evidence
+
+    def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
+        verification = self.session.current.verification
+        if goal_changed:
+            verification.reset()
+            return
+        if verification.goal and verification.goal != self.session.current.goal:
+            verification.reset()
+            return
+        if plan_replaced and not _json_dict(response.get("verification")) and verification.status in {
+            VerificationStatus.REQUIRED,
+            VerificationStatus.DONE,
+            VerificationStatus.BLOCKED,
+        }:
+            verification.reset()
+
+    def _bind_verification_goal(self) -> None:
+        verification = self.session.current.verification
+        if not verification.has_context():
+            verification.goal = ""
+            return
+        if self.session.current.goal:
+            verification.goal = self.session.current.goal
+
+
+############################
+# ConversationCompactor
+############################
+
+
+@final
+class ConversationCompactor:
+    KEEP_RECENT: ClassVar[int] = 5
+
+    def __init__(self, session: Session, model_client: ModelClient):
+        self.session = session
+        self.model_client = model_client
+
+    def compact(self) -> int:
+        count = len(self.session.conversation)
+        if count <= self.KEEP_RECENT:
+            return 0
+        old_items = self.session.conversation[: -self.KEEP_RECENT]
+        keep_items = self.session.conversation[-self.KEEP_RECENT :]
+        summary = self._summarize(old_items)
+        self.session.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
+        return count
+
+    def maybe_compact(self) -> bool:
+        if self.session.compact_at <= 0:
+            return False
+        if len(self.session.conversation) <= self.session.compact_at:
+            return False
+        return self.compact() > 0
+
+    def _summarize(self, items: list[ConversationItem]) -> str:
+        user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(conversation="\n\n".join(item.format() for item in items)).strip()
+        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
+        summary = _json_str(response.get("summary"))
+        if not summary:
+            raise LLMError("compact response missing summary")
+        return summary
+
+
+############################
+# Agent
+############################
+
+
+@final
+class Agent:
+    def __init__(self, session: Session):
+        self.session = session
+        self.prompt_builder = PromptBuilder(session)
+        self.model_client = ModelClient(session)
+        self.tool_runner = ToolCallRunner(session)
+        self.state_updater = AgentStateUpdater(session, self.tool_runner)
+        self.compactor = ConversationCompactor(session, self.model_client)
+        self.latest_tool_call_results = ""
+
+    @property
+    def latest_tool_call_events(self) -> list[ToolCallEvent]:
+        return self.tool_runner.latest_events
+
+    def build_system_prompt(self) -> str:
+        return self.prompt_builder.system_prompt()
+
+    def build_user_prompt(self, *, consume_latest_tool_results: bool = True) -> str:
+        prompt = self.prompt_builder.user_prompt(self.latest_tool_call_results)
+        if consume_latest_tool_results:
+            self.latest_tool_call_results = ""
+        return prompt
+
+    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+        return self.model_client.request(system_prompt, user_prompt, activity=activity)
+
+    def compact_history(self) -> int:
+        return self.compactor.compact()
+
+    def maybe_auto_compact(self) -> bool:
+        return self.compactor.maybe_compact()
+
+    def run(
+        self,
+        user_input: str,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> Json:
+        self.latest_tool_call_results = ""
+        self.session.current.user_input = user_input
+        self.session.current.goal_reached = False
+        self.maybe_auto_compact()
+        self.session.append_conversation(UserMessage(content=user_input))
+
+        for _ in range(MAX_AGENT_STEPS):
+            response = self.step()
+            format_error = _json_str(response.get("_format_error"))
+            if format_error:
+                self.latest_tool_call_results = format_error
+                continue
+            tool_calls = _json_list(response.get("tool_calls"))
+            if self._missing_tool_summaries():
+                self.state_updater.latest_report = ""
+                self.latest_tool_call_results = self._format_missing_tool_summaries()
+                continue
+            self.apply_response(response)
+            if on_message is not None and self.state_updater.latest_report:
+                on_message(self.state_updater.latest_report)
+            message = _json_str(response.get("message_to_user"))
+            if message:
+                self.session.append_conversation(AssistantMessage(content=message))
+                if on_message is not None:
+                    on_message(message)
+            if tool_calls:
+                self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+                if on_message is not None:
+                    report = self.tool_runner.format_latest_report()
+                    if report:
+                        on_message(report)
+                self.maybe_auto_compact()
+                continue
+            if self.session.current.goal_reached and self.session.current.verification.status != VerificationStatus.REQUIRED:
+                return response
+            if self.session.current.verification.status == VerificationStatus.REQUIRED:
+                self.session.current.goal_reached = False
+                self.latest_tool_call_results = self._format_verification_gate()
+                continue
+            if not self.session.current.goal_reached:
+                self.latest_tool_call_results = self._format_continuation_hint()
+                continue
+            return response
+        raise LLMError("agent step limit reached")
+
+    def step(self) -> Json:
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main")
+        self.state_updater.apply_tool_call_summaries(response)
+        return response
+
+    def apply_response(self, response: Json) -> None:
+        self.state_updater.apply(response)
+
+    def execute_tool_calls(
+        self,
+        tool_calls: list[JsonValue],
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+    ) -> str:
+        self.latest_tool_call_results = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        return self.latest_tool_call_results
+
+    def _format_verification_gate(self) -> str:
+        verification = self.session.current.verification
+        method = verification.method or "Pick the cheapest relevant compile, lint, smoke test, targeted command, or prompt/file inspection."
+        return "\n".join(
+            [
+                "Verification_Gate: required before completion.",
+                "Method: " + method,
+                'Next_Action: run a relevant verification tool call, or return verification.status="passed" or "blocked" with evidence if verification is already resolved.',
+            ]
+        )
+
+    def _format_continuation_hint(self) -> str:
+        return "No tool calls and goal not reached. Continue with the next useful action."
+
+    def _missing_tool_summaries(self) -> list[ToolCallEvent]:
+        return [event for event in self.tool_runner.latest_events if not event.summary]
+
+    def _format_missing_tool_summaries(self) -> str:
+        lines = ["Tool_Summary_Gate: summarize every latest tool result before continuing.", "Missing:"]
+        for event in self._missing_tool_summaries():
+            lines.append("- " + event.executed + " -> " + event.result_file)
+        lines.append("Next_Action: return last_tool_calls_summaries for every missing result.")
+        return "\n".join(lines)
+
+
+############################
+# Commands
+############################
+
+
+class CommandStatus(StrEnum):
+    HANDLED = "handled"
+    EXIT = "exit"
+    UNHANDLED = "unhandled"
+
+
+@final
+@dataclass(frozen=True)
+class CommandResult:
+    status: CommandStatus
+    message: str = ""
+
+
+@final
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    description: str
+    category: str
+    usage: str = ""
+
+    def display_name(self) -> str:
+        return self.usage or self.name
+
+
+COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
+    CommandSpec("/status", "Show session status", "Info", "/status"),
+    CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
+    CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
+    CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
+    CommandSpec("/reason", "Show or toggle reasoning", "Config", "/reason [on|off|status]"),
+    CommandSpec("/reason_effort", "Show or set reasoning effort", "Config", "/reason_effort [minimal|low|medium|high|xhigh]"),
+    CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
+    CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
+    CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
+)
+
+
+@final
+class CommandDispatcher:
+    EFFORTS: ClassVar[set[str]] = {"minimal", "low", "medium", "high", "xhigh"}
+
+    def __init__(
+        self,
+        agent: Agent,
+        run_agent: MessageCallback | None = None,
+        run_with_status: StatusRunner | None = None,
+    ):
+        self.agent = agent
+        self.run_agent = run_agent
+        self.run_with_status = run_with_status
+        self.handlers: dict[str, Callable[[str], str]] = {
+            "/help": self._help,
+            "/status": self._status,
+            "/compact": self._compact,
+            "/model": self._model,
+            "/compact-at": self._compact_at,
+            "/reason": self._reason,
+            "/reason_effort": self._reason_effort,
+            "/yolo": self._yolo,
+        }
+
+    def dispatch(self, user_input: str) -> CommandResult:
+        command, args = self._parse(user_input)
+        if command in {"/exit", "/quit", "exit", "quit"}:
+            return CommandResult(CommandStatus.EXIT, "Exit")
+        handler = self.handlers.get(command)
+        if handler is None:
+            return CommandResult(CommandStatus.UNHANDLED, "")
+        return CommandResult(CommandStatus.HANDLED, handler(args))
+
+    def _parse(self, user_input: str) -> tuple[str, str]:
+        command, _, args = user_input.strip().partition(" ")
+        return command, args.strip()
+
+    def _help(self, args: str) -> str:
+        if args:
+            question = self._format_source_help_question(args)
+            if self.run_agent is not None:
+                self.run_agent(question)
+            else:
+                self.agent.run(question)
+            return ""
+        lines = ["Commands:"]
+        current_category = ""
+        for spec in COMMANDS:
+            if spec.category != current_category:
+                current_category = spec.category
+                lines.append(current_category + ":")
+            lines.append("  " + spec.display_name() + " - " + spec.description)
+        return "\n".join(lines)
+
+    def _format_source_help_question(self, question: str) -> str:
+        source_path = os.path.abspath(__file__)
+        project_metadata = os.path.join(os.path.dirname(source_path), "pyproject.toml")
+        return "\n".join(
+            [
+                "Answer this question about nanocode itself.",
+                "First inspect the nanocode source file at this exact path:",
+                source_path,
+                "Inspect this project metadata file too when useful, if it exists:",
+                project_metadata,
+                "Base the answer on the source you inspected, cite concrete functions/classes/options when relevant, and keep the answer concise.",
+                "",
+                "Question:",
+                question,
+            ]
+        )
+
+    def _status(self, args: str) -> str:
+        if args:
+            return "Usage: /status"
+        session = self.agent.session
+        reasoning = session.reasoning_effort if session.reasoning else "off"
+        yolo = "on" if session.yolo else "off"
+        return "\n".join(
+            [
+                "model: " + (session.model or "(empty)"),
+                "reasoning: " + reasoning,
+                "yolo: " + yolo,
+                "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
+                "tokens: last=" + str(session.last_total_tokens) + " session=" + str(session.session_total_tokens),
+                "goal: " + (session.current.goal or "(empty)"),
+                "verification: " + session.current.verification.status,
+            ]
+        )
+
+    def _compact(self, args: str) -> str:
+        if args:
+            return "Usage: /compact"
+        return self._with_status(self._compact_history)
+
+    def _compact_history(self) -> str:
+        count = self.agent.compact_history()
+        if count == 0:
+            return "Conversation history is empty"
+        return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.conversation)) + " item(s)"
+
+    def _model(self, args: str) -> str:
+        if not args:
+            return "Current model: " + (self.agent.session.model or "(empty)")
+        self.agent.session.model = args
+        return "Model set to: " + args
+
+    def _compact_at(self, args: str) -> str:
+        if not args:
+            return "Current auto-compact threshold: " + str(self.agent.session.compact_at)
+        try:
+            value = int(args)
+        except ValueError:
+            return "Usage: /compact-at [number]"
+        if value <= 0:
+            return "Usage: /compact-at [number] (must be positive)"
+        self.agent.session.compact_at = value
+        compacted = self._with_status(lambda: "yes" if self.agent.maybe_auto_compact() else "") == "yes"
+        suffix = " and compacted history" if compacted else ""
+        return "Auto-compact threshold set to: " + str(value) + suffix
+
+    def _with_status(self, action: StatusAction) -> str:
+        if self.run_with_status is None:
+            return action()
+        return self.run_with_status(action)
+
+    def _reason(self, args: str) -> str:
+        if args == "on":
+            self.agent.session.reasoning = True
+            return "Reasoning enabled"
+        if args == "off":
+            self.agent.session.reasoning = False
+            return "Reasoning disabled"
+        if args in {"", "status"}:
+            return "Reasoning is " + ("on" if self.agent.session.reasoning else "off")
+        return "Usage: /reason [on|off|status]"
+
+    def _reason_effort(self, args: str) -> str:
+        if not args:
+            return "Current reasoning effort: " + self.agent.session.reasoning_effort
+        if args not in self.EFFORTS:
+            return "Usage: /reason_effort [minimal|low|medium|high|xhigh]"
+        self.agent.session.reasoning_effort = args
+        return "Reasoning effort set to: " + args
+
+    def _yolo(self, args: str) -> str:
+        if args == "on":
+            self.agent.session.yolo = True
+            return "YOLO enabled"
+        if args == "off":
+            self.agent.session.yolo = False
+            return "YOLO disabled"
+        if args in {"", "status"}:
+            return "YOLO is " + ("on" if self.agent.session.yolo else "off")
+        return "Usage: /yolo [on|off|status]"
+
+
+############################
+# Interactive Loop
+############################
+
+
+@final
+class StatusBar:
+    INTERVAL: ClassVar[float] = 0.2
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.started_at = 0.0
+        self.last_elapsed = 0.0
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.rendered = False
+        self.output = create_output(sys.stderr)
+
+    def __enter__(self) -> Self:
+        self.started_at = time.monotonic()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.pause()
+
+    def reset_timer(self) -> None:
+        self.started_at = time.monotonic()
+        self.last_elapsed = 0.0
+
+    def elapsed(self) -> float:
+        if self.started_at <= 0:
+            return 0.0
+        return time.monotonic() - self.started_at
+
+    def is_running(self) -> bool:
+        return self.thread is not None
+
+    def snapshot(self, turn_elapsed: float = 0.0) -> str:
+        return self._plain(self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
+
+    def toolbar(self):
+        elapsed = self.elapsed() if self.is_running() else self.last_elapsed
+        return FormattedText(self._fragments(elapsed, now=time.monotonic(), show_sweep=True, show_elapsed=self.is_running()))
+
+    def resume(self) -> None:
+        if self.thread is not None or not sys.stderr.isatty():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def pause(self) -> None:
+        if self.thread is None:
+            return
+        self.last_elapsed = self.elapsed()
+        self.stop_event.set()
+        self.thread.join()
+        self.thread = None
+        self._clear()
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            now = time.monotonic()
+            elapsed = self.elapsed()
+            self.last_elapsed = elapsed
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            print_formatted_text(FormattedText(self._fragments(elapsed, now=now, show_sweep=True, show_elapsed=True)), output=self.output, end="", flush=True)
+            self.rendered = True
+            self.stop_event.wait(self.INTERVAL)
+
+    def _clear(self) -> None:
+        if not self.rendered:
+            return
+        self.output.write_raw("\r")
+        self.output.erase_end_of_line()
+        self.output.flush()
+        self.rendered = False
+
+    def _text(self, turn_elapsed: float, *, now: float) -> str:
+        return self._plain(self._fragments(turn_elapsed, now=now, show_sweep=True, show_elapsed=True))
+
+    def _fragments(self, turn_elapsed: float, *, now: float, show_sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
+        text = self._format_line(turn_elapsed, now=now, show_elapsed=show_elapsed)
+        columns = shutil.get_terminal_size((120, 20)).columns
+        if len(text) >= columns:
+            text = text[: max(0, columns - 4)] + "..."
+        return self._sweep_fragments(text, now) if show_sweep else [("ansicyan", text)]
+
+    def _format_line(self, turn_elapsed: float, *, now: float, show_elapsed: bool) -> str:
+        session = self.session
+        model = session.model.rsplit("/", 1)[-1] or session.model or "(no model)"
+        reasoning = session.reasoning_effort if session.reasoning else "off"
+        yolo = " | yolo" if session.yolo else ""
+        context = str(len(session.conversation)) + "/" + str(session.compact_at)
+        tokens = "last:" + self._format_count(session.last_total_tokens) + " session:" + self._format_count(session.session_total_tokens)
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens]
+        if show_elapsed:
+            parts.append(f"{turn_elapsed:.1f}s")
+        if session.current_model_call_started_at > 0:
+            parts.append("calling:" + f"{max(0.0, now - session.current_model_call_started_at):.1f}s")
+        return " | ".join(parts)
+
+    def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
+        if not text:
+            return [("", "")]
+        width = max(1, len(text) - 1)
+        sweep = (now * 0.55) % 1.0
+        fragments = []
+        for index, char in enumerate(text):
+            ratio = index / width
+            red = round(75 + (180 - 75) * ratio)
+            green = round(180 + (130 - 180) * ratio)
+            blue = 235
+            distance = abs(ratio - sweep)
+            intensity = max(0.0, 1.0 - distance * 5.0) ** 2
+            red = round(red + (230 - red) * intensity)
+            green = round(green + (245 - green) * intensity)
+            blue = round(blue + (255 - blue) * intensity)
+            fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
+        return fragments
+
+    def _plain(self, fragments: list[tuple[str, str]]) -> str:
+        return "".join(text for _, text in fragments)
+
+    def _format_count(self, value: int) -> str:
+        if value <= 0:
+            return "-"
+        if value >= 1_000_000:
+            return str(value // 1_000_000) + "m"
+        if value >= 1_000:
+            return str(value // 1_000) + "k"
+        return str(value)
+
+
+@final
+class AgentLoop:
+    def __init__(
+        self,
+        agent: Agent,
+        *,
+        input_fn: Callable[[str], str] = input,
+        output_fn: MessageCallback = print,
+        prompt_session=None,
+    ):
+        self.agent = agent
+        self.input_fn = input_fn
+        self.output_fn = output_fn
+        self.status_bar = StatusBar(agent.session)
+        self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
+        self.prompt_session = prompt_session
+        if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
+            self.prompt_session = self._make_prompt_session()
+
+    def run(self) -> int:
+        self._print_welcome()
+        with self.status_bar:
+            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_with_status=self._run_with_status)
+            while True:
+                try:
+                    user_input = self._read_input(self._prompt()).strip()
+                except EOFError:
+                    self._emit("")
+                    return 0
+                except KeyboardInterrupt:
+                    self._emit("Cancelled")
+                    continue
+                if not user_input:
+                    continue
+                try:
+                    result = dispatcher.dispatch(user_input)
+                except Exception as error:
+                    self._emit("Error: " + str(error))
+                    continue
+                if result.status == CommandStatus.EXIT:
+                    return 0
+                if result.status == CommandStatus.HANDLED:
+                    if result.message:
+                        self._emit(result.message)
+                    continue
+                self._run_agent(user_input)
+
+    def _prompt(self) -> str:
+        return "[yolo] > " if self.agent.session.yolo else "> "
+
+    def _read_input(self, prompt: str) -> str:
+        if self.prompt_session is None:
+            return self.input_fn(prompt)
+        with patch_stdout():
+            return self.prompt_session.prompt(
+                prompt,
+                multiline=False,
+                enable_history_search=True,
+                refresh_interval=StatusBar.INTERVAL,
+            )
+
+    def _make_prompt_session(self):
+        os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
+        return PromptSession(
+            history=FileHistory(self.history_path),
+            completer=self._command_completer(),
+            complete_while_typing=True,
+        )
+
+    def _command_completer(self) -> WordCompleter:
+        return WordCompleter([spec.name for spec in COMMANDS], ignore_case=False, WORD=True)
+
+    def _run_agent(self, user_input: str) -> None:
+        try:
+            self.status_bar.reset_timer()
+            self.status_bar.resume()
+            self.agent.run(
+                user_input,
+                confirm=self._confirm_tool_call,
+                on_auto_approve=self._show_auto_tool_call,
+                on_message=self._emit,
+            )
+        except KeyboardInterrupt:
+            self._emit("Cancelled")
+        except Cancellation as error:
+            self._emit("Cancelled: " + str(error))
+        except Exception as error:
+            self._emit("Error: " + str(error))
+        finally:
+            self.status_bar.pause()
+
+    def _run_with_status(self, action: StatusAction) -> str:
+        self.status_bar.reset_timer()
+        self.status_bar.resume()
+        try:
+            return action()
+        finally:
+            self.status_bar.pause()
+
+    def _confirm_tool_call(self, call: ParsedToolCall, tool: Tool) -> ConfirmationResult:
+        was_running = self.status_bar.is_running()
+        if was_running:
+            self.status_bar.pause()
+        try:
+            self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
+            return self._wait_confirm("Proceed?", default=True)
+        finally:
+            if was_running:
+                self.status_bar.resume()
+
+    def _show_auto_tool_call(self, call: ParsedToolCall, tool: Tool) -> None:
+        was_running = self.status_bar.is_running()
+        if was_running:
+            self.status_bar.pause()
+        try:
+            self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")
+        finally:
+            if was_running:
+                self.status_bar.resume()
+
+    def _print_tool_call_display(
+        self,
+        title: str,
+        status: str,
+        call: ParsedToolCall,
+        tool: Tool,
+        *,
+        title_style: str,
+    ) -> None:
+        self._emit_segments(
+            [
+                ("ansibrightblack", "-" * 48 + "\n"),
+                (title_style, title),
+                ("ansibrightblack", " | " + status + "\n"),
+                ("ansibrightblack", "  Run     "),
+                ("ansicyan", call.executed + "\n"),
+            ],
+            title + " | " + status + "\n  Run     " + call.executed,
+        )
+        if call.intention:
+            self._emit_segments(
+                [("ansibrightblack", "  Why     "), ("ansimagenta", call.intention + "\n")],
+                "  Why     " + call.intention,
+            )
+        preview = tool.display()
+        if preview:
+            self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
+
+    def _emit(self, message: str) -> None:
+        was_running = self.status_bar.is_running()
+        if was_running:
+            self.status_bar.pause()
+        try:
+            self._print_message(message)
+        finally:
+            if was_running:
+                self.status_bar.resume()
+
+    def _print_welcome(self) -> None:
+        self._emit_segments([("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")], "nanocode - AI coding assistant")
+        self._emit_segments(
+            [("ansibrightblack", "  "), ("ansicyan", "/help [question]"), ("ansiwhite", " for help or source-aware questions\n")],
+            "  /help [question] for help or source-aware questions",
+        )
+        self._emit_segments(
+            [("ansibrightblack", "  "), ("ansicyan", "/status"), ("ansiwhite", " for current session state\n")],
+            "  /status for current session state",
+        )
+        self._emit_segments(
+            self.status_bar._fragments(0.0, now=time.monotonic(), show_sweep=False, show_elapsed=False) + [("", "\n")],
+            self.status_bar.snapshot(),
+        )
+
+    def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
+        suffix = "[Y/n/reason]" if default else "[y/N/reason]"
+        while True:
+            raw_answer = self._read_input(prompt + " " + suffix + " ").strip()
+            answer = raw_answer.lower()
+            if not answer:
+                self.output_fn("Answer: " + ("yes" if default else "no"))
+                return default
+            if answer in {"y", "yes"}:
+                self.output_fn("Answer: yes")
+                return True
+            if answer in {"n", "no"}:
+                self.output_fn("Answer: no")
+                return False
+            self.output_fn("Answer: no - " + raw_answer)
+            return raw_answer
+
+    def _print_message(self, message: str) -> None:
+        if message.startswith("State Updated"):
+            self._emit_segments(self._state_segments(message), message)
+            return
+        if message.startswith("Tool Calls"):
+            self._emit_segments(self._tool_segments(message), message)
+            return
+        if message.startswith("Error:"):
+            self._emit_segments([("bold ansired", message + "\n")], message)
+            return
+        if message.startswith("Cancelled"):
+            self._emit_segments([("ansiyellow", message + "\n")], message)
+            return
+        self._emit_segments([("ansicyan", message + "\n")], message)
+
+    def _emit_segments(self, segments: list[tuple[str, str]], plain: str) -> None:
+        if self.output_fn is print:
+            print_formatted_text(FormattedText(segments), flush=True)
+        else:
+            self.output_fn(plain)
+
+    def _preview_segments(self, preview: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = [("ansibrightblack", "  Preview\n")]
+        if self._looks_like_unified_diff(preview):
+            return segments + self._indent_segments(self._diff_segments(preview), "    ")
+        return segments + self._indented_text_segments(preview, indent="    ", style="ansicyan")
+
+    def _looks_like_unified_diff(self, text: str) -> bool:
+        return text.startswith("--- ") and "\n+++ " in text and "\n@@ " in text
+
+    def _diff_segments(self, text: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("@@"):
+                style = "ansicyan"
+            elif line.startswith(("---", "+++")):
+                style = "ansibrightblack"
+            elif line.startswith("+"):
+                style = "ansigreen"
+            elif line.startswith("-"):
+                style = "ansired"
+            else:
+                style = "ansiwhite"
+            if index < len(lines) - 1:
+                line += "\n"
+            segments.append((style, line))
+        return segments
+
+    def _indented_text_segments(self, text: str, *, indent: str, style: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        for line in text.splitlines() or [""]:
+            segments.extend([("ansibrightblack", indent), (style, line + "\n")])
+        return segments
+
+    def _indent_segments(self, segments: list[tuple[str, str]], indent: str) -> list[tuple[str, str]]:
+        indented: list[tuple[str, str]] = []
+        at_line_start = True
+        for style, text in segments:
+            for part in text.splitlines(keepends=True):
+                if at_line_start:
+                    indented.append(("ansibrightblack", indent))
+                indented.append((style, part))
+                at_line_start = part.endswith("\n")
+        return indented
+
+    def _state_segments(self, message: str) -> list[tuple[str, str]]:
+        lines = message.splitlines()
+        segments: list[tuple[str, str]] = [("ansibrightblack", "-" * 48 + "\n")]
+        for index, line in enumerate(lines):
+            if index == 0:
+                title, _, badge = line.partition("|")
+                badge = badge.strip()
+                segments.extend([("bold ansicyan", title.strip()), ("ansibrightblack", " | "), (self._verify_style(badge), badge), ("", "\n")])
+            elif line.startswith("  Goal"):
+                segments.extend([("ansibrightblack", line[:10]), ("bold ansigreen", line[10:] + "\n")])
+            elif line.startswith("  Plan"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
+            elif line.startswith("  Known"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
+            elif line.startswith("  Verify"):
+                status = line[10:].strip().split(" ", 1)[0]
+                segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])
+            elif line.startswith("    ..."):
+                segments.extend([("ansibrightblack", line + "\n")])
+            elif line.startswith("    "):
+                segments.extend([("ansibrightblack", "    "), ("ansiwhite", line[4:] + "\n")])
+            else:
+                segments.extend([("ansiwhite", line + "\n")])
+        return segments
+
+    def _tool_segments(self, message: str) -> list[tuple[str, str]]:
+        lines = message.splitlines()
+        segments: list[tuple[str, str]] = [("ansibrightblack", "-" * 48 + "\n")]
+        for index, line in enumerate(lines):
+            if index == 0:
+                segments.extend([("bold ansiblue", line), ("", "\n")])
+            elif line.startswith("  ") and ". [" in line:
+                style = "ansigreen" if "[success]" in line else "ansired"
+                segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
+            elif line.startswith("     why:"):
+                segments.extend([("ansibrightblack", "     why: "), ("ansimagenta", line[10:] + "\n")])
+            elif line.startswith("     log:"):
+                segments.extend([("ansibrightblack", "     log: "), ("ansiblue", line[10:] + "\n")])
+            else:
+                segments.extend([("ansibrightblack", line + "\n")])
+        return segments
+
+    def _verify_style(self, badge: str) -> str:
+        if "required" in badge:
+            return "bold ansimagenta"
+        if "done" in badge:
+            return "bold ansigreen"
+        if "blocked" in badge:
+            return "bold ansired"
+        return "ansibrightblack"
+
+
+###################
+# Helpers
+###################
+
+
+def _format_lines(lines: list[str], indent: str) -> str:
+    return "\n".join([(indent + line) for line in lines])
+
+
+def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=filepath,
+            tofile=filepath,
+        )
+    )
+
+
+def _format_process_result(tag: str, exit_code: int, stdout: str, stderr: str) -> str:
+    lines = [f"<{tag}>", f"* exit_code: {exit_code}"]
+    if stdout:
+        lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+    if stderr:
+        lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+    lines.append(f"</{tag}>")
+    return "\n".join(lines)
+
+
+def _json_dict(value: JsonValue) -> Json:
+    return value if isinstance(value, dict) else {}
+
+
+def _json_list(value: JsonValue) -> list[JsonValue]:
+    return value if isinstance(value, list) else []
+
+
+def _json_str(value: JsonValue) -> str | None:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return None
+    return str(value)
+
+
+def _json_int(value: JsonValue) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _shorten(text: str, limit: int = 500) -> str:
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+##############
+# Entrypoint
+##############
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        parser = argparse.ArgumentParser(description="nanocode: AI coding assistant")
+        parser.add_argument("-v", "--version", action="version", version=__version__)
+        parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
+        parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
+        args = parser.parse_args(argv)
+        session = Session(yolo=args.yolo, debug=args.debug)
+        session.cleanup_old_logs(days=3)
+        missing = session.missing_required_envs()
+        if missing:
+            print("Missing env: " + ", ".join(missing), file=sys.stderr)
+            return 2
+        return AgentLoop(Agent(session)).run()
+    except KeyboardInterrupt:
+        print("Cancelled", file=sys.stderr)
+        return 130
+    except Exception as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
