@@ -1995,6 +1995,8 @@ class ModelClient:
 
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None))
         content = self._message_content(result)
+        if content is None:
+            return self._invalid_model_response(self._format_missing_message_content(result))
         return self._parse_model_content(content)
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
@@ -2024,13 +2026,9 @@ class ModelClient:
 
     def _parse_model_content(self, content: str) -> Json:
         text = content.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+        text = self._strip_leaked_think_tags(text)
+        text = self._strip_json_fence(text)
+        text = self._strip_leaked_think_tags(text)
         try:
             value = json.loads(text)
         except json.JSONDecodeError:
@@ -2038,6 +2036,29 @@ class ModelClient:
         if not isinstance(value, dict):
             return self._invalid_model_response(content)
         return value
+
+    def _strip_json_fence(self, text: str) -> str:
+        if not text.startswith("```"):
+            return text
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    def _strip_leaked_think_tags(self, text: str) -> str:
+        text = text.strip()
+        while text.startswith("</think>"):
+            text = text[len("</think>") :].lstrip()
+        while text.startswith("<think>"):
+            end = text.find("</think>")
+            if end < 0:
+                return text
+            text = text[end + len("</think>") :].lstrip()
+            while text.startswith("</think>"):
+                text = text[len("</think>") :].lstrip()
+        return text
 
     def _invalid_model_response(self, content: str) -> Json:
         return {
@@ -2061,7 +2082,7 @@ class ModelClient:
             return {"reasoning": {"effort": self.session.reasoning_effort}}
         return {}
 
-    def _message_content(self, result: JsonValue) -> str:
+    def _message_content(self, result: JsonValue) -> str | None:
         data = _json_dict(result)
         choices = _json_list(data.get("choices"))
         if not choices:
@@ -2069,8 +2090,17 @@ class ModelClient:
         message = _json_dict(_json_dict(choices[0]).get("message"))
         content = message.get("content")
         if not isinstance(content, str):
-            raise LLMError("API response missing message content")
+            return None
         return content
+
+    def _format_missing_message_content(self, result: JsonValue) -> str:
+        choice = _json_dict(_json_list(_json_dict(result).get("choices"))[0])
+        message = _json_dict(choice.get("message"))
+        details: Json = {
+            "finish_reason": choice.get("finish_reason"),
+            "message_keys": sorted(str(key) for key in message.keys()),
+        }
+        return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
     def _record_usage(self, usage: Json) -> None:
         prompt_tokens = _json_int(usage.get("prompt_tokens"))
@@ -2627,6 +2657,8 @@ class ConversationCompactor:
 
 @final
 class Agent:
+    MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
+
     def __init__(self, session: Session):
         self.session = session
         self.prompt_builder = PromptBuilder(session)
@@ -2671,18 +2703,37 @@ class Agent:
         self.session.current.goal_reached = False
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
+        consecutive_format_errors = 0
 
         for _ in range(self.session.max_agent_steps):
             response = self.step()
             format_error = _json_str(response.get("_format_error"))
             if format_error:
+                consecutive_format_errors += 1
                 self.latest_tool_call_results = format_error
+                if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+                    self._report_gate(
+                        on_message,
+                        "Format_Gate: stopped after "
+                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                        + " consecutive invalid model outputs. "
+                        + _shorten(format_error, 180),
+                    )
+                    raise LLMError(
+                        "model returned invalid output "
+                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                        + " times in a row: "
+                        + _shorten(format_error, 300)
+                    )
+                self._report_gate(on_message, "Format_Gate: retrying model response. " + _shorten(format_error, 180))
                 continue
+            consecutive_format_errors = 0
             tool_calls = _json_list(response.get("tool_calls"))
             summary_gate = self._format_tool_summary_gate(tool_calls)
             if summary_gate:
                 self.state_updater.latest_report = ""
                 self.latest_tool_call_results = summary_gate
+                self._report_gate(on_message, self._compact_gate_report(summary_gate))
                 continue
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
@@ -2705,12 +2756,26 @@ class Agent:
             if self.session.current.verification.status == VerificationStatus.REQUIRED:
                 self.session.current.goal_reached = False
                 self.latest_tool_call_results = self._format_verification_gate()
+                self._report_gate(on_message, "Verification_Gate: retrying until verification is passed or blocked.")
                 continue
             if not self.session.current.goal_reached:
                 self.latest_tool_call_results = self._format_continuation_hint()
+                self._report_gate(on_message, "Continuation_Gate: goal not reached; retrying next useful action.")
                 continue
             return response
         raise LLMError("agent step limit reached")
+
+    def _report_gate(self, on_message: MessageCallback | None, message: str) -> None:
+        if on_message is not None:
+            on_message(message)
+
+    def _compact_gate_report(self, gate: str) -> str:
+        lines = gate.splitlines()
+        headline = lines[0] if lines else "Gate"
+        details = [line for line in lines[1:] if line.startswith("- ")]
+        if details:
+            return headline + ": " + _shorten("; ".join(details[:3]), 220)
+        return headline
 
     def step(self) -> Json:
         response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main")

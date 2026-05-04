@@ -203,6 +203,28 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
     assert response == {"message_to_user": "ok", "tool_calls": None}
 
 
+def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    assert client._parse_model_content('</think>{"message_to_user": "ok", "tool_calls": null}') == {
+        "message_to_user": "ok",
+        "tool_calls": None,
+    }
+    assert client._parse_model_content('<think>reasoning</think>\n{"message_to_user": "ok", "tool_calls": null}') == {
+        "message_to_user": "ok",
+        "tool_calls": None,
+    }
+
+
+def test_agent_request_does_not_extract_json_after_arbitrary_prefix(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('note {"message_to_user": "ok", "tool_calls": null}')
+
+    assert response["tool_calls"] is None
+    assert "expected one JSON object" in response["_format_error"]
+
+
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
     class FakeResponse:
         def __enter__(self):
@@ -227,6 +249,40 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     assert response["tool_calls"] is None
     assert "expected one JSON object" in response["_format_error"]
     assert "plain answer" in response["_format_error"]
+
+
+def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": None},
+                        }
+                    ],
+                    "usage": {},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+
+    response = Agent(session).request("system", "user")
+
+    assert response["tool_calls"] is None
+    assert "expected one JSON object" in response["_format_error"]
+    assert "API response missing message content" in response["_format_error"]
 
 
 def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
@@ -684,12 +740,14 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.model_client = FakeModelClient()
+    messages = []
 
-    response = agent.run("answer")
+    response = agent.run("answer", on_message=messages.append)
 
     assert response["message_to_user"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "No tool calls and goal not reached" in agent.model_client.user_prompts[1]
+    assert "Continuation_Gate: goal not reached; retrying next useful action." in messages
 
 
 def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
@@ -718,14 +776,16 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.model_client = FakeModelClient()
+    messages = []
 
-    response = agent.run("change file")
+    response = agent.run("change file", on_message=messages.append)
 
     assert response["message_to_user"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Verification_Gate: required before completion." in agent.model_client.user_prompts[1]
     assert session.current.verification.status == VerificationStatus.DONE
     assert session.current.verification.evidence == "tests passed"
+    assert "Verification_Gate: retrying until verification is passed or blocked." in messages
 
 
 def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
@@ -750,7 +810,33 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
 
     assert response["message_to_user"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
-    assert messages == ["done"]
+    assert messages == ["Format_Gate: retrying model response. Invalid model output: plain answer", "done"]
+
+
+def test_agent_run_stops_after_repeated_format_errors(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            return {"_format_error": "Invalid model output: missing content", "tool_calls": None}
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    try:
+        agent.run("answer", on_message=messages.append)
+    except nanocode.LLMError as error:
+        message = str(error)
+    else:
+        raise AssertionError("expected LLMError")
+
+    assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
+    assert "model returned invalid output 3 times in a row" in message
+    assert messages[-1].startswith("Format_Gate: stopped after 3 consecutive invalid model outputs.")
 
 
 def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
