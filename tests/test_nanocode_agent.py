@@ -535,11 +535,11 @@ def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
     assert "premature" not in messages
     assert all("premature" not in item.format() for item in session.conversation)
     assert len(agent.model_client.user_prompts) == 3
-    assert "Tool_Summary_Gate: extract durable evidence" in agent.model_client.user_prompts[2]
+    assert "Tool_Summary_Gate: summarize latest tool results" in agent.model_client.user_prompts[2]
     assert "Read sample.txt and found alpha." in agent.latest_tool_call_events[0].summary
 
 
-def test_agent_summary_gate_requires_key_evidence_for_failure(tmp_path):
+def test_agent_summary_gate_allows_failure_summary_without_key_evidence(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.execute_tool_calls(
@@ -565,41 +565,10 @@ def test_agent_summary_gate_requires_key_evidence_for_failure(tmp_path):
 
     gate = agent._format_tool_summary_gate([])
 
-    assert "Missing key_evidence:" in gate
-    assert event.result_file in gate
-    assert (
-        agent._format_tool_summary_gate(
-            [
-                {
-                    "name": "Read",
-                    "intention": "read result log for evidence",
-                    "args": [str(tmp_path / event.result_file)],
-                }
-            ]
-        )
-        == ""
-    )
-
-    agent.state_updater.apply_tool_call_summaries(
-        {
-            "last_tool_calls_summaries": [
-                {
-                    "tool": "Read",
-                    "intention": "read missing",
-                    "outcome": "failure",
-                    "summary": "missing.txt could not be read.",
-                    "key_evidence": ["missing.txt: file not found"],
-                    "result_file": event.result_file,
-                    "needs_raw_read": False,
-                }
-            ]
-        }
-    )
-
-    assert agent._format_tool_summary_gate([]) == ""
+    assert gate == ""
 
 
-def test_agent_summary_gate_requires_evidence_for_large_success_output(tmp_path):
+def test_agent_summary_gate_allows_large_success_summary_without_key_evidence(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     event = ToolCallEvent(
@@ -622,14 +591,40 @@ def test_agent_summary_gate_requires_evidence_for_large_success_output(tmp_path)
 
     gate = agent._format_tool_summary_gate([])
 
-    assert "Missing key_evidence:" in gate
-    assert event.result_file in gate
-    assert (
-        agent._format_tool_summary_gate(
-            [{"name": "Read", "intention": "read result log for evidence", "args": [event.result_file]}]
-        )
-        == ""
+    assert gate == ""
+
+
+def test_tool_result_file_read_does_not_create_conversation_event_or_new_log(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    result_dir = tmp_path / ".nanocode" / "tool_results"
+    result_dir.mkdir(parents=True)
+    result_file = result_dir / "result.log"
+    result_file.write_text(
+        "\n".join(
+            [
+                "<Tool_Call_Result_Log>",
+                "  <tool>ListDir</tool>",
+                "  <raw_result>",
+                "<ListDirToolResult>",
+                "* (file): nanocode.py",
+                "</ListDirToolResult>",
+                "  </raw_result>",
+                "</Tool_Call_Result_Log>",
+            ]
+        ),
+        encoding="utf-8",
     )
+
+    latest = agent.execute_tool_calls(
+        [{"name": "Read", "intention": "read old result log", "args": [".nanocode/tool_results/result.log"]}]
+    )
+
+    assert "nanocode.py" in latest
+    assert agent.latest_tool_call_events == []
+    assert session.conversation == []
+    assert sorted(path.name for path in result_dir.iterdir()) == ["result.log"]
+    assert "source: .nanocode/tool_results/result.log" in agent.tool_runner.format_latest_report()
 
 
 def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_path):
@@ -763,3 +758,5 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
 
     assert "Never answer outside JSON" in prompt
     assert "message_to_user" in prompt
+    assert "Prefer Search before Read" in prompt
+    assert "use result_file logs only as a fallback when needed" in prompt

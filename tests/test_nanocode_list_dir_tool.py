@@ -43,6 +43,21 @@ def test_list_dir_tool_sorts_dirs_before_files_then_by_name(tmp_path):
     )
 
 
+def test_list_dir_tool_defaults_to_cwd(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    result = ListDirTool.make(session, []).call()
+
+    assert result == "\n".join(
+        [
+            "<ListDirToolResult>",
+            "* (file): sample.txt",
+            "</ListDirToolResult>",
+        ]
+    )
+
+
 def test_list_dir_tool_rejects_non_directory(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")

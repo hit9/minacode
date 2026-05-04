@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 class Error(Exception): ...
@@ -524,6 +524,7 @@ class ToolCallExecution:
     output: str
     result_file: str
     result_file_lines: int
+    log_written: bool = True
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -687,18 +688,19 @@ class ListDirTool(Tool):
 
     @classmethod
     def signature(cls) -> str:
-        return "ListDir(dir_path[, glob_pattern]) -> ListDirToolResult<entries>"
+        return 'ListDir(dir_path?: "."[, glob_pattern]) -> ListDirToolResult<entries>'
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["."]', 'Example args: ["src", "*.py"]']
+        return ['Example args: []', 'Example args: ["."]', 'Example args: ["src", "*.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in (1, 2):
-            raise ToolCallError("requires 1 or 2 args: dir_path[, glob_pattern]")
+        if len(args) not in (0, 1, 2):
+            raise ToolCallError("requires 0 to 2 args: [dir_path][, glob_pattern]")
+        dir_path = str(args[0]) if args else "."
         glob_pattern = str(args[1]) if len(args) == 2 else ""
-        return cls(dirpath=session.resolve_path(args[0]), glob_pattern=glob_pattern, cwd=session.cwd)
+        return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
 
     def display(self) -> str:
         if self.glob_pattern:
@@ -1664,8 +1666,10 @@ Tools:
 - Call tools only by emitting JSON in tool_calls. Do not use native tool calls.
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
-- Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so key_evidence keeps paths, lines, errors, decisions.
-- If a prior tool result lacks detail, use Read on its result_file.
+- Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
+- Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
+- Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
+- If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
 - known_append is stable memory; current_context_update is task-local memory.
 - tool_call.intention must state the question to answer, not just the action.
 
@@ -2092,25 +2096,32 @@ class ToolCallRunner:
             if call is None:
                 call = self._invalid_tool_call(item)
 
-            result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
+            log_written = not self._is_tool_result_file_read(call)
+            if log_written:
+                result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
+            else:
+                result_file = os.path.relpath(self.session.resolve_path(call.args[0]), self.session.cwd)
+                result_file_lines = len(output.splitlines())
             execution = ToolCallExecution(
                 call=call,
                 outcome=outcome,
                 output=output,
                 result_file=result_file,
                 result_file_lines=result_file_lines,
+                log_written=log_written,
             )
-            event = ToolCallEvent(
-                intent=call.intention,
-                executed=call.executed,
-                outcome=outcome,
-                summary="",
-                result_file=result_file,
-                result_file_lines=result_file_lines,
-            )
-            self.session.append_conversation(event)
+            if log_written:
+                event = ToolCallEvent(
+                    intent=call.intention,
+                    executed=call.executed,
+                    outcome=outcome,
+                    summary="",
+                    result_file=result_file,
+                    result_file_lines=result_file_lines,
+                )
+                self.session.append_conversation(event)
+                events.append(event)
             executions.append(execution)
-            events.append(event)
 
         self.latest_events = events
         self.latest_executions = executions
@@ -2128,7 +2139,8 @@ class ToolCallRunner:
             lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
             if execution.call.intention:
                 lines.append("     why: " + execution.call.intention)
-            lines.append("     log: " + execution.result_file + " (" + str(execution.result_file_lines) + " lines)")
+            label = "log" if execution.log_written else "source"
+            lines.append("     " + label + ": " + execution.result_file + " (" + str(execution.result_file_lines) + " lines)")
         return "\n".join(lines)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -2152,6 +2164,16 @@ class ToolCallRunner:
         if tool_class is None:
             raise ToolCallError("tool not found: " + call.name)
         return tool_class.make(self.session, call.args)
+
+    def _is_tool_result_file_read(self, call: ParsedToolCall) -> bool:
+        if call.name != ReadTool.name() or not call.args:
+            return False
+        tool_results_dir = os.path.realpath(self.session.tool_results_dir())
+        path = os.path.realpath(self.session.resolve_path(call.args[0]))
+        try:
+            return os.path.commonpath([tool_results_dir, path]) == tool_results_dir
+        except ValueError:
+            return False
 
     def _write_tool_result_log(self, call: ParsedToolCall, outcome: str, output: str) -> tuple[str, int]:
         directory = self.session.tool_results_dir()
@@ -2563,9 +2585,6 @@ class ConversationCompactor:
 
 @final
 class Agent:
-    EVIDENCE_OUTPUT_LINES: ClassVar[int] = 40
-    EVIDENCE_OUTPUT_CHARS: ClassVar[int] = 4000
-
     def __init__(self, session: Session):
         self.session = session
         self.prompt_builder = PromptBuilder(session)
@@ -2688,48 +2707,31 @@ class Agent:
 
     def _format_tool_summary_gate(self, tool_calls: list[JsonValue]) -> str:
         missing = self._missing_tool_summaries()
-        missing_evidence = []
         needs_read = []
-        for event, execution in zip(self.tool_runner.latest_events, self.tool_runner.latest_executions):
+        for event in self.tool_runner.latest_events:
             if not event.summary:
                 continue
             is_reading_result_file = self._has_read_result_file_call(tool_calls, event.result_file)
-            if event.needs_raw_read and not is_reading_result_file:
-                needs_read.append(event)
-            if event.outcome in {"failure", "partial"}:
-                if not event.key_details and not is_reading_result_file:
-                    missing_evidence.append(event)
+            if event.needs_raw_read:
+                if not is_reading_result_file:
+                    needs_read.append(event)
                 continue
-            if (
-                self._is_large_tool_output(execution.output)
-                and not event.key_details
-                and not event.needs_raw_read
-                and not is_reading_result_file
-            ):
-                missing_evidence.append(event)
-        if not missing and not missing_evidence and not needs_read:
+        if not missing and not needs_read:
             return ""
 
-        lines = ["Tool_Summary_Gate: extract durable evidence before continuing.", "Raw tool results are visible only once."]
+        lines = ["Tool_Summary_Gate: summarize latest tool results before continuing.", "Raw tool results are visible only once."]
         if missing:
             lines.append("Missing summaries:")
         for event in missing:
-            lines.append("- " + event.executed + " -> " + event.result_file)
-        if missing_evidence:
-            lines.append("Missing key_evidence:")
-        for event in missing_evidence:
             lines.append("- " + event.executed + " -> " + event.result_file)
         if needs_read:
             lines.append("Needs raw read:")
         for event in needs_read:
             lines.append("- Read(" + event.result_file + ") before continuing")
         lines.append(
-            "Next_Action: return last_tool_calls_summaries with key_evidence, update current_context_update for task-local facts, or call Read(result_file) for needs_raw_read logs."
+            "Next_Action: return last_tool_calls_summaries for missing results, read result_file only when it is the cheapest accurate fallback, or continue with source tools such as Search/ListDir."
         )
         return "\n".join(lines)
-
-    def _is_large_tool_output(self, output: str) -> bool:
-        return len(output) > self.EVIDENCE_OUTPUT_CHARS or len(output.splitlines()) > self.EVIDENCE_OUTPUT_LINES
 
     def _has_read_result_file_call(self, tool_calls: list[JsonValue], result_file: str) -> bool:
         if not result_file:
