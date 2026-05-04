@@ -8,6 +8,7 @@ https://github.com/hit9/nanocode
 import argparse
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import platform
@@ -217,7 +218,7 @@ class KnownItem(PromptItem):
         if self.details:
             lines.append("  <details>")
             for detail in self.details:
-                lines.append("<detail>" + detail + "</detail>")
+                lines.append("    <detail>" + detail + "</detail>")
             lines.append("  </details>")
         lines.append("</KnownItem>")
         return _format_lines(lines, indent)
@@ -450,11 +451,8 @@ class ReadTool(Tool):
 
     def call(self) -> str:
         with open(self.filepath, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        lc = len(lines)
-        end = lc if self.end == 0 else min(self.end, lc)
-        start = min(self.start, lc)
-        content = "".join(lines[start:end])
+            lines = itertools.islice(f, self.start, self.end or None)
+            content = "".join(lines)
         return "\n".join(
             [
                 "<ReadToolResult>",
@@ -1633,7 +1631,7 @@ class ModelClient:
             return {}
         if "openrouter.ai" in self.session.api_url:
             return {"reasoning": {"effort": self.session.reasoning_effort}}
-        return {"reasoning_effort": self.session.reasoning_effort}
+        return {}
 
     def _message_content(self, result: JsonValue) -> str:
         data = _json_dict(result)
@@ -1683,10 +1681,11 @@ class ToolCallRunner:
         executions = []
         events = []
         for item in tool_calls:
-            call = self.parse_tool_call(item)
+            call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
             try:
+                call = self.parse_tool_call(item)
                 tool = self._make_tool(call)
                 if tool.requires_confirmation(self.session):
                     if self.session.yolo:
@@ -1708,6 +1707,8 @@ class ToolCallRunner:
             except Exception as error:
                 outcome = "failure"
                 output = "ToolCallError: " + str(error)
+            if call is None:
+                call = self._invalid_tool_call(item)
 
             result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
             execution = ToolCallExecution(
@@ -1756,6 +1757,13 @@ class ToolCallRunner:
         intention = _json_str(item.get("intention")) or ""
         args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
         return ParsedToolCall(name=name, intention=intention, args=args)
+
+    def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
+        try:
+            raw = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raw = repr(value)
+        return ParsedToolCall(name="InvalidToolCall", intention="parse malformed tool call", args=[_shorten(raw, 300)])
 
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)

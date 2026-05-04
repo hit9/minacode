@@ -92,7 +92,8 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert captured["authorization"] == "Bearer key"
     assert captured["payload"]["model"] == "model"
     assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
-    assert captured["payload"]["reasoning_effort"] == "medium"
+    assert "reasoning_effort" not in captured["payload"]
+    assert "reasoning" not in captured["payload"]
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
@@ -246,7 +247,7 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
     prompt = agent.build_user_prompt()
     assert "<KnownItem>" in prompt
     assert "<fact>Search only supports rg and Python fallback.</fact>" in prompt
-    assert "<detail>grep was removed</detail>" in prompt
+    assert "  <details>\n    <detail>grep was removed</detail>\n  </details>" in prompt
     assert "duplicate ignored" not in prompt
 
 
@@ -335,6 +336,20 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     log_path = tmp_path / event.result_file
     assert "Cancelled: user refused: please inspect tests first" in log_path.read_text(encoding="utf-8")
     assert "please inspect tests first" in agent.build_user_prompt()
+
+
+def test_agent_execute_tool_calls_logs_malformed_tool_call(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
+
+    assert "ToolCallError: tool call missing name" in latest
+    event = agent.latest_tool_call_events[0]
+    assert event.outcome == "failure"
+    assert event.executed.startswith("InvalidToolCall(")
+    log_path = tmp_path / event.result_file
+    assert "ToolCallError: tool call missing name" in log_path.read_text(encoding="utf-8")
 
 
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):

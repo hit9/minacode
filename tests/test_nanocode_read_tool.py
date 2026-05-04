@@ -1,5 +1,6 @@
 import pytest
 
+import nanocode
 from nanocode import ReadTool, Session, ToolCallError
 
 
@@ -40,6 +41,41 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     assert tool.start == 0
     assert tool.end == 0
     assert "alpha\nbeta\n" in result
+
+
+def test_read_tool_bounded_read_stops_at_end(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    real_open = open
+    lines_read = []
+
+    class TrackingFile:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __enter__(self):
+            self.wrapped.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.wrapped.__exit__(*args)
+
+        def __iter__(self):
+            for line in self.wrapped:
+                lines_read.append(line)
+                yield line
+
+    def tracking_open(*args, **kwargs):
+        return TrackingFile(real_open(*args, **kwargs))
+
+    monkeypatch.setattr(nanocode, "open", tracking_open, raising=False)
+
+    result = ReadTool.make(session, ["sample.txt", "1", "3"]).call()
+
+    assert "one\ntwo\n" in result
+    assert "three" not in result
+    assert lines_read == ["zero\n", "one\n", "two\n"]
 
 
 def test_read_tool_clamps_out_of_bounds_range(tmp_path):
