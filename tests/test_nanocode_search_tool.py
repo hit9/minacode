@@ -154,6 +154,18 @@ def test_search_tool_supports_glob_and_context_option(tmp_path, monkeypatch):
     assert "skip.py" not in result
 
 
+def test_search_tool_accepts_named_glob_option(tmp_path, monkeypatch):
+    (tmp_path / "keep.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "skip.txt").write_text("needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, ["needle", ".", "glob_pattern=*.py"]).call()
+
+    assert "* keep.py:1: needle" in result
+    assert "skip.txt" not in result
+
+
 def test_search_tool_rejects_empty_pattern(tmp_path):
     session = Session(cwd=str(tmp_path))
 
@@ -187,6 +199,14 @@ def test_search_tool_rejects_missing_target(tmp_path):
     tool = SearchTool.make(session, ["needle", "missing.txt"])
 
     with pytest.raises(ToolCallError, match="not a file or directory"):
+        tool.call()
+
+
+def test_search_tool_rejects_placeholder_path_with_guidance(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool = SearchTool.make(session, ["needle", "path", "*.py"])
+
+    with pytest.raises(ToolCallError, match='"path" is a placeholder'):
         tool.call()
 
 

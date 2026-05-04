@@ -885,6 +885,10 @@ class SearchTool(Tool):
                 except ValueError:
                     raise ToolCallError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
                 continue
+            if option.startswith("glob=") or option.startswith("glob_pattern="):
+                option = option.split("=", 1)[1]
+                if not option:
+                    raise ToolCallError("glob option cannot be empty")
             if glob_pattern:
                 raise ToolCallError("unexpected search option: " + option)
             glob_pattern = option
@@ -1105,6 +1109,8 @@ class SearchTool(Tool):
 
     def call(self) -> str:
         if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
+            if os.path.basename(self.target_path) == "path":
+                raise ToolCallError('not a file or directory: "path" is a placeholder; pass a real file or directory')
             raise ToolCallError("not a file or directory")
         if os.path.isfile(self.target_path) and not self._matches_glob(self.target_path):
             return self._format_result("python", [], False)
