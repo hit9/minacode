@@ -1971,6 +1971,7 @@ class ModelClient:
             "model": self.session.model,
             "messages": messages,
             "temperature": self.session.temperature,
+            "response_format": {"type": "json_object"},
         }
         extra_params = self._reasoning_params()
         payload.update(extra_params)
@@ -2812,7 +2813,11 @@ class Agent:
         return headline
 
     def step(self) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main")
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main")
+        if _json_str(response.get("_format_error")):
+            return response
+        self.latest_tool_call_results = ""
+        self.latest_agent_feedback = ""
         self.state_updater.apply_tool_call_summaries(response)
         return response
 

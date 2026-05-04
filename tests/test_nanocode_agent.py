@@ -94,6 +94,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert captured["authorization"] == "Bearer key"
     assert captured["payload"]["model"] == "model"
     assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in captured["payload"]
     assert "reasoning" not in captured["payload"]
     assert session.last_prompt_tokens == 2
@@ -554,6 +555,39 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert agent.latest_tool_call_results == ""
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
+
+
+def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "tool_calls": [
+                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
+                    ]
+                },
+                {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
+                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("read sample")
+
+    assert response["message_to_user"] == "done"
+    assert "alpha" in agent.model_client.user_prompts[1]
+    assert "alpha" in agent.model_client.user_prompts[2]
+    assert "Invalid model output: plain answer" in agent.model_client.user_prompts[2]
+    assert agent.latest_tool_call_results == ""
 
 
 def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
