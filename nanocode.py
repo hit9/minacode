@@ -265,6 +265,97 @@ class Current:
 
 
 @final
+class RangeFingerprintStore:
+    MAX_ENTRIES: ClassVar[int] = 200
+
+    @final
+    @dataclass
+    class Entry:
+        fingerprint: str
+        filepath: str
+        start: int
+        end: int
+        content: str
+
+    @final
+    @dataclass
+    class Resolved:
+        start: int
+        end: int
+        fingerprint: str
+        relocated_from: tuple[int, int] | None = None
+
+    def __init__(self):
+        self._entries: list[RangeFingerprintStore.Entry] = []
+
+    def remember(self, *, filepath: str, start: int, end: int, content: str) -> str:
+        fingerprint = _range_fingerprint(content)
+        entry = self.Entry(fingerprint=fingerprint, filepath=os.path.realpath(filepath), start=start, end=end, content=content)
+        if not any(
+            existing.fingerprint == entry.fingerprint
+            and existing.filepath == entry.filepath
+            and existing.start == entry.start
+            and existing.end == entry.end
+            and existing.content == entry.content
+            for existing in self._entries
+        ):
+            self._entries.append(entry)
+            del self._entries[: max(0, len(self._entries) - self.MAX_ENTRIES)]
+        return fingerprint
+
+    def clear(self) -> None:
+        self._entries = []
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def resolve(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> Resolved:
+        resolved_start = min(start, len(lines))
+        resolved_end = len(lines) if end == 0 else min(end, len(lines))
+        resolved_end = max(resolved_end, resolved_start)
+        current = "".join(lines[resolved_start:resolved_end])
+        current_fingerprint = _range_fingerprint(current)
+        if current_fingerprint == fingerprint:
+            return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
+
+        matches = self._find_matches(lines, filepath=filepath, fingerprint=fingerprint)
+        message = f"fingerprint mismatch: expected {fingerprint}, current {current_fingerprint}"
+        if not matches:
+            raise ToolCallError(message)
+        if len(matches) > 1:
+            raise ToolCallError(message + "; cached range matched multiple locations")
+        relocated_start, relocated_end = matches[0]
+        return self.Resolved(
+            start=relocated_start,
+            end=relocated_end,
+            fingerprint=fingerprint,
+            relocated_from=(resolved_start, resolved_end),
+        )
+
+    def _find_matches(self, lines: list[str], *, filepath: str, fingerprint: str) -> list[tuple[int, int]]:
+        filepath = os.path.realpath(filepath)
+        contents = []
+        for entry in self._entries:
+            if entry.fingerprint != fingerprint or entry.filepath != filepath or not entry.content:
+                continue
+            if entry.content not in contents:
+                contents.append(entry.content)
+
+        matches = []
+        for content in contents:
+            expected = content.splitlines(keepends=True)
+            if not expected:
+                continue
+            last_start = len(lines) - len(expected)
+            for position in range(max(0, last_start + 1)):
+                if lines[position : position + len(expected)] == expected:
+                    matches.append((position, position + len(expected)))
+                    if len(matches) > 1:
+                        return matches
+        return matches
+
+
+@final
 @dataclass
 class Session:
     REQUIRED_ENVS: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -309,6 +400,7 @@ class Session:
     # ---- current and conversation ---
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
+    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -442,6 +534,7 @@ class ReadTool(Tool):
     start: int = 0
     end: int = 0
     cwd: str = ""
+    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
     def name(cls) -> str:
@@ -470,7 +563,7 @@ class ReadTool(Tool):
             raise ToolCallError("requires 1 or 3 args: filepath[, start, end]")
         filepath = session.resolve_path(args[0])
         start, end = (0, 0) if len(args) == 1 else _parse_line_range(args[1], args[2])
-        return cls(filepath=filepath, start=start, end=end, cwd=session.cwd)
+        return cls(filepath=filepath, start=start, end=end, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
@@ -482,10 +575,16 @@ class ReadTool(Tool):
         with open(self.filepath, "r", encoding="utf-8") as f:
             lines = itertools.islice(f, self.start, self.end or None)
             content = "".join(lines)
+        fingerprint = self.range_fingerprints.remember(
+            filepath=self.filepath,
+            start=self.start,
+            end=self.end,
+            content=content,
+        )
         return "\n".join(
             [
                 "<ReadToolResult>",
-                "  <fingerprint>" + _range_fingerprint(content) + "</fingerprint>",
+                "  <fingerprint>" + fingerprint + "</fingerprint>",
                 "  <content no-indention>",
                 content,
                 "  </content>",
@@ -614,7 +713,7 @@ class SearchTool(Tool):
     MAX_MATCHES: ClassVar[int] = 100
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
-    CONTEXT_LINES: ClassVar[int] = 2
+    CONTEXT_LINES: ClassVar[int] = 4
     MAX_CONTEXT_LINES: ClassVar[int] = 20
 
     @dataclass(frozen=True)
@@ -987,6 +1086,7 @@ class ReplaceRangeTool(Tool):
     fingerprint: str = ""
     content: str = ""
     cwd: str = ""
+    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
     def name(cls) -> str:
@@ -994,7 +1094,10 @@ class ReplaceRangeTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace a 0-based line range when its Read fingerprint matches."]
+        return [
+            "Replace one 0-based line range when its Read fingerprint matches.",
+            "If earlier edits shifted lines, a cached Read fingerprint can relocate only when the old range content still matches exactly once.",
+        ]
 
     @classmethod
     def signature(cls) -> str:
@@ -1019,6 +1122,7 @@ class ReplaceRangeTool(Tool):
             fingerprint=fingerprint,
             content=str(args[4]),
             cwd=session.cwd,
+            range_fingerprints=session.range_fingerprints,
         )
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1027,42 +1131,174 @@ class ReplaceRangeTool(Tool):
     def display(self) -> str:
         label = f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
         try:
-            original, new_content, _, _, _ = self._preview()
+            original, new_content, _, _ = self._preview()
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
 
     def call(self) -> str:
-        original, new_content, current_fingerprint, start, end = self._preview()
+        original, new_content, resolved, _ = self._preview()
         if new_content == original:
             raise ToolCallError("range replacement produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        return "\n".join(
-            [
-                "<ReplaceRangeToolResult>",
-                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                f"* range: {start}:{end}",
-                f"* fingerprint: {current_fingerprint}",
-                "</ReplaceRangeToolResult>",
-            ]
-        )
+        lines = [
+            "<ReplaceRangeToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+            f"* range: {resolved.start}:{resolved.end}",
+            f"* fingerprint: {resolved.fingerprint}",
+        ]
+        if resolved.relocated_from:
+            old_start, old_end = resolved.relocated_from
+            lines.append(f"* relocated_from: {old_start}:{old_end}")
+        lines.append("</ReplaceRangeToolResult>")
+        return "\n".join(lines)
 
-    def _preview(self) -> tuple[str, str, str, int, int]:
+    def _preview(self) -> tuple[str, str, RangeFingerprintStore.Resolved, list[str]]:
         with open(self.filepath, "r", encoding="utf-8") as f:
             original = f.read()
         lines = original.splitlines(keepends=True)
-        start = min(self.start, len(lines))
-        end = len(lines) if self.end == 0 else min(self.end, len(lines))
-        end = max(end, start)
-        current = "".join(lines[start:end])
-        current_fingerprint = _range_fingerprint(current)
-        if current_fingerprint != self.fingerprint:
-            raise ToolCallError(f"fingerprint mismatch: expected {self.fingerprint}, current {current_fingerprint}")
+        resolved = self.range_fingerprints.resolve(
+            lines,
+            filepath=self.filepath,
+            start=self.start,
+            end=self.end,
+            fingerprint=self.fingerprint,
+        )
+        replacement = self.content.splitlines(keepends=True)
+        new_lines = lines[:resolved.start] + replacement + lines[resolved.end :]
+        return original, "".join(new_lines), resolved, replacement
 
-        new_content = "".join(lines[:start] + self.content.splitlines(keepends=True) + lines[end:])
-        return original, new_content, current_fingerprint, start, end
+
+@final
+@dataclass
+class BatchReplaceRangesTool(Tool):
+    @final
+    @dataclass
+    class Edit:
+        start: int
+        end: int
+        fingerprint: str
+        content: str
+
+    filepath: str = ""
+    edits: list[Edit] = field(default_factory=list)
+    cwd: str = ""
+    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
+
+    @classmethod
+    def name(cls) -> str:
+        return "BatchReplaceRanges"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return [
+            "Replace multiple 0-based line ranges in one file against one snapshot.",
+            "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
+            "Each edit can relocate by cached Read fingerprint only when the old range content still matches exactly once.",
+        ]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "BatchReplaceRanges(filepath, edits_json) -> BatchReplaceRangesToolResult<path, edits>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return [
+            'Example args: ["code.py", "[{\\"start\\":10,\\"end\\":12,\\"fingerprint\\":\\"a1b2c3\\",\\"content\\":\\"new text\\\\n\\"}]"]'
+        ]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 2:
+            raise ToolCallError("requires exactly 2 args: filepath, edits_json")
+        try:
+            raw_edits = json.loads(str(args[1]))
+        except json.JSONDecodeError as error:
+            raise ToolCallError("invalid edits_json: " + str(error))
+        if not isinstance(raw_edits, list) or not raw_edits:
+            raise ToolCallError("edits_json must be a non-empty JSON array")
+        edits = [cls._edit_from_json(raw) for raw in raw_edits]
+        return cls(
+            filepath=session.resolve_path(args[0]),
+            edits=edits,
+            cwd=session.cwd,
+            range_fingerprints=session.range_fingerprints,
+        )
+
+    @classmethod
+    def _edit_from_json(cls, raw: JsonValue) -> Edit:
+        if not isinstance(raw, dict):
+            raise ToolCallError("each edit must be a JSON object")
+        start, end = _parse_line_range(str(raw.get("start", "")), str(raw.get("end", "")))
+        fingerprint = str(raw.get("fingerprint", ""))
+        if not fingerprint:
+            raise ToolCallError("edit fingerprint cannot be empty")
+        content = raw.get("content")
+        if not isinstance(content, str):
+            raise ToolCallError("edit content must be a string")
+        return cls.Edit(start=start, end=end, fingerprint=fingerprint, content=content)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        label = f"BatchReplaceRanges({self.filepath}, edits={len(self.edits)})"
+        try:
+            original, new_content, _ = self._preview()
+        except (OSError, ToolCallError) as error:
+            return label + "\n# preview unavailable: " + str(error)
+        return _make_unified_diff(original, new_content, self.filepath) or label
+
+    def call(self) -> str:
+        original, new_content, resolved_edits = self._preview()
+        if new_content == original:
+            raise ToolCallError("range replacements produced no changes")
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
+
+        lines = [
+            "<BatchReplaceRangesToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+            f"* edits: {len(resolved_edits)}",
+        ]
+        for index, (resolved, _) in enumerate(resolved_edits, start=1):
+            line = f"* range {index}: {resolved.start}:{resolved.end}"
+            if resolved.relocated_from:
+                old_start, old_end = resolved.relocated_from
+                line += f" relocated_from={old_start}:{old_end}"
+            lines.append(line)
+        lines.append("</BatchReplaceRangesToolResult>")
+        return "\n".join(lines)
+
+    def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            original = f.read()
+        lines = original.splitlines(keepends=True)
+        resolved_edits = []
+        for edit in self.edits:
+            resolved = self.range_fingerprints.resolve(
+                lines,
+                filepath=self.filepath,
+                start=edit.start,
+                end=edit.end,
+                fingerprint=edit.fingerprint,
+            )
+            resolved_edits.append((resolved, edit.content.splitlines(keepends=True)))
+        self._ensure_non_overlapping(resolved_edits)
+
+        new_lines = list(lines)
+        for resolved, replacement in sorted(resolved_edits, key=lambda item: item[0].start, reverse=True):
+            new_lines[resolved.start : resolved.end] = replacement
+        return original, "".join(new_lines), resolved_edits
+
+    def _ensure_non_overlapping(self, resolved_edits: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
+        last_end = -1
+        for resolved, _ in sorted(resolved_edits, key=lambda item: (item[0].start, item[0].end)):
+            if resolved.start < last_end:
+                raise ToolCallError("resolved ranges overlap")
+            last_end = max(last_end, resolved.end)
 
 
 @final
@@ -1368,6 +1604,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     SearchTool.name(): SearchTool,
     EditTool.name(): EditTool,
     ReplaceRangeTool.name(): ReplaceRangeTool,
+    BatchReplaceRangesTool.name(): BatchReplaceRangesTool,
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
@@ -1953,6 +2190,7 @@ class AgentStateUpdater:
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
         if goal_changed:
             self.session.current.current_context = []
+            self.session.range_fingerprints.clear()
         self._apply_known(response)
         self._apply_current_context(response)
         self._apply_verification(response)

@@ -63,22 +63,24 @@ def test_search_tool_uses_python_when_rg_is_missing(tmp_path, monkeypatch):
     assert "  > 1: needle" in result
 
 
-def test_search_tool_python_backend_includes_two_context_lines(tmp_path, monkeypatch):
+def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
-    path.write_text("one\ntwo\nthree\nneedle\nfive\nsix\nseven\n", encoding="utf-8")
+    path.write_text("one\ntwo\nthree\nneedle\nfive\nsix\nseven\neight\nnine\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
     result = SearchTool.make(session, ["needle", "sample.txt"]).call()
 
     assert "* sample.txt:4: needle" in result
-    assert "    1: one" not in result
+    assert "    1: one" in result
     assert "    2: two" in result
     assert "    3: three" in result
     assert "  > 4: needle" in result
     assert "    5: five" in result
     assert "    6: six" in result
-    assert "    7: seven" not in result
+    assert "    7: seven" in result
+    assert "    8: eight" in result
+    assert "    9: nine" not in result
 
 
 def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
