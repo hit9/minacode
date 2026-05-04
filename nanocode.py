@@ -39,7 +39,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
 __version__ = "0.1.0"
-MAX_AGENT_STEPS = 50
 
 
 class Error(Exception): ...
@@ -261,6 +260,7 @@ class Session:
     model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
     compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
+    max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -2158,7 +2158,7 @@ class Agent:
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
-        for _ in range(MAX_AGENT_STEPS):
+        for _ in range(self.session.max_agent_steps):
             response = self.step()
             format_error = _json_str(response.get("_format_error"))
             if format_error:
