@@ -55,13 +55,30 @@ def test_replace_range_tool_rejects_ambiguous_cached_relocation(tmp_path):
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    path.write_text("zero\nbeta\nbeta\ngamma\n", encoding="utf-8")
+    path.write_text("zero\nalpha\nbeta\nbeta\ngamma\n", encoding="utf-8")
 
-    tool = ReplaceRangeTool.make(session, ["sample.txt", "0", "1", fingerprint, "BETA\n"])
+    tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
 
     with pytest.raises(ToolCallError, match="cached range matched multiple locations"):
         tool.call()
-    assert path.read_text(encoding="utf-8") == "zero\nbeta\nbeta\ngamma\n"
+    assert path.read_text(encoding="utf-8") == "zero\nalpha\nbeta\nbeta\ngamma\n"
+
+
+def test_replace_range_tool_rejects_full_file_fingerprint_for_partial_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
+
+    tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
+    display = tool.display()
+
+    assert display.startswith("ReplaceRange(")
+    assert "# preview unavailable: fingerprint mismatch" in display
+    assert "--- " not in display
+    with pytest.raises(ToolCallError, match="fingerprint mismatch"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
 def test_replace_range_tool_rejects_fingerprint_mismatch(tmp_path):
@@ -182,5 +199,23 @@ def test_replace_ranges_tool_rejects_overlapping_ranges(tmp_path):
     tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
 
     with pytest.raises(ToolCallError, match="resolved ranges overlap"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_replace_ranges_tool_rejects_full_file_fingerprint_for_partial_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
+    edits = json.dumps([{"start": 1, "end": 2, "fingerprint": fingerprint, "content": "BETA\n"}])
+
+    tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
+    display = tool.display()
+
+    assert display.startswith("BatchReplaceRanges(")
+    assert "# preview unavailable: fingerprint mismatch" in display
+    assert "--- " not in display
+    with pytest.raises(ToolCallError, match="fingerprint mismatch"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
