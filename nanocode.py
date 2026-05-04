@@ -41,7 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 
 class Error(Exception): ...
@@ -1704,7 +1704,7 @@ Core:
 - Follow the plan, but revise it when facts require it.
 
 Tools:
-- Call tools only by emitting JSON in tool_calls. Do not use native tool calls.
+- MUST use JSON tool_calls. Do not use native <tool_call>Tool(args...) syntax.
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
@@ -1729,6 +1729,7 @@ Input:
 - Current_Context: task-local facts that may expire
 - Goal: current objective
 - Plan: ordered plan
+- Agent_Feedback: latest retry/gate warning for you; follow it before continuing
 - Latest_Tool_Call_Results: latest raw tool call results
 - Latest_User_Input: latest user message
 - Tools: available tool specs
@@ -1834,6 +1835,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {verification_state}
 -------- Verification_State End -----------
 
+----------- Agent_Feedback Begin ------
+{agent_feedback}
+-------- Agent_Feedback End -----------
+
 ----------- Latest_Tool_Call_Results Begin ------
 {latest_tool_call_results}
 -------- Latest_Tool_Call_Results End -----------
@@ -1888,7 +1893,7 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
 
-    def user_prompt(self, latest_tool_call_results: str) -> str:
+    def user_prompt(self, latest_tool_call_results: str, agent_feedback: str) -> str:
         current = self.session.current
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
@@ -1898,6 +1903,7 @@ class PromptBuilder:
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
+            agent_feedback=agent_feedback or "(empty)",
             latest_tool_call_results=latest_tool_call_results or "(empty)",
             latest_user_input=current.user_input or "(empty)",
         ).strip()
@@ -2669,6 +2675,7 @@ class ConversationCompactor:
 @final
 class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
+    MAX_CONSECUTIVE_SUMMARY_GATES: ClassVar[int] = 1
 
     def __init__(self, session: Session):
         self.session = session
@@ -2678,6 +2685,7 @@ class Agent:
         self.state_updater = AgentStateUpdater(session, self.tool_runner)
         self.compactor = ConversationCompactor(session, self.model_client)
         self.latest_tool_call_results = ""
+        self.latest_agent_feedback = ""
 
     @property
     def latest_tool_call_events(self) -> list[ToolCallEvent]:
@@ -2687,9 +2695,10 @@ class Agent:
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self, *, consume_latest_tool_results: bool = True) -> str:
-        prompt = self.prompt_builder.user_prompt(self.latest_tool_call_results)
+        prompt = self.prompt_builder.user_prompt(self.latest_tool_call_results, self.latest_agent_feedback)
         if consume_latest_tool_results:
             self.latest_tool_call_results = ""
+            self.latest_agent_feedback = ""
         return prompt
 
     def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
@@ -2710,18 +2719,20 @@ class Agent:
         on_message: MessageCallback | None = None,
     ) -> Json:
         self.latest_tool_call_results = ""
+        self.latest_agent_feedback = ""
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
         consecutive_format_errors = 0
+        consecutive_summary_gates = 0
 
         for _ in range(self.session.max_agent_steps):
             response = self.step()
             format_error = _json_str(response.get("_format_error"))
             if format_error:
                 consecutive_format_errors += 1
-                self.latest_tool_call_results = format_error
+                self.latest_agent_feedback = format_error
                 if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                     self._report_gate(
                         on_message,
@@ -2749,14 +2760,23 @@ class Agent:
             tool_calls = _json_list(response.get("tool_calls"))
             summary_gate = self._format_tool_summary_gate(tool_calls)
             if summary_gate:
-                self.state_updater.latest_report = ""
-                self.latest_tool_call_results = summary_gate
+                consecutive_summary_gates += 1
+                if consecutive_summary_gates <= self.MAX_CONSECUTIVE_SUMMARY_GATES:
+                    self.state_updater.latest_report = ""
+                    self.latest_agent_feedback = summary_gate
+                    self._report_gate(
+                        on_message,
+                        "Retrying: model needs to summarize the latest tool results.",
+                        self._compact_gate_report(summary_gate),
+                    )
+                    continue
                 self._report_gate(
                     on_message,
-                    "Retrying: model needs to summarize the latest tool results.",
-                    self._compact_gate_report(summary_gate),
+                    "Continuing: model did not summarize tool results after one retry.",
+                    "Tool_Summary_Gate: allowing continuation after one missing-summary retry.",
                 )
-                continue
+            else:
+                consecutive_summary_gates = 0
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
@@ -2777,7 +2797,7 @@ class Agent:
                 return response
             if self.session.current.verification.status == VerificationStatus.REQUIRED:
                 self.session.current.goal_reached = False
-                self.latest_tool_call_results = self._format_verification_gate()
+                self.latest_agent_feedback = self._format_verification_gate()
                 self._report_gate(
                     on_message,
                     "Retrying: verification is required before completion.",
@@ -2785,7 +2805,7 @@ class Agent:
                 )
                 continue
             if not self.session.current.goal_reached:
-                self.latest_tool_call_results = self._format_continuation_hint()
+                self.latest_agent_feedback = self._format_continuation_hint()
                 self._report_gate(
                     on_message,
                     "Continuing: goal is not complete yet.",

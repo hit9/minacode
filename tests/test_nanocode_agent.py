@@ -225,7 +225,7 @@ def test_agent_request_does_not_extract_json_after_arbitrary_prefix(tmp_path):
     assert "expected one JSON object" in response["_format_error"]
 
 
-def test_agent_request_guides_native_tool_call_syntax_back_to_json(tmp_path):
+def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
@@ -607,6 +607,40 @@ def test_agent_run_requires_latest_tool_summaries_before_continuing(tmp_path):
     assert "Read sample.txt and found alpha." in agent.latest_tool_call_events[0].summary
 
 
+def test_agent_run_allows_missing_tool_summary_after_one_retry(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "tool_calls": [
+                        {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}
+                    ]
+                },
+                {"goal_reached": True, "message_to_user": "premature", "tool_calls": None},
+                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("read sample", on_message=messages.append)
+
+    assert response["message_to_user"] == "done"
+    assert "premature" not in messages
+    assert "Retrying: model needs to summarize the latest tool results." in messages
+    assert "Continuing: model did not summarize tool results after one retry." in messages
+    assert agent.latest_tool_call_events[0].summary == ""
+
+
 def test_agent_summary_gate_allows_failure_summary_without_key_evidence(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -822,6 +856,8 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
 
     assert response["message_to_user"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
+    assert "Agent_Feedback Begin" in agent.model_client.user_prompts[1]
+    assert "Latest_Tool_Call_Results Begin ------\n(empty)" in agent.model_client.user_prompts[1]
     assert messages == ["Retrying: model returned invalid output.", "done"]
 
 
@@ -877,6 +913,8 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
 
     assert "Never answer outside JSON" in prompt
     assert "message_to_user" in prompt
+    assert "MUST use JSON tool_calls" in prompt
+    assert "Agent_Feedback" in prompt
     assert "Prefer Search before Read" in prompt
     assert "Read returns at most 1000 lines" in prompt
     assert "use result_file logs only as a fallback when needed" in prompt
