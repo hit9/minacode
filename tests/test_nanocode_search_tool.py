@@ -81,11 +81,76 @@ def test_search_tool_python_backend_includes_two_context_lines(tmp_path, monkeyp
     assert "    7: seven" not in result
 
 
+def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
+    path = tmp_path / "sample.py"
+    path.write_text(
+        "class One:\n"
+        "    def __init__(self):\n"
+        "        pass\n"
+        "class Two:\n"
+        "    def __init__(self, name):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, [r"re:def __init__\([^)]*,[^)]*\)", "sample.py"]).call()
+
+    assert "* engine: python" in result
+    assert "* sample.py:5:     def __init__(self, name):" in result
+    assert "* sample.py:2:     def __init__(self):" not in result
+
+
+def test_search_tool_supports_context_option_without_glob(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("one\ntwo\nthree\nneedle\nfive\nsix\nseven\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, ["needle", "sample.txt", "context=3"]).call()
+
+    assert "    1: one" in result
+    assert "    2: two" in result
+    assert "    3: three" in result
+    assert "  > 4: needle" in result
+    assert "    5: five" in result
+    assert "    6: six" in result
+    assert "    7: seven" in result
+
+
+def test_search_tool_supports_glob_and_context_option(tmp_path, monkeypatch):
+    (tmp_path / "keep.txt").write_text("before\nneedle\nafter\n", encoding="utf-8")
+    (tmp_path / "skip.py").write_text("before\nneedle\nafter\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, ["needle", ".", "*.txt", "context=1"]).call()
+
+    assert "* keep.txt:2: needle" in result
+    assert "  > 2: needle" in result
+    assert "skip.py" not in result
+
+
 def test_search_tool_rejects_empty_pattern(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="pattern cannot be empty"):
         SearchTool.make(session, ["", "."])
+
+
+def test_search_tool_rejects_invalid_regex(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match="invalid regex"):
+        SearchTool.make(session, ["re:[", "."])
+
+
+def test_search_tool_rejects_invalid_context(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match="context must be an integer"):
+        SearchTool.make(session, ["needle", ".", "context=bad"])
 
 
 def test_search_tool_rejects_missing_target(tmp_path):

@@ -12,6 +12,7 @@ import itertools
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -614,6 +615,7 @@ class SearchTool(Tool):
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 2
+    MAX_CONTEXT_LINES: ClassVar[int] = 20
 
     @dataclass(frozen=True)
     class Match:
@@ -624,8 +626,10 @@ class SearchTool(Tool):
 
     pattern: str = ""
     patterns: list[str] = field(default_factory=list)
+    regex: bool = False
     target_path: str = ""
     glob_pattern: str = ""
+    context_lines: int = CONTEXT_LINES
     cwd: str = ""
     gitignore_patterns: list[str] = field(default_factory=list)
 
@@ -636,42 +640,77 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Search files or directories by fixed text before Read.",
-            "Each match includes nearby context lines.",
-            "Use A|B|C for literal OR search; regex is not supported.",
+            "Search files or directories before Read; default is fixed text.",
+            "Prefix pattern with re: for regex search.",
+            "Use A|B|C for literal OR search in fixed mode.",
+            "Optional context=N sets nearby context lines.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern, path[, glob_pattern]) -> SearchToolResult<matches>"
+        return "Search(pattern, path[, glob_pattern][, context=N]) -> SearchToolResult<matches>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
             'Example args: ["class Foo", "code.py"]',
             'Example args: ["TODO", ".", "*.py"]',
-            'Example args: ["class Bar|def main", "nanocode.py"]',
+            'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
+            'Example args: ["re:def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in (2, 3):
-            raise ToolCallError("requires 2 or 3 args: pattern, path[, glob_pattern]")
-        pattern = str(args[0])
+        if len(args) not in (2, 3, 4):
+            raise ToolCallError("requires 2 to 4 args: pattern, path[, glob_pattern][, context=N]")
+        raw_pattern = str(args[0])
+        if not raw_pattern:
+            raise ToolCallError("pattern cannot be empty")
+        regex = raw_pattern.startswith("re:")
+        pattern = raw_pattern[3:] if regex else raw_pattern
         if not pattern:
             raise ToolCallError("pattern cannot be empty")
-        patterns = [part for part in pattern.split("|") if part]
+        glob_pattern = ""
+        context_lines = cls.CONTEXT_LINES
+        for raw_option in args[2:]:
+            option = str(raw_option)
+            if option.startswith("context="):
+                try:
+                    context_lines = cls._parse_context_arg(option)
+                except ValueError:
+                    raise ToolCallError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
+                continue
+            if glob_pattern:
+                raise ToolCallError("unexpected search option: " + option)
+            glob_pattern = option
+        patterns = [pattern] if regex else [part for part in pattern.split("|") if part]
         if not patterns:
             raise ToolCallError("no valid search patterns")
+        if regex:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise ToolCallError("invalid regex: " + str(error))
         return cls(
-            pattern=pattern,
+            pattern=raw_pattern,
             patterns=patterns,
+            regex=regex,
             target_path=session.resolve_path(args[1]),
-            glob_pattern=str(args[2]) if len(args) == 3 else "",
+            glob_pattern=glob_pattern,
+            context_lines=context_lines,
             cwd=session.cwd,
             gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
         )
+
+    @classmethod
+    def _parse_context_arg(cls, value: str) -> int:
+        if not value.startswith("context="):
+            raise ValueError
+        context = int(value[len("context=") :])
+        if context < 0 or context > cls.MAX_CONTEXT_LINES:
+            raise ValueError
+        return context
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.target_path)
@@ -756,8 +795,8 @@ class SearchTool(Tool):
     def _read_match_context(self, path: str, line_number: int) -> list[tuple[int, str]]:
         if line_number <= 0:
             return []
-        start = max(1, line_number - self.CONTEXT_LINES)
-        end = line_number + self.CONTEXT_LINES
+        start = max(1, line_number - self.context_lines)
+        end = line_number + self.context_lines
         context = []
         try:
             if os.path.getsize(path) > self.MAX_FILE_BYTES:
@@ -789,7 +828,9 @@ class SearchTool(Tool):
         return "\n".join(lines)
 
     def _call_rg(self, rg: str) -> str:
-        cmd = [rg, "--json", "--fixed-strings", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        if not self.regex:
+            cmd.append("--fixed-strings")
         if self.glob_pattern:
             cmd.extend(["--glob", self.glob_pattern])
         for pattern in self.patterns:
@@ -827,7 +868,8 @@ class SearchTool(Tool):
             if len(matches) >= self.MAX_MATCHES:
                 truncated = True
                 break
-        return self._format_result("rg", matches, truncated)
+        engine = "rg-regex" if self.regex else "rg"
+        return self._format_result(engine, matches, truncated)
 
     def _call_python(self) -> str:
         matches = []
@@ -839,7 +881,7 @@ class SearchTool(Tool):
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     for lineno, line in enumerate(f, start=1):
                         text = line.rstrip("\n")
-                        if not any(pattern in text for pattern in self.patterns):
+                        if not self._line_matches(text):
                             continue
                         matches.append(self._make_match(path, lineno, text))
                         if len(matches) >= self.MAX_MATCHES:
@@ -849,6 +891,14 @@ class SearchTool(Tool):
                 continue
 
         return self._format_result("python", matches, truncated)
+
+    def _line_matches(self, text: str) -> bool:
+        if not self.regex:
+            return any(pattern in text for pattern in self.patterns)
+        try:
+            return re.search(self.patterns[0], text) is not None
+        except re.error as error:
+            raise ToolCallError("invalid regex: " + str(error))
 
     def call(self) -> str:
         if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
