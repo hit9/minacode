@@ -58,11 +58,11 @@ Ask a source-aware question about nanocode itself:
 
 ## Safety
 
-nanocode does not provide sandbox protection. It can run shell commands and edit files in the environment where you start it.
+nanocode does NOT provide sandbox protection. It can run shell commands and edit files in the environment where you start it.
 
 If you do not fully trust the model, tools, prompts, or workspace, run nanocode inside your own sandbox, container, VM, or other isolated environment.
 
-Use at your own risk.
+USE AT YOUR OWN RISK.
 
 ## Tools
 
