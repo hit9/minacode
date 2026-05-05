@@ -1821,7 +1821,10 @@ Core:
 
 Tools:
 - MUST use tool actions. Do not use native <tool_call>Tool(args...) syntax.
-- Use multiple tool calls in one turn when they are independent.
+- Keep each tool batch small: never more than 5 tool actions unless the user explicitly asked for broad parallel work.
+- Use multiple tool calls in one turn only when they are independent and do not require seeing another tool's result first.
+- If you need discovery (ListDir/Search/Read/LineCount), do only the necessary discovery batch, then stop and wait for results before editing, patching, testing, or cleanup.
+- Do not queue speculative follow-up tools whose arguments depend on unread files, unknown search results, or unverified command output.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
 - Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
