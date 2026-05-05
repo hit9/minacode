@@ -2055,6 +2055,7 @@ class ModelClient:
         }
         if self.session.stream:
             payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
         extra_params = self._reasoning_params()
         payload.update(extra_params)
         self._write_debug_prompt(activity=activity, messages=messages)
@@ -2072,8 +2073,8 @@ class ModelClient:
             try:
                 with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
                     if self.session.stream:
-                        content = self._read_streaming_content(response, on_action=on_action)
-                        result: Json = {}
+                        content, usage = self._read_streaming_content(response, on_action=on_action)
+                        result: Json = {"usage": usage}
                     else:
                         body = response.read().decode("utf-8")
             finally:
@@ -2099,8 +2100,9 @@ class ModelClient:
             return self._invalid_model_response(self._format_missing_message_content(result))
         return self._parse_model_content(content)
 
-    def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> str:
+    def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> tuple[str, Json]:
         parts: list[str] = []
+        usage: Json = {}
         buffer = ""
         frame_number = 0
         for raw_line in response:
@@ -2114,7 +2116,11 @@ class ModelClient:
                 event = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            choices = _json_list(_json_dict(event).get("choices"))
+            event_data = _json_dict(event)
+            event_usage = _json_dict(event_data.get("usage"))
+            if event_usage:
+                usage = event_usage
+            choices = _json_list(event_data.get("choices"))
             if not choices:
                 continue
             delta = _json_dict(_json_dict(choices[0]).get("delta"))
@@ -2130,7 +2136,7 @@ class ModelClient:
                     action, _error = self._parse_action_frame(frame, frame_number)
                     if action is not None:
                         on_action(action)
-        return "".join(parts)
+        return "".join(parts), usage
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
         if not self.session.debug:

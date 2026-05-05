@@ -121,6 +121,11 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
             ]
             for chunk in chunks:
                 yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield (
+                "data: "
+                + json.dumps({"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}})
+                + "\n"
+            ).encode("utf-8")
             yield b"data: [DONE]\n"
 
     def fake_urlopen(request, timeout):
@@ -134,11 +139,16 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     response = Agent(session).request("system", "user", on_action=actions.append)
 
     assert captured["payload"]["stream"] is True
+    assert captured["payload"]["stream_options"] == {"include_usage": True}
     assert response["actions"] == [
         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
         {"type": "message", "text": "done"},
     ]
     assert actions == response["actions"]
+    assert session.last_prompt_tokens == 2
+    assert session.last_completion_tokens == 3
+    assert session.last_total_tokens == 5
+    assert session.session_total_tokens == 5
 
 
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
