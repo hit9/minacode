@@ -351,14 +351,23 @@ class RangeFingerprintStore:
         if current_fingerprint == fingerprint:
             return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
 
-        matches = self._find_matches(lines, filepath=filepath, start=start, end=end, fingerprint=fingerprint)
+        for content in self._candidate_contents(
+            filepath=filepath,
+            start=resolved_start,
+            end=resolved_end,
+            fingerprint=fingerprint,
+        ):
+            if _range_fingerprint(content) == current_fingerprint:
+                return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
+
+        matches = self._find_matches(lines, filepath=filepath, start=resolved_start, end=resolved_end, fingerprint=fingerprint)
         message = (
             f"fingerprint mismatch for range {start}:{end}: expected {fingerprint}, current {current_fingerprint}; "
             f"call Read(filepath, {start}, {end}) and reuse that range fingerprint"
         )
         other_ranges = self._ranges_for_fingerprint(filepath=filepath, fingerprint=fingerprint)
         if other_ranges:
-            message += "; this fingerprint was cached for exact range(s): " + ", ".join(f"{range_start}:{range_end}" for range_start, range_end in other_ranges)
+            message += "; this fingerprint was cached for range(s): " + ", ".join(f"{range_start}:{range_end}" for range_start, range_end in other_ranges)
         if not matches:
             raise ToolCallError(message)
         if len(matches) > 1:
@@ -367,18 +376,16 @@ class RangeFingerprintStore:
         return self.Resolved(
             start=relocated_start,
             end=relocated_end,
-            fingerprint=fingerprint,
+            fingerprint=_range_fingerprint("".join(lines[relocated_start:relocated_end])),
             relocated_from=(resolved_start, resolved_end),
         )
 
     def _find_matches(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> list[tuple[int, int]]:
-        filepath = os.path.realpath(filepath)
-        contents = []
-        for entry in self._entries:
-            if entry.fingerprint != fingerprint or entry.filepath != filepath or entry.start != start or entry.end != end or not entry.content:
-                continue
-            if entry.content not in contents:
-                contents.append(entry.content)
+        contents = [
+            content
+            for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint)
+            if content
+        ]
 
         matches = []
         for content in contents:
@@ -392,6 +399,25 @@ class RangeFingerprintStore:
                     if len(matches) > 1:
                         return matches
         return matches
+
+    def _candidate_contents(self, *, filepath: str, start: int, end: int, fingerprint: str) -> list[str]:
+        filepath = os.path.realpath(filepath)
+        contents: list[str] = []
+        for entry in self._entries:
+            if entry.fingerprint != fingerprint or entry.filepath != filepath:
+                continue
+            if start == end:
+                if entry.start == start and entry.end == end and entry.content == "":
+                    contents.append("")
+                continue
+            entry_lines = entry.content.splitlines(keepends=True)
+            cached_end = entry.start + len(entry_lines)
+            if start < entry.start or end > cached_end:
+                continue
+            candidate = "".join(entry_lines[start - entry.start : end - entry.start])
+            if candidate not in contents:
+                contents.append(candidate)
+        return contents
 
     def _ranges_for_fingerprint(self, *, filepath: str, fingerprint: str) -> list[tuple[int, int]]:
         filepath = os.path.realpath(filepath)
@@ -610,7 +636,7 @@ class ReadTool(Tool):
             "Optional range is 0-based [start,end); end=0 means EOF.",
             "Returns at most 1000 lines; truncated results include total lines and next-step guidance.",
             "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
-            "For ReplaceRange, the fingerprint is valid only for this exact filepath/start/end; read the exact edit range immediately before replacing.",
+            "For ReplaceRange, non-empty subranges may use a wider cached Read fingerprint that covers them; empty insert ranges require an exact empty-range Read.",
         ]
 
     @classmethod
@@ -1212,8 +1238,8 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based line range when its fingerprint comes from Read(filepath, exact same start, exact same end).",
-            "Never use a wider Read fingerprint for a narrower edit; if mismatch happens, Read the exact target range and retry once.",
+            "Replace one 0-based line range when its fingerprint comes from Read(filepath, ...).",
+            "If a wider cached Read range covers this target range, the tool may slice and validate the narrower range automatically; otherwise Read the exact target range and retry once.",
             "If earlier edits shifted lines, a cached Read fingerprint for the same original range can relocate only when old content still matches exactly once.",
         ]
 
@@ -1321,7 +1347,7 @@ class BatchReplaceRangesTool(Tool):
         return [
             "Replace multiple 0-based line ranges in one file against one snapshot.",
             "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
-            "Each edit fingerprint must come from Read(filepath, exact same start, exact same end); never reuse a wider Read fingerprint for a narrower edit.",
+            "Each edit fingerprint must come from Read(filepath, ...); if a wider cached range covers the target range, it may be sliced and validated automatically.",
             "Same-range cached fingerprints can relocate shifted old content.",
         ]
 
@@ -1472,7 +1498,7 @@ class ApplyPatchTool(Tool):
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 original = f.read()
-            new_content, _ = self._apply_unified_diff(original, self.unified_diff)
+            new_content, _ = self._apply_unified_diff(original, self._normalized_unified_diff())
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
@@ -1480,7 +1506,7 @@ class ApplyPatchTool(Tool):
     def call(self) -> str:
         with open(self.filepath, "r", encoding="utf-8") as f:
             original = f.read()
-        new_content, hunks = self._apply_unified_diff(original, self.unified_diff)
+        new_content, hunks = self._apply_unified_diff(original, self._normalized_unified_diff())
         if new_content == original:
             raise ToolCallError("patch produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
@@ -1494,6 +1520,58 @@ class ApplyPatchTool(Tool):
                 "</ApplyPatchToolResult>",
             ]
         )
+
+    def _normalized_unified_diff(self) -> str:
+        lines = self.unified_diff.splitlines(keepends=True)
+        begin_index = next((index for index, line in enumerate(lines) if line.strip()), -1)
+        if begin_index < 0 or lines[begin_index].strip() != "*** Begin Patch":
+            return self.unified_diff
+        return self._codex_update_patch_to_unified_diff(lines, begin_index)
+
+    def _codex_update_patch_to_unified_diff(self, lines: list[str], begin_index: int) -> str:
+        update_seen = False
+        end_seen = False
+        hunk_lines: list[str] = []
+        for line in lines[begin_index + 1 :]:
+            stripped = line.strip()
+            if stripped == "*** End Patch":
+                end_seen = True
+                break
+            if stripped.startswith("*** Update File: "):
+                if update_seen:
+                    raise ToolCallError("ApplyPatch supports one Update File per call")
+                self._validate_codex_patch_path(stripped[len("*** Update File: ") :].strip())
+                update_seen = True
+                continue
+            if stripped.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
+                raise ToolCallError("ApplyPatch supports only Update File patches")
+            if stripped == "*** End of File":
+                continue
+            if not update_seen:
+                if stripped:
+                    raise ToolCallError("invalid ApplyPatch wrapper")
+                continue
+            hunk_lines.append(self._normalize_codex_hunk_header(line))
+        if not update_seen:
+            raise ToolCallError("ApplyPatch wrapper missing Update File")
+        if not end_seen:
+            raise ToolCallError("ApplyPatch wrapper missing End Patch")
+        return "".join(hunk_lines)
+
+    def _validate_codex_patch_path(self, patch_path: str) -> None:
+        if not patch_path:
+            raise ToolCallError("ApplyPatch wrapper missing Update File path")
+        candidate = patch_path if os.path.isabs(patch_path) else os.path.join(self.cwd, patch_path)
+        if os.path.realpath(candidate) != os.path.realpath(self.filepath):
+            raise ToolCallError("patch target does not match filepath: " + patch_path)
+
+    @staticmethod
+    def _normalize_codex_hunk_header(line: str) -> str:
+        body = line.rstrip("\r\n")
+        newline = line[len(body) :]
+        if body.startswith("@@ ") and not body.startswith("@@ -"):
+            return "@@" + newline
+        return line
 
     @staticmethod
     def _apply_unified_diff(content: str, unified_diff: str) -> tuple[str, int]:
@@ -1828,7 +1906,7 @@ Tools:
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
 - Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
-- ReplaceRange/BatchReplaceRanges fingerprints are valid only for the exact filepath/start/end returned by Read. Never use a wider Read fingerprint for a narrower edit. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
+- ReplaceRange/BatchReplaceRanges may use a wider cached Read fingerprint for a non-empty subrange that it covers. Empty insert ranges require an exact empty-range Read. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
 - Summarize every latest tool result with tool_summary actions; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.

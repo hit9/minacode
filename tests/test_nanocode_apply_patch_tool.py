@@ -74,6 +74,53 @@ def test_apply_patch_tool_applies_bare_fuzzy_hunk_and_previews_diff(tmp_path):
     assert "* hunks: 1" in result
 
 
+def test_apply_patch_tool_accepts_codex_style_update_file_patch(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: sample.txt\n"
+        "@@ around beta\n"
+        " alpha\n"
+        "-beta\n"
+        "+BETA\n"
+        " gamma\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["sample.txt", patch])
+    display = tool.display()
+    result = tool.call()
+
+    assert "# preview unavailable" not in display
+    assert "-beta\n" in display
+    assert "+BETA\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+    assert "* hunks: 1" in result
+
+
+def test_apply_patch_tool_rejects_codex_style_patch_for_different_file(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: other.txt\n"
+        "@@\n"
+        "-beta\n"
+        "+BETA\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["sample.txt", patch])
+
+    with pytest.raises(ToolCallError, match="patch target does not match filepath: other.txt"):
+        tool.call()
+    assert "patch target does not match filepath: other.txt" in tool.display()
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
 def test_apply_patch_tool_rejects_ambiguous_context_when_hunk_line_number_is_stale(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\nalpha\nbeta\n", encoding="utf-8")

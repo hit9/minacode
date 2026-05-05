@@ -75,7 +75,7 @@ def test_replace_range_tool_rejects_ambiguous_cached_relocation(tmp_path):
     assert path.read_text(encoding="utf-8") == "zero\nalpha\nbeta\nbeta\ngamma\n"
 
 
-def test_replace_range_tool_rejects_full_file_fingerprint_for_partial_range(tmp_path):
+def test_replace_range_tool_accepts_full_file_fingerprint_for_partial_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -83,14 +83,14 @@ def test_replace_range_tool_rejects_full_file_fingerprint_for_partial_range(tmp_
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
     display = tool.display()
+    result = tool.call()
 
-    assert display.startswith("ReplaceRange(")
-    assert "# preview unavailable: fingerprint mismatch" in display
-    assert "call Read(filepath, 1, 2)" in display
-    assert "--- " not in display
-    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 2\)"):
-        tool.call()
-    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+    assert display.startswith("--- ")
+    assert "# preview unavailable" not in display
+    assert "-beta\n" in display
+    assert "+BETA\n" in display
+    assert "* range: 1:2" in result
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
 def test_replace_range_tool_reports_fingerprint_cached_range(tmp_path):
@@ -98,12 +98,13 @@ def test_replace_range_tool_reports_fingerprint_cached_range(tmp_path):
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0", "3"]).call())
+    path.write_text("alpha\nBETA\ngamma\n", encoding="utf-8")
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
 
     display = tool.display()
-    assert "this fingerprint was cached for exact range(s): 0:3" in display
-    with pytest.raises(ToolCallError, match=r"cached for exact range\(s\): 0:3"):
+    assert "this fingerprint was cached for range(s): 0:3" in display
+    with pytest.raises(ToolCallError, match=r"cached for range\(s\): 0:3"):
         tool.call()
 
 
@@ -168,6 +169,21 @@ def test_replace_range_tool_inserts_when_start_equals_end(tmp_path):
     ReplaceRangeTool.make(session, ["sample.txt", "1", "1", fingerprint, "beta\n"]).call()
 
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_replace_range_tool_rejects_wide_fingerprint_for_empty_insert_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
+    path.write_text("zero\nalpha\nbeta\ngamma\n", encoding="utf-8")
+
+    tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "1", fingerprint, "INSERT\n"])
+
+    assert "# preview unavailable: fingerprint mismatch" in tool.display()
+    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 1\)"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "zero\nalpha\nbeta\ngamma\n"
 
 
 def test_replace_range_tool_rejects_no_change(tmp_path):
@@ -242,7 +258,7 @@ def test_replace_ranges_tool_rejects_overlapping_ranges(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
-def test_replace_ranges_tool_rejects_full_file_fingerprint_for_partial_range(tmp_path):
+def test_replace_ranges_tool_accepts_full_file_fingerprint_for_partial_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -251,11 +267,11 @@ def test_replace_ranges_tool_rejects_full_file_fingerprint_for_partial_range(tmp
 
     tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
     display = tool.display()
+    result = tool.call()
 
-    assert display.startswith("BatchReplaceRanges(")
-    assert "# preview unavailable: fingerprint mismatch" in display
-    assert "call Read(filepath, 1, 2)" in display
-    assert "--- " not in display
-    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 2\)"):
-        tool.call()
-    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+    assert display.startswith("--- ")
+    assert "# preview unavailable" not in display
+    assert "-beta\n" in display
+    assert "+BETA\n" in display
+    assert "* edits: 1" in result
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
