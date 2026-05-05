@@ -851,11 +851,12 @@ class SearchTool(Tool):
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern, path[, option...]) -> SearchToolResult<matches>; option is context=N|N (0..30) or glob_pattern"
+        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; option is context=N|N (0..30) or glob_pattern"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
+            'Example args: ["TODO"]',
             'Example args: ["class Foo", "code.py"]',
             'Example args: ["TODO", ".", "*.py"]',
             'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
@@ -865,8 +866,8 @@ class SearchTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in (2, 3, 4):
-            raise ToolCallError("requires 2 to 4 args: pattern, path[, glob_pattern][, context=N]")
+        if len(args) not in (1, 2, 3, 4):
+            raise ToolCallError("requires 1 to 4 args: pattern[, path][, glob_pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallError("pattern cannot be empty")
@@ -876,6 +877,9 @@ class SearchTool(Tool):
             raise ToolCallError("pattern cannot be empty")
         if regex and "\n" in pattern:
             raise ToolCallError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
+        target_path_arg = str(args[1]) if len(args) >= 2 else "."
+        if not target_path_arg:
+            target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
         for raw_option in args[2:]:
@@ -905,7 +909,7 @@ class SearchTool(Tool):
             pattern=raw_pattern,
             patterns=patterns,
             regex=regex,
-            target_path=session.resolve_path(args[1]),
+            target_path=session.resolve_path(target_path_arg),
             glob_pattern=glob_pattern,
             context_lines=context_lines,
             cwd=session.cwd,

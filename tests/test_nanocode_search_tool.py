@@ -166,11 +166,29 @@ def test_search_tool_accepts_named_glob_option(tmp_path, monkeypatch):
     assert "skip.txt" not in result
 
 
+def test_search_tool_defaults_path_to_cwd_when_omitted(tmp_path):
+    (tmp_path / "sample.txt").write_text("needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["needle"])
+
+    assert tool.target_path == str(tmp_path)
+
+
 def test_search_tool_rejects_empty_pattern(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="pattern cannot be empty"):
         SearchTool.make(session, ["", "."])
+
+
+def test_search_tool_treats_empty_path_as_cwd(tmp_path):
+    (tmp_path / "sample.txt").write_text("needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["needle", ""])
+
+    assert tool.target_path == str(tmp_path)
 
 
 def test_search_tool_rejects_invalid_regex(tmp_path):
