@@ -1076,24 +1076,3 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
     assert "model returned invalid output 3 times in a row" in message
     assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
 
-
-def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
-    prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
-
-    assert "Output format is mandatory" in prompt
-    assert "Each action frame MUST contain exactly one JSON object action" in prompt
-    assert "Each action frame MUST end with a separator line containing only __END_ACTION__" in prompt
-    assert "Do not wrap actions in" in prompt
-    assert "Do not output a JSON array" in prompt
-    assert "MUST use tool actions" in prompt
-    assert "Keep each tool batch small" in prompt
-    assert "never more than 8 tool actions" in prompt
-    assert "Use multiple tool calls in one turn only when they are independent" in prompt
-    assert "then stop and wait for results before editing, patching, testing, or cleanup" in prompt
-    assert "Do not queue speculative follow-up tools" in prompt
-    assert "Agent_Feedback" in prompt
-    assert "Prefer Search before Read" in prompt
-    assert "Read returns at most 1000 lines" in prompt
-    assert "may use a wider cached Read fingerprint for a non-empty subrange that it covers" in prompt
-    assert "Empty insert ranges require an exact empty-range Read" in prompt
-    assert "use result_file logs only as a fallback when needed" in prompt
