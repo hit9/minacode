@@ -85,7 +85,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12, stream=False)
 
     response = Agent(session).request("system", "user")
 
@@ -101,6 +101,119 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
+
+
+def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            chunks = [
+                '{"type":"tool","name":"Read",',
+                '"intention":"read sample","args":["sample.txt"]}__END_ACTION__',
+                '{"type":"message","text":"done"}__END_ACTION__',
+            ]
+            for chunk in chunks:
+                yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    actions = []
+
+    response = Agent(session).request("system", "user", on_action=actions.append)
+
+    assert captured["payload"]["stream"] is True
+    assert response["actions"] == [
+        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
+        {"type": "message", "text": "done"},
+    ]
+    assert actions == response["actions"]
+
+
+def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    captured_payloads = []
+    responses = [
+        [
+            '{"type":"tool","name":"Read",',
+            '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
+        ],
+        ['{"type":"message","text":"done"}__END_ACTION__'],
+    ]
+
+    class FakeResponse:
+        def __init__(self, chunks):
+            self.chunks = chunks
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            for chunk in self.chunks:
+                yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(request, timeout):
+        captured_payloads.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    messages = []
+
+    response = Agent(session).run("read sample", on_message=messages.append)
+
+    assert response["actions"] == [{"type": "message", "text": "done"}]
+    assert len(captured_payloads) == 2
+    assert [payload["stream"] for payload in captured_payloads] == [True, True]
+    assert messages[0] == "Queued: Read sample.txt:0-1 - read sample"
+    assert any(message.startswith("Tool Calls") for message in messages[1:])
+    assert messages[-1] == "done"
+
+
+def test_agent_stream_preview_summarizes_long_tool_arguments(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    bash_preview = agent._format_stream_action_preview(
+        {
+            "type": "tool",
+            "name": "Bash",
+            "intention": "Create a test file for fingerprint experiments.",
+            "args": ["cat <<EOF > test_fingerprint.txt\nLine 1: Alpha\nLine 2: Beta\nEOF"],
+        }
+    )
+    replace_preview = agent._format_stream_action_preview(
+        {
+            "type": "tool",
+            "name": "ReplaceRange",
+            "intention": "Test a valid ReplaceRange to ensure baseline works.",
+            "args": [
+                "test_fingerprint.txt",
+                "1",
+                "4",
+                "5743477810356510368",
+                "Line 2: Beta Updated\nLine 3: Gamma Updated\nLine 4: Delta Updated",
+            ],
+        }
+    )
+
+    assert bash_preview == "Queued: Bash - Create a test file for fingerprint experiments."
+    assert replace_preview == "Queued: ReplaceRange test_fingerprint.txt:1-4 - Test a valid ReplaceRange to ensure baseline works."
+
 
 def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
     captured = {}
@@ -126,6 +239,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
         api_key="key",
         model="model",
         reasoning_effort="high",
+        stream=False,
     )
 
     Agent(session).request("system", "user")
@@ -153,6 +267,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
         model="model",
         model_timeout=12,
         debug=True,
+        stream=False,
     )
 
     response = Agent(session).request("system prompt", "user prompt")
@@ -187,7 +302,7 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")
 
@@ -258,7 +373,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")
 
@@ -292,7 +407,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")
 

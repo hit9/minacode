@@ -428,6 +428,7 @@ class Session:
     temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
     reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
     reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
+    stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
     model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
     compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
@@ -547,6 +548,7 @@ ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
 MessageCallback: TypeAlias = Callable[[str], None]
+ActionCallback: TypeAlias = Callable[[Json], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
@@ -2034,7 +2036,7 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
 
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
         if not self.session.api_url:
             raise LLMError("NANOCODE_API_URL is required")
         if not self.session.api_key:
@@ -2051,6 +2053,8 @@ class ModelClient:
             "messages": messages,
             "temperature": self.session.temperature,
         }
+        if self.session.stream:
+            payload["stream"] = True
         extra_params = self._reasoning_params()
         payload.update(extra_params)
         self._write_debug_prompt(activity=activity, messages=messages)
@@ -2067,7 +2071,11 @@ class ModelClient:
             self.session.current_model_call_started_at = time.monotonic()
             try:
                 with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
-                    body = response.read().decode("utf-8")
+                    if self.session.stream:
+                        content = self._read_streaming_content(response, on_action=on_action)
+                        result: Json = {}
+                    else:
+                        body = response.read().decode("utf-8")
             finally:
                 self.session.current_model_call_started_at = 0.0
         except socket.timeout:
@@ -2078,16 +2086,51 @@ class ModelClient:
         except Exception as error:
             raise LLMError(str(error))
 
-        try:
-            result = json.loads(body)
-        except json.JSONDecodeError:
-            raise LLMError("API response is not JSON: " + _shorten(body))
+        if not self.session.stream:
+            try:
+                result = json.loads(body)
+            except json.JSONDecodeError:
+                raise LLMError("API response is not JSON: " + _shorten(body))
 
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None))
-        content = self._message_content(result)
+        if not self.session.stream:
+            content = self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
         return self._parse_model_content(content)
+
+    def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> str:
+        parts: list[str] = []
+        buffer = ""
+        frame_number = 0
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line or line.startswith(":") or not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if data == "[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = _json_list(_json_dict(event).get("choices"))
+            if not choices:
+                continue
+            delta = _json_dict(_json_dict(choices[0]).get("delta"))
+            content = delta.get("content")
+            if not isinstance(content, str):
+                continue
+            parts.append(content)
+            if on_action is not None:
+                buffer += content
+                frames, buffer = self._completed_action_frames(buffer)
+                for frame in frames:
+                    frame_number += 1
+                    action, _error = self._parse_action_frame(frame, frame_number)
+                    if action is not None:
+                        on_action(action)
+        return "".join(parts)
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
         if not self.session.debug:
@@ -2122,21 +2165,12 @@ class ModelClient:
         actions: list[Json] = []
         frame_errors: list[str] = []
         for frame_number, frame in enumerate(self._action_frames(text), start=1):
-            frame = frame.strip()
-            if not frame:
+            action, error = self._parse_action_frame(frame, frame_number)
+            if action is not None:
+                actions.append(action)
                 continue
-            try:
-                value = json_repair.loads(frame)
-            except Exception as error:
-                frame_errors.append("frame " + str(frame_number) + ": " + str(error))
-                continue
-            if not isinstance(value, dict):
-                frame_errors.append("frame " + str(frame_number) + ": expected JSON object action")
-                continue
-            if not _json_str(value.get("type")):
-                frame_errors.append("frame " + str(frame_number) + ": action missing type")
-                continue
-            actions.append(value)
+            if error:
+                frame_errors.append(error)
         if not actions:
             reason = "expected at least one valid action frame ending with " + self.ACTION_FRAME_END
             if frame_errors:
@@ -2165,6 +2199,36 @@ class ModelClient:
         if trailing:
             frames.append(trailing)
         return frames
+
+    def _completed_action_frames(self, text: str) -> tuple[list[str], str]:
+        frames: list[str] = []
+        current: list[str] = []
+        for line in text.splitlines(keepends=True):
+            if not self._has_action_frame_end(line):
+                current.append(line)
+                continue
+            parts = self.ACTION_FRAME_END_SPLIT_PATTERN.split(line)
+            for index, part in enumerate(parts):
+                if part:
+                    current.append(part)
+                if index < len(parts) - 1:
+                    frames.append("".join(current).strip())
+                    current = []
+        return frames, "".join(current)
+
+    def _parse_action_frame(self, frame: str, frame_number: int) -> tuple[Json | None, str]:
+        frame = frame.strip()
+        if not frame:
+            return None, ""
+        try:
+            value = json_repair.loads(frame)
+        except Exception as error:
+            return None, "frame " + str(frame_number) + ": " + str(error)
+        if not isinstance(value, dict):
+            return None, "frame " + str(frame_number) + ": expected JSON object action"
+        if not _json_str(value.get("type")):
+            return None, "frame " + str(frame_number) + ": action missing type"
+        return value, ""
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
@@ -2839,7 +2903,9 @@ class Agent:
             self.latest_agent_feedback = ""
         return prompt
 
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
+        if isinstance(self.model_client, ModelClient):
+            return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
         return self.model_client.request(system_prompt, user_prompt, activity=activity)
 
     def compact_history(self) -> int:
@@ -2865,7 +2931,7 @@ class Agent:
         consecutive_format_errors = 0
 
         for _ in range(self.session.max_agent_steps):
-            response = self.step()
+            response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None)
             format_error = _json_str(response.get("_format_error"))
             if format_error:
                 consecutive_format_errors += 1
@@ -2962,8 +3028,8 @@ class Agent:
             return headline + ": " + _shorten("; ".join(details[:3]), 220)
         return headline
 
-    def step(self) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main")
+    def step(self, *, on_action: ActionCallback | None = None) -> Json:
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main", on_action=on_action)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -2976,6 +3042,47 @@ class Agent:
 
     def apply_response(self, response: Json) -> None:
         self.state_updater.apply(response)
+
+    def _stream_action_preview_callback(self, on_message: MessageCallback | None) -> ActionCallback:
+        def preview(action: Json) -> None:
+            if on_message is None:
+                return
+            report = self._format_stream_action_preview(action)
+            if report:
+                on_message(report)
+
+        return preview
+
+    def _format_stream_action_preview(self, action: Json) -> str:
+        if _json_str(action.get("type")) != "tool":
+            return ""
+        try:
+            call = self.tool_runner.parse_tool_call(action)
+        except ToolCallError:
+            return ""
+        label = "Queued: " + self._format_stream_tool_label(call)
+        if call.intention:
+            label += " - " + _shorten(call.intention, 80)
+        return label
+
+    def _format_stream_tool_label(self, call: ParsedToolCall) -> str:
+        args = call.args
+        if call.name == "Bash":
+            return "Bash"
+        if call.name in {"Read", "ReplaceRange"} and args:
+            return self._format_stream_path_range_label(call.name, args)
+        if call.name == "Search":
+            path = args[1] if len(args) >= 2 and args[1] else ""
+            return "Search" + ((" " + _shorten(path, 48)) if path else "")
+        if args:
+            return call.name + " " + _shorten(args[0], 48)
+        return call.name
+
+    def _format_stream_path_range_label(self, name: str, args: list[str]) -> str:
+        label = name + " " + _shorten(args[0], 48)
+        if len(args) >= 3:
+            label += ":" + args[1] + "-" + args[2]
+        return label
 
     def execute_tool_calls(
         self,
@@ -3117,6 +3224,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
     CommandSpec("/reason", "Show or toggle reasoning", "Config", "/reason [on|off|status]"),
     CommandSpec("/reason_effort", "Show or set reasoning effort", "Config", "/reason_effort [minimal|low|medium|high|xhigh]"),
+    CommandSpec("/stream", "Show or toggle streaming responses", "Config", "/stream [on|off|status]"),
     CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
@@ -3146,6 +3254,7 @@ class CommandDispatcher:
             "/compact-at": self._compact_at,
             "/reason": self._reason,
             "/reason_effort": self._reason_effort,
+            "/stream": self._stream,
             "/yolo": self._yolo,
             "/blackboard": self._blackboard,
         }
@@ -3204,11 +3313,13 @@ class CommandDispatcher:
             return "Usage: /status"
         session = self.agent.session
         reasoning = session.reasoning_effort if session.reasoning else "off"
+        stream = "on" if session.stream else "off"
         yolo = "on" if session.yolo else "off"
         return "\n".join(
             [
                 "model: " + (session.model or "(empty)"),
                 "reasoning: " + reasoning,
+                "stream: " + stream,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
@@ -3272,6 +3383,17 @@ class CommandDispatcher:
             return "Usage: /reason_effort [minimal|low|medium|high|xhigh]"
         self.agent.session.reasoning_effort = args
         return "Reasoning effort set to: " + args
+
+    def _stream(self, args: str) -> str:
+        if args == "on":
+            self.agent.session.stream = True
+            return "Streaming enabled"
+        if args == "off":
+            self.agent.session.stream = False
+            return "Streaming disabled"
+        if args in {"", "status"}:
+            return "Streaming is " + ("on" if self.agent.session.stream else "off")
+        return "Usage: /stream [on|off|status]"
 
     def _yolo(self, args: str) -> str:
         if args == "on":
@@ -3633,6 +3755,9 @@ class AgentLoop:
         if message.startswith("Tool Calls"):
             self._emit_segments(self._tool_segments(message), message)
             return
+        if message.startswith("Queued:"):
+            self._emit_segments(self._queued_segments(message), message)
+            return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
             return
@@ -3734,6 +3859,15 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "     log: "), ("ansiblue", line[10:] + "\n")])
             else:
                 segments.extend([("ansibrightblack", line + "\n")])
+        return segments
+
+    def _queued_segments(self, message: str) -> list[tuple[str, str]]:
+        body = message[len("Queued:") :].strip()
+        target, separator, reason = body.partition(" - ")
+        segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", target)]
+        if separator:
+            segments.extend([("ansibrightblack", " - "), ("ansimagenta", reason)])
+        segments.append(("", "\n"))
         return segments
 
     def _verify_style(self, badge: str) -> str:

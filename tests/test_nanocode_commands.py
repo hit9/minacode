@@ -22,6 +22,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     model_result = dispatcher.dispatch("/model new-model")
     effort_result = dispatcher.dispatch("/reason_effort high")
     reason_result = dispatcher.dispatch("/reason off")
+    stream_result = dispatcher.dispatch("/stream off")
     yolo_result = dispatcher.dispatch("/yolo on")
     compact_result = dispatcher.dispatch("/compact-at 2")
     exit_result = dispatcher.dispatch("/exit")
@@ -32,6 +33,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert session.reasoning_effort == "high"
     assert reason_result.message == "Reasoning disabled"
     assert session.reasoning is False
+    assert stream_result.message == "Streaming disabled"
+    assert session.stream is False
     assert yolo_result.message == "YOLO enabled"
     assert session.yolo is True
     assert compact_result.message == "Auto-compact threshold set to: 2"
@@ -51,7 +54,26 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
+    assert "stream: on" in result.message
     assert "blackboard: 0 items" in result.message
+
+
+def test_stream_command_shows_and_updates_streaming_mode(tmp_path):
+    session = Session(cwd=str(tmp_path), stream=True)
+    dispatcher = CommandDispatcher(Agent(session))
+
+    status_result = dispatcher.dispatch("/stream")
+    off_result = dispatcher.dispatch("/stream off")
+    off_status_result = dispatcher.dispatch("/stream status")
+    on_result = dispatcher.dispatch("/stream on")
+    invalid_result = dispatcher.dispatch("/stream maybe")
+
+    assert status_result.message == "Streaming is on"
+    assert off_result.message == "Streaming disabled"
+    assert off_status_result.message == "Streaming is off"
+    assert on_result.message == "Streaming enabled"
+    assert invalid_result.message == "Usage: /stream [on|off|status]"
+    assert session.stream is True
 
 
 def test_blackboard_command_reports_empty_board(tmp_path):

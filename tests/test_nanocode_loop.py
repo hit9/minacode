@@ -91,6 +91,24 @@ def test_agent_loop_highlights_only_diff_previews(tmp_path):
     assert ("ansicyan", "-old\n") in false_positive_segments
 
 
+def test_agent_loop_styles_queued_tool_preview(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+
+    segments = loop._queued_segments("Queued: ReplaceRange sample.txt:1-2 - update sample")
+
+    assert segments == [
+        ("ansibrightblack", "Queued: "),
+        ("ansicyan", "ReplaceRange sample.txt:1-2"),
+        ("ansibrightblack", " - "),
+        ("ansimagenta", "update sample"),
+        ("", "\n"),
+    ]
+
+
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeAgent:
         def __init__(self):
