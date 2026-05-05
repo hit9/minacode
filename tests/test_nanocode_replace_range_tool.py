@@ -141,7 +141,7 @@ def test_replace_range_cache_clears_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
 
-    Agent(session).apply_response({"goal_update": "new goal"})
+    Agent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
     assert len(session.range_fingerprints) == 0
 

@@ -1813,17 +1813,17 @@ Core:
 - Follow the plan, but revise it when facts require it.
 
 Tools:
-- MUST use JSON tool_calls. Do not use native <tool_call>Tool(args...) syntax.
+- MUST use tool actions. Do not use native <tool_call>Tool(args...) syntax.
 - Use multiple tool calls in one turn when they are independent.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
 - Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
 - ReplaceRange/BatchReplaceRanges fingerprints are valid only for the exact filepath/start/end returned by Read. Never use a wider Read fingerprint for a narrower edit. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
-- Summarize every latest tool result in last_tool_calls_summaries; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
+- Summarize every latest tool result with tool_summary actions; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
-- known_append is stable memory; current_context_update is task-local memory.
-- tool_call.intention must state the question to answer, not just the action.
+- known actions are stable memory; context actions are task-local memory.
+- tool action intention must state the question to answer, not just the action.
 
 Verification:
 - Verification_State belongs only to its <goal>.
@@ -1846,74 +1846,21 @@ Input:
 
 Output MUST be exactly one JSON object.
 No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON.
-Put normal replies in message_to_user.
-Put tool calls only in JSON tool_calls.
+Top-level object MUST contain only actions. Include only actions that are needed; do not emit null/no-op fields.
 
 Schema:
 {
-  "user_language": "string",
-
-  "goal_update": null | "string",
-  "goal_reached": true | false,
-
-  "plan_update": null | {
-    "mode": "replace" | "patch",
-    "items": [
-      {
-        "op": "add|update|remove",
-        "id": "string",
-        "after": null | "string",
-        "text": null | "string",
-        "status": null | "todo|doing|done|blocked",
-        "evidence": null | "string"
-      }
-    ]
-  },
-
-  "known_append": null | [
-    {
-      "fact": "string",
-      "details": null | ["string"]
-    }
-  ],
-
-  "current_context_update": null | {
-    "mode": "replace" | "append",
-    "items": [
-      {
-        "note": "string",
-        "details": null | ["string"]
-      }
-    ]
-  },
-
-  "verification": {
-    "method": null | "string",
-    "status": "pending" | "passed" | "blocked",
-    "evidence": null | "string"
-  },
-
-  "tool_calls": null | [
-    {
-      "name": "string",
-      "intention": "string",
-      "args": ["string"]
-    }
-  ],
-
-  "last_tool_calls_summaries": [
-    {
-      "tool": "string",
-      "intention": "string",
-      "outcome": "success" | "failure" | "partial",
-      "summary": "string",
-      "key_evidence": null | ["string"],
-      "result_file": null | "string",
-      "needs_raw_read": true | false
-    }
-  ],
-
-  "message_to_user": null | "string"
+  "actions": [
+    {"type": "message", "text": "string"},
+    {"type": "tool", "name": "string", "intention": "string", "args": ["string"]},
+    {"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "result_file": null | "string", "needs_raw_read": true | false},
+    {"type": "goal", "text": "string"},
+    {"type": "done"},
+    {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]},
+    {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]},
+    {"type": "context", "mode": "replace|append", "items": [{"note": "string", "details": null | ["string"]}]},
+    {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
+  ]
 }
 """
 
@@ -2183,13 +2130,11 @@ class ModelClient:
         guidance = ""
         if self._looks_like_native_tool_call(content):
             guidance = (
-                " Native tool_call syntax is not supported; return one JSON object with tool_calls entries like "
-                '{"name":"Read","intention":"...","args":["nanocode.py","0","100"]}.'
+                " Native tool_call syntax is not supported; return one JSON object with actions like "
+                '{"actions":[{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0","100"]}]}.'
             )
         return {
-            "goal_reached": False,
-            "tool_calls": None,
-            "message_to_user": None,
+            "actions": [],
             "_format_error": "Invalid model output: expected one JSON object matching the Output JSON schema. Return strict JSON only. Bad output: "
             + _shorten(content)
             + guidance,
@@ -2471,6 +2416,9 @@ class AgentStateUpdater:
             before_verification,
         )
 
+    def _actions(self, response: Json) -> list[Json]:
+        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+
     def apply_tool_call_summaries(self, response: Json) -> None:
         self._apply_tool_call_summaries(response)
 
@@ -2567,7 +2515,7 @@ class AgentStateUpdater:
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
     def _apply_tool_call_summaries(self, response: Json) -> None:
-        summaries = _json_list(response.get("last_tool_calls_summaries"))
+        summaries = [action for action in self._actions(response) if _json_str(action.get("type")) == "tool_summary"]
         if not summaries:
             return
         pending = [event for event in self.tool_runner.latest_events if not event.summary]
@@ -2615,42 +2563,44 @@ class AgentStateUpdater:
         return [detail for detail in details if detail]
 
     def _apply_goal(self, response: Json) -> bool:
-        update = _json_str(response.get("goal_update"))
         changed = False
-        if update is not None:
-            changed = update != self.session.current.goal
-            self.session.current.goal = update
-        reached = response.get("goal_reached")
-        if isinstance(reached, bool):
-            self.session.current.goal_reached = reached
+        for action in self._actions(response):
+            action_type = _json_str(action.get("type"))
+            if action_type == "goal":
+                update = _json_str(action.get("text"))
+                if update is not None:
+                    changed = changed or update != self.session.current.goal
+                    self.session.current.goal = update
+            elif action_type == "done":
+                self.session.current.goal_reached = True
         return changed
 
     def _apply_plan(self, response: Json) -> bool:
-        update = _json_dict(response.get("plan_update"))
-        if not update:
-            return False
-        items = _json_list(update.get("items"))
-        if update.get("mode") == "replace":
-            self.session.current.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
-            return True
-        for raw in items:
-            patch = _json_dict(raw)
-            op = _json_str(patch.get("op")) or "add"
-            item_id = _json_str(patch.get("id")) or ""
-            if op == "remove":
-                self.session.current.plan = [item for item in self.session.current.plan if item.id != item_id]
+        replaced = False
+        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
+            items = _json_list(update.get("items"))
+            if update.get("mode") == "replace":
+                self.session.current.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+                replaced = True
                 continue
-            plan_item = self._plan_item_from_json(patch)
-            if plan_item is None:
-                continue
-            existing = next((item for item in self.session.current.plan if item.id == plan_item.id and item.id), None)
-            if existing:
-                existing.text = plan_item.text
-                existing.status = plan_item.status
-                existing.evidence = plan_item.evidence
-            else:
-                self.session.current.plan.append(plan_item)
-        return False
+            for raw in items:
+                patch = _json_dict(raw)
+                op = _json_str(patch.get("op")) or "add"
+                item_id = _json_str(patch.get("id")) or ""
+                if op == "remove":
+                    self.session.current.plan = [item for item in self.session.current.plan if item.id != item_id]
+                    continue
+                plan_item = self._plan_item_from_json(patch)
+                if plan_item is None:
+                    continue
+                existing = next((item for item in self.session.current.plan if item.id == plan_item.id and item.id), None)
+                if existing:
+                    existing.text = plan_item.text
+                    existing.status = plan_item.status
+                    existing.evidence = plan_item.evidence
+                else:
+                    self.session.current.plan.append(plan_item)
+        return replaced
 
     def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
         item = _json_dict(value)
@@ -2668,58 +2618,55 @@ class AgentStateUpdater:
         )
 
     def _apply_known(self, response: Json) -> None:
-        for raw in _json_list(response.get("known_append")):
-            item = _json_dict(raw)
-            fact = _json_str(item.get("fact")) if item else _json_str(raw)
-            if not fact:
-                continue
-            details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-            details = [detail for detail in details if detail]
-            if not any(known.fact == fact for known in self.session.current.known):
-                self.session.current.known.append(KnownItem(fact=fact, details=details))
+        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "known"]:
+            for raw in _json_list(action.get("items")):
+                item = _json_dict(raw)
+                fact = _json_str(item.get("fact")) if item else _json_str(raw)
+                if not fact:
+                    continue
+                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
+                details = [detail for detail in details if detail]
+                if not any(known.fact == fact for known in self.session.current.known):
+                    self.session.current.known.append(KnownItem(fact=fact, details=details))
 
     def _apply_current_context(self, response: Json) -> None:
-        update = _json_dict(response.get("current_context_update"))
-        if not update:
-            return
-        if update.get("mode") == "replace":
-            self.session.current.current_context = []
-        for raw in _json_list(update.get("items")):
-            item = _json_dict(raw)
-            note = _json_str(item.get("note")) if item else _json_str(raw)
-            if not note:
-                continue
-            details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-            details = [detail for detail in details if detail]
-            existing = next((context for context in self.session.current.current_context if context.note == note), None)
-            if existing:
-                existing.details = details
-            else:
-                self.session.current.current_context.append(CurrentContextItem(note=note, details=details))
+        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "context"]:
+            if update.get("mode") == "replace":
+                self.session.current.current_context = []
+            for raw in _json_list(update.get("items")):
+                item = _json_dict(raw)
+                note = _json_str(item.get("note")) if item else _json_str(raw)
+                if not note:
+                    continue
+                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
+                details = [detail for detail in details if detail]
+                existing = next((context for context in self.session.current.current_context if context.note == note), None)
+                if existing:
+                    existing.details = details
+                else:
+                    self.session.current.current_context.append(CurrentContextItem(note=note, details=details))
         if len(self.session.current.current_context) > self.CURRENT_CONTEXT_LIMIT:
             self.session.current.current_context = self.session.current.current_context[-self.CURRENT_CONTEXT_LIMIT :]
 
     def _apply_verification(self, response: Json) -> None:
-        data = _json_dict(response.get("verification"))
-        if not data:
-            return
-        method = _json_str(data.get("method"))
-        if method is not None:
-            if method != self.session.current.verification.method:
-                self.session.current.verification.evidence = ""
-            self.session.current.verification.method = method
-        status = _json_str(data.get("status"))
-        if status == "pending":
-            self.session.current.verification.status = VerificationStatus.REQUIRED
-            if "evidence" not in data:
-                self.session.current.verification.evidence = ""
-        elif status == "passed":
-            self.session.current.verification.status = VerificationStatus.DONE
-        elif status == "blocked":
-            self.session.current.verification.status = VerificationStatus.BLOCKED
-        evidence = _json_str(data.get("evidence"))
-        if evidence is not None:
-            self.session.current.verification.evidence = evidence
+        for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
+            method = _json_str(data.get("method"))
+            if method is not None:
+                if method != self.session.current.verification.method:
+                    self.session.current.verification.evidence = ""
+                self.session.current.verification.method = method
+            status = _json_str(data.get("status"))
+            if status == "pending":
+                self.session.current.verification.status = VerificationStatus.REQUIRED
+                if "evidence" not in data:
+                    self.session.current.verification.evidence = ""
+            elif status == "passed":
+                self.session.current.verification.status = VerificationStatus.DONE
+            elif status == "blocked":
+                self.session.current.verification.status = VerificationStatus.BLOCKED
+            evidence = _json_str(data.get("evidence"))
+            if evidence is not None:
+                self.session.current.verification.evidence = evidence
 
     def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
         verification = self.session.current.verification
@@ -2731,7 +2678,7 @@ class AgentStateUpdater:
             return
         if (
             plan_replaced
-            and not _json_dict(response.get("verification"))
+            and not any(_json_str(action.get("type")) == "verify" for action in self._actions(response))
             and verification.status
             in {
                 VerificationStatus.REQUIRED,
@@ -2872,12 +2819,13 @@ class Agent:
                 )
                 continue
             consecutive_format_errors = 0
-            tool_calls = _json_list(response.get("tool_calls"))
+            actions = self._response_actions(response)
+            tool_calls = self._tool_calls_from_actions(actions)
+            messages = self._messages_from_actions(actions)
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
-            message = _json_str(response.get("message_to_user"))
-            if message:
+            for message in messages:
                 self.session.append_conversation(AssistantMessage(content=message))
                 if on_message is not None:
                     on_message(message)
@@ -2927,6 +2875,9 @@ class Agent:
         response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main")
         if _json_str(response.get("_format_error")):
             return response
+        invalid_response = self._validate_action_response(response)
+        if invalid_response is not None:
+            return invalid_response
         self.latest_tool_call_results = ""
         self.latest_agent_feedback = ""
         self.state_updater.apply_tool_call_summaries(response)
@@ -2952,12 +2903,12 @@ class Agent:
             [
                 "Verification_Gate: required before completion.",
                 "Method: " + method,
-                'Next_Action: run a relevant verification tool call, or return verification.status="passed" or "blocked" with evidence if verification is already resolved.',
+                'Next_Action: run a relevant tool action, or return a verify action with status="passed" or "blocked" and evidence if verification is already resolved.',
             ]
         )
 
     def _format_continuation_hint(self) -> str:
-        return "No tool calls and goal not reached. Continue with the next useful action."
+        return "No tool actions and no done action. Continue with the next useful action."
 
     def _missing_tool_summaries(self) -> list[ToolCallEvent]:
         return [event for event in self.tool_runner.latest_events if not event.summary]
@@ -2986,7 +2937,7 @@ class Agent:
         for event in needs_read:
             lines.append("- Read(" + event.result_file + ") before continuing")
         lines.append(
-            "Next_Action: return last_tool_calls_summaries for missing results, read result_file only when it is the cheapest accurate fallback, or continue with source tools such as Search/ListDir."
+            "Next_Action: return tool_summary actions for missing results, read result_file with a tool action only when it is the cheapest accurate fallback, or continue with source tools such as Search/ListDir."
         )
         return "\n".join(lines)
 
@@ -3002,6 +2953,35 @@ class Agent:
             if args and self.session.resolve_path(args[0]) == expected:
                 return True
         return False
+
+    def _invalid_action_response(self, response: Json, reason: str) -> Json:
+        return {
+            "actions": [],
+            "_format_error": "Invalid model output: "
+            + reason
+            + '. Return strict JSON only. Expected top-level object: {"actions":[...]}. Bad output: '
+            + _shorten(json.dumps(response, ensure_ascii=False)),
+        }
+
+    def _validate_action_response(self, response: Json) -> Json | None:
+        if not isinstance(response.get("actions"), list):
+            return self._invalid_action_response(response, "expected actions array")
+        extra_keys = sorted(str(key) for key in response.keys() if key != "actions")
+        if extra_keys:
+            return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
+        action_types = {_json_str(action.get("type")) for action in self._response_actions(response)}
+        if "done" in action_types and "tool" in action_types:
+            return self._invalid_action_response(response, "done action cannot be combined with tool actions")
+        return None
+
+    def _response_actions(self, response: Json) -> list[Json]:
+        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+
+    def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
+        return [action for action in actions if _json_str(action.get("type")) == "tool"]
+
+    def _messages_from_actions(self, actions: list[Json]) -> list[str]:
+        return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "message") if message]
 
 
 ############################

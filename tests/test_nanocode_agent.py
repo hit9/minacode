@@ -37,8 +37,9 @@ def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path
 
     agent.apply_response(
         {
-            "last_tool_calls_summaries": [
+            "actions": [
                 {
+                    "type": "tool_summary",
                     "tool": "Read",
                     "intention": "read sample",
                     "outcome": "success",
@@ -71,7 +72,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
         def read(self):
             return json.dumps(
                 {
-                    "choices": [{"message": {"content": json.dumps({"message_to_user": "ok", "tool_calls": None})}}],
+                    "choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
                 }
             ).encode("utf-8")
@@ -88,7 +89,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
 
     response = Agent(session).request("system", "user")
 
-    assert response == {"message_to_user": "ok", "tool_calls": None}
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
     assert captured["url"] == "https://example.test/v1/chat/completions"
     assert captured["timeout"] == 12
     assert captured["authorization"] == "Bearer key"
@@ -113,7 +114,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}], "usage": {}}).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         captured["payload"] = json.loads(request.data.decode("utf-8"))
@@ -143,7 +144,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"message_to_user": "ok"})}}], "usage": {}}).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}], "usage": {}}).encode("utf-8")
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     session = Session(
@@ -158,7 +159,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
     response = Agent(session).request("system prompt", "user prompt")
 
     files = list((tmp_path / ".nanocode" / "debug").glob("*-0001-main.txt"))
-    assert response["message_to_user"] == "ok"
+    assert response["actions"][0]["text"] == "ok"
     assert len(files) == 1
     content = files[0].read_text(encoding="utf-8")
     assert content == "--- system message 1 ---\nsystem prompt\n\n--- user message 2 ---\nuser prompt\n"
@@ -178,7 +179,7 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "choices": [{"message": {"content": '```json\n{"message_to_user": "ok", "tool_calls": null}\n```'}}],
+                    "choices": [{"message": {"content": '```json\n{"actions":[{"type":"message","text":"ok"}]}\n```'}}],
                     "usage": {},
                 }
             ).encode("utf-8")
@@ -191,28 +192,26 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
 
     response = Agent(session).request("system", "user")
 
-    assert response == {"message_to_user": "ok", "tool_calls": None}
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
 
 
 def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
-    assert client._parse_model_content('</think>{"message_to_user": "ok", "tool_calls": null}') == {
-        "message_to_user": "ok",
-        "tool_calls": None,
+    assert client._parse_model_content('</think>{"actions":[{"type":"message","text":"ok"}]}') == {
+        "actions": [{"type": "message", "text": "ok"}],
     }
-    assert client._parse_model_content('<think>reasoning</think>\n{"message_to_user": "ok", "tool_calls": null}') == {
-        "message_to_user": "ok",
-        "tool_calls": None,
+    assert client._parse_model_content('<think>reasoning</think>\n{"actions":[{"type":"message","text":"ok"}]}') == {
+        "actions": [{"type": "message", "text": "ok"}],
     }
 
 
 def test_agent_request_does_not_extract_json_after_arbitrary_prefix(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
-    response = client._parse_model_content('note {"message_to_user": "ok", "tool_calls": null}')
+    response = client._parse_model_content('note {"actions":[{"type":"message","text":"ok"}]}')
 
-    assert response["tool_calls"] is None
+    assert response["actions"] == []
     assert "expected one JSON object" in response["_format_error"]
 
 
@@ -221,7 +220,7 @@ def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
 
     response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
 
-    assert response["tool_calls"] is None
+    assert response["actions"] == []
     assert "Native tool_call syntax is not supported" in response["_format_error"]
     assert '"name":"Read"' in response["_format_error"]
     assert '"args":["nanocode.py","0","100"]' in response["_format_error"]
@@ -246,7 +245,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
 
     response = Agent(session).request("system", "user")
 
-    assert response["tool_calls"] is None
+    assert response["actions"] == []
     assert "expected one JSON object" in response["_format_error"]
     assert "plain answer" in response["_format_error"]
 
@@ -280,7 +279,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
 
     response = Agent(session).request("system", "user")
 
-    assert response["tool_calls"] is None
+    assert response["actions"] == []
     assert "expected one JSON object" in response["_format_error"]
     assert "API response missing message content" in response["_format_error"]
 
@@ -291,9 +290,14 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
 
     agent.apply_response(
         {
-            "known_append": [
-                {"fact": "Search only supports rg and Python fallback.", "details": ["grep was removed"]},
-                {"fact": "Search only supports rg and Python fallback.", "details": ["duplicate ignored"]},
+            "actions": [
+                {
+                    "type": "known",
+                    "items": [
+                        {"fact": "Search only supports rg and Python fallback.", "details": ["grep was removed"]},
+                        {"fact": "Search only supports rg and Python fallback.", "details": ["duplicate ignored"]},
+                    ],
+                }
             ]
         }
     )
@@ -313,13 +317,16 @@ def test_agent_keeps_current_context_separate_from_known(tmp_path):
 
     agent.apply_response(
         {
-            "current_context_update": {
-                "mode": "append",
-                "items": [
-                    {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["exit code 1"]},
-                    {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["updated failure"]},
-                ],
-            }
+            "actions": [
+                {
+                    "type": "context",
+                    "mode": "append",
+                    "items": [
+                        {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["exit code 1"]},
+                        {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["updated failure"]},
+                    ],
+                }
+            ]
         }
     )
 
@@ -336,7 +343,7 @@ def test_agent_clears_current_context_when_goal_changes(tmp_path):
     session.current.current_context = [CurrentContextItem(note="old dirty state")]
     agent = Agent(session)
 
-    agent.apply_response({"goal_update": "new goal", "goal_reached": False})
+    agent.apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
     assert session.current.current_context == []
     assert "  Goal    new goal" in agent.state_updater.latest_report
@@ -350,10 +357,13 @@ def test_agent_keeps_last_fifty_current_context_items(tmp_path):
 
     agent.apply_response(
         {
-            "current_context_update": {
-                "mode": "append",
-                "items": [{"note": "note " + str(index)} for index in range(55)],
-            }
+            "actions": [
+                {
+                    "type": "context",
+                    "mode": "append",
+                    "items": [{"note": "note " + str(index)} for index in range(55)],
+                }
+            ]
         }
     )
 
@@ -367,8 +377,10 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     agent = Agent(session)
 
     response = {
-        "plan_update": {"mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
-        "known_append": [{"fact": "Search uses rg.", "details": ["Python fallback exists"]}],
+        "actions": [
+            {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
+            {"type": "known", "items": [{"fact": "Search uses rg.", "details": ["Python fallback exists"]}]},
+        ]
     }
 
     agent.apply_response(response)
@@ -393,14 +405,14 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     session.current.verification.evidence = "old evidence"
     agent = Agent(session)
 
-    agent.apply_response({"goal_update": "new goal", "goal_reached": False})
+    agent.apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
     assert session.current.verification.goal == ""
     assert session.current.verification.status == VerificationStatus.IDLE
     assert session.current.verification.method == ""
     assert session.current.verification.evidence == ""
 
-    agent.apply_response({"verification": {"method": "run tests", "status": "pending", "evidence": None}})
+    agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "pending", "evidence": None}]})
 
     assert session.current.verification.goal == "new goal"
     assert session.current.verification.status == VerificationStatus.REQUIRED
@@ -510,10 +522,13 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
-                    "last_tool_calls_summaries": [
+                    "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]
+                },
+                {
+                    "actions": [
                         {
+                            "type": "tool_summary",
                             "tool": "Read",
                             "intention": "read sample",
                             "outcome": "success",
@@ -521,11 +536,10 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "key_evidence": ["alpha"],
                             "result_file": None,
                             "needs_raw_read": False,
-                        }
+                        },
+                        {"type": "done"},
+                        {"type": "message", "text": "done"},
                     ],
-                    "goal_reached": True,
-                    "message_to_user": "done",
-                    "tool_calls": None,
                 },
             ]
 
@@ -541,7 +555,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     messages = []
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert messages[0].startswith("Tool Calls\n")
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
@@ -561,9 +575,9 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
-                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -576,7 +590,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     response = agent.run("read sample")
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert "alpha" in agent.model_client.user_prompts[1]
     assert "alpha" in agent.model_client.user_prompts[2]
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[2]
@@ -590,8 +604,8 @@ def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"tool_calls": [{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -605,7 +619,7 @@ def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
 
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert "Retrying: model needs to summarize the latest tool results." not in messages
     assert len(agent.model_client.user_prompts) == 2
     assert agent.latest_tool_call_events[0].summary == ""
@@ -621,8 +635,9 @@ def test_agent_summary_gate_allows_failure_summary_without_key_evidence(tmp_path
 
     agent.state_updater.apply_tool_call_summaries(
         {
-            "last_tool_calls_summaries": [
+            "actions": [
                 {
+                    "type": "tool_summary",
                     "tool": "Read",
                     "intention": "read missing",
                     "outcome": "failure",
@@ -724,8 +739,8 @@ def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_p
 
     assert "Needs raw read:" in gate
     assert "Read(.nanocode/tool_results/result.log)" in gate
-    assert agent._format_tool_summary_gate([{"name": "Read", "intention": "read result log", "args": [event.result_file]}]) == ""
-    assert agent._format_tool_summary_gate([{"name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]) == ""
+    assert agent._format_tool_summary_gate([{"type": "tool", "name": "Read", "intention": "read result log", "args": [event.result_file]}]) == ""
+    assert agent._format_tool_summary_gate([{"type": "tool", "name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]) == ""
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
@@ -733,8 +748,8 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"goal_update": "answer", "goal_reached": False, "message_to_user": None, "tool_calls": None},
-                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+                {"actions": [{"type": "goal", "text": "answer"}]},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -748,9 +763,9 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert "No tool calls and goal not reached" in agent.model_client.user_prompts[1]
+    assert "No tool actions and no done action" in agent.model_client.user_prompts[1]
     assert "Continuing: goal is not complete yet." in messages
 
 
@@ -760,16 +775,18 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {
-                    "goal_update": "change file",
-                    "goal_reached": True,
-                    "verification": {"method": "run tests", "status": "pending", "evidence": None},
-                    "tool_calls": None,
+                    "actions": [
+                        {"type": "goal", "text": "change file"},
+                        {"type": "done"},
+                        {"type": "verify", "method": "run tests", "status": "pending", "evidence": None},
+                    ],
                 },
                 {
-                    "goal_reached": True,
-                    "verification": {"method": "run tests", "status": "passed", "evidence": "tests passed"},
-                    "message_to_user": "done",
-                    "tool_calls": None,
+                    "actions": [
+                        {"type": "done"},
+                        {"type": "verify", "method": "run tests", "status": "passed", "evidence": "tests passed"},
+                        {"type": "message", "text": "done"},
+                    ],
                 },
             ]
 
@@ -784,7 +801,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     response = agent.run("change file", on_message=messages.append)
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Verification_Gate: required before completion." in agent.model_client.user_prompts[1]
     assert session.current.verification.status == VerificationStatus.DONE
@@ -797,8 +814,8 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
-                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -812,19 +829,65 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["message_to_user"] == "done"
+    assert response["actions"][-1]["text"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
     assert "Agent_Feedback Begin" in agent.model_client.user_prompts[1]
     assert "Latest_Tool_Call_Results Begin ------\n(empty)" in agent.model_client.user_prompts[1]
     assert messages == ["Retrying: model returned invalid output.", "done"]
 
 
+def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [], "message_to_user": "old protocol"},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["text"] == "done"
+    assert "unexpected top-level keys: message_to_user" in agent.model_client.user_prompts[1]
+
+
+def test_agent_run_rejects_done_with_tool_actions(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]}, {"type": "done"}]},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["text"] == "done"
+    assert "done action cannot be combined with tool actions" in agent.model_client.user_prompts[1]
+
+
 def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "tool_calls": None},
-                {"goal_reached": True, "message_to_user": "done", "tool_calls": None},
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -847,7 +910,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
             self.calls += 1
-            return {"_format_error": "Invalid model output: missing content", "tool_calls": None}
+            return {"_format_error": "Invalid model output: missing content", "actions": []}
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -871,8 +934,8 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
 
     assert "Output MUST be exactly one JSON object" in prompt
     assert "No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON" in prompt
-    assert "message_to_user" in prompt
-    assert "MUST use JSON tool_calls" in prompt
+    assert '"actions"' in prompt
+    assert "MUST use tool actions" in prompt
     assert "Agent_Feedback" in prompt
     assert "Prefer Search before Read" in prompt
     assert "Read returns at most 1000 lines" in prompt

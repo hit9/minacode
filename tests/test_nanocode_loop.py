@@ -171,7 +171,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
-            return {"message_to_user": "assistant response"}
+            return {"actions": [{"type": "message", "text": "assistant response"}]}
 
     inputs = iter(["/status", "hello", "/exit"])
     outputs = []
