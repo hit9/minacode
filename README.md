@@ -10,6 +10,41 @@ nanocode is used to help building itself, including features such as `@file` pat
 |---|---|
 | ![Screenshot 1](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot1.png) | ![Screenshot 2](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot2.png) |
 
+## Features
+
+- **Constrained Output**: Force model replies into auditable action frames.
+- **Verified Edits**: Reject stale range edits before they touch files.
+- **Autonomous Loop**: Chain reading, editing, running, and verification.
+- **Live Telemetry**: Stream tool intent, token use, cost, and status.
+
+## Tools
+
+- File: `Read`, `LineCount`, `ListDir`, `Search`.
+- Edit: `Edit`, `ReplaceRange`, `BatchReplaceRanges`, `ApplyPatch`.
+- Shell: `Bash`, `Git`.
+- Memory: `Blackboard`.
+
+## Commands
+
+- Info: `/help [question]`, `/status`.
+- Session: `/compact`, `/blackboard [status|clear]`.
+- Config: `/model`, `/compact-at`, `/reason`, `/reason_effort`, `/stream`, `/yolo`.
+- Exit: `/exit`, `/quit`.
+
+## Configuration
+
+- Required: `NANOCODE_API_URL`, `NANOCODE_API_KEY`, `NANOCODE_MODEL`.
+- Runtime: `NANOCODE_DIR`, `NANOCODE_TEMPERATURE`, `NANOCODE_STREAM`.
+- Reasoning: `NANOCODE_REASONING`, `NANOCODE_REASONING_EFFORT`.
+- Limits: `NANOCODE_MODEL_TIMEOUT`, `NANOCODE_SHELL_TIMEOUT`, `NANOCODE_COMPACT_AT`, `NANOCODE_MAX_AGENT_STEPS`.
+- Cost: `NANOCODE_PROMPT_PRICE_PER_1M_TOKENS`, `NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS`.
+
+## Status
+
+- Status bar: model, reasoning, context, tokens/cost, blackboard, elapsed time, and active model-call time.
+- `/status`: model, reasoning, stream, yolo, conversation, tokens/cost, blackboard, goal, and verification.
+
+
 ## Install
 
 ```sh
@@ -27,29 +62,6 @@ For local development:
 ```sh
 uv sync --extra dev
 uv run nanocode
-```
-
-## Environment Variables
-
-Required:
-
-```sh
-export NANOCODE_API_URL="https://api.example.com/v1"
-export NANOCODE_API_KEY="your-api-key"
-export NANOCODE_MODEL="your-model"
-```
-
-Optional:
-
-```sh
-export NANOCODE_DIR=".nanocode"
-export NANOCODE_TEMPERATURE="0.7"
-export NANOCODE_REASONING="on"
-export NANOCODE_REASONING_EFFORT="medium"
-export NANOCODE_STREAM="on"
-export NANOCODE_MODEL_TIMEOUT="60"
-export NANOCODE_SHELL_TIMEOUT="60"
-export NANOCODE_COMPACT_AT="100"
 ```
 
 ## Usage
