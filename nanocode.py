@@ -459,6 +459,12 @@ class Session:
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
     compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
     max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
+    prompt_price_per_1m_tokens: float = field(
+        default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0"))
+    )
+    completion_price_per_1m_tokens: float = field(
+        default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0"))
+    )
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -469,9 +475,11 @@ class Session:
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
+    last_cost_usd: float = 0.0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
+    session_cost_usd: float = 0.0
     current_model_call_started_at: float = 0.0
 
     # ---- current and conversation ---
@@ -1498,7 +1506,8 @@ class ApplyPatchTool(Tool):
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 original = f.read()
-            new_content, _ = self._apply_unified_diff(original, self._normalized_unified_diff())
+            unified_diff, allow_compatible = self._normalized_unified_diff()
+            new_content, _ = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
@@ -1506,7 +1515,8 @@ class ApplyPatchTool(Tool):
     def call(self) -> str:
         with open(self.filepath, "r", encoding="utf-8") as f:
             original = f.read()
-        new_content, hunks = self._apply_unified_diff(original, self._normalized_unified_diff())
+        unified_diff, allow_compatible = self._normalized_unified_diff()
+        new_content, hunks = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         if new_content == original:
             raise ToolCallError("patch produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
@@ -1521,12 +1531,12 @@ class ApplyPatchTool(Tool):
             ]
         )
 
-    def _normalized_unified_diff(self) -> str:
+    def _normalized_unified_diff(self) -> tuple[str, bool]:
         lines = self.unified_diff.splitlines(keepends=True)
         begin_index = next((index for index, line in enumerate(lines) if line.strip()), -1)
         if begin_index < 0 or lines[begin_index].strip() != "*** Begin Patch":
-            return self.unified_diff
-        return self._codex_update_patch_to_unified_diff(lines, begin_index)
+            return self.unified_diff, False
+        return self._codex_update_patch_to_unified_diff(lines, begin_index), True
 
     def _codex_update_patch_to_unified_diff(self, lines: list[str], begin_index: int) -> str:
         update_seen = False
@@ -1574,11 +1584,12 @@ class ApplyPatchTool(Tool):
         return line
 
     @staticmethod
-    def _apply_unified_diff(content: str, unified_diff: str) -> tuple[str, int]:
+    def _apply_unified_diff(content: str, unified_diff: str, *, allow_compatible: bool = False) -> tuple[str, int]:
         lines = content.splitlines(keepends=True)
         patch_lines = unified_diff.splitlines(keepends=True)
         offset = 0
         hunks = 0
+        hunk_number = 0
         i = 0
 
         while i < len(patch_lines):
@@ -1600,6 +1611,7 @@ class ApplyPatchTool(Tool):
             else:
                 i += 1
                 continue
+            hunk_number += 1
 
             i += 1
             hunk_lines = []
@@ -1632,7 +1644,15 @@ class ApplyPatchTool(Tool):
                     raise ToolCallError("invalid hunk line")
 
             target = -1 if fuzzy else max(old_start - 1, 0) + offset
-            index = ApplyPatchTool._find_hunk_position(lines, expected, target)
+            try:
+                index = ApplyPatchTool._find_hunk_position(lines, expected, target)
+            except ToolCallError as error:
+                if allow_compatible and str(error) == "hunk context did not match":
+                    applied_index = ApplyPatchTool._find_already_applied_hunk(lines, replacement)
+                    if applied_index is not None:
+                        hunks += 1
+                        continue
+                raise ToolCallError(ApplyPatchTool._format_hunk_error(hunk_number, str(error), expected, replacement))
             lines[index : index + len(expected)] = replacement
             offset += len(replacement) - len(expected)
             hunks += 1
@@ -1640,6 +1660,34 @@ class ApplyPatchTool(Tool):
         if hunks == 0:
             raise ToolCallError("patch has no hunks")
         return "".join(lines), hunks
+
+    @staticmethod
+    def _find_already_applied_hunk(lines: list[str], replacement: list[str]) -> int | None:
+        if not replacement:
+            return None
+        matches = []
+        last_start = len(lines) - len(replacement)
+        for position in range(max(0, last_start + 1)):
+            if lines[position : position + len(replacement)] == replacement:
+                matches.append(position)
+                if len(matches) > 1:
+                    return None
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _format_hunk_error(hunk_number: int, reason: str, expected: list[str], replacement: list[str]) -> str:
+        lines = ["hunk " + str(hunk_number) + ": " + reason]
+        if expected:
+            lines.append("expected:")
+            lines.extend(ApplyPatchTool._format_hunk_lines("-", expected))
+        if replacement:
+            lines.append("replacement:")
+            lines.extend(ApplyPatchTool._format_hunk_lines("+", replacement))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_hunk_lines(marker: str, lines: list[str]) -> list[str]:
+        return [marker + _shorten(line.rstrip("\n"), 160) for line in lines[:6]]
 
     @staticmethod
     def _find_hunk_position(lines: list[str], expected: list[str], target: int) -> int:
@@ -2404,12 +2452,17 @@ class ModelClient:
         prompt_tokens = _json_int(usage.get("prompt_tokens"))
         completion_tokens = _json_int(usage.get("completion_tokens"))
         total_tokens = _json_int(usage.get("total_tokens"))
+        prompt_cost = prompt_tokens * self.session.prompt_price_per_1m_tokens / 1_000_000
+        completion_cost = completion_tokens * self.session.completion_price_per_1m_tokens / 1_000_000
+        total_cost = prompt_cost + completion_cost
         self.session.last_prompt_tokens = prompt_tokens
         self.session.last_completion_tokens = completion_tokens
         self.session.last_total_tokens = total_tokens
+        self.session.last_cost_usd = total_cost
         self.session.session_prompt_tokens += prompt_tokens
         self.session.session_completion_tokens += completion_tokens
         self.session.session_total_tokens += total_tokens
+        self.session.session_cost_usd += total_cost
 
 
 ############################
@@ -3410,6 +3463,7 @@ class CommandDispatcher:
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
+                "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
                 "blackboard: " + str(len(session.blackboard)) + " items",
                 "goal: " + (session.current.goal or "(empty)"),
                 "verification: " + session.current.verification.status,
@@ -3515,6 +3569,12 @@ def _format_count(value: int) -> str:
     return str(value)
 
 
+def _format_cost(value: float) -> str:
+    if value <= 0:
+        return "-"
+    return "$" + f"{value:.6f}"
+
+
 ############################
 # Interactive Loop
 ############################
@@ -3610,7 +3670,15 @@ class StatusBar:
         reasoning = session.reasoning_effort if session.reasoning else "off"
         yolo = " | yolo" if session.yolo else ""
         context = str(len(session.conversation)) + "/" + str(session.compact_at)
-        tokens = "last:" + self._format_count(session.last_total_tokens) + " session:" + self._format_count(session.session_total_tokens)
+        last_tokens = self._format_count(session.last_total_tokens)
+        last_cost = _format_cost(session.last_cost_usd)
+        if last_cost != "-":
+            last_tokens += "/" + last_cost
+        session_tokens = self._format_count(session.session_total_tokens)
+        session_cost = _format_cost(session.session_cost_usd)
+        if session_cost != "-":
+            session_tokens += "/" + session_cost
+        tokens = "last:" + last_tokens + " session:" + session_tokens
         blackboard = "bb:" + str(len(session.blackboard))
         parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens, blackboard]
         if show_elapsed:

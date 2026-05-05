@@ -86,6 +86,8 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12, stream=False)
+    session.prompt_price_per_1m_tokens = 1.0
+    session.completion_price_per_1m_tokens = 2.0
 
     response = Agent(session).request("system", "user")
 
@@ -101,6 +103,8 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
+    assert abs(session.last_cost_usd - 0.000008) < 1e-12
+    assert abs(session.session_cost_usd - 0.000008) < 1e-12
 
 
 def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypatch):

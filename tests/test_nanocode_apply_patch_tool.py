@@ -100,6 +100,59 @@ def test_apply_patch_tool_accepts_codex_style_update_file_patch(tmp_path):
     assert "* hunks: 1" in result
 
 
+def test_apply_patch_tool_treats_unique_applied_codex_hunk_as_noop(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nBETA\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        " alpha\n"
+        "-beta\n"
+        "+BETA\n"
+        " gamma\n"
+        "@@\n"
+        " gamma\n"
+        "+delta\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["sample.txt", patch])
+    display = tool.display()
+    result = tool.call()
+
+    assert "# preview unavailable" not in display
+    assert "+delta\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\ndelta\n"
+    assert "* hunks: 2" in result
+
+
+def test_apply_patch_tool_reports_hunk_number_and_context_for_mismatch(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: sample.txt\n"
+        "@@\n"
+        "-missing\n"
+        "+MISSING\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["sample.txt", patch])
+
+    with pytest.raises(ToolCallError) as error:
+        tool.call()
+    message = str(error.value)
+    assert "hunk 1: hunk context did not match" in message
+    assert "expected:\n-missing" in message
+    assert "replacement:\n+MISSING" in message
+    assert "hunk 1: hunk context did not match" in tool.display()
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
 def test_apply_patch_tool_rejects_codex_style_patch_for_different_file(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")

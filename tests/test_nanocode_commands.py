@@ -48,12 +48,15 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     session = Session(cwd=str(tmp_path), model="model")
     session.last_total_tokens = 1200
     session.session_total_tokens = 2_345_678
+    session.last_cost_usd = 0.000008
+    session.session_cost_usd = 12.345678
     dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/status")
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
+    assert "cost(usd): last=$0.000008 session=$12.345678" in result.message
     assert "stream: on" in result.message
     assert "blackboard: 0 items" in result.message
 

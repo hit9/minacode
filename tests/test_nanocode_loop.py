@@ -52,7 +52,10 @@ def test_session_reports_missing_required_envs(tmp_path):
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     session = Session(cwd=str(tmp_path), model="provider/model", compact_at=9)
+    session.last_total_tokens = 42
+    session.last_cost_usd = 0.000008
     session.session_total_tokens = 1200
+    session.session_cost_usd = 12.345678
     bar = StatusBar(session)
 
     text = bar._text(1.2, now=1.0)
@@ -61,11 +64,12 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert ">" not in text
     assert "model (medium)" in text
     assert "ctx:0/9" in text
-    assert "tok:last:- session:1k" in text
+    assert "tok:last:42/$0.000008 session:1k/$12.345678" in text
+    assert "usd:" not in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tok:last:- session:1k | bb:0"
+    assert snapshot == "model (medium) | ctx:0/9 | tok:last:42/$0.000008 session:1k/$12.345678 | bb:0"
     assert ">" not in snapshot
 
 
