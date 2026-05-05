@@ -72,7 +72,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
         def read(self):
             return json.dumps(
                 {
-                    "choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}],
+                    "choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
                 }
             ).encode("utf-8")
@@ -95,13 +95,12 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert captured["authorization"] == "Bearer key"
     assert captured["payload"]["model"] == "model"
     assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
-    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert "reasoning" not in captured["payload"]
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
-
 
 def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
     captured = {}
@@ -114,7 +113,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}], "usage": {}}).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         captured["payload"] = json.loads(request.data.decode("utf-8"))
@@ -144,7 +143,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
             return None
 
         def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"actions": [{"type": "message", "text": "ok"}]})}}], "usage": {}}).encode("utf-8")
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     session = Session(
@@ -179,7 +178,7 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "choices": [{"message": {"content": '```json\n{"actions":[{"type":"message","text":"ok"}]}\n```'}}],
+                    "choices": [{"message": {"content": '```json\n{"type":"message","text":"ok"}\n__END_ACTION__\n```'}}],
                     "usage": {},
                 }
             ).encode("utf-8")
@@ -198,21 +197,39 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
 def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
-    assert client._parse_model_content('</think>{"actions":[{"type":"message","text":"ok"}]}') == {
+    assert client._parse_model_content('</think>{"type":"message","text":"ok"}\n__END_ACTION__') == {
         "actions": [{"type": "message", "text": "ok"}],
     }
-    assert client._parse_model_content('<think>reasoning</think>\n{"actions":[{"type":"message","text":"ok"}]}') == {
+    assert client._parse_model_content('<think>reasoning</think>\n{"type":"message","text":"ok"}\n__END_ACTION__') == {
         "actions": [{"type": "message", "text": "ok"}],
     }
 
 
-def test_agent_request_does_not_extract_json_after_arbitrary_prefix(tmp_path):
+def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
-    response = client._parse_model_content('note {"actions":[{"type":"message","text":"ok"}]}')
+    response = client._parse_model_content(
+        '{\n  "type": "message",\n  "text": "ok"\n}\n**END_ACTION**\n{"type":"goal","text":"next"}\nEND_ACTION'
+    )
 
-    assert response["actions"] == []
-    assert "expected one JSON object" in response["_format_error"]
+    assert response == {"actions": [{"type": "message", "text": "ok"}, {"type": "goal", "text": "next"}]}
+
+
+def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('{"type":"message","text":"ok"}__END_ACTION__{"type":"goal","text":"next"}__END_ACTION__')
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}, {"type": "goal", "text": "next"}]}
+
+
+def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('plain answer\n__END_ACTION__\n{"type":"message","text":"ok"}\n__END_ACTION__')
+
+    assert response["actions"] == [{"type": "message", "text": "ok"}]
+    assert response["_format_frame_errors"] == ["frame 1: expected JSON object action"]
 
 
 def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
@@ -246,7 +263,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
-    assert "expected one JSON object" in response["_format_error"]
+    assert "expected at least one valid action frame" in response["_format_error"]
     assert "plain answer" in response["_format_error"]
 
 
@@ -537,7 +554,6 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "result_file": None,
                             "needs_raw_read": False,
                         },
-                        {"type": "done"},
                         {"type": "message", "text": "done"},
                     ],
                 },
@@ -577,7 +593,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -605,7 +621,7 @@ def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -749,7 +765,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer"}]},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -765,7 +781,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert "No tool actions and no done action" in agent.model_client.user_prompts[1]
+    assert "No tool actions and no message action" in agent.model_client.user_prompts[1]
     assert "Continuing: goal is not complete yet." in messages
 
 
@@ -777,13 +793,11 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "change file"},
-                        {"type": "done"},
                         {"type": "verify", "method": "run tests", "status": "pending", "evidence": None},
                     ],
                 },
                 {
                     "actions": [
-                        {"type": "done"},
                         {"type": "verify", "method": "run tests", "status": "passed", "evidence": "tests passed"},
                         {"type": "message", "text": "done"},
                     ],
@@ -815,7 +829,7 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -833,7 +847,7 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
     assert "Agent_Feedback Begin" in agent.model_client.user_prompts[1]
     assert "Latest_Tool_Call_Results Begin ------\n(empty)" in agent.model_client.user_prompts[1]
-    assert messages == ["Retrying: model returned invalid output.", "done"]
+    assert messages == ["Retrying: model returned invalid output: plain answer", "done"]
 
 
 def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
@@ -842,7 +856,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [], "message_to_user": "old protocol"},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -859,35 +873,44 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
     assert "unexpected top-level keys: message_to_user" in agent.model_client.user_prompts[1]
 
 
-def test_agent_run_rejects_done_with_tool_actions(tmp_path):
+def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
     class FakeModelClient:
         def __init__(self):
-            self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]}, {"type": "done"}]},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {
+                    "actions": [{"type": "message", "text": "done"}],
+                    "_format_frame_errors": ["frame 1: expected JSON object action"],
+                }
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.model_client = FakeModelClient()
+    messages = []
 
-    response = agent.run("answer")
+    agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert "done action cannot be combined with tool actions" in agent.model_client.user_prompts[1]
+    assert messages == ["done"]
+
+    debug_session = Session(cwd=str(tmp_path), debug=True)
+    debug_agent = Agent(debug_session)
+    debug_agent.model_client = FakeModelClient()
+    debug_messages = []
+
+    debug_agent.run("answer", on_message=debug_messages.append)
+
+    assert debug_messages == ["Format_Warning: ignored invalid action frame(s).\n- frame 1: expected JSON object action", "done"]
 
 
 def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"actions": [{"type": "done"}, {"type": "message", "text": "done"}]},
+                {"_format_error": "Invalid model output: plain answer", "_format_bad_output": "plain answer", "actions": []},
+                {"actions": [{"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -900,7 +923,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
 
     agent.run("answer", on_message=messages.append)
 
-    assert messages[0] == "Format_Gate: retrying model response. Invalid model output: plain answer"
+    assert messages[0] == "Format_Gate: retrying model response. Invalid model output: plain answer\nFull bad output:\nplain answer"
 
 
 def test_agent_run_stops_after_repeated_format_errors(tmp_path):
@@ -932,9 +955,11 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
 def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
     prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
 
-    assert "Output MUST be exactly one JSON object" in prompt
-    assert "No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON" in prompt
-    assert '"actions"' in prompt
+    assert "Output format is mandatory" in prompt
+    assert "Each action frame MUST contain exactly one JSON object action" in prompt
+    assert "Each action frame MUST end with a separator line containing only __END_ACTION__" in prompt
+    assert "Do not wrap actions in" in prompt
+    assert "Do not output a JSON array" in prompt
     assert "MUST use tool actions" in prompt
     assert "Agent_Feedback" in prompt
     assert "Prefer Search before Read" in prompt

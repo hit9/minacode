@@ -11,6 +11,7 @@ import fnmatch
 import hashlib
 import itertools
 import json
+import json_repair
 import os
 import platform
 import re
@@ -1844,24 +1845,40 @@ Input:
 - Latest_User_Input: latest user message
 - Tools: available tool specs
 
-Output MUST be exactly one JSON object.
-No markdown, prose, code fences, XML tags, native tool calls, or text outside JSON.
-Top-level object MUST contain only actions. Include only actions that are needed; do not emit null/no-op fields.
+Output format is mandatory:
+- Output action frames only.
+- Each action frame MUST contain exactly one JSON object action.
+- Each action frame MUST end with a separator line containing only __END_ACTION__.
+- The separator is required after every action, including the final action.
+- Pretty-printed multi-line JSON is allowed inside a frame.
+- Do not wrap actions in {"actions":[...]}.
+- Do not output a JSON array.
+- Do not output markdown, prose, code fences, XML tags, native tool calls, or text outside action frames.
+- Include only actions that are needed; do not emit null/no-op fields.
 
-Schema:
+Action schemas:
+{"type": "message", "text": "string"}
+{"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
+{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "result_file": null | "string", "needs_raw_read": true | false}
+{"type": "goal", "text": "string"}
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
+{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
+{"type": "context", "mode": "replace|append", "items": [{"note": "string", "details": null | ["string"]}]}
+{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
+
+Example:
 {
-  "actions": [
-    {"type": "message", "text": "string"},
-    {"type": "tool", "name": "string", "intention": "string", "args": ["string"]},
-    {"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "result_file": null | "string", "needs_raw_read": true | false},
-    {"type": "goal", "text": "string"},
-    {"type": "done"},
-    {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]},
-    {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]},
-    {"type": "context", "mode": "replace|append", "items": [{"note": "string", "details": null | ["string"]}]},
-    {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
-  ]
+  "type": "tool",
+  "name": "Read",
+  "intention": "Inspect SearchTool.make.",
+  "args": ["nanocode.py", "880", "930"]
 }
+__END_ACTION__
+{
+  "type": "message",
+  "text": "Done."
+}
+__END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2006,6 +2023,10 @@ class PromptBuilder:
 
 @final
 class ModelClient:
+    ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
+    ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
+    ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
+
     def __init__(self, session: Session):
         self.session = session
 
@@ -2025,7 +2046,6 @@ class ModelClient:
             "model": self.session.model,
             "messages": messages,
             "temperature": self.session.temperature,
-            "response_format": {"type": "json_object"},
         }
         extra_params = self._reasoning_params()
         payload.update(extra_params)
@@ -2095,13 +2115,58 @@ class ModelClient:
         text = self._strip_leaked_think_tags(text)
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
-        try:
-            value = json.loads(text)
-        except json.JSONDecodeError:
-            return self._invalid_model_response(content)
-        if not isinstance(value, dict):
-            return self._invalid_model_response(content)
-        return value
+        actions: list[Json] = []
+        frame_errors: list[str] = []
+        for frame_number, frame in enumerate(self._action_frames(text), start=1):
+            frame = frame.strip()
+            if not frame:
+                continue
+            try:
+                value = json_repair.loads(frame)
+            except Exception as error:
+                frame_errors.append("frame " + str(frame_number) + ": " + str(error))
+                continue
+            if not isinstance(value, dict):
+                frame_errors.append("frame " + str(frame_number) + ": expected JSON object action")
+                continue
+            if not _json_str(value.get("type")):
+                frame_errors.append("frame " + str(frame_number) + ": action missing type")
+                continue
+            actions.append(value)
+        if not actions:
+            reason = "expected at least one valid action frame ending with " + self.ACTION_FRAME_END
+            if frame_errors:
+                reason += "; " + "; ".join(frame_errors[:3])
+            return self._invalid_model_response(content, reason)
+        response: Json = {"actions": actions}
+        if frame_errors:
+            response["_format_frame_errors"] = frame_errors
+        return response
+
+    def _action_frames(self, text: str) -> list[str]:
+        frames: list[str] = []
+        current: list[str] = []
+        for line in text.splitlines():
+            if not self._has_action_frame_end(line):
+                current.append(line)
+                continue
+            parts = self.ACTION_FRAME_END_SPLIT_PATTERN.split(line)
+            for index, part in enumerate(parts):
+                if part:
+                    current.append(part)
+                if index < len(parts) - 1:
+                    frames.append("\n".join(current).strip())
+                    current = []
+        trailing = "\n".join(current).strip()
+        if trailing:
+            frames.append(trailing)
+        return frames
+
+    def _has_action_frame_end(self, line: str) -> bool:
+        return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
+
+    def _is_action_frame_end(self, line: str) -> bool:
+        return self.ACTION_FRAME_END_PATTERN.match(line) is not None
 
     def _strip_json_fence(self, text: str) -> str:
         if not text.startswith("```"):
@@ -2126,16 +2191,19 @@ class ModelClient:
                 text = text[len("</think>") :].lstrip()
         return text
 
-    def _invalid_model_response(self, content: str) -> Json:
+    def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
         guidance = ""
         if self._looks_like_native_tool_call(content):
             guidance = (
-                " Native tool_call syntax is not supported; return one JSON object with actions like "
-                '{"actions":[{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0","100"]}]}.'
+                " Native tool_call syntax is not supported; return an action frame like "
+                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0","100"]}\n__END_ACTION__.'
             )
         return {
             "actions": [],
-            "_format_error": "Invalid model output: expected one JSON object matching the Output JSON schema. Return strict JSON only. Bad output: "
+            "_format_bad_output": content,
+            "_format_error": "Invalid model output: "
+            + reason
+            + ". Return action frames only. Bad output: "
             + _shorten(content)
             + guidance,
         }
@@ -2571,8 +2639,6 @@ class AgentStateUpdater:
                 if update is not None:
                     changed = changed or update != self.session.current.goal
                     self.session.current.goal = update
-            elif action_type == "done":
-                self.session.current.goal_reached = True
         return changed
 
     def _apply_plan(self, response: Json) -> bool:
@@ -2807,21 +2873,25 @@ class Agent:
                         "Format_Gate: stopped after "
                         + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
                         + " consecutive invalid model outputs. "
-                        + _shorten(format_error, 180),
+                        + self._format_gate_debug_details(response, format_error),
                     )
                     raise LLMError(
                         "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
                     )
                 self._report_gate(
                     on_message,
-                    "Retrying: model returned invalid output.",
-                    "Format_Gate: retrying model response. " + _shorten(format_error, 180),
+                    self._format_gate_user_message("Retrying: model returned invalid output", format_error),
+                    "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
                 )
                 continue
             consecutive_format_errors = 0
             actions = self._response_actions(response)
             tool_calls = self._tool_calls_from_actions(actions)
             messages = self._messages_from_actions(actions)
+            if self.session.debug and on_message is not None:
+                frame_error_report = self._format_frame_error_report(response)
+                if frame_error_report:
+                    on_message(frame_error_report)
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
@@ -2837,8 +2907,6 @@ class Agent:
                         on_message(report)
                 self.maybe_auto_compact()
                 continue
-            if self.session.current.goal_reached and self.session.current.verification.status != VerificationStatus.REQUIRED:
-                return response
             if self.session.current.verification.status == VerificationStatus.REQUIRED:
                 self.session.current.goal_reached = False
                 self.latest_agent_feedback = self._format_verification_gate()
@@ -2848,7 +2916,10 @@ class Agent:
                     "Verification_Gate: retrying until verification is passed or blocked.",
                 )
                 continue
-            if not self.session.current.goal_reached:
+            if messages:
+                self.session.current.goal_reached = True
+                return response
+            if not messages:
                 self.latest_agent_feedback = self._format_continuation_hint()
                 self._report_gate(
                     on_message,
@@ -2862,6 +2933,22 @@ class Agent:
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is not None:
             on_message(debug_message if self.session.debug else message)
+
+    def _format_gate_user_message(self, prefix: str, format_error: str) -> str:
+        detail = format_error
+        for marker in (". Bad output:", " Bad output:"):
+            if marker in detail:
+                detail = detail.split(marker, 1)[0]
+                break
+        if detail.startswith("Invalid model output: "):
+            detail = detail[len("Invalid model output: ") :]
+        return prefix + ": " + _shorten(detail, 180)
+
+    def _format_gate_debug_details(self, response: Json, format_error: str) -> str:
+        bad_output = _json_str(response.get("_format_bad_output"))
+        if bad_output is None:
+            return _shorten(format_error, 180)
+        return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
     def _compact_gate_report(self, gate: str) -> str:
         lines = gate.splitlines()
@@ -2908,7 +2995,7 @@ class Agent:
         )
 
     def _format_continuation_hint(self) -> str:
-        return "No tool actions and no done action. Continue with the next useful action."
+        return "No tool actions and no message action. Continue with the next useful action."
 
     def _missing_tool_summaries(self) -> list[ToolCallEvent]:
         return [event for event in self.tool_runner.latest_events if not event.summary]
@@ -2959,20 +3046,24 @@ class Agent:
             "actions": [],
             "_format_error": "Invalid model output: "
             + reason
-            + '. Return strict JSON only. Expected top-level object: {"actions":[...]}. Bad output: '
+            + ". Return action frames only. Bad output: "
             + _shorten(json.dumps(response, ensure_ascii=False)),
         }
 
     def _validate_action_response(self, response: Json) -> Json | None:
         if not isinstance(response.get("actions"), list):
             return self._invalid_action_response(response, "expected actions array")
-        extra_keys = sorted(str(key) for key in response.keys() if key != "actions")
+        extra_keys = sorted(str(key) for key in response.keys() if key != "actions" and not str(key).startswith("_format_"))
         if extra_keys:
             return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
-        action_types = {_json_str(action.get("type")) for action in self._response_actions(response)}
-        if "done" in action_types and "tool" in action_types:
-            return self._invalid_action_response(response, "done action cannot be combined with tool actions")
         return None
+
+    def _format_frame_error_report(self, response: Json) -> str:
+        errors = [_json_str(error) or "" for error in _json_list(response.get("_format_frame_errors"))]
+        errors = [error for error in errors if error]
+        if not errors:
+            return ""
+        return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
