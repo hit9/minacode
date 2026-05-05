@@ -42,7 +42,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 class Error(Exception): ...
