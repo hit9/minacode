@@ -1087,7 +1087,7 @@ def test_agent_system_prompt_forbids_non_json_answers(tmp_path):
     assert "Do not output a JSON array" in prompt
     assert "MUST use tool actions" in prompt
     assert "Keep each tool batch small" in prompt
-    assert "never more than 5 tool actions" in prompt
+    assert "never more than 8 tool actions" in prompt
     assert "Use multiple tool calls in one turn only when they are independent" in prompt
     assert "then stop and wait for results before editing, patching, testing, or cleanup" in prompt
     assert "Do not queue speculative follow-up tools" in prompt
