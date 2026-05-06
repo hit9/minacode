@@ -2653,7 +2653,7 @@ class AgentStateUpdater:
         if self.session.details != before_details:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Details " + str(len(self.session.details_store)))
+            lines.append("  Details " + f"{len(self.session.details_store)}")
             lines.extend(self._format_details_rows(before_details))
         verification = current.verification.format()
         if verification != before_verification:
