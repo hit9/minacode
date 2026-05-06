@@ -509,6 +509,11 @@ def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_pa
     assert "Use known actions only for stable facts not from tool results." in prompt
     assert "Put reusable stable facts in known_facts; use null if none." in prompt
     assert '"known_facts": null | [{"fact": "string", "details": null | ["string"]}]' in prompt
+    assert "Main loop (most important):" in prompt
+    assert "Goal: decide the current Goal from Latest_User_Input and existing Goal." in prompt
+    assert "Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh tool results." in prompt
+    assert "Plan: revise Plan from facts, not guesses; keep one next step doing." in prompt
+    assert "Next: run the next necessary independent tool batch, verify, or answer." in prompt
     assert "Temporary key-value stash for large notes, raw excerpts, and tool-result notes" in prompt
     assert "Known = small stable facts useful later" in prompt
     assert "Use Blackboard for large notes, raw excerpts, or content you may need to read back later" in prompt

@@ -2188,12 +2188,12 @@ Action schemas:
 {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
 
-Decision order:
-1. Read Latest_User_Input and Agent_Feedback.
-2. Set or keep Goal.
-3. Summarize fresh tool results and extract known_facts, if any.
-4. Update Plan if needed.
-5. Run the next necessary independent tool batch, OR verify, OR answer.
+Main loop (most important):
+1. Goal: decide the current Goal from Latest_User_Input and existing Goal.
+2. Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh tool results.
+3. Facts: summarize fresh tool results; put reusable facts in known_facts.
+4. Plan: revise Plan from facts, not guesses; keep one next step doing.
+5. Next: run the next necessary independent tool batch, verify, or answer.
 6. Never skip verification after edits.
 
 Example:
