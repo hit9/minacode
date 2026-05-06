@@ -185,21 +185,44 @@ class Verification(PromptItem):
 
 
 @final
-@dataclass
+@dataclass(init=False)
 class KnownItem(PromptItem):
     fact: str
-    details: list[str] = field(default_factory=list)
+    detail_keys: list[str] = field(default_factory=list)
+
+    def __init__(self, fact: str, detail_keys: list[str] | None = None, details: list[str] | None = None):
+        self.fact = fact
+        self.detail_keys = list(detail_keys if detail_keys is not None else details or [])
+
+    @property
+    def details(self) -> list[str]:
+        return self.detail_keys
+
+    @details.setter
+    def details(self, value: list[str]) -> None:
+        self.detail_keys = value
 
     @override
     def format(self, indent: str = "") -> str:
         lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
-        if self.details:
-            lines.append("  <details>")
-            for detail in self.details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </details>")
+        if self.detail_keys:
+            lines.append("  <detail_keys>")
+            for key in self.detail_keys:
+                lines.append("    <detail_key>" + key + "</detail_key>")
+            lines.append("  </detail_keys>")
         lines.append("</KnownItem>")
         return _format_lines(lines, indent)
+
+
+@final
+@dataclass
+class DetailItem(PromptItem):
+    description: str
+    value: str
+
+    @override
+    def format(self, indent: str = "") -> str:
+        return _format_lines(["<Detail>", "  <description>" + self.description + "</description>", "</Detail>"], indent)
 
 
 @final
@@ -394,7 +417,23 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    details: dict[str, str] = field(default_factory=dict)
+    details_store: dict[str, DetailItem] = field(default_factory=dict)
+
+    @property
+    def details(self) -> dict[str, DetailItem]:
+        return self.details_store
+
+    @details.setter
+    def details(self, value: dict[str, DetailItem] | dict[str, str]) -> None:
+        self.details_store = {key: item if isinstance(item, DetailItem) else DetailItem(description=key, value=str(item)) for key, item in value.items()}
+
+    @property
+    def details(self) -> dict[str, DetailItem]:
+        return self.details_store
+
+    @details.setter
+    def details(self, value: dict[str, DetailItem] | dict[str, str]) -> None:
+        self.details_store = {key: item if isinstance(item, DetailItem) else DetailItem(description=key, value=str(item)) for key, item in value.items()}
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -1872,8 +1911,10 @@ class GitTool(Tool):
 @final
 @dataclass
 class DetailsTool(Tool):
+    MAX_OUTPUT_CHARS: ClassVar[int] = 20_000
+
     keys: list[str]
-    details: dict[str, str]
+    details: dict[str, DetailItem]
 
     @classmethod
     def name(cls) -> str:
@@ -1881,7 +1922,7 @@ class DetailsTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read stored detail values by key; accepts one or more keys."]
+        return ["Read hidden detail values by key; batch multiple keys when useful."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1910,10 +1951,15 @@ class DetailsTool(Tool):
             raise ToolCallError("Details requires at least one key")
         lines = ["<DetailsToolResult>"]
         for key in self.keys:
-            value = self.details.get(key, "")
-            lines.extend(['  <Detail key="' + key + '">', value, "  </Detail>"])
+            if key not in self.details:
+                lines.append('  <Missing key="' + key + '"/>')
+                continue
+            lines.extend(['  <Detail key="' + key + '">', self.details[key].value, "  </Detail>"])
         lines.append("</DetailsToolResult>")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        if len(result) <= self.MAX_OUTPUT_CHARS:
+            return result
+        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</DetailsToolResult>"
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1939,14 +1985,8 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
-USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
-KNOWN IS CRITICAL; STORE NON-EMPTY FACTS WITH NON-EMPTY DETAIL KEYS.
-DETAIL VALUES ARE HIDDEN; STORE VALUES WITH details ACTION AND FETCH THEM WITH Details(key...).
-TOOL RESULTS ARE ONE-SHOT; EXTRACT KNOWN FACTS AND DETAIL KEYS IMMEDIATELY BEFORE CONTINUING.
 
-Based ON Existing Input:
-
-Environment, Conversation_History, Known, Goal, Plan,Verification_State, Errors, Last_Tool_Calls and Latest_User_Input.
+Use the current Environment, Conversation_History, Known, Goal, Plan, Verification_State, Errors, Last_Tool_Calls, and Latest_User_Input.
 
 STEPS:
 
@@ -1957,6 +1997,7 @@ STEPS:
 5. Report progress to the user with message when appropriate.
 
 Available tools:
+USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
 
 { __tools__ }
 
@@ -1964,8 +2005,17 @@ Rules:
 
 1. Call at most 10 tools in one turn.
 2. Prefer batched Search/Read when useful.
-3. Tool results are one-shot; batch independent tools and extract known facts/detail keys immediately.
+3. Tool results are one-shot; batch independent tools and extract known facts/detail values immediately.
 4. EVERY TURN MUST EMIT AT LEAST ONE ACTION FRAME.
+
+* KNOWN IS CRITICAL; STORE NON-EMPTY, SELF-CONTAINED FACTS WITH NON-EMPTY DETAIL KEYS/DESCRIPTIONS/VALUES.
+* DETAIL VALUES ARE HIDDEN; context shows only key+description; fetch values later with Details(key...).
+* TOOL RESULTS ARE ONE-SHOT; EXTRACT KNOWN FACTS AND DETAIL VALUES IMMEDIATELY BEFORE CONTINUING.
+* Every turn must output known with details; missing known or empty details is rejected.
+
+During Exploring:
+* Before Read, prefer batched Details(...) for stored context.
+* Later only detail keys/descriptions are visible; use Details(key...) for values.
 
 Output format (Strict)
 
@@ -1974,8 +2024,8 @@ Output multiple JSON objects separated by __END_ACTION__:
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
-{"type": "known", "items": [{"fact": "non-empty string", "details": ["non-empty detail key"]}]} __END_ACTION__
-{"type": "details", "items": [{"key": "non-empty detail key", "value": "non-empty string"}]} __END_ACTION__
+{"type": "known", "items": [{"fact": "non-empty self-contained string", "details": [{"key": "non-empty detail key", "description": "non-empty description", "value": "non-empty detail value"}]}]} __END_ACTION__
+{"type": "details", "items": [{"key": "non-empty detail key", "description": "non-empty description", "value": "non-empty detail value"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -1992,6 +2042,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Known>
 {known}
 </Known>
+
+<Details>
+{details}
+</Details>
 
 <Goal>
 {goal}
@@ -2069,6 +2123,7 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
+            details=self._format_details(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2097,6 +2152,14 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
+
+    def _format_details(self) -> str:
+        if not self.session.details:
+            return "(empty)"
+        lines = []
+        for key, item in self.session.details.items():
+            lines.extend(['<Detail key="' + key + '">', "  <description>" + item.description + "</description>", "</Detail>"])
+        return "\n".join(lines)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -2529,6 +2592,8 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
+    MAX_DETAIL_ITEMS: ClassVar[int] = 80
+    MAX_DETAIL_VALUE_CHARS: ClassVar[int] = 12_000
 
     def __init__(self, session: Session):
         self.session = session
@@ -2565,7 +2630,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_details: dict[str, str],
+        before_details: dict[str, DetailItem],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2588,7 +2653,7 @@ class AgentStateUpdater:
         if self.session.details != before_details:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Details")
+            lines.append("  Details " + str(len(self.session.details_store)))
             lines.extend(self._format_details_rows(before_details))
         verification = current.verification.format()
         if verification != before_verification:
@@ -2617,19 +2682,20 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             text = self._compact(item.fact)
-            if item.details:
-                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
+            if item.detail_keys:
+                text += " | " + "; ".join(self._compact(key) for key in item.detail_keys)
             rows.append("    " + str(index) + ". " + text)
         return rows
 
-    def _format_details_rows(self, before_details: dict[str, str]) -> list[str]:
+    def _format_details_rows(self, before_details: dict[str, DetailItem]) -> list[str]:
         changed = [key for key, value in self.session.details.items() if before_details.get(key) != value]
         if not changed:
             return ["    (empty)"]
         offset = max(0, len(changed) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, key in enumerate(changed[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(key))
+            item = self.session.details[key]
+            rows.append("    " + str(index) + ". " + self._compact(key) + " - " + self._compact(item.description))
         return rows
 
     def _format_verification(self) -> str:
@@ -2719,9 +2785,9 @@ class AgentStateUpdater:
             for raw in items:
                 item = _json_dict(raw)
                 key = _json_str(item.get("key"))
+                description = _json_str(item.get("description"))
                 value = _json_str(item.get("value"))
-                if key and value:
-                    self.session.details[key] = value
+                self._store_detail(key, description, value)
 
     def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
         item = _json_dict(value)
@@ -2730,11 +2796,43 @@ class AgentStateUpdater:
         fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        details = [(_json_str(detail) or "").strip() for detail in _json_list(item.get("details"))]
-        details = [detail for detail in details if detail]
-        if not details:
+        detail_keys = self._detail_keys_from_known_item(item)
+        if not detail_keys:
             return None
-        return KnownItem(fact=fact, details=details)
+        return KnownItem(fact=fact, detail_keys=detail_keys)
+
+    def _detail_keys_from_known_item(self, item: Json) -> list[str]:
+        keys: list[str] = []
+        for raw in _json_list(item.get("detail_keys")):
+            key = (_json_str(raw) or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+        for raw in _json_list(item.get("details")):
+            detail = _json_dict(raw)
+            if detail:
+                key = (_json_str(detail.get("key")) or "").strip()
+                description = _json_str(detail.get("description"))
+                value = _json_str(detail.get("value"))
+                self._store_detail(key, description, value)
+            else:
+                key = (_json_str(raw) or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+        return keys
+
+    def _store_detail(self, key: str | None, description: str | None, value: str | None) -> None:
+        key = (key or "").strip()
+        description = (description or "").strip()
+        value = (value or "").strip()
+        if not key or not value:
+            return
+        if not description:
+            description = key
+        if len(value) > self.MAX_DETAIL_VALUE_CHARS:
+            value = value[: self.MAX_DETAIL_VALUE_CHARS] + "\n...<truncated>"
+        if key not in self.session.details and len(self.session.details) >= self.MAX_DETAIL_ITEMS:
+            self.session.details.pop(next(iter(self.session.details)))
+        self.session.details[key] = DetailItem(description=description, value=value)
 
     def _add_known_item(self, item: KnownItem) -> None:
         if not any(known.fact == item.fact for known in self.session.current.known):
@@ -3152,6 +3250,7 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
+    CommandSpec("/details", "Show or clear hidden detail store", "Info", "/details [clear]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3180,6 +3279,7 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
+            "/details": self._details,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3238,6 +3338,20 @@ class CommandDispatcher:
             ]
         )
 
+    def _details(self, args: str) -> str:
+        if args == "clear":
+            count = len(self.agent.session.details_store)
+            self.agent.session.details_store.clear()
+            return "Cleared details: " + str(count)
+        if args:
+            return "Usage: /details [clear]"
+        if not self.agent.session.details_store:
+            return "Details: 0"
+        lines = ["Details: " + str(len(self.agent.session.details_store))]
+        for key, item in self.agent.session.details_store.items():
+            lines.append("  " + key + " - " + item.description)
+        return "\n".join(lines)
+
     def _status(self, args: str) -> str:
         if args:
             return "Usage: /status"
@@ -3252,6 +3366,7 @@ class CommandDispatcher:
                 "stream: " + stream,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
+                "details: " + str(len(session.details_store)),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
                 "goal: " + (session.current.goal or "(empty)"),
@@ -3457,7 +3572,7 @@ class StatusBar:
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "details:" + str(len(session.details_store)), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
