@@ -57,6 +57,9 @@ class ToolCallArgError(ToolCallError): ...
 class LLMError(Exception): ...
 
 
+class ModelRequestTimeout(Exception): ...
+
+
 class Cancellation(Exception): ...
 
 
@@ -2172,6 +2175,9 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
 
+    def _timeout_handler(self, signum: int, frame: Any) -> None:
+        raise ModelRequestTimeout()
+
     def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
         if not self.session.api_url:
             raise LLMError("NANOCODE_API_URL is required")
@@ -2206,6 +2212,9 @@ class ModelClient:
         )
         try:
             self.session.current_model_call_started_at = time.monotonic()
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, self._timeout_handler)
+            signal.setitimer(signal.ITIMER_REAL, max(0, self.session.model_timeout))
             try:
                 with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
                     if self.session.stream:
@@ -2214,12 +2223,20 @@ class ModelClient:
                     else:
                         body = response.read().decode("utf-8")
             finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous_handler)
                 self.session.current_model_call_started_at = 0.0
-        except socket.timeout:
+        except ModelRequestTimeout:
+            raise LLMError("request model timeout")
+        except (socket.timeout, TimeoutError):
             raise LLMError("request model timeout")
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
             raise LLMError("API request failed: HTTP " + str(error.code) + ": " + _shorten(body))
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, (socket.timeout, TimeoutError)):
+                raise LLMError("request model timeout")
+            raise LLMError(str(error))
         except Exception as error:
             raise LLMError(str(error))
 

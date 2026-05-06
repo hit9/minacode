@@ -229,6 +229,34 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     assert session.session_total_tokens == 5
 
 
+def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            nanocode.signal.raise_signal(nanocode.signal.SIGALRM)
+            yield b""
+
+    sleeps = []
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12)
+
+    try:
+        Agent(session).request("system", "user")
+    except LLMError as error:
+        assert str(error) == "request model timeout"
+    else:
+        raise AssertionError("expected LLMError")
+
+    assert session.current_model_call_started_at == 0.0
+    assert sleeps == [3, 6, 10]
+
+
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     captured_payloads = []
