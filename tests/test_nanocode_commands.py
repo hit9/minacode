@@ -90,28 +90,28 @@ def test_blackboard_command_reports_empty_board(tmp_path):
 
 def test_blackboard_command_reads_board_with_default_and_status_args(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.blackboard = ["note 1", "note 2"]
+    session.blackboard = {"note 1": "value 1", "note 2": "value 2"}
     dispatcher = CommandDispatcher(Agent(session))
 
     default_result = dispatcher.dispatch("/blackboard")
     status_result = dispatcher.dispatch("/blackboard status")
 
     assert default_result.status == CommandStatus.HANDLED
-    assert default_result.message == "Blackboard:\nnote 1\nnote 2"
+    assert default_result.message == "Blackboard:\nnote 1 -> value 1\nnote 2 -> value 2"
     assert status_result.status == CommandStatus.HANDLED
     assert status_result.message == default_result.message
 
 
 def test_blackboard_command_clear_mutates_session_board(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.blackboard = ["note"]
+    session.blackboard = {"note": "value"}
     dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/blackboard   clear  ")
 
     assert result.status == CommandStatus.HANDLED
     assert result.message == "Blackboard cleared"
-    assert session.blackboard == []
+    assert session.blackboard == {}
 
 
 def test_blackboard_command_reports_usage_for_unknown_args(tmp_path):

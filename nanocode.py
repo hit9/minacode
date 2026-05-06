@@ -486,7 +486,7 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    blackboard: list[str] = field(default_factory=list)
+    blackboard: dict[str, str] = field(default_factory=dict)
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -1854,12 +1854,17 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
+def _format_blackboard(blackboard: dict[str, str]) -> str:
+    return "\n".join(key + " -> " + value for key, value in blackboard.items())
+
+
 @final
 @dataclass
 class BlackboardTool(Tool):
     action: str
-    content: str
-    blackboard: list[str]
+    key: str
+    value: str | None
+    blackboard: dict[str, str]
 
     @classmethod
     def name(cls) -> str:
@@ -1869,50 +1874,68 @@ class BlackboardTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Scratchpad for hypotheses, intermediate analysis, or task state.",
-            "Stores temporary data outside main context; cleared when the session ends. Actions: read, append, clear.",
+            "Stores temporary key-value data outside main context; cleared when the session ends. Actions: read, set, delete, clear.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Blackboard(action[, content]) -> BlackboardToolResult<content>"
+        return "Blackboard(action[, key[, value]]) -> BlackboardToolResult<content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            '{"name": "Blackboard", "intention": "Record progress", "args": ["append", "Step 1 done"]}',
+            '{"name": "Blackboard", "intention": "Record progress", "args": ["set", "progress", "Step 1 done"]}',
+            '{"name": "Blackboard", "intention": "Read progress", "args": ["read", "progress"]}',
             '{"name": "Blackboard", "intention": "Clear it", "args": ["clear"]}',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         action = args[0] if args else "read"
-        content = args[1] if len(args) > 1 else ""
-        return cls(action=action, content=content, blackboard=session.blackboard)
+        key = args[1] if len(args) > 1 else ""
+        value = args[2] if len(args) > 2 else None
+        return cls(action=action, key=key, value=value, blackboard=session.blackboard)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
 
     def display(self) -> str:
-        if self.action == "append":
-            preview = self.content.replace("\n", " ")[:80]
-            return f"Blackboard append: {preview}"
+        if self.action == "set":
+            preview = (self.value or "").replace("\n", " ")[:80]
+            return f"Blackboard set {self.key}: {preview}"
+        if self.action == "delete":
+            return f"Blackboard delete {self.key}"
         return f"Blackboard {self.action}"
 
     def call(self) -> str:
         if self.action == "read":
-            content = "\n".join(self.blackboard)
+            key = self.key.strip()
+            if key:
+                value = self.blackboard.get(key)
+                content = "" if value is None else key + " -> " + value
+            else:
+                content = _format_blackboard(self.blackboard)
             return f"<BlackboardToolResult>\n{content}\n</BlackboardToolResult>"
 
-        if self.action == "append":
-            if self.content:
-                self.blackboard.append(self.content.rstrip())
-            return "<BlackboardToolResult>appended</BlackboardToolResult>"
+        if self.action == "set":
+            key = self.key.strip()
+            if not key or self.value is None:
+                raise ToolCallError("Blackboard set requires key and value")
+            self.blackboard[key] = self.value.rstrip()
+            return "<BlackboardToolResult>set</BlackboardToolResult>"
+
+        if self.action == "delete":
+            key = self.key.strip()
+            if not key:
+                raise ToolCallError("Blackboard delete requires key")
+            self.blackboard.pop(key, None)
+            return "<BlackboardToolResult>deleted</BlackboardToolResult>"
 
         if self.action == "clear":
             self.blackboard.clear()
             return "<BlackboardToolResult>cleared</BlackboardToolResult>"
 
-        raise ToolCallError("Blackboard action must be one of: read, append, clear")
+        raise ToolCallError("Blackboard action must be one of: read, set, delete, clear")
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -3552,7 +3575,7 @@ class CommandDispatcher:
             self.blackboard.clear()
             return "Blackboard cleared"
         if args in {"", "status"}:
-            content = "\n".join(self.blackboard)
+            content = _format_blackboard(self.blackboard)
             if content:
                 return "Blackboard:\n" + content
             return "Blackboard is empty"
