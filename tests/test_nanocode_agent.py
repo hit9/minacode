@@ -97,6 +97,34 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
     assert sleeps == [3, 6, 10]
 
 
+def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            if self.calls <= 2:
+                raise LLMError("request model timeout")
+            return {"actions": [{"type": "message", "text": "ok"}]}
+
+    sleeps = []
+    messages = []
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    response = agent.request("system", "user", on_message=messages.append)
+
+    assert response["actions"][0]["text"] == "ok"
+    assert agent.model_client.calls == 3
+    assert sleeps == [3, 6]
+    assert messages == [
+        "Retrying: request model timeout; retry 1/3 in 3s.",
+        "Retrying: request model timeout; retry 2/3 in 6s.",
+    ]
+
+
 def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
     class FakeModelClient:
         def __init__(self):
