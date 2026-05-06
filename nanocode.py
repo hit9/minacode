@@ -2123,8 +2123,8 @@ Plan rules:
 
 Memory rules:
 - Known = small stable facts useful later.
-- While summarizing tool results, put reusable facts in known_facts.
-- Use known actions only for stable facts not from tool results.
+- After tool results, Known review is mandatory: set known_facts or null, or the step is rejected.
+- known_facts automatically update Known; use known actions only for non-tool facts.
 - Use Blackboard for large notes, raw excerpts, or content you may need to read back later.
 
 Tool rules:
@@ -2144,9 +2144,9 @@ Tool rules:
 
 Tool result rules:
 - Recent_Tool_Call_Results contains the full previous tool batch plus a bounded older buffer.
-- Briefly summarize each fresh tool result before using it further.
+- Before any new tool/message after tool results, emit tool_summary for each fresh result.
 - Put paths, lines, errors, and decisions in key_evidence.
-- Put reusable stable facts in known_facts; use null if none.
+- Every tool_summary must set known_facts; omitted known_facts is rejected.
 - If raw detail is missing, rerun a targeted tool or read result_file only when cheaper.
 
 Verification rules:
@@ -2190,8 +2190,8 @@ Action schemas:
 
 Main loop (most important):
 1. Goal: decide the current Goal from Latest_User_Input and existing Goal.
-2. Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh tool results.
-3. Facts: summarize fresh tool results; put reusable facts in known_facts.
+2. Fresh results: if present, tool_summary + known_facts/null first, or rejected.
+3. Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh facts.
 4. Plan: revise Plan from facts, not guesses; keep one next step doing.
 5. Next: run the next necessary independent tool batch, verify, or answer.
 6. Never skip verification after edits.
@@ -2845,6 +2845,7 @@ class AgentStateUpdater:
         self.session = session
         self.tool_runner = tool_runner
         self.latest_report = ""
+        self.latest_known_changed = False
 
     def apply(self, response: Json) -> None:
         before_goal = self.session.current.goal
@@ -2860,6 +2861,7 @@ class AgentStateUpdater:
         self._apply_verification(response)
         self._bind_verification_goal()
         self._apply_tool_call_summaries(response)
+        self.latest_known_changed = [item.format() for item in self.session.current.known] != before_known
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
@@ -2999,10 +3001,26 @@ class AgentStateUpdater:
         return [detail for detail in details if detail]
 
     def _apply_known_facts_from_summary(self, summary: Json) -> None:
+        added = False
         for raw in _json_list(summary.get("known_facts")):
             item = self._known_item_from_json(raw)
             if item is not None:
                 self._add_known_item(item)
+                added = True
+        if added:
+            return
+        fallback = self._fallback_known_item_from_summary(summary)
+        if fallback is not None:
+            self._add_known_item(fallback)
+
+    def _fallback_known_item_from_summary(self, summary: Json) -> KnownItem | None:
+        text = _json_str(summary.get("summary"))
+        if not text or summary.get("needs_raw_read") is True:
+            return None
+        details = self._key_details_from_summary(summary)
+        if not details:
+            return None
+        return KnownItem(fact=self._compact(text, limit=180), details=details)
 
     def _apply_goal(self, response: Json) -> bool:
         changed = False
@@ -3258,6 +3276,15 @@ class Agent:
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
+            known_gate = self._format_known_gate(actions)
+            if known_gate:
+                self.latest_agent_feedback = known_gate
+                self._report_gate(
+                    on_message,
+                    "Retrying: Known was not reviewed after tool results.",
+                    self._compact_gate_report(known_gate),
+                )
+                continue
             for message in messages:
                 self.session.append_conversation(AssistantMessage(content=message))
                 if on_message is not None:
@@ -3400,6 +3427,35 @@ class Agent:
 
     def _format_continuation_hint(self) -> str:
         return "No tool actions and no message action. Continue with the next useful action."
+
+    def _format_known_gate(self, actions: list[Json]) -> str:
+        summaries = [action for action in actions if _json_str(action.get("type")) == "tool_summary"]
+        if self.state_updater.latest_known_changed:
+            return ""
+        if summaries:
+            undecided = [summary for summary in summaries if "known_facts" not in summary]
+            if not undecided:
+                return ""
+            return "\n".join(
+                [
+                    "Known_Gate: tool_summary omitted known_facts.",
+                    "Known review is mandatory after tool results.",
+                    "Next_Action: set known_facts to reusable facts or null.",
+                ]
+            )
+        tool_calls = self._tool_calls_from_actions(actions)
+        missing = [event for event in self._missing_tool_summaries() if not self._has_read_result_file_call(tool_calls, event.result_file)]
+        if not missing:
+            return ""
+        lines = [
+            "Known_Gate: tool results need Known review.",
+            "Emit tool_summary for each fresh result with known_facts or null.",
+            "Missing summaries:",
+        ]
+        for event in missing:
+            lines.append("- " + event.executed + " -> " + event.result_file)
+        lines.append("Next_Action: tool_summary + known_facts/null first.")
+        return "\n".join(lines)
 
     def _missing_tool_summaries(self) -> list[ToolCallEvent]:
         return [event for event in self.tool_runner.latest_events if not event.summary]
