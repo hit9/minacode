@@ -154,6 +154,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
             '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
         ],
         [
+            '{"type":"goal","text":"read sample","complete":true}__END_ACTION__',
             '{"type":"message","text":"done"}__END_ACTION__',
         ],
     ]
@@ -476,8 +477,9 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     session.current.verification.evidence = "old evidence"
     agent = Agent(session)
 
-    agent.apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
+    agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": False}]})
 
+    assert session.current.goal_reached is False
     assert session.current.verification.goal == ""
     assert session.current.verification.status == VerificationStatus.IDLE
     assert session.current.verification.method == ""
@@ -489,6 +491,10 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert session.current.verification.status == VerificationStatus.REQUIRED
     assert session.current.verification.method == "run tests"
     assert session.current.verification.evidence == ""
+
+    agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
+
+    assert session.current.goal_reached is True
 
 
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):
@@ -596,6 +602,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "type": "known",
                             "items": [{"fact": "Read sample.txt and found alpha.", "details": ["alpha"]}],
                         },
+                        {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
                     ],
                 },
@@ -639,6 +646,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
                 {
                     "actions": [
+                        {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
                     ]
                 },
@@ -667,7 +675,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": [{"type": "message", "text": "done too early"}]},
+                {"actions": [{"type": "goal", "text": "read sample", "complete": True}, {"type": "message", "text": "done too early"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -692,8 +700,8 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "goal", "text": "answer"}]},
-                {"actions": [{"type": "message", "text": "done"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -719,13 +727,14 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "goal", "text": "change file"},
+                        {"type": "goal", "text": "change file", "complete": False},
                         {"type": "verify", "method": "run tests", "status": "pending", "evidence": None},
                     ],
                 },
                 {
                     "actions": [
                         {"type": "verify", "method": "run tests", "status": "passed", "evidence": "tests passed"},
+                        {"type": "goal", "text": "change file", "complete": True},
                         {"type": "message", "text": "done"},
                     ],
                 },
@@ -755,7 +764,7 @@ def test_agent_run_retries_format_error_in_recent_tool_results(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"actions": [{"type": "message", "text": "done"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -771,7 +780,8 @@ def test_agent_run_retries_format_error_in_recent_tool_results(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert messages == ["Retrying: model returned invalid output: plain answer", "done"]
+    assert messages[0] == "Retrying: model returned invalid output: plain answer"
+    assert messages[-1] == "done"
 
 
 def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
@@ -780,7 +790,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [], "message_to_user": "old protocol"},
-                {"actions": [{"type": "message", "text": "done"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -802,7 +812,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
         def __init__(self):
             self.responses = [
                 {
-                    "actions": [{"type": "message", "text": "done"}],
+                    "actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}],
                     "_format_frame_errors": ["frame 1: expected JSON object action"],
                 }
             ]
@@ -817,7 +827,8 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
 
     agent.run("answer", on_message=messages.append)
 
-    assert messages == ["done"]
+    assert "Format_Warning:" not in "\n".join(messages)
+    assert messages[-1] == "done"
 
     debug_session = Session(cwd=str(tmp_path), debug=True)
     debug_agent = Agent(debug_session)
@@ -826,7 +837,8 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
 
     debug_agent.run("answer", on_message=debug_messages.append)
 
-    assert debug_messages == ["Format_Warning: ignored invalid action frame(s).\n- frame 1: expected JSON object action", "done"]
+    assert debug_messages[0] == "Format_Warning: ignored invalid action frame(s).\n- frame 1: expected JSON object action"
+    assert debug_messages[-1] == "done"
 
 
 def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
@@ -834,7 +846,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
         def __init__(self):
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "_format_bad_output": "plain answer", "actions": []},
-                {"actions": [{"type": "message", "text": "done"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):

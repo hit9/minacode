@@ -57,34 +57,6 @@ class LLMError(Exception): ...
 class Cancellation(Exception): ...
 
 
-class ReferenceFileCompleter(Completer):
-    def __init__(self, cwd: str, command_completer: WordCompleter):
-        self.cwd = cwd
-        self.command_completer = command_completer
-
-    def get_completions(self, document, complete_event):
-        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
-        if match is None:
-            yield from self.command_completer.get_completions(document, complete_event)
-            return
-
-        partial = match.group(1)
-        dirname, prefix = os.path.split(partial)
-        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
-        try:
-            names = sorted(os.listdir(base_dir))
-        except OSError:
-            return
-
-        for name in names:
-            if not name.startswith(prefix):
-                continue
-            full_path = os.path.join(base_dir, name)
-            suffix = "/" if os.path.isdir(full_path) else ""
-            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
-            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
-
-
 class PromptItem:
     @abstractmethod
     def format(self, indent: str = "") -> str:
@@ -1966,6 +1938,8 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
+NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
+
 Steps:
 
 1. If the goal is not set, determine the current goal first.
@@ -1987,7 +1961,7 @@ Output format (Strict)
 Output multiple JSON objects separated by __END_ACTION__:
 
 {"type": "message", "text": "string"} __END_ACTION__
-{"type": "goal", "text": "string"} __END_ACTION__
+{"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
 {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
@@ -2535,6 +2509,7 @@ class ToolCallRunner:
             return ""
         return str(preview_error())
 
+
 ############################
 # AgentStateUpdater
 ############################
@@ -2652,6 +2627,9 @@ class AgentStateUpdater:
                 if update is not None:
                     changed = changed or update != self.session.current.goal
                     self.session.current.goal = update
+                complete = action.get("complete")
+                if isinstance(complete, bool):
+                    self.session.current.goal_reached = complete
         return changed
 
     def _apply_plan(self, response: Json) -> bool:
@@ -2914,18 +2892,16 @@ class Agent:
                     "Verification_Gate: retrying until verification is passed or blocked.",
                 )
                 continue
-            if messages:
-                self.session.current.goal_reached = True
+            if messages and self.session.current.goal_reached:
                 return response
-            if not messages:
-                self.latest_agent_feedback = self._format_continuation_hint()
-                self._report_gate(
-                    on_message,
-                    "Continuing: goal is not complete yet.",
-                    "Continuation_Gate: goal not reached; retrying next useful action.",
-                )
-                continue
-            return response
+            self.session.current.goal_reached = False
+            self.latest_agent_feedback = self._format_continuation_hint()
+            self._report_gate(
+                on_message,
+                "Continuing: goal is not complete yet.",
+                "Continuation_Gate: goal not reached; retrying next useful action.",
+            )
+            continue
         raise LLMError("agent step limit reached")
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
@@ -3285,6 +3261,7 @@ class CommandDispatcher:
         if args in {"", "status"}:
             return "YOLO is " + ("on" if self.agent.session.yolo else "off")
         return "Usage: /yolo [on|off|status]"
+
 
 def _format_count(value: int) -> str:
     if value <= 0:
@@ -3813,6 +3790,34 @@ def _json_int(value: JsonValue) -> int:
 
 def _shorten(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+class ReferenceFileCompleter(Completer):
+    def __init__(self, cwd: str, command_completer: WordCompleter):
+        self.cwd = cwd
+        self.command_completer = command_completer
+
+    def get_completions(self, document, complete_event):
+        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
+        if match is None:
+            yield from self.command_completer.get_completions(document, complete_event)
+            return
+
+        partial = match.group(1)
+        dirname, prefix = os.path.split(partial)
+        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
+        try:
+            names = sorted(os.listdir(base_dir))
+        except OSError:
+            return
+
+        for name in names:
+            if not name.startswith(prefix):
+                continue
+            full_path = os.path.join(base_dir, name)
+            suffix = "/" if os.path.isdir(full_path) else ""
+            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
+            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
 
 
 ##############
