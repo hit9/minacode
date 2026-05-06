@@ -851,6 +851,28 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     assert not (tmp_path / ".nanocode" / "tool_results").exists()
 
 
+def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}])
+
+    assert "ToolCallError: invalid start: should be an integer" in latest
+    assert agent.agent_feedback_errors == [
+        'Error: tool call args invalid: Read("sample.txt", "bad", "1") -> ToolCallError: invalid start: should be an integer. Rule: use the tool signature exactly.'
+    ]
+
+
+def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0", "1"]}])
+
+    assert "ToolCallError: " in latest
+    assert agent.agent_feedback_errors == []
+
+
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")

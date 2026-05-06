@@ -51,6 +51,9 @@ class Error(Exception): ...
 class ToolCallError(Exception): ...
 
 
+class ToolCallArgError(ToolCallError): ...
+
+
 class LLMError(Exception): ...
 
 
@@ -464,6 +467,7 @@ class ToolCallExecution:
     call: ParsedToolCall
     outcome: str
     output: str
+    error_type: Type[Exception] | None = None
 
 
 def _format_last_tool_calls(executions: list[ToolCallExecution]) -> str:
@@ -505,11 +509,11 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     try:
         start = max(0, int(start_arg))
     except (ValueError, TypeError):
-        raise ToolCallError("invalid start: should be an integer")
+        raise ToolCallArgError("invalid start: should be an integer")
     try:
         end = max(0, int(end_arg))
     except (ValueError, TypeError):
-        raise ToolCallError("invalid end: should be an integer")
+        raise ToolCallArgError("invalid end: should be an integer")
     if end:
         end = max(end, start)
     return start, end
@@ -518,7 +522,7 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
 def _parse_line_range_token(value: str) -> tuple[int, int]:
     match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
     if match is None:
-        raise ToolCallError("invalid range: should be start-end, start:end, or start,end")
+        raise ToolCallArgError("invalid range: should be start-end, start:end, or start,end")
     return _parse_line_range(match.group(1), match.group(2))
 
 
@@ -580,7 +584,7 @@ class ReadTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
-            raise ToolCallError("requires filepath optionally followed by start/end pairs")
+            raise ToolCallArgError("requires filepath optionally followed by start/end pairs")
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
@@ -588,7 +592,7 @@ class ReadTool(Tool):
             ranges = [_parse_line_range_token(arg) for arg in args[1:]]
         else:
             if len(args) % 2 == 0:
-                raise ToolCallError("requires filepath optionally followed by start/end pairs")
+                raise ToolCallArgError("requires filepath optionally followed by start/end pairs")
             ranges = [_parse_line_range(args[index], args[index + 1]) for index in range(1, len(args), 2)]
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
@@ -717,7 +721,7 @@ class LineCountTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 1:
-            raise ToolCallError("requires exactly one arg: filepath")
+            raise ToolCallArgError("requires exactly one arg: filepath")
         return cls(filepath=session.resolve_path(args[0]))
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -759,7 +763,7 @@ class ListDirTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) not in (0, 1, 2):
-            raise ToolCallError("requires 0 to 2 args: [dir_path][, glob_pattern]")
+            raise ToolCallArgError("requires 0 to 2 args: [dir_path][, glob_pattern]")
         dir_path = str(args[0]) if args else "."
         glob_pattern = str(args[1]) if len(args) == 2 else ""
         return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
@@ -862,20 +866,20 @@ class SearchTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) < 1 or len(args) > 20:
-            raise ToolCallError("requires 1 to 20 args: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallArgError("requires 1 to 20 args: pattern[, path][, glob_pattern][, context=N]")
         args = cls._normalize_multi_pattern_args(session, args)
         if len(args) not in (1, 2, 3, 4):
-            raise ToolCallError("requires 1 to 4 args after normalization: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallArgError("requires 1 to 4 args after normalization: pattern[, path][, glob_pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
-            raise ToolCallError("pattern cannot be empty")
+            raise ToolCallArgError("pattern cannot be empty")
         explicit_regex = raw_pattern.startswith("re:")
         pattern = raw_pattern[3:] if explicit_regex else raw_pattern
         regex = True
         if not pattern:
-            raise ToolCallError("pattern cannot be empty")
+            raise ToolCallArgError("pattern cannot be empty")
         if regex and "\n" in pattern:
-            raise ToolCallError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
+            raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
         target_path_arg = str(args[1]) if len(args) >= 2 else "."
         if target_path_arg.startswith("path="):
             target_path_arg = target_path_arg.split("=", 1)[1]
@@ -887,29 +891,29 @@ class SearchTool(Tool):
             option = str(raw_option)
             if option.startswith("path="):
                 if target_path_arg != ".":
-                    raise ToolCallError("path option cannot be combined with positional path")
+                    raise ToolCallArgError("path option cannot be combined with positional path")
                 target_path_arg = option.split("=", 1)[1] or "."
                 continue
             if option.startswith("context=") or option.isdigit():
                 try:
                     context_lines = cls._parse_context_arg(option)
                 except ValueError:
-                    raise ToolCallError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
+                    raise ToolCallArgError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
                 continue
             if option.startswith("glob=") or option.startswith("glob_pattern="):
                 option = option.split("=", 1)[1]
                 if not option:
-                    raise ToolCallError("glob option cannot be empty")
+                    raise ToolCallArgError("glob option cannot be empty")
             if glob_pattern:
-                raise ToolCallError("unexpected search option: " + option)
+                raise ToolCallArgError("unexpected search option: " + option)
             glob_pattern = option
         patterns = [pattern]
         if not patterns:
-            raise ToolCallError("no valid search patterns")
+            raise ToolCallArgError("no valid search patterns")
         try:
             re.compile(pattern)
         except re.error as error:
-            raise ToolCallError("invalid regex: " + str(error))
+            raise ToolCallArgError("invalid regex: " + str(error))
         return cls(
             pattern=raw_pattern,
             patterns=patterns,
@@ -1164,7 +1168,7 @@ class SearchTool(Tool):
         try:
             return re.search(self.patterns[0], text) is not None
         except re.error as error:
-            raise ToolCallError("invalid regex: " + str(error))
+            raise ToolCallArgError("invalid regex: " + str(error))
 
     def call(self) -> str:
         if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
@@ -1207,10 +1211,10 @@ class EditTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 3:
-            raise ToolCallError("requires exactly 3 args: filepath, find, replace")
+            raise ToolCallArgError("requires exactly 3 args: filepath, find, replace")
         find = str(args[1])
         if not find:
-            raise ToolCallError("find text cannot be empty")
+            raise ToolCallArgError("find text cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1280,11 +1284,11 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 5:
-            raise ToolCallError("requires exactly 5 args: filepath, start, end, fingerprint, content")
+            raise ToolCallArgError("requires exactly 5 args: filepath, start, end, fingerprint, content")
         start, end = _parse_line_range(args[1], args[2])
         fingerprint = str(args[3])
         if not fingerprint:
-            raise ToolCallError("fingerprint cannot be empty")
+            raise ToolCallArgError("fingerprint cannot be empty")
         return cls(
             filepath=session.resolve_path(args[0]),
             start=start,
@@ -1387,13 +1391,13 @@ class BatchReplaceRangesTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
-            raise ToolCallError("requires exactly 2 args: filepath, edits_json")
+            raise ToolCallArgError("requires exactly 2 args: filepath, edits_json")
         try:
             raw_edits = json.loads(str(args[1]))
         except json.JSONDecodeError as error:
-            raise ToolCallError("invalid edits_json: " + str(error))
+            raise ToolCallArgError("invalid edits_json: " + str(error))
         if not isinstance(raw_edits, list) or not raw_edits:
-            raise ToolCallError("edits_json must be a non-empty JSON array")
+            raise ToolCallArgError("edits_json must be a non-empty JSON array")
         edits = [cls._edit_from_json(raw) for raw in raw_edits]
         return cls(
             filepath=session.resolve_path(args[0]),
@@ -1405,14 +1409,14 @@ class BatchReplaceRangesTool(Tool):
     @classmethod
     def _edit_from_json(cls, raw: JsonValue) -> Edit:
         if not isinstance(raw, dict):
-            raise ToolCallError("each edit must be a JSON object")
+            raise ToolCallArgError("each edit must be a JSON object")
         start, end = _parse_line_range(str(raw.get("start", "")), str(raw.get("end", "")))
         fingerprint = str(raw.get("fingerprint", ""))
         if not fingerprint:
-            raise ToolCallError("edit fingerprint cannot be empty")
+            raise ToolCallArgError("edit fingerprint cannot be empty")
         content = raw.get("content")
         if not isinstance(content, str):
-            raise ToolCallError("edit content must be a string")
+            raise ToolCallArgError("edit content must be a string")
         return cls.Edit(start=start, end=end, fingerprint=fingerprint, content=content)
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1509,10 +1513,10 @@ class ApplyPatchTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
-            raise ToolCallError("requires exactly 2 args: filepath, unified_diff")
+            raise ToolCallArgError("requires exactly 2 args: filepath, unified_diff")
         unified_diff = str(args[1])
         if not unified_diff.strip():
-            raise ToolCallError("unified_diff cannot be empty")
+            raise ToolCallArgError("unified_diff cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), unified_diff=unified_diff, cwd=session.cwd)
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1580,17 +1584,17 @@ class ApplyPatchTool(Tool):
                 continue
             hunk_lines.append(self._normalize_codex_hunk_header(line))
         if not update_seen:
-            raise ToolCallError("ApplyPatch wrapper missing Update File")
+                raise ToolCallArgError("ApplyPatch wrapper missing Update File")
         if not end_seen:
-            raise ToolCallError("ApplyPatch wrapper missing End Patch")
+            raise ToolCallArgError("ApplyPatch wrapper missing End Patch")
         return "".join(hunk_lines)
 
     def _validate_codex_patch_path(self, patch_path: str) -> None:
         if not patch_path:
-            raise ToolCallError("ApplyPatch wrapper missing Update File path")
+            raise ToolCallArgError("ApplyPatch wrapper missing Update File path")
         candidate = patch_path if os.path.isabs(patch_path) else os.path.join(self.cwd, patch_path)
         if os.path.realpath(candidate) != os.path.realpath(self.filepath):
-            raise ToolCallError("patch target does not match filepath: " + patch_path)
+            raise ToolCallArgError("patch target does not match filepath: " + patch_path)
 
     @staticmethod
     def _normalize_codex_hunk_header(line: str) -> str:
@@ -1618,13 +1622,13 @@ class ApplyPatchTool(Tool):
                 fuzzy = False
                 parts = header.split()
                 if len(parts) < 3 or not parts[1].startswith("-"):
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
                 try:
                     old_start = int(parts[1][1:].split(",", 1)[0])
                 except ValueError:
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
             elif header.startswith("@@"):
-                raise ToolCallError("invalid hunk header")
+                raise ToolCallArgError("invalid hunk header")
             else:
                 i += 1
                 continue
@@ -1637,7 +1641,7 @@ class ApplyPatchTool(Tool):
                 if next_header == "@@" or next_header.startswith("@@ "):
                     break
                 if next_header.startswith("@@"):
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
                 hunk_lines.append(patch_lines[i])
                 i += 1
 
@@ -1658,7 +1662,7 @@ class ApplyPatchTool(Tool):
                 elif marker == "+":
                     replacement.append(text)
                 else:
-                    raise ToolCallError("invalid hunk line")
+                    raise ToolCallArgError("invalid hunk line")
 
             target = -1 if fuzzy else max(old_start - 1, 0) + offset
             try:
@@ -1675,7 +1679,7 @@ class ApplyPatchTool(Tool):
             hunks += 1
 
         if hunks == 0:
-            raise ToolCallError("patch has no hunks")
+            raise ToolCallArgError("patch has no hunks")
         return "".join(lines), hunks
 
     @staticmethod
@@ -1755,7 +1759,7 @@ class BashTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 1:
-            raise ToolCallError("requires exactly one arg: command")
+            raise ToolCallArgError("requires exactly one arg: command")
         if not session.bash:
             raise ToolCallError("bash not found")
         return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.shell_timeout)
@@ -1829,7 +1833,7 @@ class GitTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if not args:
-            raise ToolCallError("requires at least one git arg")
+            raise ToolCallArgError("requires at least one git arg")
         git_path = shutil.which("git")
         if not git_path:
             raise ToolCallError("git not found")
@@ -1839,14 +1843,14 @@ class GitTool(Tool):
         if git_args[0].startswith("cwd="):
             cwd_arg = git_args.pop(0)[len("cwd=") :]
             if not cwd_arg:
-                raise ToolCallError("cwd= requires a path")
+                raise ToolCallArgError("cwd= requires a path")
             cwd = session.resolve_path(cwd_arg)
             if not session.is_path_in_cwd(cwd):
                 raise ToolCallError(f"path outside cwd: {cwd_arg}")
             if not os.path.isdir(cwd):
                 raise ToolCallError(f"cwd is not a directory: {cwd_arg}")
         if not git_args:
-            raise ToolCallError("requires at least one git arg")
+            raise ToolCallArgError("requires at least one git arg")
         return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.shell_timeout)
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1911,7 +1915,7 @@ class ContextTool(Tool):
 
     def call(self) -> str:
         if not self.keys:
-            raise ToolCallError("Context requires at least one key")
+            raise ToolCallArgError("Context requires at least one key")
         lines = ["<ContextToolResult>"]
         for key in self.keys:
             if key not in self.context:
@@ -2542,6 +2546,7 @@ class ToolCallRunner:
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
+            error_type: Type[Exception] | None = None
             try:
                 call = self.parse_tool_call(item)
                 tool = self._make_tool(call)
@@ -2565,9 +2570,11 @@ class ToolCallRunner:
             except Cancellation as error:
                 outcome = "failure"
                 output = "Cancelled: " + str(error)
+                error_type = type(error)
             except Exception as error:
                 outcome = "failure"
                 output = "ToolCallError: " + str(error)
+                error_type = type(error)
             if call is None:
                 call = self._invalid_tool_call(item)
 
@@ -2575,6 +2582,7 @@ class ToolCallRunner:
                 call=call,
                 outcome=outcome,
                 output=output,
+                error_type=error_type,
             )
             executions.append(execution)
 
@@ -2599,7 +2607,7 @@ class ToolCallRunner:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
         if not name:
-            raise ToolCallError("tool call missing name")
+            raise ToolCallArgError("tool call missing name")
         intention = _json_str(item.get("intention")) or ""
         args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
         return ParsedToolCall(name=name, intention=intention, args=args)
@@ -2614,7 +2622,7 @@ class ToolCallRunner:
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            raise ToolCallError("tool not found: " + call.name)
+            raise ToolCallArgError("tool not found: " + call.name)
         return tool_class.make(self.session, call.args)
 
     def _preview_error(self, tool: Tool) -> str:
@@ -3223,7 +3231,13 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         self.last_tool_calls = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        for execution in self.tool_runner.latest_executions:
+            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+                self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
         return self.last_tool_calls
+
+    def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
+        return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
