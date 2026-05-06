@@ -1583,7 +1583,7 @@ class ApplyPatchTool(Tool):
                 continue
             hunk_lines.append(self._normalize_codex_hunk_header(line))
         if not update_seen:
-                raise ToolCallArgError("ApplyPatch wrapper missing Update File")
+            raise ToolCallArgError("ApplyPatch wrapper missing Update File")
         if not end_seen:
             raise ToolCallArgError("ApplyPatch wrapper missing End Patch")
         return "".join(hunk_lines)
@@ -1953,12 +1953,14 @@ MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a loopi
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
+
 Memory:
-- Known = concise, self-contained facts.
-- Context = hidden raw support: code snippets, logs, source text, long outputs.
-- Use Context(key...) to fetch hidden context by key.
-- Before Read, prefer batched Context(...) if stored context may answer the question.
-- Tool results are one-shot; immediately save useful facts as known and raw support as context.
+- Known = concise facts.
+- Context = RAW ORIGINAL MATERIAL, NOT SUMMARIES.
+- Store exact code snippets, logs, source text, command output, errors, and long tool results as Context.
+- Context.value should preserve the original wording/content needed later.
+- Context.description says what the value contains and when to reuse it.
+- Tool results are one-shot; save important raw results as Context before continuing.
 
 STEPS:
 
