@@ -364,7 +364,6 @@ class Session:
     reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
     stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
     model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
-    stream_first_token_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_STREAM_FIRST_TOKEN_TIMEOUT", "30")))
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
     compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "50")))
     max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
@@ -2260,9 +2259,6 @@ class ModelClient:
         usage: Json = {}
         buffer = ""
         frame_number = 0
-        first_content = True
-        if self.session.stream_first_token_timeout > 0:
-            self._set_stream_read_timeout(response, self.session.stream_first_token_timeout)
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -2285,9 +2281,6 @@ class ModelClient:
             content = delta.get("content")
             if not isinstance(content, str):
                 continue
-            if first_content:
-                first_content = False
-                self._set_stream_read_timeout(response, self.session.model_timeout)
             parts.append(content)
             if on_action is not None:
                 buffer += content
@@ -2298,34 +2291,6 @@ class ModelClient:
                     if action is not None:
                         on_action(action)
         return "".join(parts), usage
-
-    def _set_stream_read_timeout(self, response: Any, timeout: int) -> bool:
-        fp = getattr(response, "fp", None)
-        nested_fp = getattr(fp, "fp", None)
-        raw = getattr(fp, "raw", fp)
-        nested_raw = getattr(nested_fp, "raw", nested_fp)
-        candidates = [
-            response,
-            getattr(response, "sock", None),
-            fp,
-            getattr(fp, "_sock", None),
-            raw,
-            getattr(raw, "_sock", None),
-            nested_fp,
-            getattr(nested_fp, "_sock", None),
-            nested_raw,
-            getattr(nested_raw, "_sock", None),
-        ]
-        for candidate in candidates:
-            setter = getattr(candidate, "settimeout", None)
-            if not callable(setter):
-                continue
-            try:
-                setter(timeout)
-            except Exception:
-                continue
-            return True
-        return False
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
         if not self.session.debug:
