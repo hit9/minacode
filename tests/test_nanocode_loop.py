@@ -46,6 +46,17 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert ">" not in snapshot
 
 
+def test_status_bar_shows_current_model_call_number(tmp_path):
+    session = Session(cwd=str(tmp_path), model="provider/model")
+    session.turn_model_calls = 2
+    session.current_model_call_started_at = 0.4
+    bar = StatusBar(session)
+
+    text = bar._text(0.0, now=1.0)
+
+    assert "calling(2):0.6s" in text
+
+
 def test_agent_loop_highlights_only_diff_previews(tmp_path):
     class FakeAgent:
         def __init__(self):

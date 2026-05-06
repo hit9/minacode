@@ -96,6 +96,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
 
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 4
+    assert agent.session.turn_model_calls == 4
     assert sleeps == [3, 6, 10]
 
 
@@ -120,6 +121,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
 
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 3
+    assert agent.session.turn_model_calls == 3
     assert sleeps == [3, 6]
     assert messages == [
         "Retrying: request model timeout; retry 1/3 in 3s.",
@@ -149,6 +151,7 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
         raise AssertionError("expected LLMError")
 
     assert agent.model_client.calls == 4
+    assert agent.session.turn_model_calls == 4
     assert sleeps == [3, 6, 10]
 
 
@@ -174,6 +177,7 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
         raise AssertionError("expected LLMError")
 
     assert agent.model_client.calls == 1
+    assert agent.session.turn_model_calls == 1
     assert sleeps == []
 
 
@@ -818,6 +822,35 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert "alpha" in agent.last_tool_calls
+
+
+def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
+    for index in range(6):
+        (tmp_path / f"sample-{index}.txt").write_text(f"line {index}\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "tool", "name": "Read", "intention": f"read {index}", "args": [f"sample-{index}.txt", "0", "1"]}
+                        for index in range(6)
+                    ]
+                },
+                {"actions": [{"type": "goal", "text": "read samples", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    agent.run("read samples")
+
+    assert list(session.tool_result_store) == ["tr.2", "tr.3", "tr.4", "tr.5", "tr.6"]
+    assert session.tool_result_counter == 6
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):

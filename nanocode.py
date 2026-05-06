@@ -393,6 +393,7 @@ class Session:
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
+    turn_model_calls: int = 0
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -2873,6 +2874,7 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
+    MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 5
 
     def __init__(self, session: Session):
         self.session = session
@@ -2901,6 +2903,7 @@ class Agent:
     ) -> Json:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
             try:
+                self.session.turn_model_calls += 1
                 if isinstance(self.model_client, ModelClient):
                     return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
@@ -2942,6 +2945,7 @@ class Agent:
         self.last_tool_calls = ""
         self._clear_agent_feedback()
         self.session.turn_tool_calls = 0
+        self.session.turn_model_calls = 0
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
         self.maybe_auto_compact()
@@ -3007,6 +3011,7 @@ class Agent:
                     continue
                 if messages and self.session.current.goal_reached:
                     self._clear_agent_feedback()
+                    self._trim_tool_result_store_after_goal_complete()
                     return response
                 self.session.current.goal_reached = False
                 if not actions:
@@ -3026,6 +3031,13 @@ class Agent:
 
     def _clear_agent_feedback(self) -> None:
         self.agent_feedback_errors = []
+
+    def _trim_tool_result_store_after_goal_complete(self) -> None:
+        overflow = len(self.session.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
+        if overflow <= 0:
+            return
+        for key in list(self.session.tool_result_store)[:overflow]:
+            self.session.tool_result_store.pop(key)
 
     def _remember_agent_error(self, text: str) -> None:
         text = " ".join(text.split())
@@ -3531,7 +3543,7 @@ class StatusBar:
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
-            parts.append("calling:" + f"{max(0.0, now - session.current_model_call_started_at):.1f}s")
+            parts.append("calling(" + str(session.turn_model_calls) + "):" + f"{max(0.0, now - session.current_model_call_started_at):.1f}s")
         return " | ".join(parts)
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
