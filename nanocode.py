@@ -417,10 +417,7 @@ class Session:
 
     @evidence.setter
     def evidence(self, value: dict[str, EvidenceItem] | dict[str, str]) -> None:
-        self.evidence_store = {
-            key: item if isinstance(item, EvidenceItem) else EvidenceItem(description=key, value=str(item))
-            for key, item in value.items()
-        }
+        self.evidence_store = {key: item if isinstance(item, EvidenceItem) else EvidenceItem(description=key, value=str(item)) for key, item in value.items()}
 
     @property
     def details(self) -> dict[str, EvidenceItem]:
@@ -2030,6 +2027,14 @@ Rules:
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
 7. Do not Read before checking relevant stored Evidence when available.
+
+Action types:
+* message: tell the user progress, result, or blocker.
+* goal: set/update the current goal; complete=true only after success + verification.
+* verify: record verification status for the current goal.
+* known: save durable facts with raw evidence; required every turn.
+* plan: create or update the work plan.
+* tool: call a tool through JSON action frame only.
 
 Output format (Strict)
 
