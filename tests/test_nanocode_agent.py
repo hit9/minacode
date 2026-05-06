@@ -45,6 +45,7 @@ def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path
                     "outcome": "success",
                     "summary": "Read sample.txt line 1.",
                     "key_evidence": ["sample.txt:1 alpha"],
+                    "known_facts": [{"fact": "sample.txt line 1 is alpha.", "details": ["sample.txt:1 alpha"]}],
                     "result_file": event.result_file,
                     "needs_raw_read": False,
                 }
@@ -57,6 +58,9 @@ def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path
     assert "sample.txt:1 alpha" in event.format()
     assert "<key_details>\n    <detail>sample.txt:1 alpha</detail>\n  </key_details>" in event.format()
     assert "alpha\n  </content>" not in event.format()
+    assert session.current.known == [KnownItem(fact="sample.txt line 1 is alpha.", details=["sample.txt:1 alpha"])]
+    assert "  Known\n" in agent.state_updater.latest_report
+    assert "sample.txt line 1 is alpha." in agent.state_updater.latest_report
 
 
 def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks():
@@ -499,12 +503,15 @@ def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_pa
     assert "Mission:" in prompt
     assert "{ __tools__ }" not in prompt
     assert "- Read(filepath" in prompt
-    assert "Before repeating similar Search/Read/discovery" in prompt
-    assert "When locating related symbols, prefer one OR search over repeated Search calls." in prompt
-    assert "Optional path=FILE sets the search path explicitly." in prompt
-    assert "Blackboard(set, key, value)" in prompt
-    assert "Known = small stable conclusions useful for later steps" in prompt
-    assert "Blackboard = larger notes, raw excerpts, tool-result notes" in prompt
+    assert "Use one OR search for related symbols: A|B|C or 3+ plain args" in prompt
+    assert "Options: path=FILE, context=N|N, glob=*.py or bare glob." in prompt
+    assert "While summarizing tool results, put reusable facts in known_facts." in prompt
+    assert "Use known actions only for stable facts not from tool results." in prompt
+    assert "Put reusable stable facts in known_facts; use null if none." in prompt
+    assert '"known_facts": null | [{"fact": "string", "details": null | ["string"]}]' in prompt
+    assert "Temporary key-value stash for large notes, raw excerpts, and tool-result notes" in prompt
+    assert "Known = small stable facts useful later" in prompt
+    assert "Use Blackboard for large notes, raw excerpts, or content you may need to read back later" in prompt
     assert "Current_Context" not in prompt
     assert '{"type": "context"' not in prompt
 
@@ -671,6 +678,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "outcome": "success",
                             "summary": "Read sample.txt and found alpha.",
                             "key_evidence": ["alpha"],
+                            "known_facts": [{"fact": "sample.txt contains alpha.", "details": ["alpha"]}],
                             "result_file": None,
                             "needs_raw_read": False,
                         },
@@ -700,6 +708,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "alpha" in agent.recent_tool_call_results.format()
+    assert session.current.known == [KnownItem(fact="sample.txt contains alpha.", details=["alpha"])]
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
 

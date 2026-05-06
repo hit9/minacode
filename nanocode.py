@@ -693,11 +693,10 @@ class ReadTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Read exact file lines with a fingerprint.",
-            "Optional ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs for multiple ranges.",
-            "Returns at most 1000 lines per range; truncated results include total lines and next-step guidance.",
-            "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
-            "For ReplaceRange, non-empty subranges may use a wider cached Read fingerprint that covers them; empty insert ranges require an exact empty-range Read.",
+            "Read file lines and cache fingerprints for range edits.",
+            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs to read multiple ranges.",
+            "Returns at most 1000 lines per range; use Search/LineCount before broad reads.",
+            "For ReplaceRange, read an exact or covering range first; empty inserts require an exact empty-range Read.",
         ]
 
     @classmethod
@@ -831,7 +830,7 @@ class LineCountTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Count file lines before choosing a Read range."]
+        return ["Count file lines before choosing Read ranges."]
 
     @classmethod
     def signature(cls) -> str:
@@ -872,8 +871,7 @@ class ListDirTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "List immediate directory entries, optionally filtered by entry-name glob.",
-            "Returns entries sorted by type then name.",
+            "List immediate directory entries; optional glob filters entry names.",
         ]
 
     @classmethod
@@ -967,14 +965,9 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Search files or directories before Read; default is fixed text.",
-            "Prefix pattern with re: for regex search.",
-            "Search is line-oriented; regex patterns must not contain newlines.",
-            "Use A|B|C for literal OR; 3+ plain args also OR-search unless the final one is an existing path.",
-            "When locating related symbols, prefer one OR search over repeated Search calls.",
-            "Optional path=FILE sets the search path explicitly.",
-            "Optional context=N or N sets nearby context lines, from 0 to 30.",
-            "Optional glob matches file basename or path relative to cwd.",
+            "Search files before Read; fixed text by default, prefix re: for line regex.",
+            "Use one OR search for related symbols: A|B|C or 3+ plain args; final existing path narrows scope.",
+            "Options: path=FILE, context=N|N, glob=*.py or bare glob.",
         ]
 
     @classmethod
@@ -1328,7 +1321,7 @@ class EditTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace the first exact text block in a file."]
+        return ["Replace the first exact text block in a file; use for small unambiguous edits."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1398,9 +1391,9 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based line range when its fingerprint comes from Read(filepath, ...).",
-            "If a wider cached Read range covers this target range, the tool may slice and validate the narrower range automatically; otherwise Read the exact target range and retry once.",
-            "If earlier edits shifted lines, a cached Read fingerprint for the same original range can relocate only when old content still matches exactly once.",
+            "Replace one 0-based line range using a Read fingerprint.",
+            "Read an exact or covering range first; if fingerprint mismatch, Read target range and retry once.",
+            "Can relocate shifted old content only when it still matches exactly once.",
         ]
 
     @classmethod
@@ -1505,10 +1498,9 @@ class BatchReplaceRangesTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace multiple 0-based line ranges in one file against one snapshot.",
-            "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
-            "Each edit fingerprint must come from Read(filepath, ...); if a wider cached range covers the target range, it may be sliced and validated automatically.",
-            "Same-range cached fingerprints can relocate shifted old content.",
+            "Replace multiple non-overlapping ranges in one file using Read fingerprints.",
+            "Use for several edits in the same file; ranges refer to one snapshot and do not shift within the call.",
+            "Fingerprints may come from exact or covering Read ranges; same-range cached content can relocate.",
         ]
 
     @classmethod
@@ -1631,7 +1623,7 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Apply a simple single-file unified diff."]
+        return ["Apply one single-file unified diff; use when range fingerprints are awkward."]
 
     @classmethod
     def signature(cls) -> str:
@@ -2025,7 +2017,7 @@ class BlackboardTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Temporary key-value stash; use Blackboard(set, key, value) for reusable findings/tool-result notes, read later, clear when done.",
+            "Temporary key-value stash for large notes, raw excerpts, and tool-result notes; read later, clear when done.",
         ]
 
     @classmethod
@@ -2130,10 +2122,10 @@ Plan rules:
 - Replace the full Plan when its structure changes; patch only status/evidence on existing items.
 
 Memory rules:
-- Known = small stable conclusions useful for later steps.
-- Blackboard = larger notes, raw excerpts, tool-result notes, or anything you may need to read back later.
-- Before repeating similar Search/Read/discovery, save the useful finding in Known or Blackboard.
-- Do not save raw logs. Save only concise evidence.
+- Known = small stable facts useful later.
+- While summarizing tool results, put reusable facts in known_facts.
+- Use known actions only for stable facts not from tool results.
+- Use Blackboard for large notes, raw excerpts, or content you may need to read back later.
 
 Tool rules:
 - You MUST call tools by outputting tool actions.
@@ -2152,10 +2144,10 @@ Tool rules:
 
 Tool result rules:
 - Recent_Tool_Call_Results contains the full previous tool batch plus a bounded older buffer.
-- Summarize every fresh tool result before using it further.
-- Preserve exact evidence in key_evidence when paths, lines, errors, or decisions matter later.
+- Briefly summarize each fresh tool result before using it further.
+- Put paths, lines, errors, and decisions in key_evidence.
+- Put reusable stable facts in known_facts; use null if none.
 - If raw detail is missing, rerun a targeted tool or read result_file only when cheaper.
-- Keep summaries short and store reusable notes in Known or Blackboard.
 
 Verification rules:
 - Verification belongs to the current Goal only.
@@ -2190,7 +2182,7 @@ Output format:
 Action schemas:
 {"type": "message", "text": "string"}
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
-{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "result_file": null | "string", "needs_raw_read": true | false}
+{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false}
 {"type": "goal", "text": "string"}
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
 {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
@@ -2199,11 +2191,10 @@ Action schemas:
 Decision order:
 1. Read Latest_User_Input and Agent_Feedback.
 2. Set or keep Goal.
-3. Summarize fresh tool results, if any.
-4. Update Known or Blackboard only if useful.
-5. Update Plan if needed.
-6. Run the next necessary independent tool batch, OR verify, OR answer.
-7. Never skip verification after edits.
+3. Summarize fresh tool results and extract known_facts, if any.
+4. Update Plan if needed.
+5. Run the next necessary independent tool batch, OR verify, OR answer.
+6. Never skip verification after edits.
 
 Example:
 {
@@ -2880,7 +2871,7 @@ class AgentStateUpdater:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
     def apply_tool_call_summaries(self, response: Json) -> None:
-        self._apply_tool_call_summaries(response)
+        self._apply_tool_call_summaries(response, apply_known_facts=False)
 
     def _format_state_report(
         self,
@@ -2954,7 +2945,7 @@ class AgentStateUpdater:
         text = " ".join(text.split())
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    def _apply_tool_call_summaries(self, response: Json) -> None:
+    def _apply_tool_call_summaries(self, response: Json, *, apply_known_facts: bool = True) -> None:
         summaries = [action for action in self._actions(response) if _json_str(action.get("type")) == "tool_summary"]
         if not summaries:
             return
@@ -2969,6 +2960,8 @@ class AgentStateUpdater:
             event.summary = self._format_tool_call_summary(summary)
             event.key_details = self._key_details_from_summary(summary)
             event.needs_raw_read = summary.get("needs_raw_read") is True
+            if apply_known_facts:
+                self._apply_known_facts_from_summary(summary)
             if event in pending:
                 pending.remove(event)
 
@@ -2982,6 +2975,9 @@ class AgentStateUpdater:
         intention = _json_str(summary.get("intention"))
         if tool or intention:
             for event in pending:
+                if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
+                    return event
+            for event in self.tool_runner.latest_events:
                 if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
                     return event
         return pending[0] if pending else None
@@ -3001,6 +2997,12 @@ class AgentStateUpdater:
     def _key_details_from_summary(self, summary: Json) -> list[str]:
         details = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
         return [detail for detail in details if detail]
+
+    def _apply_known_facts_from_summary(self, summary: Json) -> None:
+        for raw in _json_list(summary.get("known_facts")):
+            item = self._known_item_from_json(raw)
+            if item is not None:
+                self._add_known_item(item)
 
     def _apply_goal(self, response: Json) -> bool:
         changed = False
@@ -3058,14 +3060,21 @@ class AgentStateUpdater:
     def _apply_known(self, response: Json) -> None:
         for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "known"]:
             for raw in _json_list(action.get("items")):
-                item = _json_dict(raw)
-                fact = _json_str(item.get("fact")) if item else _json_str(raw)
-                if not fact:
-                    continue
-                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-                details = [detail for detail in details if detail]
-                if not any(known.fact == fact for known in self.session.current.known):
-                    self.session.current.known.append(KnownItem(fact=fact, details=details))
+                item = self._known_item_from_json(raw)
+                if item is not None:
+                    self._add_known_item(item)
+
+    def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
+        item = _json_dict(value)
+        fact = _json_str(item.get("fact")) if item else _json_str(value)
+        if not fact:
+            return None
+        details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
+        return KnownItem(fact=fact, details=[detail for detail in details if detail])
+
+    def _add_known_item(self, item: KnownItem) -> None:
+        if not any(known.fact == item.fact for known in self.session.current.known):
+            self.session.current.known.append(item)
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
