@@ -1911,7 +1911,7 @@ class BlackboardTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Temporary key-value stash for findings, leads, and useful tool-result notes; read later, clear when done; actions: read, set, delete, clear.",
+            "Temporary key-value stash; use Blackboard(set, key, value) for reusable findings/tool-result notes, read later, clear when done.",
         ]
 
     @classmethod
@@ -2008,7 +2008,8 @@ Core:
 State:
 - Keep Goal, Plan, Known, and Current_Context current.
 - Before tool actions, set or patch Goal and Plan when missing or stale.
-- After meaningful findings, update known/context or Blackboard before continuing.
+- Promote durable repo/task facts to known; use context or Blackboard for task-local notes.
+- Before repeating Search/Read or adjacent discovery, save reusable findings in known/context or Blackboard(set, key, value).
 
 Tools:
 - MUST use tool actions. Do not use native <tool_call>Tool(args...) syntax.
@@ -2020,11 +2021,11 @@ Tools:
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
 - Read returns at most 1000 lines per range; pass repeated start/end pairs for multiple ranges.
 - ReplaceRange/BatchReplaceRanges may use a wider cached Read fingerprint for a non-empty subrange that it covers. Empty insert ranges require an exact empty-range Read. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
-- Summarize every latest tool result; raw results are shown once only, so keep key_evidence and stash useful notes in Blackboard.
+- Summarize every latest tool result; raw results are shown once only, so keep key_evidence and save reusable notes with Blackboard(set, key, value).
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
 - known actions are stable memory; context actions are task-local memory.
-- Stash useful tool-result notes in Blackboard for later read; reopen result_file logs when raw detail is needed; clear entries when done.
+- Use Blackboard(set, key, value) for reusable tool-result notes; reopen result_file logs for raw detail; clear entries when done.
 - tool action intention must state the question to answer, not just the action.
 
 Verification:

@@ -468,6 +468,14 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
     assert "duplicate ignored" not in prompt
 
 
+def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_path):
+    prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
+
+    assert "Before repeating Search/Read or adjacent discovery" in prompt
+    assert "Blackboard(set, key, value)" in prompt
+    assert "Promote durable repo/task facts to known" in prompt
+
+
 def test_agent_keeps_current_context_separate_from_known(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
