@@ -15,7 +15,7 @@ def test_context_tool_gets_multiple_keys(tmp_path):
     assert '<Context key="parser.notes">\nline 1\nline 2\n  </Context>' in prefixed_result
 
 
-def test_prompt_shows_context_descriptions_and_active_values(tmp_path):
+def test_prompt_shows_context_descriptions_without_values(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.current.known = [KnownItem(fact="Parser notes were captured.", context_keys=["parser.notes"])]
     session.context = {"parser.notes": ContextItem(description="Parser notes from sample output.", value="line 1\nline 2")}
@@ -24,11 +24,11 @@ def test_prompt_shows_context_descriptions_and_active_values(tmp_path):
 
     assert "<Details_Keys>" not in prompt
     assert "<Context>" in prompt
-    assert "<Active_Context>" in prompt
+    assert "<Active_Context>" not in prompt
     assert "Parser notes were captured." in prompt
     assert "parser.notes" in prompt
     assert "Parser notes from sample output." in prompt
-    assert "line 1" in prompt
+    assert "line 1" not in prompt
 
 
 def test_known_action_stores_context_descriptions_and_values(tmp_path):

@@ -1975,7 +1975,6 @@ USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBI
 Memory:
 - Known = concise, self-contained facts.
 - Context = hidden raw support: code snippets, logs, source text, long outputs.
-- Active_Context is already visible.
 - Use Context(key...) to fetch hidden context by key.
 - Before Read, prefer batched Context(...) if stored context may answer the question.
 - Tool results are one-shot; immediately save useful facts as known and raw support as context.
@@ -1991,7 +1990,7 @@ STEPS:
    - Do this before any next tool/message.
 
 3. Memory check:
-   - Use Known and Active_Context first.
+   - Use Known and Context keys/descriptions first.
    - If needed context is hidden, call batched Context(key...).
    - Only Read files when memory is missing or insufficient.
    - Context description must say what the value contains and when to reuse it.
@@ -2063,10 +2062,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Context>
 {context}
 </Context>
-
-<Active_Context>
-{active_context}
-</Active_Context>
 
 <Goal>
 {goal}
@@ -2150,7 +2145,6 @@ class PromptBuilder:
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
             context=self._format_context(),
-            active_context=self._format_active_context(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2190,36 +2184,6 @@ class PromptBuilder:
         for key, item in self.session.context_store.items():
             lines.extend(['<Context key="' + key + '">', "  <description>" + item.description + "</description>", "</Context>"])
         return "\n".join(lines)
-
-    def _format_active_context(self) -> str:
-        if not self.session.context_store:
-            return "(empty)"
-        max_items = 3
-        max_total_chars = 4_000
-        max_value_chars = 1_500
-        chunks = []
-        used = 0
-        for key, item in reversed(list(self.session.context_store.items())):
-            value = item.value
-            if len(value) > max_value_chars:
-                value = value[:max_value_chars] + "\n...<truncated>"
-            chunk = "\n".join(
-                [
-                    '<Context key="' + key + '">',
-                    "  <description>" + item.description + "</description>",
-                    "  <value>",
-                    value,
-                    "  </value>",
-                    "</Context>",
-                ]
-            )
-            if used + len(chunk) > max_total_chars:
-                break
-            chunks.append(chunk)
-            used += len(chunk)
-            if len(chunks) >= max_items:
-                break
-        return "\n\n".join(chunks) if chunks else "(empty)"
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
