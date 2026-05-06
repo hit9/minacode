@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, LLMError, Session, VerificationStatus
+from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
 
 
 def test_agent_tool_results_go_to_last_tool_calls_and_store(tmp_path):
@@ -26,6 +26,19 @@ def test_agent_tool_results_go_to_last_tool_calls_and_store(tmp_path):
     assert "alpha" in session.tool_result_store["tr.1"].value
     assert session.conversation == []
     assert not (tmp_path / ".nanocode" / "tool_results").exists()
+
+
+def test_tool_result_store_keeps_latest_128_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    for index in range(129):
+        agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
+
+    assert len(session.tool_result_store) == 128
+    assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
+    assert list(session.tool_result_store)[-1] == "tr.129"
+    assert session.tool_result_counter == 129
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):

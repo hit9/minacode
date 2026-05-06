@@ -2493,6 +2493,7 @@ class ModelClient:
 @final
 class ToolCallRunner:
     DISPLAY_LIMIT: ClassVar[int] = 5
+    MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 128
 
     def __init__(self, session: Session):
         self.session = session
@@ -2580,7 +2581,15 @@ class ToolCallRunner:
         if call.intention:
             description += " - " + call.intention
         self.session.tool_result_store[key] = ToolResultItem(description=description, value=output)
+        self._trim_tool_result_store()
         return key
+
+    def _trim_tool_result_store(self) -> None:
+        overflow = len(self.session.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
+        if overflow <= 0:
+            return
+        for old_key in list(self.session.tool_result_store)[:overflow]:
+            self.session.tool_result_store.pop(old_key)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
