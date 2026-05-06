@@ -58,7 +58,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "tokens: last=1k session=2m" in result.message
     assert "cost(usd): last=$0.000008 session=$12.345678" in result.message
     assert "stream: on" in result.message
-    assert "blackboard: 0 items" in result.message
+    assert "blackboard" not in result.message
 
 
 def test_stream_command_shows_and_updates_streaming_mode(tmp_path):
@@ -79,48 +79,13 @@ def test_stream_command_shows_and_updates_streaming_mode(tmp_path):
     assert session.stream is True
 
 
-def test_blackboard_command_reports_empty_board(tmp_path):
+def test_blackboard_command_is_not_registered(tmp_path):
     dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
 
     result = dispatcher.dispatch("/blackboard")
 
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == "Blackboard is empty"
-
-
-def test_blackboard_command_reads_board_with_default_and_status_args(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.blackboard = {"note 1": "value 1", "note 2": "value 2"}
-    dispatcher = CommandDispatcher(Agent(session))
-
-    default_result = dispatcher.dispatch("/blackboard")
-    status_result = dispatcher.dispatch("/blackboard status")
-
-    assert default_result.status == CommandStatus.HANDLED
-    assert default_result.message == "Blackboard:\nnote 1 -> value 1\nnote 2 -> value 2"
-    assert status_result.status == CommandStatus.HANDLED
-    assert status_result.message == default_result.message
-
-
-def test_blackboard_command_clear_mutates_session_board(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.blackboard = {"note": "value"}
-    dispatcher = CommandDispatcher(Agent(session))
-
-    result = dispatcher.dispatch("/blackboard   clear  ")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == "Blackboard cleared"
-    assert session.blackboard == {}
-
-
-def test_blackboard_command_reports_usage_for_unknown_args(tmp_path):
-    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
-
-    result = dispatcher.dispatch("/blackboard append note")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == "Usage: /blackboard [status|clear]"
+    assert result.status == CommandStatus.UNHANDLED
+    assert result.message == ""
 
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):

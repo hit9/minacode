@@ -69,12 +69,11 @@ USE AT YOUR OWN RISK.
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
 - Edit: `Edit`, `ReplaceRange`, `BatchReplaceRanges`, `ApplyPatch`.
 - Shell: `Bash`, `Git`.
-- Memory: `Blackboard`.
 
 ## Commands
 
 - Info: `/help [question]`, `/status`.
-- Session: `/compact`, `/blackboard [status|clear]`.
+- Session: `/compact`.
 - Config: `/model`, `/compact-at`, `/reason`, `/reason_effort`, `/stream`, `/yolo`.
 - Exit: `/exit`, `/quit`.
 
@@ -88,7 +87,6 @@ USE AT YOUR OWN RISK.
 
 ## Status
 
-- Status bar: model, reasoning, context, tokens/cost, blackboard, elapsed time, and active model-call time.
-- `/status`: model, reasoning, stream, yolo, conversation, tokens/cost, blackboard, goal, and verification.
-
+- Status bar: model, reasoning, context, tokens/cost, elapsed time, and active model-call time.
+- `/status`: model, reasoning, stream, yolo, conversation, tokens/cost, goal, and verification.
 

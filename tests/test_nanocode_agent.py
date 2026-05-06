@@ -88,15 +88,11 @@ def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks(
     assert "first-output-token" not in trim_prompt
 
 
-def test_agent_user_prompt_includes_blackboard_keys_only(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.blackboard = {"investigation": "inspect parser implementation", "next": "run focused tests"}
+def test_agent_user_prompt_has_no_blackboard_section(tmp_path):
+    prompt = Agent(Session(cwd=str(tmp_path))).build_user_prompt()
 
-    prompt = Agent(session).build_user_prompt()
-
-    assert "<Blackboard_Keys>\n- investigation\n- next\n</Blackboard_Keys>" in prompt
-    assert "inspect parser implementation" not in prompt
-    assert "run focused tests" not in prompt
+    assert "Blackboard_Keys" not in prompt
+    assert "Blackboard" not in prompt
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -502,7 +498,7 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
     assert "duplicate ignored" not in prompt
 
 
-def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_path):
+def test_agent_system_prompt_guides_known_and_tool_summaries(tmp_path):
     prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
 
     assert "Rules:" in prompt
@@ -510,16 +506,15 @@ def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_pa
     assert "- Read(filepath" in prompt
     assert "Use one OR search for related symbols: A|B|C or 3+ plain args" in prompt
     assert "Options: path=FILE, context=N|N, glob=*.py or bare glob." in prompt
-    assert "Every turn outputs exactly one known action." in prompt
-    assert "Output tool_summary before anything else." in prompt
-    assert "Each tool_summary includes known_facts: null or list." in prompt
-    assert "known.items=[] means no new durable facts." in prompt
+    assert "Output exactly one known action every turn." in prompt
+    assert "tool_summary for fresh tool results." in prompt
+    assert "Fresh tool results: summarize all first; each tool_summary needs known_facts." in prompt
+    assert "Known: items=[] means no new durable facts" in prompt
     assert '"known_facts": null | [{"fact": "string", "details": null | ["string"]}]' in prompt
     assert "Order:" in prompt
-    assert "Summarize fresh tool results." in prompt
-    assert "Set/keep Goal." in prompt
-    assert "Output known." in prompt
-    assert "Temporary key-value stash for large notes, raw excerpts, and tool-result notes" in prompt
+    assert "goal if needed." in prompt
+    assert "known always." in prompt
+    assert "Blackboard" not in prompt
     assert "Current_Context" not in prompt
     assert '{"type": "context"' not in prompt
 

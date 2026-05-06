@@ -69,7 +69,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tok:last:42/$0.000008 session:1k/$12.345678 | bb:0"
+    assert snapshot == "model (medium) | ctx:0/9 | tok:last:42/$0.000008 session:1k/$12.345678"
     assert ">" not in snapshot
 
 

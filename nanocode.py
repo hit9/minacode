@@ -459,7 +459,6 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    blackboard: dict[str, str] = field(default_factory=dict)
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -2006,89 +2005,6 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
-def _format_blackboard(blackboard: dict[str, str]) -> str:
-    return "\n".join(key + " -> " + value for key, value in blackboard.items())
-
-
-@final
-@dataclass
-class BlackboardTool(Tool):
-    action: str
-    key: str
-    value: str | None
-    blackboard: dict[str, str]
-
-    @classmethod
-    def name(cls) -> str:
-        return "Blackboard"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Temporary key-value stash for large notes, raw excerpts, and tool-result notes; read later, clear when done.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Blackboard(action[, key[, value]]) -> BlackboardToolResult<content>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            '{"name": "Blackboard", "intention": "Record progress", "args": ["set", "progress", "Step 1 done"]}',
-            '{"name": "Blackboard", "intention": "Read progress", "args": ["read", "progress"]}',
-            '{"name": "Blackboard", "intention": "Clear it", "args": ["clear"]}',
-        ]
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        action = args[0] if args else "read"
-        key = args[1] if len(args) > 1 else ""
-        value = args[2] if len(args) > 2 else None
-        return cls(action=action, key=key, value=value, blackboard=session.blackboard)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return False
-
-    def display(self) -> str:
-        if self.action == "set":
-            preview = (self.value or "").replace("\n", " ")[:80]
-            return f"Blackboard set {self.key}: {preview}"
-        if self.action == "delete":
-            return f"Blackboard delete {self.key}"
-        return f"Blackboard {self.action}"
-
-    def call(self) -> str:
-        if self.action == "read":
-            key = self.key.strip()
-            if key:
-                value = self.blackboard.get(key)
-                content = "" if value is None else key + " -> " + value
-            else:
-                content = _format_blackboard(self.blackboard)
-            return f"<BlackboardToolResult>\n{content}\n</BlackboardToolResult>"
-
-        if self.action == "set":
-            key = self.key.strip()
-            if not key or self.value is None:
-                raise ToolCallError("Blackboard set requires key and value")
-            self.blackboard[key] = self.value.rstrip()
-            return "<BlackboardToolResult>set</BlackboardToolResult>"
-
-        if self.action == "delete":
-            key = self.key.strip()
-            if not key:
-                raise ToolCallError("Blackboard delete requires key")
-            self.blackboard.pop(key, None)
-            return "<BlackboardToolResult>deleted</BlackboardToolResult>"
-
-        if self.action == "clear":
-            self.blackboard.clear()
-            return "<BlackboardToolResult>cleared</BlackboardToolResult>"
-
-        raise ToolCallError("Blackboard action must be one of: read, set, delete, clear")
-
-
 TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.name(): ReadTool,
     LineCountTool.name(): LineCountTool,
@@ -2100,7 +2016,6 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
-    BlackboardTool.name(): BlackboardTool,
 }
 
 
@@ -2111,55 +2026,29 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a small coding agent.
 
-Rules:
-- Output action frames only.
-- Keep one Goal.
-- Make the smallest correct change.
-- Use tools instead of guessing.
+Do:
+- One Goal.
+- Smallest correct change.
+- Tool-check facts.
 - Stop after dependent tool results.
-- Verify after edits before finishing.
-- Every turn outputs exactly one known action.
+- Verify after edits.
+- Output action frames only.
+- Output exactly one known action every turn.
 
 Order:
-1. Summarize fresh tool results.
-2. Set/keep Goal.
-3. Output known.
-4. Update Plan if needed.
-5. Tool, verify, or message.
+1. tool_summary for fresh tool results.
+2. goal if needed.
+3. known always.
+4. plan if needed.
+5. tool / verify / message.
 
-Fresh tool results:
-- Output tool_summary before anything else.
-- One tool_summary per fresh result.
-- Each tool_summary includes known_facts: null or list.
-
-Known:
-- known.items=[] means no new durable facts.
-- Store only small durable facts.
-- Do not store guesses, logs, raw text, or temporary observations.
-
-Goal:
-- Keep unless empty, done, wrong, or changed by user.
-- If user changed task, replace Goal, Plan, verification state.
-
-Plan:
-- Only for non-trivial tasks.
-- 2-5 steps, max one doing.
-- Include verification after edits.
-- replace = structure; patch = status/evidence.
-
-Tools:
-- Tool actions only.
-- Small independent batches only.
-- Prefer Search/ListDir -> Read -> Edit.
-- Prefer specific tools over Bash.
-- Never edit from assumptions.
-- intention says what question the tool answers.
-
-Verify:
-- Use narrowest meaningful check.
-- Failed: update Plan and continue.
-- Impossible: verify blocked with evidence.
-- Do not finish after edits unless passed/blocked.
+Rules:
+- Fresh tool results: summarize all first; each tool_summary needs known_facts.
+- Goal: keep unless empty, done, wrong, or user changed task.
+- Known: items=[] means no new durable facts; no guesses/logs/raw text/temp facts.
+- Plan: only non-trivial; 2-5 steps; max one doing; include verify after edits.
+- Tools: small independent batches only; prefer Search/ListDir -> Read -> Edit; no assumption edits; intention says what question is answered.
+- Verify: narrowest check; failed = update plan; impossible = blocked with evidence; do not finish after edits unless passed/blocked.
 
 Available tools:
 { __tools__ }
@@ -2168,7 +2057,6 @@ Input sections:
 - Environment
 - Conversation_History
 - Known
-- Blackboard_Keys
 - Goal
 - Plan
 - Verification_State
@@ -2178,19 +2066,20 @@ Input sections:
 
 Output format:
 - Each frame contains exactly one JSON object.
-- IMPORTANT: EACH FRAME MUST ENDS WITH __END_ACTION__.
+- Each frame ends with only __END_ACTION__.
 - No arrays, wrappers, null fields, markdown, prose, XML, or native tool calls.
 
 Action schemas:
-{"type": "message", "text": "string"} __END_ACTION__.
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__.
-{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false} __END_ACTION__.
-{"type": "goal", "text": "string"} __END_ACTION__.
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__.
-{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__.
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__.
+{"type": "message", "text": "string"}
+{"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
+{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false}
+{"type": "goal", "text": "string"}
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
+{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
+{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
 
-Exception: known.items may be [].
+Exception:
+- known.items may be [].
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2205,10 +2094,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Known>
 {known}
 </Known>
-
-<Blackboard_Keys>
-{blackboard_keys}
-</Blackboard_Keys>
 
 <Goal>
 {goal}
@@ -2286,7 +2171,6 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            blackboard_keys=self._format_blackboard_keys(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2315,11 +2199,6 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
-
-    def _format_blackboard_keys(self) -> str:
-        if not self.session.blackboard:
-            return "(empty)"
-        return "\n".join("- " + key for key in self.session.blackboard)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -3506,7 +3385,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
-    CommandSpec("/blackboard", "View or clear the blackboard", "Control", "/blackboard [status|clear]"),
 )
 
 
@@ -3523,7 +3401,6 @@ class CommandDispatcher:
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
-        self.blackboard = agent.session.blackboard
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
@@ -3534,7 +3411,6 @@ class CommandDispatcher:
             "/reason_effort": self._reason_effort,
             "/stream": self._stream,
             "/yolo": self._yolo,
-            "/blackboard": self._blackboard,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -3602,7 +3478,6 @@ class CommandDispatcher:
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
-                "blackboard: " + str(len(session.blackboard)) + " items",
                 "goal: " + (session.current.goal or "(empty)"),
                 "verification: " + session.current.verification.status,
             ]
@@ -3684,18 +3559,6 @@ class CommandDispatcher:
         if args in {"", "status"}:
             return "YOLO is " + ("on" if self.agent.session.yolo else "off")
         return "Usage: /yolo [on|off|status]"
-
-    def _blackboard(self, args: str) -> str:
-        if args == "clear":
-            self.blackboard.clear()
-            return "Blackboard cleared"
-        if args in {"", "status"}:
-            content = _format_blackboard(self.blackboard)
-            if content:
-                return "Blackboard:\n" + content
-            return "Blackboard is empty"
-        return "Usage: /blackboard [status|clear]"
-
 
 def _format_count(value: int) -> str:
     if value <= 0:
@@ -3817,8 +3680,7 @@ class StatusBar:
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        blackboard = "bb:" + str(len(session.blackboard))
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens, blackboard]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
