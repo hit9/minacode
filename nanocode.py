@@ -869,7 +869,7 @@ class SearchTool(Tool):
         return [
             "Search files before Read; fixed text by default, prefix re: for line regex.",
             "Use one OR search for related symbols: A|B|C or 3+ plain args; final existing path narrows scope.",
-            "Options: path=FILE, context=N|N, glob=*.py or bare glob.",
+            "Options: path=string, context=N|N, glob=*.py or bare glob.",
         ]
 
     @classmethod
@@ -3065,7 +3065,15 @@ class Agent:
     def build_user_prompt(self) -> str:
         return self.prompt_builder.user_prompt(self.last_tool_calls, self._format_agent_feedback())
 
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
+    def request(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        activity: str = "main",
+        on_action: ActionCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> Json:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
             try:
                 if isinstance(self.model_client, ModelClient):
@@ -3074,7 +3082,18 @@ class Agent:
             except LLMError as error:
                 if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
                     raise
-                time.sleep(self.MODEL_TIMEOUT_RETRY_DELAYS[attempt])
+                delay = self.MODEL_TIMEOUT_RETRY_DELAYS[attempt]
+                if on_message is not None:
+                    on_message(
+                        "Retrying: request model timeout; retry "
+                        + str(attempt + 1)
+                        + "/"
+                        + str(len(self.MODEL_TIMEOUT_RETRY_DELAYS))
+                        + " in "
+                        + str(delay)
+                        + "s."
+                    )
+                time.sleep(delay)
         raise LLMError("request model timeout")
 
     def compact_history(self) -> int:
@@ -3105,7 +3124,7 @@ class Agent:
 
         try:
             for _ in range(self.session.max_agent_steps):
-                response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None)
+                response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None, on_message=on_message)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
@@ -3239,8 +3258,8 @@ class Agent:
             return headline + ": " + _shorten("; ".join(details[:3]), 220)
         return headline
 
-    def step(self, *, on_action: ActionCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main", on_action=on_action)
+    def step(self, *, on_action: ActionCallback | None = None, on_message: MessageCallback | None = None) -> Json:
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main", on_action=on_action, on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
