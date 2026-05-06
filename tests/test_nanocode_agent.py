@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, KnownItem, Session, VerificationStatus
+from nanocode import Agent, KnownItem, LLMError, Session, VerificationStatus
 
 
 def test_agent_tool_results_go_to_last_tool_calls_without_conversation_or_log(tmp_path):
@@ -72,6 +72,79 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.last_total_tokens == 5
     assert abs(session.last_cost_usd - 0.000008) < 1e-12
     assert abs(session.session_cost_usd - 0.000008) < 1e-12
+
+
+def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            if self.calls <= 3:
+                raise LLMError("request model timeout")
+            return {"actions": [{"type": "message", "text": "ok"}]}
+
+    sleeps = []
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    response = agent.request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert agent.model_client.calls == 4
+    assert sleeps == [3, 6, 10]
+
+
+def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            raise LLMError("request model timeout")
+
+    sleeps = []
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    try:
+        agent.request("system", "user")
+    except LLMError as error:
+        assert str(error) == "request model timeout"
+    else:
+        raise AssertionError("expected LLMError")
+
+    assert agent.model_client.calls == 4
+    assert sleeps == [3, 6, 10]
+
+
+def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            raise LLMError("API request failed")
+
+    sleeps = []
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    try:
+        agent.request("system", "user")
+    except LLMError as error:
+        assert str(error) == "API request failed"
+    else:
+        raise AssertionError("expected LLMError")
+
+    assert agent.model_client.calls == 1
+    assert sleeps == []
 
 
 def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypatch):

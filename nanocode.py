@@ -2936,6 +2936,7 @@ class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
+    MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
 
     def __init__(self, session: Session):
         self.session = session
@@ -2954,9 +2955,16 @@ class Agent:
         return self.prompt_builder.user_prompt(self.last_tool_calls, self._format_agent_feedback())
 
     def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
-        if isinstance(self.model_client, ModelClient):
-            return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
-        return self.model_client.request(system_prompt, user_prompt, activity=activity)
+        for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
+            try:
+                if isinstance(self.model_client, ModelClient):
+                    return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
+                return self.model_client.request(system_prompt, user_prompt, activity=activity)
+            except LLMError as error:
+                if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
+                    raise
+                time.sleep(self.MODEL_TIMEOUT_RETRY_DELAYS[attempt])
+        raise LLMError("request model timeout")
 
     def compact_history(self) -> int:
         return self.compactor.compact()
