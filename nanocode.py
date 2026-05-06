@@ -1944,6 +1944,10 @@ KNOWN IS CRITICAL; STORE NON-EMPTY FACTS WITH NON-EMPTY DETAIL KEYS.
 DETAIL VALUES ARE HIDDEN; STORE VALUES WITH details ACTION AND FETCH THEM WITH Details(key...).
 TOOL RESULTS ARE ONE-SHOT; EXTRACT KNOWN FACTS AND DETAIL KEYS IMMEDIATELY BEFORE CONTINUING.
 
+Based ON Existing Input:
+
+Environment, Conversation_History, Known, Goal, Plan,Verification_State, Errors, Last_Tool_Calls and Latest_User_Input.
+
 STEPS:
 
 1. If the goal is not set, determine the current goal first.
