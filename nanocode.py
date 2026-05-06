@@ -972,19 +972,21 @@ class SearchTool(Tool):
             "Search is line-oriented; regex patterns must not contain newlines.",
             "Use A|B|C for literal OR; 3+ plain args also OR-search unless the final one is an existing path.",
             "When locating related symbols, prefer one OR search over repeated Search calls.",
+            "Optional path=FILE sets the search path explicitly.",
             "Optional context=N or N sets nearby context lines, from 0 to 30.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; option is context=N|N (0..30) or glob_pattern"
+        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; option is path=FILE, context=N|N (0..30), or glob_pattern"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
             'Example args: ["TODO"]',
             'Example args: ["class Foo", "code.py"]',
+            'Example args: ["re:class .*Tool", "path=nanocode.py", "context=0"]',
             'Example args: ["TODO", ".", "*.py"]',
             'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
             'Example args: ["TODO", ".", "*.py", "8"]',
@@ -1008,12 +1010,19 @@ class SearchTool(Tool):
         if regex and "\n" in pattern:
             raise ToolCallError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
         target_path_arg = str(args[1]) if len(args) >= 2 else "."
+        if target_path_arg.startswith("path="):
+            target_path_arg = target_path_arg.split("=", 1)[1]
         if not target_path_arg:
             target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
         for raw_option in args[2:]:
             option = str(raw_option)
+            if option.startswith("path="):
+                if target_path_arg != ".":
+                    raise ToolCallError("path option cannot be combined with positional path")
+                target_path_arg = option.split("=", 1)[1] or "."
+                continue
             if option.startswith("context=") or option.isdigit():
                 try:
                     context_lines = cls._parse_context_arg(option)
@@ -1051,7 +1060,9 @@ class SearchTool(Tool):
         values = [str(arg) for arg in args]
         if len(values) < 3 or values[0].startswith("re:"):
             return values
-        positional, options, has_glob_option = cls._split_search_positionals_and_options(values)
+        positional, options, has_glob_option, has_path_option = cls._split_search_positionals_and_options(values)
+        if has_path_option and len(positional) >= 2:
+            return ["|".join(positional), "."] + options
         if len(positional) < 3:
             return values
         if has_glob_option and len(positional) == 2:
@@ -1068,19 +1079,23 @@ class SearchTool(Tool):
         return ["|".join(pattern_parts), target_path_arg] + options
 
     @classmethod
-    def _split_search_positionals_and_options(cls, values: list[str]) -> tuple[list[str], list[str], bool]:
+    def _split_search_positionals_and_options(cls, values: list[str]) -> tuple[list[str], list[str], bool, bool]:
         option_start = len(values)
         has_glob_option = False
+        has_path_option = False
         while option_start > 1:
             option_kind = cls._search_option_kind(values[option_start - 1])
             if option_kind is None:
                 break
             has_glob_option = has_glob_option or option_kind == "glob"
+            has_path_option = has_path_option or option_kind == "path"
             option_start -= 1
-        return values[:option_start], values[option_start:], has_glob_option
+        return values[:option_start], values[option_start:], has_glob_option, has_path_option
 
     @classmethod
     def _search_option_kind(cls, value: str) -> str | None:
+        if value.startswith("path="):
+            return "path"
         if value.startswith("context=") or value.isdigit():
             return "context"
         if value.startswith("glob=") or value.startswith("glob_pattern="):

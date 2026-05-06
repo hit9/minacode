@@ -67,6 +67,32 @@ def test_search_tool_treats_existing_final_plain_arg_as_path(tmp_path):
     assert tool.target_path == str(path)
 
 
+def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_path, monkeypatch):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["re:class .*Tool", "path=nanocode.py", "context=0"])
+    result = tool.call()
+
+    assert tool.target_path == str(path)
+    assert tool.context_lines == 0
+    assert "* nanocode.py:1: class EditTool:" in result
+    assert "* nanocode.py:2: class BashTool:" in result
+
+
+def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "class Bash", "path=nanocode.py"])
+
+    assert tool.pattern == "class Edit|class Bash"
+    assert tool.target_path == str(path)
+
+
 def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("needle\n", encoding="utf-8")
