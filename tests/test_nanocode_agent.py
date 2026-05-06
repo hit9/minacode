@@ -483,18 +483,19 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "Search only supports rg and Python fallback.", "details": ["grep was removed"]},
-                        {"fact": "Search only supports rg and Python fallback.", "details": ["duplicate ignored"]},
+                        {"fact": "Search only supports rg and Python fallback.", "evidence": [{"key": "search.impl", "description": "Search implementation notes.", "value": "grep was removed"}]},
+                        {"fact": "Search only supports rg and Python fallback.", "evidence": [{"key": "search.duplicate", "description": "Duplicate note.", "value": "duplicate ignored"}]},
                     ],
                 }
             ]
         }
     )
 
-    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", details=["grep was removed"])]
+    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", evidence_keys=["search.impl"])]
+    assert "search.impl" in session.evidence_store
 
 
-def test_agent_ignores_known_items_without_fact_or_detail_keys(tmp_path):
+def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
@@ -504,17 +505,19 @@ def test_agent_ignores_known_items_without_fact_or_detail_keys(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "", "details": ["parser.notes"]},
-                        {"fact": "Parser notes exist.", "details": []},
-                        {"fact": "Whitespace details are ignored.", "details": ["   "]},
-                        {"fact": "Parser notes were captured.", "details": [" parser.notes "]},
+                        {"fact": "", "evidence": [{"key": "parser.notes", "description": "Parser notes.", "value": "ignored"}]},
+                        {"fact": "Parser notes exist.", "evidence": []},
+                        {"fact": "Parser notes were captured.", "evidence": [{"key": "parser.notes", "description": "Parser notes.", "value": "line 1"}]},
                     ],
                 }
             ]
         }
     )
 
-    assert session.current.known == [KnownItem(fact="Parser notes were captured.", details=["parser.notes"])]
+    assert session.current.known == [
+        KnownItem(fact="Parser notes exist."),
+        KnownItem(fact="Parser notes were captured.", evidence_keys=["parser.notes"]),
+    ]
 
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
@@ -524,7 +527,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     response = {
         "actions": [
             {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
-            {"type": "known", "items": [{"fact": "Search uses rg.", "details": ["Python fallback exists"]}]},
+            {"type": "known", "items": [{"fact": "Search uses rg.", "evidence": [{"key": "search.rg", "description": "Search uses rg evidence.", "value": "Python fallback exists"}]}]},
         ]
     }
 
@@ -534,7 +537,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
     assert "  Known\n" in agent.state_updater.latest_report
-    assert "    1. Search uses rg. | Python fallback exists" in agent.state_updater.latest_report
+    assert "    1. Search uses rg. | search.rg" in agent.state_updater.latest_report
 
     agent.apply_response(response)
 
@@ -673,7 +676,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                     "actions": [
                         {
                             "type": "known",
-                            "items": [{"fact": "Read sample.txt and found alpha.", "details": ["alpha"]}],
+                            "items": [{"fact": "Read sample.txt and found alpha.", "evidence": [{"key": "sample.alpha", "description": "Read sample.txt output.", "value": "alpha"}]}],
                         },
                         {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
@@ -703,7 +706,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "alpha" in agent.last_tool_calls
-    assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", details=["alpha"])]
+    assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", evidence_keys=["sample.alpha"])]
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
 

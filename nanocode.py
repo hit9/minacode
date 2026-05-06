@@ -188,41 +188,33 @@ class Verification(PromptItem):
 @dataclass(init=False)
 class KnownItem(PromptItem):
     fact: str
-    detail_keys: list[str] = field(default_factory=list)
+    evidence_keys: list[str] = field(default_factory=list)
 
-    def __init__(self, fact: str, detail_keys: list[str] | None = None, details: list[str] | None = None):
+    def __init__(self, fact: str, evidence_keys: list[str] | None = None):
         self.fact = fact
-        self.detail_keys = list(detail_keys if detail_keys is not None else details or [])
-
-    @property
-    def details(self) -> list[str]:
-        return self.detail_keys
-
-    @details.setter
-    def details(self, value: list[str]) -> None:
-        self.detail_keys = value
+        self.evidence_keys = list(evidence_keys or [])
 
     @override
     def format(self, indent: str = "") -> str:
         lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
-        if self.detail_keys:
-            lines.append("  <detail_keys>")
-            for key in self.detail_keys:
-                lines.append("    <detail_key>" + key + "</detail_key>")
-            lines.append("  </detail_keys>")
+        if self.evidence_keys:
+            lines.append("  <evidence_keys>")
+            for key in self.evidence_keys:
+                lines.append("    <evidence_key>" + key + "</evidence_key>")
+            lines.append("  </evidence_keys>")
         lines.append("</KnownItem>")
         return _format_lines(lines, indent)
 
 
 @final
 @dataclass
-class DetailItem(PromptItem):
+class EvidenceItem(PromptItem):
     description: str
     value: str
 
     @override
     def format(self, indent: str = "") -> str:
-        return _format_lines(["<Detail>", "  <description>" + self.description + "</description>", "</Detail>"], indent)
+        return _format_lines(["<Evidence>", "  <description>" + self.description + "</description>", "</Evidence>"], indent)
 
 
 @final
@@ -417,23 +409,26 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    details_store: dict[str, DetailItem] = field(default_factory=dict)
+    evidence_store: dict[str, EvidenceItem] = field(default_factory=dict)
 
     @property
-    def details(self) -> dict[str, DetailItem]:
-        return self.details_store
+    def evidence(self) -> dict[str, EvidenceItem]:
+        return self.evidence_store
 
-    @details.setter
-    def details(self, value: dict[str, DetailItem] | dict[str, str]) -> None:
-        self.details_store = {key: item if isinstance(item, DetailItem) else DetailItem(description=key, value=str(item)) for key, item in value.items()}
+    @evidence.setter
+    def evidence(self, value: dict[str, EvidenceItem] | dict[str, str]) -> None:
+        self.evidence_store = {
+            key: item if isinstance(item, EvidenceItem) else EvidenceItem(description=key, value=str(item))
+            for key, item in value.items()
+        }
 
     @property
-    def details(self) -> dict[str, DetailItem]:
-        return self.details_store
+    def details(self) -> dict[str, EvidenceItem]:
+        return self.evidence_store
 
     @details.setter
-    def details(self, value: dict[str, DetailItem] | dict[str, str]) -> None:
-        self.details_store = {key: item if isinstance(item, DetailItem) else DetailItem(description=key, value=str(item)) for key, item in value.items()}
+    def details(self, value: dict[str, EvidenceItem] | dict[str, str]) -> None:
+        self.evidence = value
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -1910,56 +1905,56 @@ class GitTool(Tool):
 
 @final
 @dataclass
-class DetailsTool(Tool):
+class EvidenceTool(Tool):
     MAX_OUTPUT_CHARS: ClassVar[int] = 20_000
 
     keys: list[str]
-    details: dict[str, DetailItem]
+    evidence: dict[str, EvidenceItem]
 
     @classmethod
     def name(cls) -> str:
-        return "Details"
+        return "Evidence"
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read hidden detail values by key; batch multiple keys when useful."]
+        return ["Read hidden evidence values by key; batch multiple keys when useful."]
 
     @classmethod
     def signature(cls) -> str:
-        return "Details(key[, key...]) -> DetailsToolResult<content>"
+        return "Evidence(key[, key...]) -> EvidenceToolResult<content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            '{"name": "Details", "intention": "Read stored notes", "args": ["parser.notes", "other.key"]}',
+            '{"name": "Evidence", "intention": "Read stored evidence", "args": ["parser.notes", "other.key"]}',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if args and args[0].strip().lower() in {"get", "read"}:
             args = args[1:]
-        return cls(keys=args, details=session.details)
+        return cls(keys=args, evidence=session.evidence_store)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
 
     def display(self) -> str:
-        return "Details " + ", ".join(self.keys)
+        return "Evidence " + ", ".join(self.keys)
 
     def call(self) -> str:
         if not self.keys:
-            raise ToolCallError("Details requires at least one key")
-        lines = ["<DetailsToolResult>"]
+            raise ToolCallError("Evidence requires at least one key")
+        lines = ["<EvidenceToolResult>"]
         for key in self.keys:
-            if key not in self.details:
+            if key not in self.evidence:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
-            lines.extend(['  <Detail key="' + key + '">', self.details[key].value, "  </Detail>"])
-        lines.append("</DetailsToolResult>")
+            lines.extend(['  <Evidence key="' + key + '">', self.evidence[key].value, "  </Evidence>"])
+        lines.append("</EvidenceToolResult>")
         result = "\n".join(lines)
         if len(result) <= self.MAX_OUTPUT_CHARS:
             return result
-        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</DetailsToolResult>"
+        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</EvidenceToolResult>"
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1973,7 +1968,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
-    DetailsTool.name(): DetailsTool,
+    EvidenceTool.name(): EvidenceTool,
 }
 
 
@@ -1985,42 +1980,56 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
+USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
-You must utilize your memory (the "details store" and "known" components); otherwise, it will be difficult for your intelligence to function effectively..
-
-Use the current Environment, Conversation_History, Known, Goal, Plan, Verification_State, Errors, Last_Tool_Calls, and Latest_User_Input.
+Memory:
+- Known = concise, self-contained facts.
+- Evidence = hidden raw support: code snippets, logs, source text, long outputs.
+- Active_Evidence is already visible.
+- Use Evidence(key...) to fetch hidden evidence by key.
+- Before Read, prefer batched Evidence(...) if stored evidence may answer the question.
+- Tool results are one-shot; immediately save useful facts as known and raw support as evidence.
 
 STEPS:
 
-1. If the goal is not set, determine the current goal first.
-2. Extract facts from the latest tool call results.
-3. Create or revise the plan based on facts and the goal.
-4. Verify before marking the goal as achieved.
-5. Report progress to the user with message when appropriate.
+1. Goal:
+   - If the goal is not set, output goal first.
+
+2. Fresh tool results:
+   - Extract known facts from latest tool results.
+   - Store supporting raw text/logs/code snippets as evidence.
+   - Do this before any next tool/message.
+
+3. Memory check:
+   - Use Known and Active_Evidence first.
+   - If needed context is hidden, call batched Evidence(key...).
+   - Only Read files when memory is missing or insufficient.
+
+4. Plan:
+   - Create or revise the plan based on facts and the goal.
+
+5. Act:
+   - Use tools, verify, or message.
+   - Verify before marking the goal as complete.
+   - Report progress with message when appropriate.
+
+Memory Tools:
+
+{ __memory_tools__ }
 
 Available tools:
-USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
 
-{ __tools__ }
+{ __other_tools__ }
 
 Rules:
 
-1. Call at most 10 tools in one turn.
-2. Prefer batched Search/Read when useful.
-3. Tool results are one-shot; batch independent tools and extract known facts/detail values immediately.
-4. EVERY TURN MUST EMIT AT LEAST ONE ACTION FRAME.
-
-* KNOWN IS CRITICAL; STORE NON-EMPTY, SELF-CONTAINED FACTS WITH NON-EMPTY DETAIL KEYS/DESCRIPTIONS/VALUES.
-* DETAIL VALUES ARE HIDDEN; context shows only key+description; fetch values later with Details(key...).
-* TOOL RESULTS ARE ONE-SHOT; EXTRACT KNOWN FACTS AND DETAIL VALUES IMMEDIATELY BEFORE CONTINUING.
-* Every turn must output known with details; missing known or empty details is rejected.
-
-During Exploring:
-* Before Read, prefer batched Details(...) for stored context.
-* Later only detail keys/descriptions are visible; use Details(key...) for values.
-
-Again:
-You must utilize your memory (the "details store" and "known" components); otherwise, it will be difficult for your intelligence to function effectively..
+1. Every turn must emit at least one action frame.
+2. Every turn must output known with non-empty evidence, or rejected.
+3. Call at most 10 tools in one turn.
+4. Prefer batched Search/Read/Evidence when useful.
+5. Batch only independent tools.
+6. If a tool result is needed for the next decision, stop after that tool batch.
+7. Do not Read before checking relevant stored Evidence when available.
 
 Output format (Strict)
 
@@ -2029,8 +2038,7 @@ Output multiple JSON objects separated by __END_ACTION__:
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
-{"type": "known", "items": [{"fact": "non-empty self-contained string", "details": [{"key": "non-empty detail key", "description": "non-empty description", "value": "non-empty detail value"}]}]} __END_ACTION__
-{"type": "details", "items": [{"key": "non-empty detail key", "description": "non-empty description", "value": "non-empty detail value"}]} __END_ACTION__
+{"type": "known", "items": [{"fact": "non-empty self-contained string", "evidence": [{"key": "non-empty evidence key", "description": "non-empty description", "value": "non-empty raw evidence"}]}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -2048,9 +2056,13 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {known}
 </Known>
 
-<Details>
-{details}
-</Details>
+<Evidence>
+{evidence}
+</Evidence>
+
+<Active_Evidence>
+{active_evidence}
+</Active_Evidence>
 
 <Goal>
 {goal}
@@ -2090,7 +2102,7 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- known facts and known detail keys needed later
+- known facts and evidence keys needed later
 - unresolved blockers and open questions
 - verification evidence
 
@@ -2099,7 +2111,7 @@ Omit noise:
 - repeated output
 - full stack traces
 - chatter
-- detail values unless needed for continuity
+- evidence values unless needed for continuity
 
 Write the shortest complete continuation summary.
 
@@ -2120,7 +2132,12 @@ class PromptBuilder:
         self.session = session
 
     def system_prompt(self) -> str:
-        return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
+        return (
+            MAIN_AGENT_SYSTEM_PROMPT.replace("{ __memory_tools__ }", self._format_tools(memory=True))
+            .replace("{ __other_tools__ }", self._format_tools(memory=False))
+            .replace("{ __tools__ }", self._format_tools())
+            .strip()
+        )
 
     def user_prompt(self, last_tool_calls: str, errors: str) -> str:
         current = self.session.current
@@ -2128,7 +2145,8 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            details=self._format_details(),
+            evidence=self._format_evidence(),
+            active_evidence=self._format_active_evidence(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2137,9 +2155,12 @@ class PromptBuilder:
             latest_user_input=current.user_input or "(empty)",
         ).strip()
 
-    def _format_tools(self) -> str:
+    def _format_tools(self, memory: bool | None = None) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
+            is_memory_tool = tool.name() == EvidenceTool.name()
+            if memory is not None and is_memory_tool != memory:
+                continue
             lines.append("- " + tool.signature())
             for item in tool.description():
                 lines.append("  - " + item)
@@ -2158,13 +2179,43 @@ class PromptBuilder:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
 
-    def _format_details(self) -> str:
-        if not self.session.details:
+    def _format_evidence(self) -> str:
+        if not self.session.evidence_store:
             return "(empty)"
         lines = []
-        for key, item in self.session.details.items():
-            lines.extend(['<Detail key="' + key + '">', "  <description>" + item.description + "</description>", "</Detail>"])
+        for key, item in self.session.evidence_store.items():
+            lines.extend(['<Evidence key="' + key + '">', "  <description>" + item.description + "</description>", "</Evidence>"])
         return "\n".join(lines)
+
+    def _format_active_evidence(self) -> str:
+        if not self.session.evidence_store:
+            return "(empty)"
+        max_items = 3
+        max_total_chars = 4_000
+        max_value_chars = 1_500
+        chunks = []
+        used = 0
+        for key, item in reversed(list(self.session.evidence_store.items())):
+            value = item.value
+            if len(value) > max_value_chars:
+                value = value[:max_value_chars] + "\n...<truncated>"
+            chunk = "\n".join(
+                [
+                    '<Evidence key="' + key + '">',
+                    "  <description>" + item.description + "</description>",
+                    "  <value>",
+                    value,
+                    "  </value>",
+                    "</Evidence>",
+                ]
+            )
+            if used + len(chunk) > max_total_chars:
+                break
+            chunks.append(chunk)
+            used += len(chunk)
+            if len(chunks) >= max_items:
+                break
+        return "\n\n".join(chunks) if chunks else "(empty)"
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -2597,8 +2648,8 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_DETAIL_ITEMS: ClassVar[int] = 80
-    MAX_DETAIL_VALUE_CHARS: ClassVar[int] = 12_000
+    MAX_EVIDENCE_ITEMS: ClassVar[int] = 80
+    MAX_EVIDENCE_VALUE_CHARS: ClassVar[int] = 12_000
 
     def __init__(self, session: Session):
         self.session = session
@@ -2608,7 +2659,7 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = [item.format() for item in self.session.current.known]
-        before_details = dict(self.session.details)
+        before_evidence = dict(self.session.evidence_store)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
@@ -2616,14 +2667,13 @@ class AgentStateUpdater:
         if goal_changed:
             self.session.range_fingerprints.clear()
         self._apply_known(response)
-        self._apply_details(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
-            before_details,
+            before_evidence,
             before_verification,
         )
 
@@ -2635,7 +2685,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_details: dict[str, DetailItem],
+        before_evidence: dict[str, EvidenceItem],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2655,11 +2705,11 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        if self.session.details != before_details:
+        if self.session.evidence_store != before_evidence:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Details " + f"({len(self.session.details_store)})")
-            lines.extend(self._format_details_rows(before_details))
+            lines.append("  Evidence " + f"({len(self.session.evidence_store)})")
+            lines.extend(self._format_evidence_rows(before_evidence))
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -2687,19 +2737,19 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             text = self._compact(item.fact)
-            if item.detail_keys:
-                text += " | " + "; ".join(self._compact(key) for key in item.detail_keys)
+            if item.evidence_keys:
+                text += " | " + "; ".join(self._compact(key) for key in item.evidence_keys)
             rows.append("    " + str(index) + ". " + text)
         return rows
 
-    def _format_details_rows(self, before_details: dict[str, DetailItem]) -> list[str]:
-        changed = [key for key, value in self.session.details.items() if before_details.get(key) != value]
+    def _format_evidence_rows(self, before_evidence: dict[str, EvidenceItem]) -> list[str]:
+        changed = [key for key, value in self.session.evidence_store.items() if before_evidence.get(key) != value]
         if not changed:
             return ["    (empty)"]
         offset = max(0, len(changed) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, key in enumerate(changed[offset:], start=offset + 1):
-            item = self.session.details[key]
+            item = self.session.evidence_store[key]
             rows.append("    " + str(index) + ". " + self._compact(key) + " - " + self._compact(item.description))
         return rows
 
@@ -2782,18 +2832,6 @@ class AgentStateUpdater:
                 if item is not None:
                     self._add_known_item(item)
 
-    def _apply_details(self, response: Json) -> None:
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "details"]:
-            items = _json_list(action.get("items"))
-            if not items and ("key" in action or "value" in action):
-                items = [action]
-            for raw in items:
-                item = _json_dict(raw)
-                key = _json_str(item.get("key"))
-                description = _json_str(item.get("description"))
-                value = _json_str(item.get("value"))
-                self._store_detail(key, description, value)
-
     def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
         item = _json_dict(value)
         if not item:
@@ -2801,31 +2839,29 @@ class AgentStateUpdater:
         fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        detail_keys = self._detail_keys_from_known_item(item)
-        if not detail_keys:
-            return None
-        return KnownItem(fact=fact, detail_keys=detail_keys)
+        evidence_keys = self._evidence_keys_from_known_item(item)
+        return KnownItem(fact=fact, evidence_keys=evidence_keys)
 
-    def _detail_keys_from_known_item(self, item: Json) -> list[str]:
+    def _evidence_keys_from_known_item(self, item: Json) -> list[str]:
         keys: list[str] = []
-        for raw in _json_list(item.get("detail_keys")):
+        for raw in _json_list(item.get("evidence_keys")):
             key = (_json_str(raw) or "").strip()
             if key and key not in keys:
                 keys.append(key)
-        for raw in _json_list(item.get("details")):
-            detail = _json_dict(raw)
-            if detail:
-                key = (_json_str(detail.get("key")) or "").strip()
-                description = _json_str(detail.get("description"))
-                value = _json_str(detail.get("value"))
-                self._store_detail(key, description, value)
+        for raw in _json_list(item.get("evidence")):
+            evidence = _json_dict(raw)
+            if evidence:
+                key = (_json_str(evidence.get("key")) or "").strip()
+                description = _json_str(evidence.get("description"))
+                value = _json_str(evidence.get("value"))
+                self._store_evidence(key, description, value)
             else:
                 key = (_json_str(raw) or "").strip()
             if key and key not in keys:
                 keys.append(key)
         return keys
 
-    def _store_detail(self, key: str | None, description: str | None, value: str | None) -> None:
+    def _store_evidence(self, key: str | None, description: str | None, value: str | None) -> None:
         key = (key or "").strip()
         description = (description or "").strip()
         value = (value or "").strip()
@@ -2833,11 +2869,13 @@ class AgentStateUpdater:
             return
         if not description:
             description = key
-        if len(value) > self.MAX_DETAIL_VALUE_CHARS:
-            value = value[: self.MAX_DETAIL_VALUE_CHARS] + "\n...<truncated>"
-        if key not in self.session.details and len(self.session.details) >= self.MAX_DETAIL_ITEMS:
-            self.session.details.pop(next(iter(self.session.details)))
-        self.session.details[key] = DetailItem(description=description, value=value)
+        if len(value) > self.MAX_EVIDENCE_VALUE_CHARS:
+            value = value[: self.MAX_EVIDENCE_VALUE_CHARS] + "\n...<truncated>"
+        if key in self.session.evidence_store:
+            self.session.evidence_store.pop(key)
+        elif len(self.session.evidence_store) >= self.MAX_EVIDENCE_ITEMS:
+            self.session.evidence_store.pop(next(iter(self.session.evidence_store)))
+        self.session.evidence_store[key] = EvidenceItem(description=description, value=value)
 
     def _add_known_item(self, item: KnownItem) -> None:
         if not any(known.fact == item.fact for known in self.session.current.known):
@@ -3263,7 +3301,7 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
-    CommandSpec("/details", "Show or clear hidden detail store", "Info", "/details [clear]"),
+    CommandSpec("/evidence", "Show or clear hidden evidence store", "Info", "/evidence [clear]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3292,7 +3330,7 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
-            "/details": self._details,
+            "/evidence": self._evidence,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3351,17 +3389,17 @@ class CommandDispatcher:
             ]
         )
 
-    def _details(self, args: str) -> str:
+    def _evidence(self, args: str) -> str:
         if args == "clear":
-            count = len(self.agent.session.details_store)
-            self.agent.session.details_store.clear()
-            return "Cleared details: " + str(count)
+            count = len(self.agent.session.evidence_store)
+            self.agent.session.evidence_store.clear()
+            return "Cleared evidence: " + str(count)
         if args:
-            return "Usage: /details [clear]"
-        if not self.agent.session.details_store:
-            return "Details: 0"
-        lines = ["Details: " + str(len(self.agent.session.details_store))]
-        for key, item in self.agent.session.details_store.items():
+            return "Usage: /evidence [clear]"
+        if not self.agent.session.evidence_store:
+            return "Evidence: 0"
+        lines = ["Evidence: " + str(len(self.agent.session.evidence_store))]
+        for key, item in self.agent.session.evidence_store.items():
             lines.append("  " + key + " - " + item.description)
         return "\n".join(lines)
 
@@ -3379,7 +3417,7 @@ class CommandDispatcher:
                 "stream: " + stream,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "details: " + str(len(session.details_store)),
+                "evidence: " + str(len(session.evidence_store)),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
                 "goal: " + (session.current.goal or "(empty)"),
@@ -3585,7 +3623,7 @@ class StatusBar:
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "details:" + str(len(session.details_store)), "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "evidence:" + str(len(session.evidence_store)), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
@@ -3893,7 +3931,7 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Details"):
+            elif line.startswith("  Evidence"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])

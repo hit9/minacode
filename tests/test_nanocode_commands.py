@@ -1,4 +1,4 @@
-from nanocode import Agent, CommandDispatcher, CommandStatus, DetailItem, Session, UserMessage
+from nanocode import Agent, CommandDispatcher, CommandStatus, EvidenceItem, Session, UserMessage
 
 
 class FakeModelClient:
@@ -58,28 +58,28 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "tokens: last=1k session=2m" in result.message
     assert "cost(usd): last=$0.000008 session=$12.345678" in result.message
     assert "stream: on" in result.message
-    assert "details: 0" in result.message
+    assert "evidence: 0" in result.message
     assert "blackboard" not in result.message
 
 
-def test_details_command_shows_and_clears_store(tmp_path):
+def test_evidence_command_shows_and_clears_store(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.details_store = {"parser.notes": DetailItem(description="Parser notes from sample output.", value="line 1\nline 2")}
+    session.evidence_store = {"parser.notes": EvidenceItem(description="Parser notes from sample output.", value="line 1\nline 2")}
     dispatcher = CommandDispatcher(Agent(session))
 
-    status_result = dispatcher.dispatch("/details")
-    clear_result = dispatcher.dispatch("/details clear")
-    empty_result = dispatcher.dispatch("/details")
-    invalid_result = dispatcher.dispatch("/details nope")
+    status_result = dispatcher.dispatch("/evidence")
+    clear_result = dispatcher.dispatch("/evidence clear")
+    empty_result = dispatcher.dispatch("/evidence")
+    invalid_result = dispatcher.dispatch("/evidence nope")
 
     assert status_result.status == CommandStatus.HANDLED
-    assert "Details: 1" in status_result.message
+    assert "Evidence: 1" in status_result.message
     assert "parser.notes - Parser notes from sample output." in status_result.message
     assert "line 1" not in status_result.message
-    assert clear_result.message == "Cleared details: 1"
-    assert empty_result.message == "Details: 0"
-    assert invalid_result.message == "Usage: /details [clear]"
-    assert session.details_store == {}
+    assert clear_result.message == "Cleared evidence: 1"
+    assert empty_result.message == "Evidence: 0"
+    assert invalid_result.message == "Usage: /evidence [clear]"
+    assert session.evidence_store == {}
 
 
 def test_stream_command_shows_and_updates_streaming_mode(tmp_path):
