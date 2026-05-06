@@ -2042,9 +2042,34 @@ Action types:
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
+
+After __END_REASONING__, output action frames only.
+
 Output format (Strict)
 
-Output multiple JSON objects separated by __END_ACTION__:
+The structure is basically:
+
+<Reasoning_Block>
+__END_REASONING__
+<Action> __END_ACTION__
+<Action> __END_ACTION__
+<Action> __END_ACTION__
+...
+
+Reasoning block (required before actions):
+
+Goal: current goal or "need_goal"
+FreshResults: "yes" if latest tool results must be summarized, else "no"
+Known: facts to store now, or "none"
+EvidenceKeys: relevant existing evidence keys, or "none"
+MemoryGate: "use_active_evidence" | "call_Evidence" | "read_allowed"
+Need: missing fact needed for next action, or "none"
+Next: "goal" | "known" | "plan" | "tool" | "verify" | "message"
+May_Call_Tools_Names: ...
+
+__END_REASONING__
+
+Followed by actions, which are multiple JSON objects separated by __END_ACTION__:
 
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
@@ -2242,6 +2267,7 @@ class PromptBuilder:
 @final
 class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
+    REASONING_FRAME_END: ClassVar[str] = "__END_REASONING__"
     ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
@@ -2317,6 +2343,7 @@ class ModelClient:
         usage: Json = {}
         buffer = ""
         frame_number = 0
+        reasoning_done = False
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -2342,12 +2369,25 @@ class ModelClient:
             parts.append(content)
             if on_action is not None:
                 buffer += content
+                if not reasoning_done:
+                    marker_index = buffer.find(self.REASONING_FRAME_END)
+                    if marker_index < 0:
+                        continue
+                    buffer = buffer[marker_index + len(self.REASONING_FRAME_END) :]
+                    reasoning_done = True
                 frames, buffer = self._completed_action_frames(buffer)
                 for frame in frames:
                     frame_number += 1
                     action, _error = self._parse_action_frame(frame, frame_number)
                     if action is not None:
                         on_action(action)
+        if on_action is not None and not reasoning_done and buffer:
+            frames, _buffer = self._completed_action_frames(buffer)
+            for frame in frames:
+                frame_number += 1
+                action, _error = self._parse_action_frame(frame, frame_number)
+                if action is not None:
+                    on_action(action)
         return "".join(parts), usage
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
@@ -2378,6 +2418,9 @@ class ModelClient:
     def _parse_model_content(self, content: str) -> Json:
         text = content.strip()
         text = self._strip_leaked_think_tags(text)
+        text = self._strip_json_fence(text)
+        text = self._strip_leaked_think_tags(text)
+        text = self._strip_reasoning_prefix(text)
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
         actions: list[Json] = []
@@ -2451,6 +2494,12 @@ class ModelClient:
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
 
+    def _strip_reasoning_prefix(self, text: str) -> str:
+        marker_index = text.find(self.REASONING_FRAME_END)
+        if marker_index < 0:
+            return text
+        return text[marker_index + len(self.REASONING_FRAME_END) :].strip()
+
     def _is_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_PATTERN.match(line) is not None
 
@@ -2487,7 +2536,15 @@ class ModelClient:
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
+            "_format_error": (
+                "Invalid model output: "
+                + reason
+                + ". Return a reasoning block ending with "
+                + self.REASONING_FRAME_END
+                + ", then action frames only. Bad output: "
+                + _shorten(content)
+                + guidance
+            ),
         }
 
     def _looks_like_native_tool_call(self, content: str) -> bool:
@@ -3143,7 +3200,7 @@ class Agent:
 
     def _format_agent_feedback_format_error(self, format_error: str) -> str:
         message = self._format_gate_user_message("Error: model returned invalid output", format_error)
-        return message + " Rule: return valid JSON action frames only."
+        return message + " Rule: return __END_REASONING__ first, then valid JSON action frames only."
 
     def _format_agent_feedback_verification_error(self) -> str:
         return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with evidence.'
