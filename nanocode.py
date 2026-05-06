@@ -133,7 +133,7 @@ class PlanItem(PromptItem):
     text: str
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
-    evidence: str = ""
+    context: str = ""
 
     @override
     def format(self, indent: str = "") -> str:
@@ -141,8 +141,8 @@ class PlanItem(PromptItem):
         if self.id:
             parts.append("id=" + self.id)
         parts.append(self.text)
-        if self.evidence:
-            parts.append("evidence=" + self.evidence)
+        if self.context:
+            parts.append("context=" + self.context)
         return indent + "<PlanItem>" + " ".join(parts) + "</PlanItem>"
 
 
@@ -160,7 +160,7 @@ class Verification(PromptItem):
     goal: str = ""
     status: VerificationStatus = VerificationStatus.IDLE
     method: str = ""
-    evidence: str = ""
+    context: str = ""
 
     @override
     def format(self, indent: str = "") -> str:
@@ -169,7 +169,7 @@ class Verification(PromptItem):
             "  <goal>" + self.goal + "</goal>",
             "  <status>" + self.status + "</status>",
             "  <method>" + self.method + "</method>",
-            "  <evidence>" + self.evidence + "</evidence>",
+            "  <context>" + self.context + "</context>",
             "</Verification>",
         ]
         return _format_lines(lines, indent)
@@ -178,43 +178,43 @@ class Verification(PromptItem):
         self.goal = ""
         self.status = VerificationStatus.IDLE
         self.method = ""
-        self.evidence = ""
+        self.context = ""
 
     def has_context(self) -> bool:
-        return bool(self.goal or self.method or self.evidence or self.status != VerificationStatus.IDLE)
+        return bool(self.goal or self.method or self.context or self.status != VerificationStatus.IDLE)
 
 
 @final
 @dataclass(init=False)
 class KnownItem(PromptItem):
     fact: str
-    evidence_keys: list[str] = field(default_factory=list)
+    context_keys: list[str] = field(default_factory=list)
 
-    def __init__(self, fact: str, evidence_keys: list[str] | None = None):
+    def __init__(self, fact: str, context_keys: list[str] | None = None):
         self.fact = fact
-        self.evidence_keys = list(evidence_keys or [])
+        self.context_keys = list(context_keys or [])
 
     @override
     def format(self, indent: str = "") -> str:
         lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
-        if self.evidence_keys:
-            lines.append("  <evidence_keys>")
-            for key in self.evidence_keys:
-                lines.append("    <evidence_key>" + key + "</evidence_key>")
-            lines.append("  </evidence_keys>")
+        if self.context_keys:
+            lines.append("  <context_keys>")
+            for key in self.context_keys:
+                lines.append("    <context_key>" + key + "</context_key>")
+            lines.append("  </context_keys>")
         lines.append("</KnownItem>")
         return _format_lines(lines, indent)
 
 
 @final
 @dataclass
-class EvidenceItem(PromptItem):
+class ContextItem(PromptItem):
     description: str
     value: str
 
     @override
     def format(self, indent: str = "") -> str:
-        return _format_lines(["<Evidence>", "  <description>" + self.description + "</description>", "</Evidence>"], indent)
+        return _format_lines(["<Context>", "  <description>" + self.description + "</description>", "</Context>"], indent)
 
 
 @final
@@ -409,23 +409,15 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    evidence_store: dict[str, EvidenceItem] = field(default_factory=dict)
+    context_store: dict[str, ContextItem] = field(default_factory=dict)
 
     @property
-    def evidence(self) -> dict[str, EvidenceItem]:
-        return self.evidence_store
+    def context(self) -> dict[str, ContextItem]:
+        return self.context_store
 
-    @evidence.setter
-    def evidence(self, value: dict[str, EvidenceItem] | dict[str, str]) -> None:
-        self.evidence_store = {key: item if isinstance(item, EvidenceItem) else EvidenceItem(description=key, value=str(item)) for key, item in value.items()}
-
-    @property
-    def details(self) -> dict[str, EvidenceItem]:
-        return self.evidence_store
-
-    @details.setter
-    def details(self, value: dict[str, EvidenceItem] | dict[str, str]) -> None:
-        self.evidence = value
+    @context.setter
+    def context(self, value: dict[str, ContextItem] | dict[str, str]) -> None:
+        self.context_store = {key: item if isinstance(item, ContextItem) else ContextItem(description=key, value=str(item)) for key, item in value.items()}
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -1902,56 +1894,56 @@ class GitTool(Tool):
 
 @final
 @dataclass
-class EvidenceTool(Tool):
+class ContextTool(Tool):
     MAX_OUTPUT_CHARS: ClassVar[int] = 20_000
 
     keys: list[str]
-    evidence: dict[str, EvidenceItem]
+    context: dict[str, ContextItem]
 
     @classmethod
     def name(cls) -> str:
-        return "Evidence"
+        return "Context"
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read hidden evidence values by key; batch multiple keys when useful."]
+        return ["Read hidden context values by key; batch multiple keys when useful."]
 
     @classmethod
     def signature(cls) -> str:
-        return "Evidence(key[, key...]) -> EvidenceToolResult<content>"
+        return "Context(key[, key...]) -> ContextToolResult<content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            '{"name": "Evidence", "intention": "Read stored evidence", "args": ["parser.notes", "other.key"]}',
+            '{"name": "Context", "intention": "Read stored context", "args": ["parser.notes", "other.key"]}',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if args and args[0].strip().lower() in {"get", "read"}:
             args = args[1:]
-        return cls(keys=args, evidence=session.evidence_store)
+        return cls(keys=args, context=session.context_store)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
 
     def display(self) -> str:
-        return "Evidence " + ", ".join(self.keys)
+        return "Context " + ", ".join(self.keys)
 
     def call(self) -> str:
         if not self.keys:
-            raise ToolCallError("Evidence requires at least one key")
-        lines = ["<EvidenceToolResult>"]
+            raise ToolCallError("Context requires at least one key")
+        lines = ["<ContextToolResult>"]
         for key in self.keys:
-            if key not in self.evidence:
+            if key not in self.context:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
-            lines.extend(['  <Evidence key="' + key + '">', self.evidence[key].value, "  </Evidence>"])
-        lines.append("</EvidenceToolResult>")
+            lines.extend(['  <Context key="' + key + '">', self.context[key].value, "  </Context>"])
+        lines.append("</ContextToolResult>")
         result = "\n".join(lines)
         if len(result) <= self.MAX_OUTPUT_CHARS:
             return result
-        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</EvidenceToolResult>"
+        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</ContextToolResult>"
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1965,7 +1957,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
-    EvidenceTool.name(): EvidenceTool,
+    ContextTool.name(): ContextTool,
 }
 
 
@@ -1981,11 +1973,11 @@ USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBI
 
 Memory:
 - Known = concise, self-contained facts.
-- Evidence = hidden raw support: code snippets, logs, source text, long outputs.
-- Active_Evidence is already visible.
-- Use Evidence(key...) to fetch hidden evidence by key.
-- Before Read, prefer batched Evidence(...) if stored evidence may answer the question.
-- Tool results are one-shot; immediately save useful facts as known and raw support as evidence.
+- Context = hidden raw support: code snippets, logs, source text, long outputs.
+- Active_Context is already visible.
+- Use Context(key...) to fetch hidden context by key.
+- Before Read, prefer batched Context(...) if stored context may answer the question.
+- Tool results are one-shot; immediately save useful facts as known and raw support as context.
 
 STEPS:
 
@@ -1994,14 +1986,14 @@ STEPS:
 
 2. Fresh tool results:
    - Extract known facts from latest tool results.
-   - Store supporting raw text/logs/code snippets as evidence.
+   - Store supporting raw text/logs/code snippets as context.
    - Do this before any next tool/message.
 
 3. Memory check:
-   - Use Known and Active_Evidence first.
-   - If needed context is hidden, call batched Evidence(key...).
+   - Use Known and Active_Context first.
+   - If needed context is hidden, call batched Context(key...).
    - Only Read files when memory is missing or insufficient.
-   - Evidence description must say what the value contains and when to reuse it.
+   - Context description must say what the value contains and when to reuse it.
 
 4. Plan:
    - Create or revise the plan based on facts and the goal.
@@ -2020,62 +2012,37 @@ Available tools:
 { __other_tools__ }
 
 READ GATE:
-- Do not Read a file if relevant Evidence keys exist.
-- First call batched Evidence(key...).
-- Read only after Evidence is missing, insufficient, or stale.
+- Do not Read a file if relevant Context keys exist.
+- First call batched Context(key...).
+- Read only after Context is missing, insufficient, or stale.
 
 Rules:
 
 1. Every turn must emit at least one action frame.
-2. Every turn must output known with non-empty evidence, or rejected.
+2. Every turn must output known with non-empty context, or rejected.
 3. Call at most 10 tools in one turn.
-4. Prefer batched Search/Read/Evidence when useful.
+4. Prefer batched Search/Read/Context when useful.
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
-7. Do not Read before checking relevant stored Evidence when available.
+7. Do not Read before checking relevant stored Context when available.
 
 Action types:
 * message: tell the user progress, result, or blocker.
 * goal: set/update the current goal; complete=true only after success + verification.
 * verify: record verification status for the current goal.
-* known: save durable facts with raw evidence; required every turn.
+* known: save durable facts with raw context; required every turn.
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
-
-After __END_REASONING__, output action frames only.
-
 Output format (Strict)
 
-The structure is basically:
-
-<Reasoning_Block>
-__END_REASONING__
-<Action> __END_ACTION__
-<Action> __END_ACTION__
-<Action> __END_ACTION__
-...
-
-Reasoning block (required before actions):
-
-Goal: current goal or "need_goal"
-FreshResults: "yes" if latest tool results must be summarized, else "no"
-Known: facts to store now, or "none"
-EvidenceKeys: relevant existing evidence keys, or "none"
-MemoryGate: "use_active_evidence" | "call_Evidence" | "read_allowed"
-Need: missing fact needed for next action, or "none"
-Next: "goal" | "known" | "plan" | "tool" | "verify" | "message"
-May_Call_Tools_Names: ...
-
-__END_REASONING__
-
-Followed by actions, which are multiple JSON objects separated by __END_ACTION__:
+Output multiple JSON objects separated by __END_ACTION__:
 
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
-{"type": "known", "items": [{"fact": "non-empty self-contained string", "evidence": [{"key": "non-empty evidence key", "description": "non-empty description", "value": "non-empty raw evidence"}]}]} __END_ACTION__
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
+{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
+{"type": "known", "items": [{"fact": "non-empty self-contained string", "context": [{"key": "non-empty context key", "description": "non-empty description", "value": "non-empty raw context"}]}]} __END_ACTION__
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
 
@@ -2092,13 +2059,13 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {known}
 </Known>
 
-<Evidence>
-{evidence}
-</Evidence>
+<Context>
+{context}
+</Context>
 
-<Active_Evidence>
-{active_evidence}
-</Active_Evidence>
+<Active_Context>
+{active_context}
+</Active_Context>
 
 <Goal>
 {goal}
@@ -2138,16 +2105,16 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- known facts and evidence keys needed later
+- known facts and context keys needed later
 - unresolved blockers and open questions
-- verification evidence
+- verification context
 
 Omit noise:
 - raw logs
 - repeated output
 - full stack traces
 - chatter
-- evidence values unless needed for continuity
+- context values unless needed for continuity
 
 Write the shortest complete continuation summary.
 
@@ -2181,8 +2148,8 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            evidence=self._format_evidence(),
-            active_evidence=self._format_active_evidence(),
+            context=self._format_context(),
+            active_context=self._format_active_context(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2194,7 +2161,7 @@ class PromptBuilder:
     def _format_tools(self, memory: bool | None = None) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
-            is_memory_tool = tool.name() == EvidenceTool.name()
+            is_memory_tool = tool.name() == ContextTool.name()
             if memory is not None and is_memory_tool != memory:
                 continue
             lines.append("- " + tool.signature())
@@ -2215,34 +2182,34 @@ class PromptBuilder:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
 
-    def _format_evidence(self) -> str:
-        if not self.session.evidence_store:
+    def _format_context(self) -> str:
+        if not self.session.context_store:
             return "(empty)"
         lines = []
-        for key, item in self.session.evidence_store.items():
-            lines.extend(['<Evidence key="' + key + '">', "  <description>" + item.description + "</description>", "</Evidence>"])
+        for key, item in self.session.context_store.items():
+            lines.extend(['<Context key="' + key + '">', "  <description>" + item.description + "</description>", "</Context>"])
         return "\n".join(lines)
 
-    def _format_active_evidence(self) -> str:
-        if not self.session.evidence_store:
+    def _format_active_context(self) -> str:
+        if not self.session.context_store:
             return "(empty)"
         max_items = 3
         max_total_chars = 4_000
         max_value_chars = 1_500
         chunks = []
         used = 0
-        for key, item in reversed(list(self.session.evidence_store.items())):
+        for key, item in reversed(list(self.session.context_store.items())):
             value = item.value
             if len(value) > max_value_chars:
                 value = value[:max_value_chars] + "\n...<truncated>"
             chunk = "\n".join(
                 [
-                    '<Evidence key="' + key + '">',
+                    '<Context key="' + key + '">',
                     "  <description>" + item.description + "</description>",
                     "  <value>",
                     value,
                     "  </value>",
-                    "</Evidence>",
+                    "</Context>",
                 ]
             )
             if used + len(chunk) > max_total_chars:
@@ -2267,7 +2234,6 @@ class PromptBuilder:
 @final
 class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
-    REASONING_FRAME_END: ClassVar[str] = "__END_REASONING__"
     ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
@@ -2343,7 +2309,6 @@ class ModelClient:
         usage: Json = {}
         buffer = ""
         frame_number = 0
-        reasoning_done = False
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -2369,25 +2334,12 @@ class ModelClient:
             parts.append(content)
             if on_action is not None:
                 buffer += content
-                if not reasoning_done:
-                    marker_index = buffer.find(self.REASONING_FRAME_END)
-                    if marker_index < 0:
-                        continue
-                    buffer = buffer[marker_index + len(self.REASONING_FRAME_END) :]
-                    reasoning_done = True
                 frames, buffer = self._completed_action_frames(buffer)
                 for frame in frames:
                     frame_number += 1
                     action, _error = self._parse_action_frame(frame, frame_number)
                     if action is not None:
                         on_action(action)
-        if on_action is not None and not reasoning_done and buffer:
-            frames, _buffer = self._completed_action_frames(buffer)
-            for frame in frames:
-                frame_number += 1
-                action, _error = self._parse_action_frame(frame, frame_number)
-                if action is not None:
-                    on_action(action)
         return "".join(parts), usage
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
@@ -2418,9 +2370,6 @@ class ModelClient:
     def _parse_model_content(self, content: str) -> Json:
         text = content.strip()
         text = self._strip_leaked_think_tags(text)
-        text = self._strip_json_fence(text)
-        text = self._strip_leaked_think_tags(text)
-        text = self._strip_reasoning_prefix(text)
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
         actions: list[Json] = []
@@ -2494,12 +2443,6 @@ class ModelClient:
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
 
-    def _strip_reasoning_prefix(self, text: str) -> str:
-        marker_index = text.find(self.REASONING_FRAME_END)
-        if marker_index < 0:
-            return text
-        return text[marker_index + len(self.REASONING_FRAME_END) :].strip()
-
     def _is_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_PATTERN.match(line) is not None
 
@@ -2536,15 +2479,7 @@ class ModelClient:
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": (
-                "Invalid model output: "
-                + reason
-                + ". Return a reasoning block ending with "
-                + self.REASONING_FRAME_END
-                + ", then action frames only. Bad output: "
-                + _shorten(content)
-                + guidance
-            ),
+            "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
         }
 
     def _looks_like_native_tool_call(self, content: str) -> bool:
@@ -2716,8 +2651,8 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_EVIDENCE_ITEMS: ClassVar[int] = 80
-    MAX_EVIDENCE_VALUE_CHARS: ClassVar[int] = 12_000
+    MAX_CONTEXT_ITEMS: ClassVar[int] = 80
+    MAX_CONTEXT_VALUE_CHARS: ClassVar[int] = 12_000
 
     def __init__(self, session: Session):
         self.session = session
@@ -2727,7 +2662,7 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = [item.format() for item in self.session.current.known]
-        before_evidence = dict(self.session.evidence_store)
+        before_context = dict(self.session.context_store)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
@@ -2741,7 +2676,7 @@ class AgentStateUpdater:
             before_goal,
             before_plan,
             before_known,
-            before_evidence,
+            before_context,
             before_verification,
         )
 
@@ -2753,7 +2688,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_evidence: dict[str, EvidenceItem],
+        before_context: dict[str, ContextItem],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2773,11 +2708,11 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        if self.session.evidence_store != before_evidence:
+        if self.session.context_store != before_context:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Evidence " + f"({len(self.session.evidence_store)})")
-            lines.extend(self._format_evidence_rows(before_evidence))
+            lines.append("  Context " + f"({len(self.session.context_store)})")
+            lines.extend(self._format_context_rows(before_context))
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -2793,8 +2728,8 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text))
-            if item.evidence:
-                rows.append("       evidence: " + self._compact(item.evidence))
+            if item.context:
+                rows.append("       context: " + self._compact(item.context))
         return rows
 
     def _format_known_rows(self) -> list[str]:
@@ -2805,19 +2740,19 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             text = self._compact(item.fact)
-            if item.evidence_keys:
-                text += " | " + "; ".join(self._compact(key) for key in item.evidence_keys)
+            if item.context_keys:
+                text += " | " + "; ".join(self._compact(key) for key in item.context_keys)
             rows.append("    " + str(index) + ". " + text)
         return rows
 
-    def _format_evidence_rows(self, before_evidence: dict[str, EvidenceItem]) -> list[str]:
-        changed = [key for key, value in self.session.evidence_store.items() if before_evidence.get(key) != value]
+    def _format_context_rows(self, before_context: dict[str, ContextItem]) -> list[str]:
+        changed = [key for key, value in self.session.context_store.items() if before_context.get(key) != value]
         if not changed:
             return ["    (empty)"]
         offset = max(0, len(changed) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, key in enumerate(changed[offset:], start=offset + 1):
-            item = self.session.evidence_store[key]
+            item = self.session.context_store[key]
             rows.append("    " + str(index) + ". " + self._compact(key) + " - " + self._compact(item.description))
         return rows
 
@@ -2826,8 +2761,8 @@ class AgentStateUpdater:
         parts = [verification.status]
         if verification.method:
             parts.append(self._compact(verification.method))
-        if verification.evidence:
-            parts.append("evidence: " + self._compact(verification.evidence))
+        if verification.context:
+            parts.append("context: " + self._compact(verification.context))
         return " | ".join(parts)
 
     def _verification_badge(self) -> str:
@@ -2873,7 +2808,7 @@ class AgentStateUpdater:
                 if existing:
                     existing.text = plan_item.text
                     existing.status = plan_item.status
-                    existing.evidence = plan_item.evidence
+                    existing.context = plan_item.context
                 else:
                     self.session.current.plan.append(plan_item)
         return replaced
@@ -2890,7 +2825,7 @@ class AgentStateUpdater:
             text=text,
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
-            evidence=_json_str(item.get("evidence")) or "",
+            context=_json_str(item.get("context")) or "",
         )
 
     def _apply_known(self, response: Json) -> None:
@@ -2907,29 +2842,29 @@ class AgentStateUpdater:
         fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        evidence_keys = self._evidence_keys_from_known_item(item)
-        return KnownItem(fact=fact, evidence_keys=evidence_keys)
+        context_keys = self._context_keys_from_known_item(item)
+        return KnownItem(fact=fact, context_keys=context_keys)
 
-    def _evidence_keys_from_known_item(self, item: Json) -> list[str]:
+    def _context_keys_from_known_item(self, item: Json) -> list[str]:
         keys: list[str] = []
-        for raw in _json_list(item.get("evidence_keys")):
+        for raw in _json_list(item.get("context_keys")):
             key = (_json_str(raw) or "").strip()
             if key and key not in keys:
                 keys.append(key)
-        for raw in _json_list(item.get("evidence")):
-            evidence = _json_dict(raw)
-            if evidence:
-                key = (_json_str(evidence.get("key")) or "").strip()
-                description = _json_str(evidence.get("description"))
-                value = _json_str(evidence.get("value"))
-                self._store_evidence(key, description, value)
+        for raw in _json_list(item.get("context")):
+            context = _json_dict(raw)
+            if context:
+                key = (_json_str(context.get("key")) or "").strip()
+                description = _json_str(context.get("description"))
+                value = _json_str(context.get("value"))
+                self._store_context(key, description, value)
             else:
                 key = (_json_str(raw) or "").strip()
             if key and key not in keys:
                 keys.append(key)
         return keys
 
-    def _store_evidence(self, key: str | None, description: str | None, value: str | None) -> None:
+    def _store_context(self, key: str | None, description: str | None, value: str | None) -> None:
         key = (key or "").strip()
         description = (description or "").strip()
         value = (value or "").strip()
@@ -2937,13 +2872,13 @@ class AgentStateUpdater:
             return
         if not description:
             description = key
-        if len(value) > self.MAX_EVIDENCE_VALUE_CHARS:
-            value = value[: self.MAX_EVIDENCE_VALUE_CHARS] + "\n...<truncated>"
-        if key in self.session.evidence_store:
-            self.session.evidence_store.pop(key)
-        elif len(self.session.evidence_store) >= self.MAX_EVIDENCE_ITEMS:
-            self.session.evidence_store.pop(next(iter(self.session.evidence_store)))
-        self.session.evidence_store[key] = EvidenceItem(description=description, value=value)
+        if len(value) > self.MAX_CONTEXT_VALUE_CHARS:
+            value = value[: self.MAX_CONTEXT_VALUE_CHARS] + "\n...<truncated>"
+        if key in self.session.context_store:
+            self.session.context_store.pop(key)
+        elif len(self.session.context_store) >= self.MAX_CONTEXT_ITEMS:
+            self.session.context_store.pop(next(iter(self.session.context_store)))
+        self.session.context_store[key] = ContextItem(description=description, value=value)
 
     def _add_known_item(self, item: KnownItem) -> None:
         if not any(known.fact == item.fact for known in self.session.current.known):
@@ -2954,20 +2889,20 @@ class AgentStateUpdater:
             method = _json_str(data.get("method"))
             if method is not None:
                 if method != self.session.current.verification.method:
-                    self.session.current.verification.evidence = ""
+                    self.session.current.verification.context = ""
                 self.session.current.verification.method = method
             status = _json_str(data.get("status"))
             if status == "pending":
                 self.session.current.verification.status = VerificationStatus.REQUIRED
-                if "evidence" not in data:
-                    self.session.current.verification.evidence = ""
+                if "context" not in data:
+                    self.session.current.verification.context = ""
             elif status == "passed":
                 self.session.current.verification.status = VerificationStatus.DONE
             elif status == "blocked":
                 self.session.current.verification.status = VerificationStatus.BLOCKED
-            evidence = _json_str(data.get("evidence"))
-            if evidence is not None:
-                self.session.current.verification.evidence = evidence
+            context = _json_str(data.get("context"))
+            if context is not None:
+                self.session.current.verification.context = context
 
     def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
         verification = self.session.current.verification
@@ -3219,10 +3154,10 @@ class Agent:
 
     def _format_agent_feedback_format_error(self, format_error: str) -> str:
         message = self._format_gate_user_message("Error: model returned invalid output", format_error)
-        return message + " Rule: return __END_REASONING__ first, then valid JSON action frames only."
+        return message + " Rule: return valid JSON action frames only."
 
     def _format_agent_feedback_verification_error(self) -> str:
-        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with evidence.'
+        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with context.'
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
         return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
@@ -3388,7 +3323,7 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
-    CommandSpec("/evidence", "Show or clear hidden evidence store", "Info", "/evidence [clear]"),
+    CommandSpec("/context", "Show or clear hidden context store", "Info", "/context [clear]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3417,7 +3352,7 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
-            "/evidence": self._evidence,
+            "/context": self._context,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3476,17 +3411,17 @@ class CommandDispatcher:
             ]
         )
 
-    def _evidence(self, args: str) -> str:
+    def _context(self, args: str) -> str:
         if args == "clear":
-            count = len(self.agent.session.evidence_store)
-            self.agent.session.evidence_store.clear()
-            return "Cleared evidence: " + str(count)
+            count = len(self.agent.session.context_store)
+            self.agent.session.context_store.clear()
+            return "Cleared context: " + str(count)
         if args:
-            return "Usage: /evidence [clear]"
-        if not self.agent.session.evidence_store:
-            return "Evidence: 0"
-        lines = ["Evidence: " + str(len(self.agent.session.evidence_store))]
-        for key, item in self.agent.session.evidence_store.items():
+            return "Usage: /context [clear]"
+        if not self.agent.session.context_store:
+            return "Context: 0"
+        lines = ["Context: " + str(len(self.agent.session.context_store))]
+        for key, item in self.agent.session.context_store.items():
             lines.append("  " + key + " - " + item.description)
         return "\n".join(lines)
 
@@ -3504,7 +3439,7 @@ class CommandDispatcher:
                 "stream: " + stream,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "evidence: " + str(len(session.evidence_store)),
+                "context: " + str(len(session.context_store)),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
                 "goal: " + (session.current.goal or "(empty)"),
@@ -3710,7 +3645,7 @@ class StatusBar:
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "evidence:" + str(len(session.evidence_store)), "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "context:" + str(len(session.context_store)), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
@@ -4018,7 +3953,7 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Evidence"):
+            elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])

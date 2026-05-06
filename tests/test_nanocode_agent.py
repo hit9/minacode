@@ -223,38 +223,6 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     assert session.session_total_tokens == 5
 
 
-def test_agent_request_streams_actions_after_reasoning_marker(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
-            chunks = [
-                "Reasoning:\nis_goal_set: yes\ncurrent_goal: test\n",
-                "has_tool_results: no\ntool_results_summary: (none)\nknown_to_save: test fact\n",
-                "evidence_to_save: (none)\nplan_update: respond\nnext_action: message\n__END_REASONING__\n",
-                '{"type":"message","text":"ok"}__END_ACTION__',
-            ]
-            for chunk in chunks:
-                yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
-            yield b"data: [DONE]\n"
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
-    actions = []
-
-    response = Agent(session).request("system", "user", on_action=actions.append)
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
-    assert actions == [{"type": "message", "text": "ok"}]
-
-
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     captured_payloads = []
@@ -437,26 +405,6 @@ def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
     }
 
 
-def test_agent_request_accepts_reasoning_prefix_before_action_frames(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        "Reasoning:\n"
-        "is_goal_set: yes\n"
-        "current_goal: answer\n"
-        "has_tool_results: no\n"
-        "tool_results_summary: (none)\n"
-        "known_to_save: answer fact\n"
-        "evidence_to_save: (none)\n"
-        "plan_update: reply\n"
-        "next_action: message\n"
-        "__END_REASONING__\n"
-        '{"type":"message","text":"ok"}\n__END_ACTION__'
-    )
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
-
-
 def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -563,16 +511,16 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "Search only supports rg and Python fallback.", "evidence": [{"key": "search.impl", "description": "Search implementation notes.", "value": "grep was removed"}]},
-                        {"fact": "Search only supports rg and Python fallback.", "evidence": [{"key": "search.duplicate", "description": "Duplicate note.", "value": "duplicate ignored"}]},
+                        {"fact": "Search only supports rg and Python fallback.", "context": [{"key": "search.impl", "description": "Search implementation notes.", "value": "grep was removed"}]},
+                        {"fact": "Search only supports rg and Python fallback.", "context": [{"key": "search.duplicate", "description": "Duplicate note.", "value": "duplicate ignored"}]},
                     ],
                 }
             ]
         }
     )
 
-    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", evidence_keys=["search.impl"])]
-    assert "search.impl" in session.evidence_store
+    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", context_keys=["search.impl"])]
+    assert "search.impl" in session.context_store
 
 
 def test_agent_ignores_known_items_without_fact(tmp_path):
@@ -585,9 +533,9 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "", "evidence": [{"key": "parser.notes", "description": "Parser notes.", "value": "ignored"}]},
-                        {"fact": "Parser notes exist.", "evidence": []},
-                        {"fact": "Parser notes were captured.", "evidence": [{"key": "parser.notes", "description": "Parser notes.", "value": "line 1"}]},
+                        {"fact": "", "context": [{"key": "parser.notes", "description": "Parser notes.", "value": "ignored"}]},
+                        {"fact": "Parser notes exist.", "context": []},
+                        {"fact": "Parser notes were captured.", "context": [{"key": "parser.notes", "description": "Parser notes.", "value": "line 1"}]},
                     ],
                 }
             ]
@@ -596,7 +544,7 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
 
     assert session.current.known == [
         KnownItem(fact="Parser notes exist."),
-        KnownItem(fact="Parser notes were captured.", evidence_keys=["parser.notes"]),
+        KnownItem(fact="Parser notes were captured.", context_keys=["parser.notes"]),
     ]
 
 
@@ -607,7 +555,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     response = {
         "actions": [
             {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
-            {"type": "known", "items": [{"fact": "Search uses rg.", "evidence": [{"key": "search.rg", "description": "Search uses rg evidence.", "value": "Python fallback exists"}]}]},
+            {"type": "known", "items": [{"fact": "Search uses rg.", "context": [{"key": "search.rg", "description": "Search uses rg context.", "value": "Python fallback exists"}]}]},
         ]
     }
 
@@ -630,7 +578,7 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     session.current.verification.goal = "old goal"
     session.current.verification.status = VerificationStatus.DONE
     session.current.verification.method = "old check"
-    session.current.verification.evidence = "old evidence"
+    session.current.verification.context = "old context"
     agent = Agent(session)
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": False}]})
@@ -639,14 +587,14 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert session.current.verification.goal == ""
     assert session.current.verification.status == VerificationStatus.IDLE
     assert session.current.verification.method == ""
-    assert session.current.verification.evidence == ""
+    assert session.current.verification.context == ""
 
-    agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "pending", "evidence": None}]})
+    agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "pending", "context": None}]})
 
     assert session.current.verification.goal == "new goal"
     assert session.current.verification.status == VerificationStatus.REQUIRED
     assert session.current.verification.method == "run tests"
-    assert session.current.verification.evidence == ""
+    assert session.current.verification.context == ""
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
 
@@ -756,7 +704,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                     "actions": [
                         {
                             "type": "known",
-                            "items": [{"fact": "Read sample.txt and found alpha.", "evidence": [{"key": "sample.alpha", "description": "Read sample.txt output.", "value": "alpha"}]}],
+                            "items": [{"fact": "Read sample.txt and found alpha.", "context": [{"key": "sample.alpha", "description": "Read sample.txt output.", "value": "alpha"}]}],
                         },
                         {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
@@ -786,7 +734,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "alpha" in agent.last_tool_calls
-    assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", evidence_keys=["sample.alpha"])]
+    assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", context_keys=["sample.alpha"])]
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
 
@@ -929,12 +877,12 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "change file", "complete": False},
-                        {"type": "verify", "method": "run tests", "status": "pending", "evidence": None},
+                        {"type": "verify", "method": "run tests", "status": "pending", "context": None},
                     ],
                 },
                 {
                     "actions": [
-                        {"type": "verify", "method": "run tests", "status": "passed", "evidence": "tests passed"},
+                        {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
                         {"type": "goal", "text": "change file", "complete": True},
                         {"type": "message", "text": "done"},
                     ],
@@ -955,7 +903,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert session.current.verification.status == VerificationStatus.DONE
-    assert session.current.verification.evidence == "tests passed"
+    assert session.current.verification.context == "tests passed"
     assert "Retrying: verification is required before completion." in messages
 
 
@@ -1008,7 +956,7 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert "model returned invalid output" in agent.model_client.user_prompts[1]
-    assert "Rule: return __END_REASONING__ first, then valid JSON action frames only." in agent.model_client.user_prompts[1]
+    assert "Rule: return valid JSON action frames only." in agent.model_client.user_prompts[1]
     assert "model returned invalid output" in agent.model_client.user_prompts[2]
     assert agent.agent_feedback_errors == []
 

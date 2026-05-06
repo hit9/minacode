@@ -1,7 +1,7 @@
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
-from nanocode import AgentLoop, EvidenceItem, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
+from nanocode import AgentLoop, ContextItem, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
 
 
 def test_session_reports_missing_required_envs(tmp_path):
@@ -27,7 +27,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     session.last_cost_usd = 0.000008
     session.session_total_tokens = 1200
     session.session_cost_usd = 12.345678
-    session.evidence_store = {"parser.notes": EvidenceItem(description="Parser notes.", value="secret")}
+    session.context_store = {"parser.notes": ContextItem(description="Parser notes.", value="secret")}
     bar = StatusBar(session)
 
     text = bar._text(1.2, now=1.0)
@@ -36,13 +36,13 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert ">" not in text
     assert "model (medium)" in text
     assert "ctx:0/9" in text
-    assert "evidence:1" in text
+    assert "context:1" in text
     assert "tok:last:42/$0.000008 session:1k/$12.345678" in text
     assert "usd:" not in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | evidence:1 | tok:last:42/$0.000008 session:1k/$12.345678"
+    assert snapshot == "model (medium) | ctx:0/9 | context:1 | tok:last:42/$0.000008 session:1k/$12.345678"
     assert ">" not in snapshot
 
 
