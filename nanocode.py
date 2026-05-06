@@ -1961,9 +1961,9 @@ STEPS:
    - Do this before any next tool/message.
 
 3. Memory check:
-   - Use Known and Tool_Result_Store keys/descriptions first.
-   - If needed raw tool output is hidden, call batched ToolResult(key...).
-   - Only Read files when stored tool results are missing or insufficient.
+   - Use Known for stable facts.
+   - Use ToolResult(key...) only when you need a previous tool result by key.
+   - Use Read/Search/ListDir for current source state.
 
 4. Plan:
    - Create or revise the plan based on facts and the goal.
@@ -1982,11 +1982,6 @@ MAX to 10 tool calls this time:
 
 { __other_tools__ }
 
-READ GATE:
-- Do not Read a file if relevant Tool_Result_Store keys exist.
-- First call batched ToolResult(key...).
-- Read only after stored tool results are missing, insufficient, or stale.
-
 Rules:
 
 1. Every turn must emit at least one action frame.
@@ -1995,7 +1990,6 @@ Rules:
 4. Prefer batched Search/Read/ToolResult when useful.
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
-7. Do not Read before checking relevant stored tool results when available.
 
 Action types:
 * message: tell the user progress, result, or blocker.
