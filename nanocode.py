@@ -369,7 +369,7 @@ class Session:
     stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
     model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
-    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
+    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "50")))
     max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
     prompt_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0")))
     completion_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0")))
@@ -394,6 +394,7 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
+    details: dict[str, str] = field(default_factory=dict)
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -463,74 +464,25 @@ class ToolCallExecution:
     output: str
 
 
-@final
-class RecentToolCallResultBuffer:
-    DEFAULT_OLDER_CHAR_BUDGET: ClassVar[int] = 20_000
+def _format_last_tool_calls(executions: list[ToolCallExecution]) -> str:
+    blocks = [_format_last_tool_call(execution) for execution in executions]
+    return "\n\n".join(blocks) or "(empty)"
 
-    def __init__(self, older_char_budget: int = DEFAULT_OLDER_CHAR_BUDGET):
-        self.older_char_budget = max(0, older_char_budget)
-        self.last_batch: list[str] = []
-        self.older_blocks: list[str] = []
 
-    def clear(self) -> None:
-        self.last_batch = []
-        self.older_blocks = []
-
-    def record(self, executions: list[ToolCallExecution]) -> None:
-        if self.last_batch:
-            self.older_blocks = self.last_batch + self.older_blocks
-            self._trim_older_blocks()
-        self.last_batch = self.format_executions_as_blocks(executions)
-
-    def format(self) -> str:
-        if not self.last_batch and not self.older_blocks:
-            return "(empty)"
-        return "\n".join(
-            [
-                "<last_batch>",
-                self._join_blocks(self.last_batch) or "(empty)",
-                "</last_batch>",
-                '<older_buffer char_budget="' + str(self.older_char_budget) + '" retained_chars="' + str(self._blocks_chars(self.older_blocks)) + '">',
-                self._join_blocks(self.older_blocks) or "(empty)",
-                "</older_buffer>",
-            ]
-        )
-
-    @classmethod
-    def format_executions(cls, executions: list[ToolCallExecution]) -> str:
-        return cls._join_blocks(cls.format_executions_as_blocks(executions)) or "(empty)"
-
-    @classmethod
-    def format_executions_as_blocks(cls, executions: list[ToolCallExecution]) -> list[str]:
-        return [cls._format_execution(execution) for execution in executions]
-
-    @classmethod
-    def _format_execution(cls, execution: ToolCallExecution) -> str:
-        return "\n".join(
-            [
-                "<Recent_Tool_Call_Result>",
-                "  <tool>" + execution.call.name + "</tool>",
-                "  <intention>" + execution.call.intention + "</intention>",
-                "  <executed>" + execution.call.executed + "</executed>",
-                "  <outcome>" + execution.outcome + "</outcome>",
-                "  <raw_result>",
-                execution.output,
-                "  </raw_result>",
-                "</Recent_Tool_Call_Result>",
-            ]
-        )
-
-    def _trim_older_blocks(self) -> None:
-        while self.older_blocks and self._blocks_chars(self.older_blocks) > self.older_char_budget:
-            self.older_blocks.pop()
-
-    @staticmethod
-    def _join_blocks(blocks: list[str]) -> str:
-        return "\n\n".join(blocks)
-
-    @classmethod
-    def _blocks_chars(cls, blocks: list[str]) -> int:
-        return len(cls._join_blocks(blocks))
+def _format_last_tool_call(execution: ToolCallExecution) -> str:
+    return "\n".join(
+        [
+            "<Last_Tool_Call>",
+            "  <tool>" + execution.call.name + "</tool>",
+            "  <intention>" + execution.call.intention + "</intention>",
+            "  <executed>" + execution.call.executed + "</executed>",
+            "  <outcome>" + execution.outcome + "</outcome>",
+            "  <raw_result>",
+            execution.output,
+            "  </raw_result>",
+            "</Last_Tool_Call>",
+        ]
+    )
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -1917,6 +1869,53 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
+@final
+@dataclass
+class DetailsTool(Tool):
+    keys: list[str]
+    details: dict[str, str]
+
+    @classmethod
+    def name(cls) -> str:
+        return "Details"
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Read stored detail values by key; accepts one or more keys."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "Details(key[, key...]) -> DetailsToolResult<content>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return [
+            '{"name": "Details", "intention": "Read stored notes", "args": ["parser.notes", "other.key"]}',
+        ]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if args and args[0].strip().lower() in {"get", "read"}:
+            args = args[1:]
+        return cls(keys=args, details=session.details)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return False
+
+    def display(self) -> str:
+        return "Details " + ", ".join(self.keys)
+
+    def call(self) -> str:
+        if not self.keys:
+            raise ToolCallError("Details requires at least one key")
+        lines = ["<DetailsToolResult>"]
+        for key in self.keys:
+            value = self.details.get(key, "")
+            lines.extend(['  <Detail key="' + key + '">', value, "  </Detail>"])
+        lines.append("</DetailsToolResult>")
+        return "\n".join(lines)
+
+
 TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.name(): ReadTool,
     LineCountTool.name(): LineCountTool,
@@ -1928,6 +1927,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
+    DetailsTool.name(): DetailsTool,
 }
 
 
@@ -1950,6 +1950,7 @@ Steps:
 
 Available tools:
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
+TOOL RESULTS ARE SHOWN ONCE; EXTRACT KNOWN FACTS AND DETAILS IMMEDIATELY.
 
 { __tools__ }
 
@@ -1957,6 +1958,8 @@ Rules:
 
 1. Call at most 10 tools in one turn.
 2. Prefer batched Search/Read when useful.
+3. Tool results are one-shot; batch independent tools and extract known facts immediately.
+4. EVERY TURN MUST EMIT AT LEAST ONE ACTION FRAME.
 
 Output format (Strict)
 
@@ -1966,6 +1969,7 @@ Output multiple JSON objects separated by __END_ACTION__:
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
 {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__
+{"type": "details", "items": [{"key": "string", "value": "string"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -1983,6 +1987,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {known}
 </Known>
 
+<Details_Keys>
+{details_keys}
+</Details_Keys>
+
 <Goal>
 {goal}
 </Goal>
@@ -1999,9 +2007,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {agent_feedback}
 </Agent_Feedback>
 
-<Recent_Tool_Call_Results>
-{recent_tool_call_results}
-</Recent_Tool_Call_Results>
+<Last_Tool_Calls>
+{last_tool_calls}
+</Last_Tool_Calls>
 
 <Latest_User_Input>
 {latest_user_input}
@@ -2021,7 +2029,7 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- result_refs/log refs needed later
+- details keys needed later
 - unresolved blockers and open questions
 - verification evidence
 
@@ -2030,7 +2038,7 @@ Omit noise:
 - repeated output
 - full stack traces
 - chatter
-- details already recoverable from result_refs unless needed for continuity
+- details values unless needed for continuity
 
 Write the shortest complete continuation summary.
 
@@ -2053,17 +2061,18 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
 
-    def user_prompt(self, recent_tool_call_results: str, agent_feedback: str) -> str:
+    def user_prompt(self, last_tool_calls: str, agent_feedback: str) -> str:
         current = self.session.current
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
+            details_keys=self._format_details_keys(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
             agent_feedback=agent_feedback or "(empty)",
-            recent_tool_call_results=recent_tool_call_results or "(empty)",
+            last_tool_calls=last_tool_calls or "(empty)",
             latest_user_input=current.user_input or "(empty)",
         ).strip()
 
@@ -2087,6 +2096,11 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
+
+    def _format_details_keys(self) -> str:
+        if not self.session.details:
+            return "(empty)"
+        return "\n".join("- " + key for key in self.session.details)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -2466,7 +2480,7 @@ class ToolCallRunner:
             executions.append(execution)
 
         self.latest_executions = executions
-        return RecentToolCallResultBuffer.format_executions(executions)
+        return _format_last_tool_calls(executions)
 
     def format_latest_report(self) -> str:
         if not self.latest_executions:
@@ -2480,7 +2494,6 @@ class ToolCallRunner:
             lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
             if execution.call.intention:
                 lines.append("     why: " + execution.call.intention)
-            lines.append("     result: " + str(len(execution.output.splitlines())) + " lines")
         return "\n".join(lines)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -2529,6 +2542,7 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = [item.format() for item in self.session.current.known]
+        before_details = dict(self.session.details)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
@@ -2536,12 +2550,14 @@ class AgentStateUpdater:
         if goal_changed:
             self.session.range_fingerprints.clear()
         self._apply_known(response)
+        self._apply_details(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
+            before_details,
             before_verification,
         )
 
@@ -2553,6 +2569,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
+        before_details: dict[str, str],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2572,6 +2589,11 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
+        if self.session.details != before_details:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Details")
+            lines.extend(self._format_details_rows(before_details))
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -2602,6 +2624,16 @@ class AgentStateUpdater:
             if item.details:
                 text += " | " + "; ".join(self._compact(detail) for detail in item.details)
             rows.append("    " + str(index) + ". " + text)
+        return rows
+
+    def _format_details_rows(self, before_details: dict[str, str]) -> list[str]:
+        changed = [key for key, value in self.session.details.items() if before_details.get(key) != value]
+        if not changed:
+            return ["    (empty)"]
+        offset = max(0, len(changed) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, key in enumerate(changed[offset:], start=offset + 1):
+            rows.append("    " + str(index) + ". " + self._compact(key))
         return rows
 
     def _format_verification(self) -> str:
@@ -2682,6 +2714,15 @@ class AgentStateUpdater:
                 item = self._known_item_from_json(raw)
                 if item is not None:
                     self._add_known_item(item)
+
+    def _apply_details(self, response: Json) -> None:
+        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "details"]:
+            for raw in _json_list(action.get("items")):
+                item = _json_dict(raw)
+                key = _json_str(item.get("key"))
+                value = _json_str(item.get("value"))
+                if key and value:
+                    self.session.details[key] = value
 
     def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
         item = _json_dict(value)
@@ -2799,14 +2840,14 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
-        self.recent_tool_call_results = RecentToolCallResultBuffer()
+        self.last_tool_calls = ""
         self.latest_agent_feedback = ""
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self, *, consume_agent_feedback: bool = True) -> str:
-        prompt = self.prompt_builder.user_prompt(self.recent_tool_call_results.format(), self.latest_agent_feedback)
+        prompt = self.prompt_builder.user_prompt(self.last_tool_calls, self.latest_agent_feedback)
         if consume_agent_feedback:
             self.latest_agent_feedback = ""
         return prompt
@@ -2830,7 +2871,7 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> Json:
-        self.recent_tool_call_results.clear()
+        self.last_tool_calls = ""
         self.latest_agent_feedback = ""
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
@@ -2898,11 +2939,12 @@ class Agent:
                 return response
             self.session.current.goal_reached = False
             self.latest_agent_feedback = self._format_continuation_hint()
-            self._report_gate(
-                on_message,
-                "Continuing: goal is not complete yet.",
-                "Continuation_Gate: goal not reached; retrying next useful action.",
-            )
+            if not actions:
+                self._report_gate(
+                    on_message,
+                    "Continuing: goal is not complete yet.",
+                    "Continuation_Gate: goal not reached; retrying next useful action.",
+                )
             continue
         raise LLMError("agent step limit reached")
 
@@ -2995,9 +3037,8 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
-        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        self.recent_tool_call_results.record(self.tool_runner.latest_executions)
-        return self.recent_tool_call_results.format()
+        self.last_tool_calls = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        return self.last_tool_calls
 
     def _format_verification_gate(self) -> str:
         verification = self.session.current.verification

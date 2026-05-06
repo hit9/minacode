@@ -1,10 +1,10 @@
 import json
 
 import nanocode
-from nanocode import Agent, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallExecution, VerificationStatus
+from nanocode import Agent, KnownItem, Session, VerificationStatus
 
 
-def test_agent_tool_results_go_to_recent_area_without_conversation_or_log(tmp_path):
+def test_agent_tool_results_go_to_last_tool_calls_without_conversation_or_log(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -24,29 +24,6 @@ def test_agent_tool_results_go_to_recent_area_without_conversation_or_log(tmp_pa
     assert "<result_file>" not in latest
     assert session.conversation == []
     assert not (tmp_path / ".nanocode" / "tool_results").exists()
-
-
-def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks():
-    def execution(name: str, output: str) -> ToolCallExecution:
-        return ToolCallExecution(
-            call=ParsedToolCall(name="Read", intention="read " + name, args=[name]),
-            outcome="success",
-            output=output,
-        )
-
-    keep_buffer = RecentToolCallResultBuffer(older_char_budget=1000)
-    keep_buffer.record([execution("first", "first-output-token")])
-    keep_buffer.record([execution("second", "second-output-token")])
-    keep_prompt = keep_buffer.format()
-    assert "second-output-token" in keep_prompt.split("</last_batch>", 1)[0]
-    assert "first-output-token" in keep_prompt.split("<older_buffer", 1)[1]
-
-    trim_buffer = RecentToolCallResultBuffer(older_char_budget=1)
-    trim_buffer.record([execution("first", "first-output-token")])
-    trim_buffer.record([execution("second", "second-output-token")])
-    trim_prompt = trim_buffer.format()
-    assert "second-output-token" in trim_prompt
-    assert "first-output-token" not in trim_prompt
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -624,12 +601,12 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[0].startswith("Tool Calls\n")
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
-    assert "result:" in messages[0]
+    assert "result:" not in messages[0]
     assert "log:" not in messages[0]
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
-    assert "alpha" in agent.recent_tool_call_results.format()
+    assert "alpha" in agent.last_tool_calls
     assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", details=["alpha"])]
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
@@ -664,7 +641,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "alpha" in agent.recent_tool_call_results.format()
+    assert "alpha" in agent.last_tool_calls
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
@@ -717,6 +694,51 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
+    assert "Continuing: goal is not complete yet." not in messages
+    assert any(message.startswith("State Updated") for message in messages)
+
+
+def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "known", "items": []}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert "Continuing: goal is not complete yet." not in messages
+
+
+def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": []},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
     assert "Continuing: goal is not complete yet." in messages
 
 
@@ -758,7 +780,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert "Retrying: verification is required before completion." in messages
 
 
-def test_agent_run_retries_format_error_in_recent_tool_results(tmp_path):
+def test_agent_run_retries_format_error_with_last_tool_calls(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
