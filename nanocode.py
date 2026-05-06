@@ -269,31 +269,12 @@ class KnownItem(PromptItem):
 
 @final
 @dataclass
-class CurrentContextItem(PromptItem):
-    note: str
-    details: list[str] = field(default_factory=list)
-
-    @override
-    def format(self, indent: str = "") -> str:
-        lines = ["<CurrentContextItem>", "  <note>" + self.note + "</note>"]
-        if self.details:
-            lines.append("  <details>")
-            for detail in self.details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </details>")
-        lines.append("</CurrentContextItem>")
-        return _format_lines(lines, indent)
-
-
-@final
-@dataclass
 class Current:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
-    current_context: list[CurrentContextItem] = field(default_factory=list)
     verification: Verification = field(default_factory=Verification)
 
 
@@ -2087,10 +2068,9 @@ Plan rules:
 - Replace the full Plan when its structure changes; patch only status/evidence on existing items.
 
 Memory rules:
-- known = stable repo/task facts useful across turns.
-- context = temporary facts for this task.
-- Blackboard = temporary key-value notes; use Blackboard(set, key, value) for reusable findings/tool-result notes.
-- Before repeating similar Search/Read/discovery, save the useful finding in known, context, or Blackboard.
+- Known = small stable conclusions useful for later steps.
+- Blackboard = larger notes, raw excerpts, tool-result notes, or anything you may need to read back later.
+- Before repeating similar Search/Read/discovery, save the useful finding in Known or Blackboard.
 - Do not save raw logs. Save only concise evidence.
 
 Tool rules:
@@ -2113,7 +2093,7 @@ Tool result rules:
 - Summarize every fresh tool result before using it further.
 - Preserve exact evidence in key_evidence when paths, lines, errors, or decisions matter later.
 - If raw detail is missing, rerun a targeted tool or read result_file only when cheaper.
-- Keep summaries short and store reusable notes in known, context, or Blackboard.
+- Keep summaries short and store reusable notes in Known or Blackboard.
 
 Verification rules:
 - Verification belongs to the current Goal only.
@@ -2128,7 +2108,6 @@ Input sections:
 - Environment
 - Conversation_History
 - Known
-- Current_Context
 - Blackboard_Keys
 - Goal
 - Plan
@@ -2153,14 +2132,13 @@ Action schemas:
 {"type": "goal", "text": "string"}
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
 {"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
-{"type": "context", "mode": "replace|append", "items": [{"note": "string", "details": null | ["string"]}]}
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
 
 Decision order:
 1. Read Latest_User_Input and Agent_Feedback.
 2. Set or keep Goal.
 3. Summarize fresh tool results, if any.
-4. Update known/context/Blackboard only if useful.
+4. Update Known or Blackboard only if useful.
 5. Update Plan if needed.
 6. Run the next necessary independent tool batch, OR verify, OR answer.
 7. Never skip verification after edits.
@@ -2202,10 +2180,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Known>
 {known}
 </Known>
-
-<Current_Context>
-{current_context}
-</Current_Context>
 
 <Blackboard_Keys>
 {blackboard_keys}
@@ -2287,7 +2261,6 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            current_context=self._format_current_context(),
             blackboard_keys=self._format_blackboard_keys(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
@@ -2317,11 +2290,6 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
-
-    def _format_current_context(self) -> str:
-        if not self.session.current.current_context:
-            return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.current.current_context)
 
     def _format_blackboard_keys(self) -> str:
         if not self.session.blackboard:
@@ -2819,7 +2787,6 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    CURRENT_CONTEXT_LIMIT: ClassVar[int] = 50
 
     def __init__(self, session: Session, tool_runner: ToolCallRunner):
         self.session = session
@@ -2830,16 +2797,13 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = [item.format() for item in self.session.current.known]
-        before_context = [item.format() for item in self.session.current.current_context]
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
         if goal_changed:
-            self.session.current.current_context = []
             self.session.range_fingerprints.clear()
         self._apply_known(response)
-        self._apply_current_context(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self._apply_tool_call_summaries(response)
@@ -2847,7 +2811,6 @@ class AgentStateUpdater:
             before_goal,
             before_plan,
             before_known,
-            before_context,
             before_verification,
         )
 
@@ -2862,7 +2825,6 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_context: list[str],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2882,12 +2844,6 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        current_context = [item.format() for item in current.current_context]
-        if current_context != before_context:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Context")
-            lines.extend(self._format_context_rows())
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -2915,19 +2871,6 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             text = self._compact(item.fact)
-            if item.details:
-                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
-            rows.append("    " + str(index) + ". " + text)
-        return rows
-
-    def _format_context_rows(self) -> list[str]:
-        items = self.session.current.current_context
-        if not items:
-            return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            text = self._compact(item.note)
             if item.details:
                 text += " | " + "; ".join(self._compact(detail) for detail in item.details)
             rows.append("    " + str(index) + ". " + text)
@@ -3061,25 +3004,6 @@ class AgentStateUpdater:
                 details = [detail for detail in details if detail]
                 if not any(known.fact == fact for known in self.session.current.known):
                     self.session.current.known.append(KnownItem(fact=fact, details=details))
-
-    def _apply_current_context(self, response: Json) -> None:
-        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "context"]:
-            if update.get("mode") == "replace":
-                self.session.current.current_context = []
-            for raw in _json_list(update.get("items")):
-                item = _json_dict(raw)
-                note = _json_str(item.get("note")) if item else _json_str(raw)
-                if not note:
-                    continue
-                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-                details = [detail for detail in details if detail]
-                existing = next((context for context in self.session.current.current_context if context.note == note), None)
-                if existing:
-                    existing.details = details
-                else:
-                    self.session.current.current_context.append(CurrentContextItem(note=note, details=details))
-        if len(self.session.current.current_context) > self.CURRENT_CONTEXT_LIMIT:
-            self.session.current.current_context = self.session.current.current_context[-self.CURRENT_CONTEXT_LIMIT :]
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:

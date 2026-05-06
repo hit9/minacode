@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, CurrentContextItem, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
+from nanocode import Agent, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
 
 
 def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path):
@@ -501,68 +501,10 @@ def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_pa
     assert "- Read(filepath" in prompt
     assert "Before repeating similar Search/Read/discovery" in prompt
     assert "Blackboard(set, key, value)" in prompt
-    assert "known = stable repo/task facts useful across turns" in prompt
-
-
-def test_agent_keeps_current_context_separate_from_known(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "context",
-                    "mode": "append",
-                    "items": [
-                        {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["exit code 1"]},
-                        {"note": "pytest failed in tests/test_nanocode_agent.py", "details": ["updated failure"]},
-                    ],
-                }
-            ]
-        }
-    )
-
-    assert session.current.known == []
-    assert session.current.current_context == [CurrentContextItem(note="pytest failed in tests/test_nanocode_agent.py", details=["updated failure"])]
-
-    assert "  Context\n" in agent.state_updater.latest_report
-    assert "    1. pytest failed in tests/test_nanocode_agent.py | updated failure" in agent.state_updater.latest_report
-
-
-def test_agent_clears_current_context_when_goal_changes(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.current.goal = "old goal"
-    session.current.current_context = [CurrentContextItem(note="old dirty state")]
-    agent = Agent(session)
-
-    agent.apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
-
-    assert session.current.current_context == []
-    assert "  Goal    new goal" in agent.state_updater.latest_report
-    assert "  Context\n" in agent.state_updater.latest_report
-    assert "    (empty)" in agent.state_updater.latest_report
-
-
-def test_agent_keeps_last_fifty_current_context_items(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "context",
-                    "mode": "append",
-                    "items": [{"note": "note " + str(index)} for index in range(55)],
-                }
-            ]
-        }
-    )
-
-    assert len(session.current.current_context) == 50
-    assert session.current.current_context[0].note == "note 5"
-    assert session.current.current_context[-1].note == "note 54"
+    assert "Known = small stable conclusions useful for later steps" in prompt
+    assert "Blackboard = larger notes, raw excerpts, tool-result notes" in prompt
+    assert "Current_Context" not in prompt
+    assert '{"type": "context"' not in prompt
 
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
