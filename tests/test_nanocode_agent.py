@@ -65,7 +65,7 @@ def test_agent_user_prompt_includes_blackboard_keys_only(tmp_path):
 
     prompt = Agent(session).build_user_prompt()
 
-    assert "----------- Blackboard_Keys Begin ------\n- investigation\n- next\n-------- Blackboard_Keys End -----------" in prompt
+    assert "<Blackboard_Keys>\n- investigation\n- next\n</Blackboard_Keys>" in prompt
     assert "inspect parser implementation" not in prompt
     assert "run focused tests" not in prompt
 
@@ -471,9 +471,12 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
 def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_path):
     prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
 
-    assert "Before repeating Search/Read or adjacent discovery" in prompt
+    assert "Mission:" in prompt
+    assert "{ __tools__ }" not in prompt
+    assert "- Read(filepath" in prompt
+    assert "Before repeating similar Search/Read/discovery" in prompt
     assert "Blackboard(set, key, value)" in prompt
-    assert "Promote durable repo/task facts to known" in prompt
+    assert "known = stable repo/task facts useful across turns" in prompt
 
 
 def test_agent_keeps_current_context_separate_from_known(tmp_path):
@@ -993,8 +996,8 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
-    assert "Agent_Feedback Begin" in agent.model_client.user_prompts[1]
-    assert "Latest_Tool_Call_Results Begin ------\n(empty)" in agent.model_client.user_prompts[1]
+    assert "<Agent_Feedback>" in agent.model_client.user_prompts[1]
+    assert "<Latest_Tool_Call_Results>\n(empty)\n</Latest_Tool_Call_Results>" in agent.model_client.user_prompts[1]
     assert messages == ["Retrying: model returned invalid output: plain answer", "done"]
 
 
@@ -1098,4 +1101,3 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
     assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
     assert "model returned invalid output 3 times in a row" in message
     assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
-
