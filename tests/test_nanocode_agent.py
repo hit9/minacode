@@ -621,6 +621,31 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
     assert "search.impl" in session.context_store
 
 
+def test_agent_dedupes_exact_known_facts(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "known",
+                    "items": [
+                        {"fact": "Preview logic exists in _format_stream_action_preview."},
+                        {"fact": "Preview logic exists in _format_stream_action_preview."},
+                        {"fact": "Preview logic exists in _format_stream_action_preview!"},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert session.current.known == [
+        "Preview logic exists in _format_stream_action_preview.",
+        "Preview logic exists in _format_stream_action_preview!",
+    ]
+
+
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)

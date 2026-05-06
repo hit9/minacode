@@ -1969,7 +1969,7 @@ STEPS:
    - If the goal is not set, output goal first.
 
 2. Fresh tool results:
-   - Extract known facts from latest tool results.
+   - Extract only new, stable known facts from latest tool results.
    - Store supporting raw text/logs/code snippets as context.
    - Do this before any next tool/message.
 
@@ -2003,7 +2003,7 @@ READ GATE:
 Rules:
 
 1. Every turn must emit at least one action frame.
-2. Every turn must output known with non-empty context, or rejected.
+2. Output known only for new durable facts; do not repeat or rephrase existing Known.
 3. Call at most 10 tools in one turn.
 4. Prefer batched Search/Read/Context when useful.
 5. Batch only independent tools.
@@ -2014,7 +2014,7 @@ Action types:
 * message: tell the user progress, result, or blocker.
 * goal: set/update the current goal; complete=true only after success + verification.
 * verify: record verification status for the current goal.
-* known: save durable facts with raw context; required every turn.
+* known: save new durable facts with raw context.
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
@@ -2626,7 +2626,7 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_CONTEXT_ITEMS: ClassVar[int] = 80
+    MAX_CONTEXT_ITEMS: ClassVar[int] = 300
     MAX_CONTEXT_VALUE_CHARS: ClassVar[int] = 12_000
 
     def __init__(self, session: Session):
