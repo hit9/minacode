@@ -881,9 +881,9 @@ class SearchTool(Tool):
         return [
             'Example args: ["TODO"]',
             'Example args: ["class Foo", "code.py"]',
-            'Example args: ["re:class .*Tool", "path=nanocode.py", "context=0"]',
+            'Example args: ["re:class .*Tool", "nanocode.py", "0"]',
             'Example args: ["TODO", ".", "*.py"]',
-            'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
+            'Example args: ["class Bar|def main", "nanocode.py", "6"]',
             'Example args: ["TODO", ".", "*.py", "8"]',
             'Example args: ["re:def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
         ]
