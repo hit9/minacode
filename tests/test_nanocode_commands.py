@@ -1,4 +1,4 @@
-from nanocode import Agent, CommandDispatcher, CommandStatus, ContextItem, Session, UserMessage
+from nanocode import Agent, CommandDispatcher, CommandStatus, Session, UserMessage
 
 
 class FakeModelClient:
@@ -58,28 +58,8 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "tokens: last=1k session=2m" in result.message
     assert "cost(usd): last=$0.000008 session=$12.345678" in result.message
     assert "stream: on" in result.message
-    assert "context: 0" in result.message
+    assert "tool_calls: 0" in result.message
     assert "blackboard" not in result.message
-
-
-def test_context_command_shows_and_clears_store(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.context_store = {"parser.notes": ContextItem(description="Parser notes from sample output.", value="line 1\nline 2")}
-    dispatcher = CommandDispatcher(Agent(session))
-
-    status_result = dispatcher.dispatch("/context")
-    clear_result = dispatcher.dispatch("/context clear")
-    empty_result = dispatcher.dispatch("/context")
-    invalid_result = dispatcher.dispatch("/context nope")
-
-    assert status_result.status == CommandStatus.HANDLED
-    assert "Context: 1" in status_result.message
-    assert "parser.notes - Parser notes from sample output." in status_result.message
-    assert "line 1" not in status_result.message
-    assert clear_result.message == "Cleared context: 1"
-    assert empty_result.message == "Context: 0"
-    assert invalid_result.message == "Usage: /context [clear]"
-    assert session.context_store == {}
 
 
 def test_stream_command_shows_and_updates_streaming_mode(tmp_path):

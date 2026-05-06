@@ -4,7 +4,7 @@ import nanocode
 from nanocode import Agent, LLMError, Session, VerificationStatus
 
 
-def test_agent_tool_results_go_to_last_tool_calls_without_conversation_or_log(tmp_path):
+def test_agent_tool_results_go_to_last_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -21,7 +21,9 @@ def test_agent_tool_results_go_to_last_tool_calls_without_conversation_or_log(tm
     )
 
     assert "alpha" in latest
-    assert "<result_file>" not in latest
+    assert "<result_key>tr.1</result_key>" in latest
+    assert session.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
+    assert "alpha" in session.tool_result_store["tr.1"].value
     assert session.conversation == []
     assert not (tmp_path / ".nanocode" / "tool_results").exists()
 
@@ -511,8 +513,8 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "Search only supports rg and Python fallback.", "context": [{"key": "search.impl", "description": "Search implementation notes.", "value": "grep was removed"}]},
-                        {"fact": "Search only supports rg and Python fallback.", "context": [{"key": "search.duplicate", "description": "Duplicate note.", "value": "duplicate ignored"}]},
+                        "Search only supports rg and Python fallback.",
+                        "Search only supports rg and Python fallback.",
                     ],
                 }
             ]
@@ -520,7 +522,6 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
     )
 
     assert session.current.known == ["Search only supports rg and Python fallback."]
-    assert "search.impl" in session.context_store
 
 
 def test_agent_dedupes_exact_known_facts(tmp_path):
@@ -533,9 +534,9 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "Preview logic exists in _format_stream_action_preview."},
-                        {"fact": "Preview logic exists in _format_stream_action_preview."},
-                        {"fact": "Preview logic exists in _format_stream_action_preview!"},
+                        "Preview logic exists in _format_stream_action_preview.",
+                        "Preview logic exists in _format_stream_action_preview.",
+                        "Preview logic exists in _format_stream_action_preview!",
                     ],
                 }
             ]
@@ -558,9 +559,9 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        {"fact": "", "context": [{"key": "parser.notes", "description": "Parser notes.", "value": "ignored"}]},
-                        {"fact": "Parser notes exist.", "context": []},
-                        {"fact": "Parser notes were captured.", "context": [{"key": "parser.notes", "description": "Parser notes.", "value": "line 1"}]},
+                        "",
+                        "Parser notes exist.",
+                        "Parser notes were captured.",
                     ],
                 }
             ]
@@ -580,7 +581,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     response = {
         "actions": [
             {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
-            {"type": "known", "items": [{"fact": "Search uses rg.", "context": [{"key": "search.rg", "description": "Search uses rg context.", "value": "Python fallback exists"}]}]},
+            {"type": "known", "items": ["Search uses rg."]},
         ]
     }
 
@@ -591,8 +592,6 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
     assert "  Known\n" in agent.state_updater.latest_report
     assert "    1. Search uses rg." in agent.state_updater.latest_report
-    assert "  Context (1)\n" in agent.state_updater.latest_report
-    assert "    1. search.rg - Search uses rg context." in agent.state_updater.latest_report
 
     agent.apply_response(response)
 
@@ -753,7 +752,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                     "actions": [
                         {
                             "type": "known",
-                            "items": [{"fact": "Read sample.txt and found alpha.", "context": [{"key": "sample.alpha", "description": "Read sample.txt output.", "value": "alpha"}]}],
+                            "items": ["Read sample.txt and found alpha."],
                         },
                         {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
@@ -777,11 +776,12 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[0].startswith("Tool Calls\n")
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
-    assert "result:" not in messages[0]
+    assert "result: tr.1" in messages[0]
     assert "log:" not in messages[0]
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
+    assert "tr.1" in fake_client.user_prompts[1]
     assert "alpha" in agent.last_tool_calls
     assert session.current.known == ["Read sample.txt and found alpha."]
     assert session.current.user_input == "read sample"

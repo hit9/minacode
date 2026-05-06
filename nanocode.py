@@ -189,13 +189,13 @@ class Verification(PromptItem):
 
 @final
 @dataclass
-class ContextItem(PromptItem):
+class ToolResultItem(PromptItem):
     description: str
     value: str
 
     @override
     def format(self, indent: str = "") -> str:
-        return _format_lines(["<ContextItem>", "  <description>" + self.description + "</description>", "</ContextItem>"], indent)
+        return _format_lines(["<ToolResultItem>", "  <description>" + self.description + "</description>", "</ToolResultItem>"], indent)
 
 
 @final
@@ -390,15 +390,9 @@ class Session:
     current: Current = field(default_factory=Current)
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    context_store: dict[str, ContextItem] = field(default_factory=dict)
-
-    @property
-    def context(self) -> dict[str, ContextItem]:
-        return self.context_store
-
-    @context.setter
-    def context(self, value: dict[str, ContextItem] | dict[str, str]) -> None:
-        self.context_store = {key: item if isinstance(item, ContextItem) else ContextItem(description=key, value=str(item)) for key, item in value.items()}
+    tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
+    tool_result_counter: int = 0
+    turn_tool_calls: int = 0
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -467,6 +461,7 @@ class ToolCallExecution:
     outcome: str
     output: str
     error_type: Type[Exception] | None = None
+    result_key: str = ""
 
 
 def _format_last_tool_calls(executions: list[ToolCallExecution]) -> str:
@@ -482,6 +477,7 @@ def _format_last_tool_call(execution: ToolCallExecution) -> str:
             "  <intention>" + execution.call.intention + "</intention>",
             "  <executed>" + execution.call.executed + "</executed>",
             "  <outcome>" + execution.outcome + "</outcome>",
+            "  <result_key>" + execution.result_key + "</result_key>",
             "  <raw_result>",
             execution.output,
             "  </raw_result>",
@@ -1876,56 +1872,54 @@ class GitTool(Tool):
 
 @final
 @dataclass
-class ContextTool(Tool):
+class ToolResultTool(Tool):
     MAX_OUTPUT_CHARS: ClassVar[int] = 20_000
 
     keys: list[str]
-    context: dict[str, ContextItem]
+    results: dict[str, ToolResultItem]
 
     @classmethod
     def name(cls) -> str:
-        return "Context"
+        return "ToolResult"
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read hidden context values by key; batch multiple keys when useful."]
+        return ["Read stored raw tool results by key; batch multiple keys when useful."]
 
     @classmethod
     def signature(cls) -> str:
-        return "Context(key[, key...]) -> ContextToolResult<content>"
+        return "ToolResult(key[, key...]) -> ToolResultToolResult<content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            '{"name": "Context", "intention": "Read stored context", "args": ["parser.notes", "other.key"]}',
+            '{"name": "ToolResult", "intention": "Read stored tool result", "args": ["tr.1"]}',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if args and args[0].strip().lower() in {"get", "read"}:
-            args = args[1:]
-        return cls(keys=args, context=session.context_store)
+        return cls(keys=args, results=session.tool_result_store)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
 
     def display(self) -> str:
-        return "Context " + ", ".join(self.keys)
+        return "ToolResult " + ", ".join(self.keys)
 
     def call(self) -> str:
         if not self.keys:
-            raise ToolCallArgError("Context requires at least one key")
-        lines = ["<ContextToolResult>"]
+            raise ToolCallArgError("ToolResult requires at least one key")
+        lines = ["<ToolResultToolResult>"]
         for key in self.keys:
-            if key not in self.context:
+            if key not in self.results:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
-            lines.extend(['  <ContextItem key="' + key + '">', self.context[key].value, "  </ContextItem>"])
-        lines.append("</ContextToolResult>")
+            lines.extend(['  <ToolResult key="' + key + '">', self.results[key].value, "  </ToolResult>"])
+        lines.append("</ToolResultToolResult>")
         result = "\n".join(lines)
         if len(result) <= self.MAX_OUTPUT_CHARS:
             return result
-        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</ContextToolResult>"
+        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</ToolResultToolResult>"
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1939,7 +1933,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
-    ContextTool.name(): ContextTool,
+    ToolResultTool.name(): ToolResultTool,
 }
 
 
@@ -1953,14 +1947,9 @@ MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a loopi
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
-
 Memory:
-- Known = concise facts.
-- Context = RAW ORIGINAL MATERIAL, NOT SUMMARIES.
-- Store exact code snippets, logs, source text, command output, errors, and long tool results as Context.
-- Context.value should preserve the original wording/content needed later.
-- Context.description says what the value contains and when to reuse it.
-- Tool results are one-shot; save important raw results as Context before continuing.
+- Known = concise stable facts.
+- Tool_Result_Store = raw tool results saved automatically; use ToolResult(key...) to read full content when needed.
 
 STEPS:
 
@@ -1969,14 +1958,12 @@ STEPS:
 
 2. Fresh tool results:
    - Extract only new, stable known facts from latest tool results.
-   - Store supporting raw text/logs/code snippets as context.
    - Do this before any next tool/message.
 
 3. Memory check:
-   - Use Known and Context keys/descriptions first.
-   - If needed context is hidden, call batched Context(key...).
-   - Only Read files when memory is missing or insufficient.
-   - Context description must say what the value contains and when to reuse it.
+   - Use Known and Tool_Result_Store keys/descriptions first.
+   - If needed raw tool output is hidden, call batched ToolResult(key...).
+   - Only Read files when stored tool results are missing or insufficient.
 
 4. Plan:
    - Create or revise the plan based on facts and the goal.
@@ -1991,29 +1978,30 @@ Memory Tools:
 { __memory_tools__ }
 
 Available tools:
+MAX to 10 tool calls this time:
 
 { __other_tools__ }
 
 READ GATE:
-- Do not Read a file if relevant Context keys exist.
-- First call batched Context(key...).
-- Read only after Context is missing, insufficient, or stale.
+- Do not Read a file if relevant Tool_Result_Store keys exist.
+- First call batched ToolResult(key...).
+- Read only after stored tool results are missing, insufficient, or stale.
 
 Rules:
 
 1. Every turn must emit at least one action frame.
 2. Output known only for new durable facts; do not repeat or rephrase existing Known.
 3. Call at most 10 tools in one turn.
-4. Prefer batched Search/Read/Context when useful.
+4. Prefer batched Search/Read/ToolResult when useful.
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
-7. Do not Read before checking relevant stored Context when available.
+7. Do not Read before checking relevant stored tool results when available.
 
 Action types:
 * message: tell the user progress, result, or blocker.
 * goal: set/update the current goal; complete=true only after success + verification.
 * verify: record verification status for the current goal.
-* known: save new durable facts with raw context.
+* known: save new durable facts.
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
@@ -2024,7 +2012,7 @@ Output multiple JSON objects separated by __END_ACTION__:
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
-{"type": "known", "items": [{"fact": "non-empty self-contained string", "context": [{"key": "non-empty context key", "description": "non-empty description", "value": "non-empty raw context"}]}]} __END_ACTION__
+{"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -2042,9 +2030,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {known}
 </Known>
 
-<Context_Store>
-{context}
-</Context_Store>
+<Tool_Result_Store>
+{tool_result_store}
+</Tool_Result_Store>
 
 <Goal>
 {goal}
@@ -2070,9 +2058,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {latest_user_input}
 </Latest_User_Input>
 
-<USER_RULES>
-YOU MUST SET KNOWN AND CONTEXT IMMEDIATELY FOR TOOL CALL RESULTS, OTHERWISE THE TOOL RESULT WILL NEVER SHOWN AGAIN.
-</USER_RULES>
 """
 
 
@@ -2131,7 +2116,7 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            context=self._format_context(),
+            tool_result_store=self._format_tool_result_store(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2143,7 +2128,7 @@ class PromptBuilder:
     def _format_tools(self, memory: bool | None = None) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
-            is_memory_tool = tool.name() == ContextTool.name()
+            is_memory_tool = tool.name() == ToolResultTool.name()
             if memory is not None and is_memory_tool != memory:
                 continue
             lines.append("- " + tool.signature())
@@ -2164,12 +2149,12 @@ class PromptBuilder:
             return "(empty)"
         return "\n".join(self.session.current.known)
 
-    def _format_context(self) -> str:
-        if not self.session.context_store:
+    def _format_tool_result_store(self) -> str:
+        if not self.session.tool_result_store:
             return "(empty)"
         lines = []
-        for key, item in self.session.context_store.items():
-            lines.extend(['<ContextItem key="' + key + '">', "  <description>" + item.description + "</description>", "</ContextItem>"])
+        for key, item in self.session.tool_result_store.items():
+            lines.extend(['<ToolResult key="' + key + '">', "  <description>" + item.description + "</description>", "</ToolResult>"])
         return "\n".join(lines)
 
     def _format_plan(self) -> str:
@@ -2544,12 +2529,16 @@ class ToolCallRunner:
                 error_type = type(error)
             if call is None:
                 call = self._invalid_tool_call(item)
+            result_key = ""
+            if call.name != ToolResultTool.name():
+                result_key = self._store_tool_result(call, outcome, output)
 
             execution = ToolCallExecution(
                 call=call,
                 outcome=outcome,
                 output=output,
                 error_type=error_type,
+                result_key=result_key,
             )
             executions.append(execution)
 
@@ -2568,7 +2557,18 @@ class ToolCallRunner:
             lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
             if execution.call.intention:
                 lines.append("     why: " + execution.call.intention)
+            if execution.result_key:
+                lines.append("     result: " + execution.result_key)
         return "\n".join(lines)
+
+    def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
+        self.session.tool_result_counter += 1
+        key = "tr." + str(self.session.tool_result_counter)
+        description = outcome + " " + call.executed
+        if call.intention:
+            description += " - " + call.intention
+        self.session.tool_result_store[key] = ToolResultItem(description=description, value=output)
+        return key
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
@@ -2607,8 +2607,6 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_CONTEXT_ITEMS: ClassVar[int] = 300
-    MAX_CONTEXT_VALUE_CHARS: ClassVar[int] = 12_000
 
     def __init__(self, session: Session):
         self.session = session
@@ -2618,7 +2616,6 @@ class AgentStateUpdater:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
         before_known = list(self.session.current.known)
-        before_context = dict(self.session.context_store)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
@@ -2632,7 +2629,6 @@ class AgentStateUpdater:
             before_goal,
             before_plan,
             before_known,
-            before_context,
             before_verification,
         )
 
@@ -2644,7 +2640,6 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_context: dict[str, ContextItem],
         before_verification: str,
     ) -> str:
         current = self.session.current
@@ -2664,11 +2659,6 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        if self.session.context_store != before_context:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Context " + f"({len(self.session.context_store)})")
-            lines.extend(self._format_context_rows(before_context))
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -2696,17 +2686,6 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". " + self._compact(item))
-        return rows
-
-    def _format_context_rows(self, before_context: dict[str, ContextItem]) -> list[str]:
-        changed = [key for key, value in self.session.context_store.items() if before_context.get(key) != value]
-        if not changed:
-            return ["    (empty)"]
-        offset = max(0, len(changed) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, key in enumerate(changed[offset:], start=offset + 1):
-            item = self.session.context_store[key]
-            rows.append("    " + str(index) + ". " + self._compact(key) + " - " + self._compact(item.description))
         return rows
 
     def _format_verification(self) -> str:
@@ -2789,40 +2768,13 @@ class AgentStateUpdater:
                     self._add_known_item(fact)
 
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
-        item = _json_dict(value)
-        if not item:
-            return None
-        fact = (_json_str(item.get("fact")) or "").strip()
+        fact = (_json_str(value) or "").strip()
+        if not fact:
+            item = _json_dict(value)
+            fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        self._store_context_from_known_item(item)
         return fact
-
-    def _store_context_from_known_item(self, item: Json) -> None:
-        for raw in _json_list(item.get("context")):
-            context = _json_dict(raw)
-            if not context:
-                continue
-            key = (_json_str(context.get("key")) or "").strip()
-            description = _json_str(context.get("description"))
-            value = _json_str(context.get("value"))
-            self._store_context(key, description, value)
-
-    def _store_context(self, key: str | None, description: str | None, value: str | None) -> None:
-        key = (key or "").strip()
-        description = (description or "").strip()
-        value = (value or "").strip()
-        if not key or not value:
-            return
-        if not description:
-            description = key
-        if len(value) > self.MAX_CONTEXT_VALUE_CHARS:
-            value = value[: self.MAX_CONTEXT_VALUE_CHARS] + "\n...<truncated>"
-        if key in self.session.context_store:
-            self.session.context_store.pop(key)
-        elif len(self.session.context_store) >= self.MAX_CONTEXT_ITEMS:
-            self.session.context_store.pop(next(iter(self.session.context_store)))
-        self.session.context_store[key] = ContextItem(description=description, value=value)
 
     def _add_known_item(self, fact: str) -> None:
         if fact not in self.session.current.known:
@@ -2995,6 +2947,7 @@ class Agent:
     ) -> Json:
         self.last_tool_calls = ""
         self._clear_agent_feedback()
+        self.session.turn_tool_calls = 0
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
         self.maybe_auto_compact()
@@ -3198,6 +3151,7 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         self.last_tool_calls = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self.session.turn_tool_calls += len(tool_calls)
         for execution in self.tool_runner.latest_executions:
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
@@ -3273,7 +3227,6 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
-    CommandSpec("/context", "Show or clear hidden context store", "Info", "/context [clear]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3302,7 +3255,6 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
-            "/context": self._context,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3361,20 +3313,6 @@ class CommandDispatcher:
             ]
         )
 
-    def _context(self, args: str) -> str:
-        if args == "clear":
-            count = len(self.agent.session.context_store)
-            self.agent.session.context_store.clear()
-            return "Cleared context: " + str(count)
-        if args:
-            return "Usage: /context [clear]"
-        if not self.agent.session.context_store:
-            return "Context: 0"
-        lines = ["Context: " + str(len(self.agent.session.context_store))]
-        for key, item in self.agent.session.context_store.items():
-            lines.append("  " + key + " - " + item.description)
-        return "\n".join(lines)
-
     def _status(self, args: str) -> str:
         if args:
             return "Usage: /status"
@@ -3389,7 +3327,7 @@ class CommandDispatcher:
                 "stream: " + stream,
                 "yolo: " + yolo,
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "context: " + str(len(session.context_store)),
+                "tool_calls: " + str(session.turn_tool_calls),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
                 "goal: " + (session.current.goal or "(empty)"),
@@ -3595,7 +3533,7 @@ class StatusBar:
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "context:" + str(len(session.context_store)), "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.turn_tool_calls), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
