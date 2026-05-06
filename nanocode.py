@@ -1988,7 +1988,7 @@ Rules:
 1. Every turn must emit at least one action frame.
 2. Output known only for new durable facts; do not repeat or rephrase existing Known.
 3. Call at most 10 tools in one turn.
-4. Prefer batched Search/Read/ToolResult when useful.
+4. Prefer batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F"), Read("filepath", "1-500", "500-1000", ...) etc.
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
 
