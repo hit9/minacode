@@ -630,6 +630,7 @@ class ReadTool(Tool):
     filepath: str = ""
     start: int = 0
     end: int = 0
+    ranges: list[tuple[int, int]] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
@@ -641,77 +642,115 @@ class ReadTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Read exact file lines with a fingerprint.",
-            "Optional range is 0-based [start,end); end=0 means EOF.",
-            "Returns at most 1000 lines; truncated results include total lines and next-step guidance.",
+            "Optional ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs for multiple ranges.",
+            "Returns at most 1000 lines per range; truncated results include total lines and next-step guidance.",
             "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
             "For ReplaceRange, non-empty subranges may use a wider cached Read fingerprint that covers them; empty insert ranges require an exact empty-range Read.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Read(filepath, start?: 0-N, end?: 0-N) -> ReadToolResult<fingerprint, content>"
+        return "Read(filepath[, start, end[, start, end...]]) -> ReadToolResult<fingerprint, content>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example: ["code.py", "0", "120"]', 'Example: ["code.py"]']
+        return ['Example: ["code.py", "0", "120"]', 'Example: ["code.py", "0", "40", "200", "260"]', 'Example: ["code.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in {1, 3}:
-            raise ToolCallError("requires 1 or 3 args: filepath[, start, end]")
+        if len(args) == 0 or (len(args) != 1 and len(args) % 2 == 0):
+            raise ToolCallError("requires filepath optionally followed by start/end pairs")
         filepath = session.resolve_path(args[0])
-        start, end = (0, 0) if len(args) == 1 else _parse_line_range(args[1], args[2])
-        return cls(filepath=filepath, start=start, end=end, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
+        if len(args) == 1:
+            ranges = [(0, 0)]
+        else:
+            ranges = [_parse_line_range(args[index], args[index + 1]) for index in range(1, len(args), 2)]
+        start, end = ranges[0]
+        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
 
     def display(self) -> str:
+        if len(self.ranges) > 1:
+            ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
+            return f"Read({self.filepath}, {ranges})"
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
+        if len(self.ranges) > 1:
+            lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
+            for start, end in self.ranges:
+                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(start, end)
+                lines.append("  <ReadRange>")
+                lines.extend(self._format_range_result(start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
+                lines.append("  </ReadRange>")
+            lines.append("</ReadToolResult>")
+            return "\n".join(lines)
+
+        content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(self.start, self.end)
+        lines = ["<ReadToolResult>"]
+        lines.extend(self._format_range_result(self.start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="  "))
+        lines.append("</ReadToolResult>")
+        return "\n".join(lines)
+
+    def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
         total_lines = 0
         selected_lines = []
         truncated = False
-        bounded_read_lines = self.end - self.start if self.end else 0
-        if self.end and bounded_read_lines <= self.MAX_LINES:
+        bounded_read_lines = end - start if end else 0
+        if end and bounded_read_lines <= self.MAX_LINES:
             with open(self.filepath, "r", encoding="utf-8") as f:
-                selected_lines = list(itertools.islice(f, self.start, self.end))
+                selected_lines = list(itertools.islice(f, start, end))
         else:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     total_lines = index + 1
-                    if index < self.start:
+                    if index < start:
                         continue
-                    if self.end and index >= self.end:
+                    if end and index >= end:
                         continue
                     if len(selected_lines) < self.MAX_LINES:
                         selected_lines.append(line)
                         continue
                     truncated = True
         content = "".join(selected_lines)
-        returned_end = self.start + len(selected_lines)
-        fingerprint_end = returned_end if truncated else self.end
+        returned_end = start + len(selected_lines)
+        fingerprint_end = returned_end if truncated else end
         fingerprint = self.range_fingerprints.remember(
             filepath=self.filepath,
-            start=self.start,
+            start=start,
             end=fingerprint_end,
             content=content,
         )
+        return content, returned_end, fingerprint_end, fingerprint, truncated, total_lines
+
+    def _format_range_result(
+        self,
+        start: int,
+        returned_end: int,
+        fingerprint_end: int,
+        fingerprint: str,
+        truncated: bool,
+        total_lines: int,
+        content: str,
+        *,
+        indent: str,
+    ) -> list[str]:
         lines = [
-            "<ReadToolResult>",
-            "  <range>" + str(self.start) + ":" + str(fingerprint_end) + "</range>",
-            "  <fingerprint>" + fingerprint + "</fingerprint>",
+            indent + "<range>" + str(start) + ":" + str(fingerprint_end) + "</range>",
+            indent + "<fingerprint>" + fingerprint + "</fingerprint>",
         ]
         if truncated:
             lines.extend(
                 [
-                    "  <truncated>true</truncated>",
-                    "  <total_lines>" + str(total_lines) + "</total_lines>",
-                    "  <note>Read returned "
-                    + str(len(selected_lines))
+                    indent + "<truncated>true</truncated>",
+                    indent + "<total_lines>" + str(total_lines) + "</total_lines>",
+                    indent
+                    + "<note>Read returned "
+                    + str(returned_end - start)
                     + " lines from "
-                    + str(self.start)
+                    + str(start)
                     + ":"
                     + str(returned_end)
                     + " of "
@@ -721,13 +760,12 @@ class ReadTool(Tool):
             )
         lines.extend(
             [
-                "  <content no-indention>",
+                indent + "<content no-indention>",
                 content,
-                "  </content>",
-                "</ReadToolResult>",
+                indent + "</content>",
             ]
         )
-        return "\n".join(lines)
+        return lines
 
 
 @final
@@ -1873,7 +1911,7 @@ class BlackboardTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Temporary key-value stash for investigation findings and leads; clear task-local entries when done; actions: read, set, delete, clear.",
+            "Temporary key-value stash for findings, leads, and useful tool-result notes; read later, clear when done; actions: read, set, delete, clear.",
         ]
 
     @classmethod
@@ -1975,13 +2013,13 @@ Tools:
 - Do not queue speculative follow-up tools whose arguments depend on unread files, unknown search results, or unverified command output.
 - Prefer specific tools first; use Bash only when no provided tool fits.
 - Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
-- Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
+- Read returns at most 1000 lines per range; pass repeated start/end pairs for multiple ranges.
 - ReplaceRange/BatchReplaceRanges may use a wider cached Read fingerprint for a non-empty subrange that it covers. Empty insert ranges require an exact empty-range Read. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
-- Summarize every latest tool result with tool_summary actions; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
+- Summarize every latest tool result; raw results are shown once only, so keep key_evidence and stash useful notes in Blackboard.
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
 - known actions are stable memory; context actions are task-local memory.
-- Use Blackboard to stash investigation findings and leads; clear task-local entries when done.
+- Stash useful tool-result notes in Blackboard for later read; reopen result_file logs when raw detail is needed; clear entries when done.
 - tool action intention must state the question to answer, not just the action.
 
 Verification:
