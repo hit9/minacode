@@ -1873,8 +1873,7 @@ class BlackboardTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Scratchpad for hypotheses, intermediate analysis, or task state.",
-            "Stores temporary key-value data outside main context; cleared when the session ends. Actions: read, set, delete, clear.",
+            "Temporary key-value stash for investigation findings and leads; clear task-local entries when done; actions: read, set, delete, clear.",
         ]
 
     @classmethod
@@ -1982,6 +1981,7 @@ Tools:
 - Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
 - If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
 - known actions are stable memory; context actions are task-local memory.
+- Use Blackboard to stash investigation findings and leads; clear task-local entries when done.
 - tool action intention must state the question to answer, not just the action.
 
 Verification:
