@@ -2018,6 +2018,11 @@ Available tools:
 
 { __other_tools__ }
 
+READ GATE:
+- Do not Read a file if relevant Evidence keys exist.
+- First call batched Evidence(key...).
+- Read only after Evidence is missing, insufficient, or stale.
+
 Rules:
 
 1. Every turn must emit at least one action frame.
