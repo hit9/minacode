@@ -1949,6 +1949,8 @@ Steps:
 5. Report progress to the user with message when appropriate.
 
 Available tools:
+USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
+
 { __tools__ }
 
 Rules:
