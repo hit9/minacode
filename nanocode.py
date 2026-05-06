@@ -516,9 +516,9 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
 
 
 def _parse_line_range_token(value: str) -> tuple[int, int]:
-    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", value)
+    match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
     if match is None:
-        raise ToolCallError("invalid range: should be start-end")
+        raise ToolCallError("invalid range: should be start-end, start:end, or start,end")
     return _parse_line_range(match.group(1), match.group(2))
 
 
@@ -541,7 +541,7 @@ def _range_fingerprint(content: str) -> str:
 @final
 @dataclass
 class ReadTool(Tool):
-    MAX_LINES: ClassVar[int] = 1000
+    MAX_LINES: ClassVar[int] = 600
 
     filepath: str = ""
     start: int = 0
@@ -558,14 +558,14 @@ class ReadTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Read file lines and cache fingerprints for range edits.",
-            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs or start-end tokens.",
-            "Returns at most 1000 lines per range; use Search/LineCount before broad reads.",
+            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs or start-end/start:end/start,end tokens.",
+            "Returns at most 600 lines per range; use Search/LineCount before broad reads.",
             "For ReplaceRange, read an exact or covering range first; empty inserts require an exact empty-range Read.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Read(filepath[, start, end... | start-end...]) -> ReadToolResult<fingerprint, content>"
+        return "Read(filepath[, start, end... | start-end/start:end/start,end...]) -> ReadToolResult<fingerprint, content>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -573,6 +573,7 @@ class ReadTool(Tool):
             'Example: ["code.py", "0", "120"]',
             'Example: ["code.py", "0", "40", "200", "260"]',
             'Example: ["code.py", "0-40", "200-260"]',
+            'Example: ["code.py", "0:40", "200,260"]',
             'Example: ["code.py"]',
         ]
 
@@ -583,7 +584,7 @@ class ReadTool(Tool):
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
-        elif all(re.fullmatch(r"\s*\d+\s*-\s*\d+\s*", arg) for arg in args[1:]):
+        elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
             ranges = [_parse_line_range_token(arg) for arg in args[1:]]
         else:
             if len(args) % 2 == 0:
