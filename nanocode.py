@@ -1986,6 +1986,8 @@ MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a loopi
 
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
 
+You must utilize your memory (the "details store" and "known" components); otherwise, it will be difficult for your intelligence to function effectively..
+
 Use the current Environment, Conversation_History, Known, Goal, Plan, Verification_State, Errors, Last_Tool_Calls, and Latest_User_Input.
 
 STEPS:
@@ -2016,6 +2018,9 @@ Rules:
 During Exploring:
 * Before Read, prefer batched Details(...) for stored context.
 * Later only detail keys/descriptions are visible; use Details(key...) for values.
+
+Again:
+You must utilize your memory (the "details store" and "known" components); otherwise, it will be difficult for your intelligence to function effectively..
 
 Output format (Strict)
 
@@ -2653,7 +2658,7 @@ class AgentStateUpdater:
         if self.session.details != before_details:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Details " + f"{len(self.session.details_store)}")
+            lines.append("  Details " + f"({len(self.session.details_store)})")
             lines.extend(self._format_details_rows(before_details))
         verification = current.verification.format()
         if verification != before_verification:
