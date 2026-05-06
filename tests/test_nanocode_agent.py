@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, KnownItem, LLMError, Session, VerificationStatus
+from nanocode import Agent, LLMError, Session, VerificationStatus
 
 
 def test_agent_tool_results_go_to_last_tool_calls_without_conversation_or_log(tmp_path):
@@ -617,7 +617,7 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
         }
     )
 
-    assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", context_keys=["search.impl"])]
+    assert session.current.known == ["Search only supports rg and Python fallback."]
     assert "search.impl" in session.context_store
 
 
@@ -641,8 +641,8 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
     )
 
     assert session.current.known == [
-        KnownItem(fact="Parser notes exist."),
-        KnownItem(fact="Parser notes were captured.", context_keys=["parser.notes"]),
+        "Parser notes exist.",
+        "Parser notes were captured.",
     ]
 
 
@@ -663,7 +663,9 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
     assert "  Known\n" in agent.state_updater.latest_report
-    assert "    1. Search uses rg. | search.rg" in agent.state_updater.latest_report
+    assert "    1. Search uses rg." in agent.state_updater.latest_report
+    assert "  Context (1)\n" in agent.state_updater.latest_report
+    assert "    1. search.rg - Search uses rg context." in agent.state_updater.latest_report
 
     agent.apply_response(response)
 
@@ -832,7 +834,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "alpha" in agent.last_tool_calls
-    assert session.current.known == [KnownItem(fact="Read sample.txt and found alpha.", context_keys=["sample.alpha"])]
+    assert session.current.known == ["Read sample.txt and found alpha."]
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
 

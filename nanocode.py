@@ -185,28 +185,6 @@ class Verification(PromptItem):
 
 
 @final
-@dataclass(init=False)
-class KnownItem(PromptItem):
-    fact: str
-    context_keys: list[str] = field(default_factory=list)
-
-    def __init__(self, fact: str, context_keys: list[str] | None = None):
-        self.fact = fact
-        self.context_keys = list(context_keys or [])
-
-    @override
-    def format(self, indent: str = "") -> str:
-        lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
-        if self.context_keys:
-            lines.append("  <context_keys>")
-            for key in self.context_keys:
-                lines.append("    <context_key>" + key + "</context_key>")
-            lines.append("  </context_keys>")
-        lines.append("</KnownItem>")
-        return _format_lines(lines, indent)
-
-
-@final
 @dataclass
 class ContextItem(PromptItem):
     description: str
@@ -224,7 +202,7 @@ class Current:
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
-    known: list[KnownItem] = field(default_factory=list)
+    known: list[str] = field(default_factory=list)
     verification: Verification = field(default_factory=Verification)
 
 
@@ -2175,7 +2153,7 @@ class PromptBuilder:
     def _format_known(self) -> str:
         if not self.session.current.known:
             return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.current.known)
+        return "\n".join(self.session.current.known)
 
     def _format_context(self) -> str:
         if not self.session.context_store:
@@ -2652,7 +2630,7 @@ class AgentStateUpdater:
     def apply(self, response: Json) -> None:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
-        before_known = [item.format() for item in self.session.current.known]
+        before_known = list(self.session.current.known)
         before_context = dict(self.session.context_store)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
@@ -2693,7 +2671,7 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Plan")
             lines.extend(self._format_plan_rows())
-        known = [item.format() for item in current.known]
+        known = list(current.known)
         if known != before_known:
             if not lines:
                 lines.append("State Updated | " + self._verification_badge())
@@ -2730,10 +2708,7 @@ class AgentStateUpdater:
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
-            text = self._compact(item.fact)
-            if item.context_keys:
-                text += " | " + "; ".join(self._compact(key) for key in item.context_keys)
-            rows.append("    " + str(index) + ". " + text)
+            rows.append("    " + str(index) + ". " + self._compact(item))
         return rows
 
     def _format_context_rows(self, before_context: dict[str, ContextItem]) -> list[str]:
@@ -2822,38 +2797,29 @@ class AgentStateUpdater:
     def _apply_known(self, response: Json) -> None:
         for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "known"]:
             for raw in _json_list(action.get("items")):
-                item = self._known_item_from_json(raw)
-                if item is not None:
-                    self._add_known_item(item)
+                fact = self._known_fact_from_json(raw)
+                if fact is not None:
+                    self._add_known_item(fact)
 
-    def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
+    def _known_fact_from_json(self, value: JsonValue) -> str | None:
         item = _json_dict(value)
         if not item:
             return None
         fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        context_keys = self._context_keys_from_known_item(item)
-        return KnownItem(fact=fact, context_keys=context_keys)
+        self._store_context_from_known_item(item)
+        return fact
 
-    def _context_keys_from_known_item(self, item: Json) -> list[str]:
-        keys: list[str] = []
-        for raw in _json_list(item.get("context_keys")):
-            key = (_json_str(raw) or "").strip()
-            if key and key not in keys:
-                keys.append(key)
+    def _store_context_from_known_item(self, item: Json) -> None:
         for raw in _json_list(item.get("context")):
             context = _json_dict(raw)
-            if context:
-                key = (_json_str(context.get("key")) or "").strip()
-                description = _json_str(context.get("description"))
-                value = _json_str(context.get("value"))
-                self._store_context(key, description, value)
-            else:
-                key = (_json_str(raw) or "").strip()
-            if key and key not in keys:
-                keys.append(key)
-        return keys
+            if not context:
+                continue
+            key = (_json_str(context.get("key")) or "").strip()
+            description = _json_str(context.get("description"))
+            value = _json_str(context.get("value"))
+            self._store_context(key, description, value)
 
     def _store_context(self, key: str | None, description: str | None, value: str | None) -> None:
         key = (key or "").strip()
@@ -2871,9 +2837,9 @@ class AgentStateUpdater:
             self.session.context_store.pop(next(iter(self.session.context_store)))
         self.session.context_store[key] = ContextItem(description=description, value=value)
 
-    def _add_known_item(self, item: KnownItem) -> None:
-        if not any(known.fact == item.fact for known in self.session.current.known):
-            self.session.current.known.append(item)
+    def _add_known_item(self, fact: str) -> None:
+        if fact not in self.session.current.known:
+            self.session.current.known.append(fact)
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
