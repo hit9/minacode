@@ -21,7 +21,7 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
         ToolCallEvent(
             intent="inspect file",
             executed='Read("a.py", "0", "1")',
-            summary="found alpha\nand beta",
+            outcome="success",
             result_file=".nanocode/tool_results/old.log",
             result_file_lines=9,
         ),

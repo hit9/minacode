@@ -30,37 +30,7 @@ def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path
     assert nanocode.ToolCallRunner.TOOL_RESULTS_DIR in event.result_file
     assert "alpha" in (tmp_path / event.result_file).read_text(encoding="utf-8")
 
-    prompt = agent.build_user_prompt()
-    assert "Recent_Tool_Call_Results" in prompt
-    assert "alpha" in prompt
-    assert "alpha" in agent.build_user_prompt()
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "tool_summary",
-                    "tool": "Read",
-                    "intention": "read sample",
-                    "outcome": "success",
-                    "summary": "Read sample.txt line 1.",
-                    "key_evidence": ["sample.txt:1 alpha"],
-                    "known_facts": [{"fact": "sample.txt line 1 is alpha.", "details": ["sample.txt:1 alpha"]}],
-                    "result_file": event.result_file,
-                    "needs_raw_read": False,
-                }
-            ]
-        }
-    )
-
-    assert "Read sample.txt line 1." in event.summary
-    assert event.key_details == ["sample.txt:1 alpha"]
-    assert "sample.txt:1 alpha" in event.format()
-    assert "<key_details>\n    <detail>sample.txt:1 alpha</detail>\n  </key_details>" in event.format()
     assert "alpha\n  </content>" not in event.format()
-    assert session.current.known == [KnownItem(fact="sample.txt line 1 is alpha.", details=["sample.txt:1 alpha"])]
-    assert "  Known\n" in agent.state_updater.latest_report
-    assert "sample.txt line 1 is alpha." in agent.state_updater.latest_report
 
 
 def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks():
@@ -86,13 +56,6 @@ def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks(
     trim_prompt = trim_buffer.format()
     assert "second-output-token" in trim_prompt
     assert "first-output-token" not in trim_prompt
-
-
-def test_agent_user_prompt_has_no_blackboard_section(tmp_path):
-    prompt = Agent(Session(cwd=str(tmp_path))).build_user_prompt()
-
-    assert "Blackboard_Keys" not in prompt
-    assert "Blackboard" not in prompt
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -200,9 +163,6 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
             '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
         ],
         [
-            '{"type":"tool_summary","tool":"Read","intention":"read sample","outcome":"success",',
-            '"summary":"Read sample.txt.","key_evidence":["alpha"],"known_facts":null,',
-            '"result_file":null,"needs_raw_read":false}__END_ACTION__',
             '{"type":"message","text":"done"}__END_ACTION__',
         ],
     ]
@@ -471,7 +431,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
     assert "API response missing message content" in response["_format_error"]
 
 
-def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
+def test_agent_keeps_known_items_structured_in_current(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
@@ -490,33 +450,6 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
     )
 
     assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", details=["grep was removed"])]
-
-    prompt = agent.build_user_prompt()
-    assert "<KnownItem>" in prompt
-    assert "<fact>Search only supports rg and Python fallback.</fact>" in prompt
-    assert "  <details>\n    <detail>grep was removed</detail>\n  </details>" in prompt
-    assert "duplicate ignored" not in prompt
-
-
-def test_agent_system_prompt_guides_known_and_tool_summaries(tmp_path):
-    prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
-
-    assert "Rules:" in prompt
-    assert "{ __tools__ }" not in prompt
-    assert "- Read(filepath" in prompt
-    assert "Use one OR search for related symbols: A|B|C or 3+ plain args" in prompt
-    assert "Options: path=FILE, context=N|N, glob=*.py or bare glob." in prompt
-    assert "Output exactly one known action every turn." in prompt
-    assert "tool_summary for fresh tool results." in prompt
-    assert "Fresh tool results: summarize all first; each tool_summary needs known_facts." in prompt
-    assert "Known: items=[] means no new durable facts" in prompt
-    assert '"known_facts": null | [{"fact": "string", "details": null | ["string"]}]' in prompt
-    assert "Order:" in prompt
-    assert "goal if needed." in prompt
-    assert "known always." in prompt
-    assert "Blackboard" not in prompt
-    assert "Current_Context" not in prompt
-    assert '{"type": "context"' not in prompt
 
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
@@ -565,7 +498,6 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert session.current.verification.status == VerificationStatus.REQUIRED
     assert session.current.verification.method == "run tests"
     assert session.current.verification.evidence == ""
-    assert "<goal>new goal</goal>" in agent.build_user_prompt()
 
 
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):
@@ -605,7 +537,6 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert event.outcome == "failure"
     log_path = tmp_path / event.result_file
     assert "Cancelled: user refused: please inspect tests first" in log_path.read_text(encoding="utf-8")
-    assert "please inspect tests first" in agent.build_user_prompt()
 
 
 def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp_path):
@@ -675,14 +606,8 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                 {
                     "actions": [
                         {
-                            "type": "tool_summary",
-                            "tool": "Read",
-                            "intention": "read sample",
-                            "outcome": "success",
-                            "summary": "Read sample.txt and found alpha.",
-                            "key_evidence": ["alpha"],
-                            "result_file": None,
-                            "needs_raw_read": False,
+                            "type": "known",
+                            "items": [{"fact": "Read sample.txt and found alpha.", "details": ["alpha"]}],
                         },
                         {"type": "message", "text": "done"},
                     ],
@@ -726,17 +651,6 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
                 {
                     "actions": [
-                        {
-                            "type": "tool_summary",
-                            "tool": "Read",
-                            "intention": "read sample",
-                            "outcome": "success",
-                            "summary": "Read sample.txt.",
-                            "key_evidence": ["alpha"],
-                            "known_facts": None,
-                            "result_file": None,
-                            "needs_raw_read": False,
-                        },
                         {"type": "message", "text": "done"},
                     ]
                 },
@@ -753,53 +667,8 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     response = agent.run("read sample")
 
     assert response["actions"][-1]["text"] == "done"
-    assert "alpha" in agent.model_client.user_prompts[1]
-    assert "alpha" in agent.model_client.user_prompts[2]
-    assert "Invalid model output: plain answer" in agent.model_client.user_prompts[2]
+    assert len(agent.model_client.user_prompts) == 3
     assert "alpha" in agent.recent_tool_call_results.format()
-
-
-def test_agent_run_does_not_gate_when_tool_summary_does_not_update_known(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {
-                    "actions": [
-                        {
-                            "type": "tool_summary",
-                            "tool": "Read",
-                            "intention": "read sample",
-                            "outcome": "success",
-                            "summary": "Read sample.txt.",
-                            "key_evidence": None,
-                            "result_file": None,
-                            "needs_raw_read": False,
-                        },
-                        {"type": "message", "text": "done too early"},
-                    ],
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.model_client = FakeModelClient()
-    messages = []
-
-    response = agent.run("read sample", on_message=messages.append)
-
-    assert response["actions"][-1]["text"] == "done too early"
-    assert all("Known_Gate:" not in prompt for prompt in agent.model_client.user_prompts)
-    assert "Retrying: Known was not reviewed after tool results." not in messages
-    assert "done too early" in messages
-    assert session.current.known == []
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
@@ -825,67 +694,9 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["text"] == "done too early"
-    assert all("Known_Gate:" not in prompt for prompt in agent.model_client.user_prompts)
     assert "Retrying: Known was not reviewed after tool results." not in messages
     assert "done too early" in messages
     assert len(agent.model_client.user_prompts) == 2
-    assert agent.latest_tool_call_events[0].summary == ""
-
-
-def test_agent_summary_gate_allows_failure_summary_without_key_evidence(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.execute_tool_calls(
-        [{"name": "Read", "intention": "read missing", "args": ["missing.txt"]}],
-    )
-    event = agent.latest_tool_call_events[0]
-
-    agent.state_updater.apply_tool_call_summaries(
-        {
-            "actions": [
-                {
-                    "type": "tool_summary",
-                    "tool": "Read",
-                    "intention": "read missing",
-                    "outcome": "failure",
-                    "summary": "Read failed.",
-                    "key_evidence": None,
-                    "result_file": event.result_file,
-                    "needs_raw_read": False,
-                }
-            ]
-        }
-    )
-
-    gate = agent._format_tool_summary_gate([])
-
-    assert gate == ""
-
-
-def test_agent_summary_gate_allows_large_success_summary_without_key_evidence(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    event = ToolCallEvent(
-        intent="list many lines",
-        executed='Bash("printf many lines")',
-        outcome="success",
-        summary="outcome: success\nsummary: printed many lines",
-        result_file=".nanocode/tool_results/result.log",
-    )
-    agent.tool_runner.latest_events = [event]
-    agent.tool_runner.latest_executions = [
-        ToolCallExecution(
-            call=ParsedToolCall(name="Bash", intention="list many lines", args=["printf many lines"]),
-            outcome="success",
-            output="\n".join("line " + str(index) for index in range(45)),
-            result_file=event.result_file,
-            result_file_lines=45,
-        )
-    ]
-
-    gate = agent._format_tool_summary_gate([])
-
-    assert gate == ""
 
 
 def test_tool_result_file_read_does_not_create_conversation_event_or_new_log(tmp_path):
@@ -919,37 +730,6 @@ def test_tool_result_file_read_does_not_create_conversation_event_or_new_log(tmp
     assert "source: .nanocode/tool_results/result.log" in agent.tool_runner.format_latest_report()
 
 
-def test_agent_summary_gate_blocks_needs_raw_read_until_result_log_is_read(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    event = ToolCallEvent(
-        intent="inspect large result",
-        executed='Bash("pytest")',
-        outcome="success",
-        summary="outcome: success\nsummary: output needs inspection\nneeds_raw_read: true",
-        result_file=".nanocode/tool_results/result.log",
-        key_details=[],
-        needs_raw_read=True,
-    )
-    agent.tool_runner.latest_events = [event]
-    agent.tool_runner.latest_executions = [
-        ToolCallExecution(
-            call=ParsedToolCall(name="Bash", intention="inspect large result", args=["pytest"]),
-            outcome="success",
-            output="large output",
-            result_file=event.result_file,
-            result_file_lines=100,
-        )
-    ]
-
-    gate = agent._format_tool_summary_gate([])
-
-    assert "Needs raw read:" in gate
-    assert "Read(.nanocode/tool_results/result.log)" in gate
-    assert agent._format_tool_summary_gate([{"type": "tool", "name": "Read", "intention": "read result log", "args": [event.result_file]}]) == ""
-    assert agent._format_tool_summary_gate([{"type": "tool", "name": "Read", "intention": "read result log", "args": [str(tmp_path / event.result_file)]}]) == ""
-
-
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     class FakeModelClient:
         def __init__(self):
@@ -972,7 +752,6 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert "No tool actions and no message action" in agent.model_client.user_prompts[1]
     assert "Continuing: goal is not complete yet." in messages
 
 
@@ -1008,7 +787,6 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert "Verification_Gate: required before completion." in agent.model_client.user_prompts[1]
     assert session.current.verification.status == VerificationStatus.DONE
     assert session.current.verification.evidence == "tests passed"
     assert "Retrying: verification is required before completion." in messages
@@ -1035,9 +813,7 @@ def test_agent_run_retries_format_error_in_recent_tool_results(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["text"] == "done"
-    assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
-    assert "<Agent_Feedback>" in agent.model_client.user_prompts[1]
-    assert "<Recent_Tool_Call_Results>\n(empty)\n</Recent_Tool_Call_Results>" in agent.model_client.user_prompts[1]
+    assert len(agent.model_client.user_prompts) == 2
     assert messages == ["Retrying: model returned invalid output: plain answer", "done"]
 
 
@@ -1061,7 +837,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
     response = agent.run("answer")
 
     assert response["actions"][-1]["text"] == "done"
-    assert "unexpected top-level keys: message_to_user" in agent.model_client.user_prompts[1]
+    assert len(agent.model_client.user_prompts) == 2
 
 
 def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):

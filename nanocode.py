@@ -142,11 +142,8 @@ class ToolCallEvent(ConversationItem):
     intent: str = ""
     executed: str = ""
     outcome: str = ""
-    summary: str = ""
     result_file: str = ""
     result_file_lines: int = 0
-    key_details: list[str] = field(default_factory=list)
-    needs_raw_read: bool = False
 
     @override
     def format(self, indent: str = "") -> str:
@@ -155,15 +152,7 @@ class ToolCallEvent(ConversationItem):
             "  <intent>" + self.intent + "</intent>",
             "  <executed>" + self.executed + "</executed>",
             "  <outcome>" + self.outcome + "</outcome>",
-            "  <summary>" + self.summary + "</summary>",
         ]
-        if self.key_details:
-            lines.append("  <key_details>")
-            for detail in self.key_details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </key_details>")
-        if self.needs_raw_read:
-            lines.append("  <needs_raw_read>true</needs_raw_read>")
         if self.result_file:
             lines.append("  <result_file>" + self.result_file + "</result_file>")
             lines.append("  <result_file_lines>" + str(self.result_file_lines) + "</result_file_lines>")
@@ -2024,62 +2013,34 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 #######################
 
-MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a small coding agent.
+MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
-Do:
-- One Goal.
-- Smallest correct change.
-- Tool-check facts.
-- Stop after dependent tool results.
-- Verify after edits.
-- Output action frames only.
-- Output exactly one known action every turn.
+Steps:
 
-Order:
-1. tool_summary for fresh tool results.
-2. goal if needed.
-3. known always.
-4. plan if needed.
-5. tool / verify / message.
-
-Rules:
-- Fresh tool results: summarize all first; each tool_summary needs known_facts.
-- Goal: keep unless empty, done, wrong, or user changed task.
-- Known: items=[] means no new durable facts; no guesses/logs/raw text/temp facts.
-- Plan: only non-trivial; 2-5 steps; max one doing; include verify after edits.
-- Tools: small independent batches only; prefer Search/ListDir -> Read -> Edit; no assumption edits; intention says what question is answered.
-- Verify: narrowest check; failed = update plan; impossible = blocked with evidence; do not finish after edits unless passed/blocked.
+1. If the goal is not set, determine the current goal first.
+2. Extract facts from the latest tool call results.
+3. Create or revise the plan based on facts and the goal.
+4. Verify before marking the goal as achieved.
+5. Report progress to the user with message when appropriate.
 
 Available tools:
 { __tools__ }
 
-Input sections:
-- Environment
-- Conversation_History
-- Known
-- Goal
-- Plan
-- Verification_State
-- Agent_Feedback
-- Recent_Tool_Call_Results
-- Latest_User_Input
+Rules:
 
-Output format:
-- Each frame contains exactly one JSON object.
-- Each frame ends with only __END_ACTION__.
-- No arrays, wrappers, null fields, markdown, prose, XML, or native tool calls.
+1. Call at most 10 tools in one turn.
+2. Prefer batched Search/Read when useful.
 
-Action schemas:
-{"type": "message", "text": "string"}
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
-{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false}
-{"type": "goal", "text": "string"}
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
-{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
+Output format (Strict)
 
-Exception:
-- known.items may be [].
+Output multiple JSON objects separated by __END_ACTION__:
+
+{"type": "message", "text": "string"} __END_ACTION__
+{"type": "goal", "text": "string"} __END_ACTION__
+{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
+{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
+{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2592,7 +2553,6 @@ class ToolCallRunner:
                     intent=call.intention,
                     executed=call.executed,
                     outcome=outcome,
-                    summary="",
                     result_file=result_file,
                     result_file_lines=result_file_lines,
                 )
@@ -2707,7 +2667,6 @@ class AgentStateUpdater:
         self._apply_known(response)
         self._apply_verification(response)
         self._bind_verification_goal()
-        self._apply_tool_call_summaries(response)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
@@ -2717,9 +2676,6 @@ class AgentStateUpdater:
 
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
-
-    def apply_tool_call_summaries(self, response: Json) -> None:
-        self._apply_tool_call_summaries(response, apply_known_facts=False)
 
     def _format_state_report(
         self,
@@ -2792,81 +2748,6 @@ class AgentStateUpdater:
     def _compact(self, text: str, limit: int = 140) -> str:
         text = " ".join(text.split())
         return text if len(text) <= limit else text[: limit - 3] + "..."
-
-    def _apply_tool_call_summaries(self, response: Json, *, apply_known_facts: bool = True) -> None:
-        summaries = [action for action in self._actions(response) if _json_str(action.get("type")) == "tool_summary"]
-        if not summaries:
-            return
-        pending = [event for event in self.tool_runner.latest_events if not event.summary]
-        for raw_summary in summaries:
-            summary = _json_dict(raw_summary)
-            if not summary:
-                continue
-            event = self._find_summary_event(summary, pending)
-            if event is None:
-                continue
-            event.summary = self._format_tool_call_summary(summary)
-            event.key_details = self._key_details_from_summary(summary)
-            event.needs_raw_read = summary.get("needs_raw_read") is True
-            if apply_known_facts:
-                self._apply_known_facts_from_summary(summary)
-            if event in pending:
-                pending.remove(event)
-
-    def _find_summary_event(self, summary: Json, pending: list[ToolCallEvent]) -> ToolCallEvent | None:
-        result_file = _json_str(summary.get("result_file"))
-        if result_file:
-            for event in self.tool_runner.latest_events:
-                if event.result_file == result_file:
-                    return event
-        tool = _json_str(summary.get("tool"))
-        intention = _json_str(summary.get("intention"))
-        if tool or intention:
-            for event in pending:
-                if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
-                    return event
-            for event in self.tool_runner.latest_events:
-                if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
-                    return event
-        return pending[0] if pending else None
-
-    def _format_tool_call_summary(self, summary: Json) -> str:
-        parts = []
-        outcome = _json_str(summary.get("outcome"))
-        text = _json_str(summary.get("summary"))
-        if outcome:
-            parts.append("outcome: " + outcome)
-        if text:
-            parts.append("summary: " + text)
-        if summary.get("needs_raw_read") is True:
-            parts.append("needs_raw_read: true")
-        return "\n".join(parts)
-
-    def _key_details_from_summary(self, summary: Json) -> list[str]:
-        details = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
-        return [detail for detail in details if detail]
-
-    def _apply_known_facts_from_summary(self, summary: Json) -> None:
-        added = False
-        for raw in _json_list(summary.get("known_facts")):
-            item = self._known_item_from_json(raw)
-            if item is not None:
-                self._add_known_item(item)
-                added = True
-        if added:
-            return
-        fallback = self._fallback_known_item_from_summary(summary)
-        if fallback is not None:
-            self._add_known_item(fallback)
-
-    def _fallback_known_item_from_summary(self, summary: Json) -> KnownItem | None:
-        text = _json_str(summary.get("summary"))
-        if not text or summary.get("needs_raw_read") is True:
-            return None
-        details = self._key_details_from_summary(summary)
-        if not details:
-            return None
-        return KnownItem(fact=self._compact(text, limit=180), details=details)
 
     def _apply_goal(self, response: Json) -> bool:
         changed = False
@@ -3193,7 +3074,6 @@ class Agent:
         if invalid_response is not None:
             return invalid_response
         self.latest_agent_feedback = ""
-        self.state_updater.apply_tool_call_summaries(response)
         return response
 
     def apply_response(self, response: Json) -> None:
@@ -3264,50 +3144,6 @@ class Agent:
 
     def _format_continuation_hint(self) -> str:
         return "No tool actions and no message action. Continue with the next useful action."
-
-    def _missing_tool_summaries(self) -> list[ToolCallEvent]:
-        return [event for event in self.tool_runner.latest_events if not event.summary]
-
-    def _format_tool_summary_gate(self, tool_calls: list[JsonValue]) -> str:
-        missing = self._missing_tool_summaries()
-        needs_read = []
-        for event in self.tool_runner.latest_events:
-            if not event.summary:
-                continue
-            is_reading_result_file = self._has_read_result_file_call(tool_calls, event.result_file)
-            if event.needs_raw_read:
-                if not is_reading_result_file:
-                    needs_read.append(event)
-                continue
-        if not missing and not needs_read:
-            return ""
-
-        lines = ["Tool_Summary_Gate: summarize latest tool results before continuing.", "Raw tool results are visible only once."]
-        if missing:
-            lines.append("Missing summaries:")
-        for event in missing:
-            lines.append("- " + event.executed + " -> " + event.result_file)
-        if needs_read:
-            lines.append("Needs raw read:")
-        for event in needs_read:
-            lines.append("- Read(" + event.result_file + ") before continuing")
-        lines.append(
-            "Next_Action: return tool_summary actions for missing results, read result_file with a tool action only when it is the cheapest accurate fallback, or continue with source tools such as Search/ListDir."
-        )
-        return "\n".join(lines)
-
-    def _has_read_result_file_call(self, tool_calls: list[JsonValue], result_file: str) -> bool:
-        if not result_file:
-            return False
-        expected = self.session.resolve_path(result_file)
-        for raw_call in tool_calls:
-            call = _json_dict(raw_call)
-            if _json_str(call.get("name")) != ReadTool.name():
-                continue
-            args = [_json_str(arg) or "" for arg in _json_list(call.get("args"))]
-            if args and self.session.resolve_path(args[0]) == expected:
-                return True
-        return False
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
