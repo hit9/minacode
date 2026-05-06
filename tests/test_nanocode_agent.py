@@ -1,10 +1,10 @@
 import json
 
 import nanocode
-from nanocode import Agent, CurrentContextItem, KnownItem, ParsedToolCall, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
+from nanocode import Agent, CurrentContextItem, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
 
 
-def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path):
+def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -31,9 +31,9 @@ def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path
     assert "alpha" in (tmp_path / event.result_file).read_text(encoding="utf-8")
 
     prompt = agent.build_user_prompt()
-    assert "Latest_Tool_Call_Results" in prompt
+    assert "Recent_Tool_Call_Results" in prompt
     assert "alpha" in prompt
-    assert "alpha" not in agent.build_user_prompt()
+    assert "alpha" in agent.build_user_prompt()
 
     agent.apply_response(
         {
@@ -57,6 +57,31 @@ def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path
     assert "sample.txt:1 alpha" in event.format()
     assert "<key_details>\n    <detail>sample.txt:1 alpha</detail>\n  </key_details>" in event.format()
     assert "alpha\n  </content>" not in event.format()
+
+
+def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks():
+    def execution(name: str, output: str) -> ToolCallExecution:
+        return ToolCallExecution(
+            call=ParsedToolCall(name="Read", intention="read " + name, args=[name]),
+            outcome="success",
+            output=output,
+            result_file=name + ".log",
+            result_file_lines=1,
+        )
+
+    keep_buffer = RecentToolCallResultBuffer(older_char_budget=1000)
+    keep_buffer.record([execution("first", "first-output-token")])
+    keep_buffer.record([execution("second", "second-output-token")])
+    keep_prompt = keep_buffer.format()
+    assert "second-output-token" in keep_prompt.split("</last_batch>", 1)[0]
+    assert "first-output-token" in keep_prompt.split("<older_buffer", 1)[1]
+
+    trim_buffer = RecentToolCallResultBuffer(older_char_budget=1)
+    trim_buffer.record([execution("first", "first-output-token")])
+    trim_buffer.record([execution("second", "second-output-token")])
+    trim_prompt = trim_buffer.format()
+    assert "second-output-token" in trim_prompt
+    assert "first-output-token" not in trim_prompt
 
 
 def test_agent_user_prompt_includes_blackboard_keys_only(tmp_path):
@@ -730,7 +755,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
-    assert agent.latest_tool_call_results == ""
+    assert "alpha" in agent.recent_tool_call_results.format()
     assert session.current.user_input == "read sample"
     assert session.current.goal_reached is True
 
@@ -761,7 +786,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     assert "alpha" in agent.model_client.user_prompts[1]
     assert "alpha" in agent.model_client.user_prompts[2]
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[2]
-    assert agent.latest_tool_call_results == ""
+    assert "alpha" in agent.recent_tool_call_results.format()
 
 
 def test_agent_run_does_not_block_when_tool_summary_is_missing(tmp_path):
@@ -974,7 +999,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert "Retrying: verification is required before completion." in messages
 
 
-def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
+def test_agent_run_retries_format_error_in_recent_tool_results(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -997,7 +1022,7 @@ def test_agent_run_retries_format_error_in_latest_tool_results(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert "Invalid model output: plain answer" in agent.model_client.user_prompts[1]
     assert "<Agent_Feedback>" in agent.model_client.user_prompts[1]
-    assert "<Latest_Tool_Call_Results>\n(empty)\n</Latest_Tool_Call_Results>" in agent.model_client.user_prompts[1]
+    assert "<Recent_Tool_Call_Results>\n(empty)\n</Recent_Tool_Call_Results>" in agent.model_client.user_prompts[1]
     assert messages == ["Retrying: model returned invalid output: plain answer", "done"]
 
 

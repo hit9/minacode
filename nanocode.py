@@ -578,6 +578,77 @@ class ToolCallExecution:
     log_written: bool = True
 
 
+@final
+class RecentToolCallResultBuffer:
+    DEFAULT_OLDER_CHAR_BUDGET: ClassVar[int] = 20_000
+
+    def __init__(self, older_char_budget: int = DEFAULT_OLDER_CHAR_BUDGET):
+        self.older_char_budget = max(0, older_char_budget)
+        self.last_batch: list[str] = []
+        self.older_blocks: list[str] = []
+
+    def clear(self) -> None:
+        self.last_batch = []
+        self.older_blocks = []
+
+    def record(self, executions: list[ToolCallExecution]) -> None:
+        if self.last_batch:
+            self.older_blocks = self.last_batch + self.older_blocks
+            self._trim_older_blocks()
+        self.last_batch = self.format_executions_as_blocks(executions)
+
+    def format(self) -> str:
+        if not self.last_batch and not self.older_blocks:
+            return "(empty)"
+        return "\n".join(
+            [
+                "<last_batch>",
+                self._join_blocks(self.last_batch) or "(empty)",
+                "</last_batch>",
+                '<older_buffer char_budget="' + str(self.older_char_budget) + '" retained_chars="' + str(self._blocks_chars(self.older_blocks)) + '">',
+                self._join_blocks(self.older_blocks) or "(empty)",
+                "</older_buffer>",
+            ]
+        )
+
+    @classmethod
+    def format_executions(cls, executions: list[ToolCallExecution]) -> str:
+        return cls._join_blocks(cls.format_executions_as_blocks(executions)) or "(empty)"
+
+    @classmethod
+    def format_executions_as_blocks(cls, executions: list[ToolCallExecution]) -> list[str]:
+        return [cls._format_execution(execution) for execution in executions]
+
+    @classmethod
+    def _format_execution(cls, execution: ToolCallExecution) -> str:
+        return "\n".join(
+            [
+                "<Recent_Tool_Call_Result>",
+                "  <tool>" + execution.call.name + "</tool>",
+                "  <intention>" + execution.call.intention + "</intention>",
+                "  <executed>" + execution.call.executed + "</executed>",
+                "  <outcome>" + execution.outcome + "</outcome>",
+                "  <result_file>" + execution.result_file + "</result_file>",
+                "  <raw_result>",
+                execution.output,
+                "  </raw_result>",
+                "</Recent_Tool_Call_Result>",
+            ]
+        )
+
+    def _trim_older_blocks(self) -> None:
+        while self.older_blocks and self._blocks_chars(self.older_blocks) > self.older_char_budget:
+            self.older_blocks.pop()
+
+    @staticmethod
+    def _join_blocks(blocks: list[str]) -> str:
+        return "\n\n".join(blocks)
+
+    @classmethod
+    def _blocks_chars(cls, blocks: list[str]) -> int:
+        return len(cls._join_blocks(blocks))
+
+
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
@@ -2038,7 +2109,7 @@ Tool rules:
 - Every tool action intention must answer: what question will this tool result settle?
 
 Tool result rules:
-- Latest_Tool_Call_Results is the only fresh raw result.
+- Recent_Tool_Call_Results contains the full previous tool batch plus a bounded older buffer.
 - Summarize every fresh tool result before using it further.
 - Preserve exact evidence in key_evidence when paths, lines, errors, or decisions matter later.
 - If raw detail is missing, rerun a targeted tool or read result_file only when cheaper.
@@ -2063,7 +2134,7 @@ Input sections:
 - Plan
 - Verification_State
 - Agent_Feedback
-- Latest_Tool_Call_Results
+- Recent_Tool_Call_Results
 - Latest_User_Input
 
 Output format:
@@ -2156,9 +2227,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {agent_feedback}
 </Agent_Feedback>
 
-<Latest_Tool_Call_Results>
-{latest_tool_call_results}
-</Latest_Tool_Call_Results>
+<Recent_Tool_Call_Results>
+{recent_tool_call_results}
+</Recent_Tool_Call_Results>
 
 <Latest_User_Input>
 {latest_user_input}
@@ -2210,7 +2281,7 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
 
-    def user_prompt(self, latest_tool_call_results: str, agent_feedback: str) -> str:
+    def user_prompt(self, recent_tool_call_results: str, agent_feedback: str) -> str:
         current = self.session.current
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
@@ -2222,7 +2293,7 @@ class PromptBuilder:
             plan=self._format_plan(),
             verification_state=current.verification.format(),
             agent_feedback=agent_feedback or "(empty)",
-            latest_tool_call_results=latest_tool_call_results or "(empty)",
+            recent_tool_call_results=recent_tool_call_results or "(empty)",
             latest_user_input=current.user_input or "(empty)",
         ).strip()
 
@@ -2663,7 +2734,7 @@ class ToolCallRunner:
 
         self.latest_events = events
         self.latest_executions = executions
-        return self._format_latest_tool_call_results(executions)
+        return RecentToolCallResultBuffer.format_executions(executions)
 
     def format_latest_report(self) -> str:
         if not self.latest_executions:
@@ -2739,30 +2810,6 @@ class ToolCallRunner:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         return os.path.relpath(filepath, self.session.cwd), len(content.splitlines())
-
-    def _format_latest_tool_call_results(self, executions: list[ToolCallExecution]) -> str:
-        if not executions:
-            return "(empty)"
-        blocks = []
-        for execution in executions:
-            blocks.append(
-                "\n".join(
-                    [
-                        "<Latest_Tool_Call_Result>",
-                        "  <tool>" + execution.call.name + "</tool>",
-                        "  <intention>" + execution.call.intention + "</intention>",
-                        "  <executed>" + execution.call.executed + "</executed>",
-                        "  <outcome>" + execution.outcome + "</outcome>",
-                        "  <result_file>" + execution.result_file + "</result_file>",
-                        "  <raw_result>",
-                        execution.output,
-                        "  </raw_result>",
-                        "</Latest_Tool_Call_Result>",
-                    ]
-                )
-            )
-        return "\n\n".join(blocks)
-
 
 ############################
 # AgentStateUpdater
@@ -3138,7 +3185,7 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session, self.tool_runner)
         self.compactor = ConversationCompactor(session, self.model_client)
-        self.latest_tool_call_results = ""
+        self.recent_tool_call_results = RecentToolCallResultBuffer()
         self.latest_agent_feedback = ""
 
     @property
@@ -3148,10 +3195,9 @@ class Agent:
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
-    def build_user_prompt(self, *, consume_latest_tool_results: bool = True) -> str:
-        prompt = self.prompt_builder.user_prompt(self.latest_tool_call_results, self.latest_agent_feedback)
-        if consume_latest_tool_results:
-            self.latest_tool_call_results = ""
+    def build_user_prompt(self, *, consume_agent_feedback: bool = True) -> str:
+        prompt = self.prompt_builder.user_prompt(self.recent_tool_call_results.format(), self.latest_agent_feedback)
+        if consume_agent_feedback:
             self.latest_agent_feedback = ""
         return prompt
 
@@ -3174,7 +3220,7 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> Json:
-        self.latest_tool_call_results = ""
+        self.recent_tool_call_results.clear()
         self.latest_agent_feedback = ""
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
@@ -3281,13 +3327,12 @@ class Agent:
         return headline
 
     def step(self, *, on_action: ActionCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main", on_action=on_action)
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_agent_feedback=False), activity="main", on_action=on_action)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
         if invalid_response is not None:
             return invalid_response
-        self.latest_tool_call_results = ""
         self.latest_agent_feedback = ""
         self.state_updater.apply_tool_call_summaries(response)
         return response
@@ -3343,8 +3388,9 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
-        self.latest_tool_call_results = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        return self.latest_tool_call_results
+        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self.recent_tool_call_results.record(self.tool_runner.latest_executions)
+        return self.recent_tool_call_results.format()
 
     def _format_verification_gate(self) -> str:
         verification = self.session.current.verification
