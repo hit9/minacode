@@ -1996,6 +1996,7 @@ Input:
 - Conversation_History: summarized recent events
 - Known: stable facts
 - Current_Context: task-local facts that may expire
+- Blackboard_Keys: existing Blackboard keys in this session
 - Goal: current objective
 - Plan: ordered plan
 - Agent_Feedback: latest retry/gate warning for you; follow it before continuing
@@ -2056,6 +2057,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 ----------- Current_Context Begin ------
 {current_context}
 -------- Current_Context End -----------
+
+----------- Blackboard_Keys Begin ------
+{blackboard_keys}
+-------- Blackboard_Keys End -----------
 
 ----------- Goal Begin ------
 {goal}
@@ -2134,6 +2139,7 @@ class PromptBuilder:
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
             current_context=self._format_current_context(),
+            blackboard_keys=self._format_blackboard_keys(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2167,6 +2173,11 @@ class PromptBuilder:
         if not self.session.current.current_context:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.current_context)
+
+    def _format_blackboard_keys(self) -> str:
+        if not self.session.blackboard:
+            return "(empty)"
+        return "\n".join("- " + key for key in self.session.blackboard)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:

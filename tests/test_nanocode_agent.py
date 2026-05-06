@@ -59,6 +59,17 @@ def test_agent_tool_results_go_to_latest_area_and_logs_not_conversation(tmp_path
     assert "alpha\n  </content>" not in event.format()
 
 
+def test_agent_user_prompt_includes_blackboard_keys_only(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.blackboard = {"investigation": "inspect parser implementation", "next": "run focused tests"}
+
+    prompt = Agent(session).build_user_prompt()
+
+    assert "----------- Blackboard_Keys Begin ------\n- investigation\n- next\n-------- Blackboard_Keys End -----------" in prompt
+    assert "inspect parser implementation" not in prompt
+    assert "run focused tests" not in prompt
+
+
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
     captured = {}
 
