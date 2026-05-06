@@ -362,11 +362,7 @@ class RangeFingerprintStore:
         )
 
     def _find_matches(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> list[tuple[int, int]]:
-        contents = [
-            content
-            for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint)
-            if content
-        ]
+        contents = [content for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint) if content]
 
         matches = []
         for content in contents:
@@ -440,12 +436,8 @@ class Session:
     shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
     compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
     max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
-    prompt_price_per_1m_tokens: float = field(
-        default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0"))
-    )
-    completion_price_per_1m_tokens: float = field(
-        default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0"))
-    )
+    prompt_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0")))
+    completion_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0")))
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -658,6 +650,13 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     return start, end
 
 
+def _parse_line_range_token(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", value)
+    if match is None:
+        raise ToolCallError("invalid range: should be start-end")
+    return _parse_line_range(match.group(1), match.group(2))
+
+
 def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
     lines = content.splitlines(keepends=True)
     if content and has_following_line and not content.endswith("\n"):
@@ -694,27 +693,36 @@ class ReadTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Read file lines and cache fingerprints for range edits.",
-            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs to read multiple ranges.",
+            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs or start-end tokens.",
             "Returns at most 1000 lines per range; use Search/LineCount before broad reads.",
             "For ReplaceRange, read an exact or covering range first; empty inserts require an exact empty-range Read.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Read(filepath[, start, end[, start, end...]]) -> ReadToolResult<fingerprint, content>"
+        return "Read(filepath[, start, end... | start-end...]) -> ReadToolResult<fingerprint, content>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example: ["code.py", "0", "120"]', 'Example: ["code.py", "0", "40", "200", "260"]', 'Example: ["code.py"]']
+        return [
+            'Example: ["code.py", "0", "120"]',
+            'Example: ["code.py", "0", "40", "200", "260"]',
+            'Example: ["code.py", "0-40", "200-260"]',
+            'Example: ["code.py"]',
+        ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) == 0 or (len(args) != 1 and len(args) % 2 == 0):
+        if len(args) == 0:
             raise ToolCallError("requires filepath optionally followed by start/end pairs")
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
+        elif all(re.fullmatch(r"\s*\d+\s*-\s*\d+\s*", arg) for arg in args[1:]):
+            ranges = [_parse_line_range_token(arg) for arg in args[1:]]
         else:
+            if len(args) % 2 == 0:
+                raise ToolCallError("requires filepath optionally followed by start/end pairs")
             ranges = [_parse_line_range(args[index], args[index + 1]) for index in range(1, len(args), 2)]
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
@@ -2100,60 +2108,58 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 # Prompt
 
 #######################
+
 MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a small coding agent.
 
-Mission:
-- Maintain one clear Goal.
+Rules:
+- Output action frames only.
+- Keep one Goal.
 - Make the smallest correct change.
-- Never guess when a tool can verify.
-- Stop after each dependent discovery step.
-- Finish only after verification.
+- Use tools instead of guessing.
+- Stop after dependent tool results.
+- Verify after edits before finishing.
+- Every turn outputs exactly one known action.
 
-Goal rules:
-- Keep the current Goal unless it is done, clearly wrong, or the user changed it.
-- If Goal is empty or stale, output a goal action before tool actions.
-- If the user changed the task, replace Goal, Plan, and verification state.
+Order:
+1. Summarize fresh tool results.
+2. Set/keep Goal.
+3. Output known.
+4. Update Plan if needed.
+5. Tool, verify, or message.
 
-Plan rules:
-- Use a Plan only for non-trivial tasks.
-- Keep Plan short: 2-5 steps.
-- At most one step is doing.
-- Always include a verification step for edits or behavior changes.
-- Replace the full Plan when its structure changes; patch only status/evidence on existing items.
+Fresh tool results:
+- Output tool_summary before anything else.
+- One tool_summary per fresh result.
+- Each tool_summary includes known_facts: null or list.
 
-Memory rules:
-- Known = small stable facts useful later.
-- After tool results, Known review is mandatory: set known_facts or null, or the step is rejected.
-- known_facts automatically update Known; use known actions only for non-tool facts.
-- Use Blackboard for large notes, raw excerpts, or content you may need to read back later.
+Known:
+- known.items=[] means no new durable facts.
+- Store only small durable facts.
+- Do not store guesses, logs, raw text, or temporary observations.
 
-Tool rules:
-- You MUST call tools by outputting tool actions.
-- Do NOT use native tool-call syntax, XML, markdown, or prose outside action frames.
-- Tool batches must be small.
-- Use multiple tools in one turn only when they are independent.
-- If a tool result is needed to choose the next action, stop after that tool batch.
-- Prefer Search/ListDir before Read when locating code.
-- Read returns at most 1000 lines per range; pass repeated start/end pairs for multiple ranges.
-- Prefer Read before Edit.
+Goal:
+- Keep unless empty, done, wrong, or changed by user.
+- If user changed task, replace Goal, Plan, verification state.
+
+Plan:
+- Only for non-trivial tasks.
+- 2-5 steps, max one doing.
+- Include verification after edits.
+- replace = structure; patch = status/evidence.
+
+Tools:
+- Tool actions only.
+- Small independent batches only.
+- Prefer Search/ListDir -> Read -> Edit.
 - Prefer specific tools over Bash.
-- Use Bash only when no specific tool fits.
-- Do not edit from assumptions.
-- If an edit fingerprint fails, Read the exact target range and retry once.
-- Every tool action intention must answer: what question will this tool result settle?
+- Never edit from assumptions.
+- intention says what question the tool answers.
 
-Tool result rules:
-- Recent_Tool_Call_Results contains the full previous tool batch plus a bounded older buffer.
-- Before any new tool/message after tool results, emit tool_summary for each fresh result.
-- Put paths, lines, errors, and decisions in key_evidence.
-- Every tool_summary must set known_facts; omitted known_facts is rejected.
-- If raw detail is missing, rerun a targeted tool or read result_file only when cheaper.
-
-Verification rules:
-- Verification belongs to the current Goal only.
-- For code edits, verify with the narrowest meaningful test, command, typecheck, or inspection.
-- If verification fails, update Plan and continue.
-- If verification cannot be run, explain why and mark blocked.
+Verify:
+- Use narrowest meaningful check.
+- Failed: update Plan and continue.
+- Impossible: verify blocked with evidence.
+- Do not finish after edits unless passed/blocked.
 
 Available tools:
 { __tools__ }
@@ -2171,54 +2177,20 @@ Input sections:
 - Latest_User_Input
 
 Output format:
-- Output action frames only.
 - Each frame contains exactly one JSON object.
-- Each frame ends with a line containing only __END_ACTION__.
-- Do not output arrays.
-- Do not wrap actions in {"actions": [...]}.
-- Do not output null fields.
-- Do not output markdown, code fences, prose, XML, or native tool calls.
+- IMPORTANT: EACH FRAME MUST ENDS WITH __END_ACTION__.
+- No arrays, wrappers, null fields, markdown, prose, XML, or native tool calls.
 
 Action schemas:
-{"type": "message", "text": "string"}
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
-{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false}
-{"type": "goal", "text": "string"}
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
-{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
+{"type": "message", "text": "string"} __END_ACTION__.
+{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__.
+{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "known_facts": null | [{"fact": "string", "details": null | ["string"]}], "result_file": null | "string", "needs_raw_read": true | false} __END_ACTION__.
+{"type": "goal", "text": "string"} __END_ACTION__.
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__.
+{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__.
+{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__.
 
-Main loop (most important):
-1. Goal: decide the current Goal from Latest_User_Input and existing Goal.
-2. Fresh results: if present, tool_summary + known_facts/null first, or rejected.
-3. Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh facts.
-4. Plan: revise Plan from facts, not guesses; keep one next step doing.
-5. Next: run the next necessary independent tool batch, verify, or answer.
-6. Never skip verification after edits.
-
-Example:
-{
-  "type": "goal",
-  "text": "Fix the failing parser test with the smallest correct change."
-}
-__END_ACTION__
-{
-  "type": "plan",
-  "mode": "replace",
-  "items": [
-    {"op": "add", "id": "p1", "after": null, "text": "Locate the failing parser code and test.", "status": "doing", "evidence": null},
-    {"op": "add", "id": "p2", "after": "p1", "text": "Apply the smallest fix.", "status": "todo", "evidence": null},
-    {"op": "add", "id": "p3", "after": "p2", "text": "Run the relevant parser test.", "status": "todo", "evidence": null}
-  ]
-}
-__END_ACTION__
-{
-  "type": "tool",
-  "name": "Search",
-  "intention": "Find the parser implementation and the failing test referenced by the user.",
-  "args": ["parser failing test"]
-}
-__END_ACTION__
+Exception: known.items may be [].
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2608,11 +2580,7 @@ class ModelClient:
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": "Invalid model output: "
-            + reason
-            + ". Return action frames only. Bad output: "
-            + _shorten(content)
-            + guidance,
+            "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
         }
 
     def _looks_like_native_tool_call(self, content: str) -> bool:
@@ -2832,6 +2800,7 @@ class ToolCallRunner:
             f.write(content)
         return os.path.relpath(filepath, self.session.cwd), len(content.splitlines())
 
+
 ############################
 # AgentStateUpdater
 ############################
@@ -2845,7 +2814,6 @@ class AgentStateUpdater:
         self.session = session
         self.tool_runner = tool_runner
         self.latest_report = ""
-        self.latest_known_changed = False
 
     def apply(self, response: Json) -> None:
         before_goal = self.session.current.goal
@@ -2861,7 +2829,6 @@ class AgentStateUpdater:
         self._apply_verification(response)
         self._bind_verification_goal()
         self._apply_tool_call_summaries(response)
-        self.latest_known_changed = [item.format() for item in self.session.current.known] != before_known
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
@@ -3276,15 +3243,6 @@ class Agent:
             self.apply_response(response)
             if on_message is not None and self.state_updater.latest_report:
                 on_message(self.state_updater.latest_report)
-            known_gate = self._format_known_gate(actions)
-            if known_gate:
-                self.latest_agent_feedback = known_gate
-                self._report_gate(
-                    on_message,
-                    "Retrying: Known was not reviewed after tool results.",
-                    self._compact_gate_report(known_gate),
-                )
-                continue
             for message in messages:
                 self.session.append_conversation(AssistantMessage(content=message))
                 if on_message is not None:
@@ -3427,35 +3385,6 @@ class Agent:
 
     def _format_continuation_hint(self) -> str:
         return "No tool actions and no message action. Continue with the next useful action."
-
-    def _format_known_gate(self, actions: list[Json]) -> str:
-        summaries = [action for action in actions if _json_str(action.get("type")) == "tool_summary"]
-        if self.state_updater.latest_known_changed:
-            return ""
-        if summaries:
-            undecided = [summary for summary in summaries if "known_facts" not in summary]
-            if not undecided:
-                return ""
-            return "\n".join(
-                [
-                    "Known_Gate: tool_summary omitted known_facts.",
-                    "Known review is mandatory after tool results.",
-                    "Next_Action: set known_facts to reusable facts or null.",
-                ]
-            )
-        tool_calls = self._tool_calls_from_actions(actions)
-        missing = [event for event in self._missing_tool_summaries() if not self._has_read_result_file_call(tool_calls, event.result_file)]
-        if not missing:
-            return ""
-        lines = [
-            "Known_Gate: tool results need Known review.",
-            "Emit tool_summary for each fresh result with known_facts or null.",
-            "Missing summaries:",
-        ]
-        for event in missing:
-            lines.append("- " + event.executed + " -> " + event.result_file)
-        lines.append("Next_Action: tool_summary + known_facts/null first.")
-        return "\n".join(lines)
 
     def _missing_tool_summaries(self) -> list[ToolCallEvent]:
         return [event for event in self.tool_runner.latest_events if not event.summary]

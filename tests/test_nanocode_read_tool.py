@@ -47,6 +47,24 @@ def test_read_tool_reads_multiple_line_ranges(tmp_path):
     assert len(session.range_fingerprints) == 2
 
 
+def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, ["sample.txt", "1-2", "3-5"])
+    result = tool.call()
+
+    assert tool.ranges == [(1, 2), (3, 5)]
+    assert "1:2, 3:5" in tool.display()
+    assert "<range>1:2</range>" in result
+    assert "<range>3:5</range>" in result
+    assert "one\n" in result
+    assert "three\nfour\n" in result
+    assert "zero\n" not in result
+    assert "two\n" not in result
+
+
 def test_read_tool_reads_to_eof_when_end_is_zero(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")

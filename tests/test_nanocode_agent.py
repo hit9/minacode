@@ -505,25 +505,21 @@ def test_agent_keeps_known_items_structured_in_current_and_prompt(tmp_path):
 def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_path):
     prompt = Agent(Session(cwd=str(tmp_path))).build_system_prompt()
 
-    assert "Mission:" in prompt
+    assert "Rules:" in prompt
     assert "{ __tools__ }" not in prompt
     assert "- Read(filepath" in prompt
     assert "Use one OR search for related symbols: A|B|C or 3+ plain args" in prompt
     assert "Options: path=FILE, context=N|N, glob=*.py or bare glob." in prompt
-    assert "After tool results, Known review is mandatory: set known_facts or null, or the step is rejected." in prompt
-    assert "known_facts automatically update Known; use known actions only for non-tool facts." in prompt
-    assert "Before any new tool/message after tool results, emit tool_summary for each fresh result." in prompt
-    assert "Every tool_summary must set known_facts; omitted known_facts is rejected." in prompt
+    assert "Every turn outputs exactly one known action." in prompt
+    assert "Output tool_summary before anything else." in prompt
+    assert "Each tool_summary includes known_facts: null or list." in prompt
+    assert "known.items=[] means no new durable facts." in prompt
     assert '"known_facts": null | [{"fact": "string", "details": null | ["string"]}]' in prompt
-    assert "Main loop (most important):" in prompt
-    assert "Goal: decide the current Goal from Latest_User_Input and existing Goal." in prompt
-    assert "Fresh results: if present, tool_summary + known_facts/null first, or rejected." in prompt
-    assert "Known: review Known, Blackboard_Keys, Agent_Feedback, and fresh facts." in prompt
-    assert "Plan: revise Plan from facts, not guesses; keep one next step doing." in prompt
-    assert "Next: run the next necessary independent tool batch, verify, or answer." in prompt
+    assert "Order:" in prompt
+    assert "Summarize fresh tool results." in prompt
+    assert "Set/keep Goal." in prompt
+    assert "Output known." in prompt
     assert "Temporary key-value stash for large notes, raw excerpts, and tool-result notes" in prompt
-    assert "Known = small stable facts useful later" in prompt
-    assert "Use Blackboard for large notes, raw excerpts, or content you may need to read back later" in prompt
     assert "Current_Context" not in prompt
     assert '{"type": "context"' not in prompt
 
@@ -768,7 +764,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     assert "alpha" in agent.recent_tool_call_results.format()
 
 
-def test_agent_run_reminds_when_tool_summary_does_not_update_known(tmp_path):
+def test_agent_run_does_not_gate_when_tool_summary_does_not_update_known(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -791,12 +787,6 @@ def test_agent_run_reminds_when_tool_summary_does_not_update_known(tmp_path):
                         {"type": "message", "text": "done too early"},
                     ],
                 },
-                {
-                    "actions": [
-                        {"type": "known", "items": [{"fact": "sample.txt was inspected.", "details": ["Read sample.txt."]}]},
-                        {"type": "message", "text": "done"},
-                    ],
-                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -810,14 +800,14 @@ def test_agent_run_reminds_when_tool_summary_does_not_update_known(tmp_path):
 
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert "Known_Gate: tool_summary omitted known_facts." in agent.model_client.user_prompts[2]
-    assert "Retrying: Known was not reviewed after tool results." in messages
-    assert "done too early" not in messages
-    assert session.current.known == [KnownItem(fact="sample.txt was inspected.", details=["Read sample.txt."])]
+    assert response["actions"][-1]["text"] == "done too early"
+    assert all("Known_Gate:" not in prompt for prompt in agent.model_client.user_prompts)
+    assert "Retrying: Known was not reviewed after tool results." not in messages
+    assert "done too early" in messages
+    assert session.current.known == []
 
 
-def test_agent_run_reminds_when_tool_results_are_not_reviewed_for_known(tmp_path):
+def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -826,12 +816,6 @@ def test_agent_run_reminds_when_tool_results_are_not_reviewed_for_known(tmp_path
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"actions": [{"type": "message", "text": "done too early"}]},
-                {
-                    "actions": [
-                        {"type": "known", "items": [{"fact": "sample.txt was read.", "details": ["Read(sample.txt)"]}]},
-                        {"type": "message", "text": "done"},
-                    ]
-                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -845,12 +829,11 @@ def test_agent_run_reminds_when_tool_results_are_not_reviewed_for_known(tmp_path
 
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert "Known_Gate: tool results need Known review." in agent.model_client.user_prompts[2]
-    assert "Retrying: Known was not reviewed after tool results." in messages
-    assert "done too early" not in messages
-    assert any("  Known\n" in message and "sample.txt was read." in message for message in messages)
-    assert len(agent.model_client.user_prompts) == 3
+    assert response["actions"][-1]["text"] == "done too early"
+    assert all("Known_Gate:" not in prompt for prompt in agent.model_client.user_prompts)
+    assert "Retrying: Known was not reviewed after tool results." not in messages
+    assert "done too early" in messages
+    assert len(agent.model_client.user_prompts) == 2
     assert agent.latest_tool_call_events[0].summary == ""
 
 
