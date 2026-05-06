@@ -91,6 +91,20 @@ def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
 
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
+    assert tool.regex is False
+
+
+def test_search_tool_keeps_pipe_or_as_fixed_multi_pattern(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["alpha|beta", "sample.txt"])
+    result = tool.call()
+
+    assert tool.regex is False
+    assert "* sample.txt:1: alpha" in result
+    assert "* sample.txt:2: beta" in result
 
 
 def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
@@ -253,6 +267,17 @@ def test_search_tool_rejects_invalid_regex(tmp_path):
 
     with pytest.raises(ToolCallError, match="invalid regex"):
         SearchTool.make(session, ["re:[", "."])
+
+
+def test_search_tool_auto_regex_for_regex_looking_pattern(tmp_path):
+    (tmp_path / "sample.py").write_text("class SearchTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class.*Tool", "sample.py"])
+    result = tool.call()
+
+    assert tool.regex is True
+    assert "* sample.py:1: class SearchTool:" in result
 
 
 def test_search_tool_rejects_multiline_regex(tmp_path):

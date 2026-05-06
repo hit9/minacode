@@ -838,25 +838,26 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Search files before Read; fixed text by default, prefix re: for line regex.",
-            "Use one OR search for related symbols: A|B|C or 3+ plain args; final existing path narrows scope.",
+            "Search files before Read; fixed text by default, auto-regex for regex-looking patterns, or prefix re:.",
+            "Use A|B|C or 3+ plain args for fixed-text OR; final existing path narrows scope.",
             "Options: path=string, context=N|N, glob=*.py or bare glob.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; option is path=FILE, context=N|N (0..30), or glob_pattern"
+        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; options: path, context=N|N (0..30), glob"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
             'Example args: ["TODO"]',
             'Example args: ["class Foo", "code.py"]',
-            'Example args: ["re:class .*Tool", "nanocode.py", "0"]',
+            'Example args: ["class .*Tool", "nanocode.py", "0"]',
             'Example args: ["TODO", ".", "*.py"]',
             'Example args: ["class Bar|def main", "nanocode.py", "6"]',
             'Example args: ["TODO", ".", "*.py", "8"]',
-            'Example args: ["re:def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
+            'Example args: ["def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
+            'Example args: ["re:^class .*Tool", "nanocode.py"]',
         ]
 
     @classmethod
@@ -869,8 +870,9 @@ class SearchTool(Tool):
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallError("pattern cannot be empty")
-        regex = raw_pattern.startswith("re:")
-        pattern = raw_pattern[3:] if regex else raw_pattern
+        explicit_regex = raw_pattern.startswith("re:")
+        pattern = raw_pattern[3:] if explicit_regex else raw_pattern
+        regex = explicit_regex or cls._looks_like_regex_pattern(pattern)
         if not pattern:
             raise ToolCallError("pattern cannot be empty")
         if regex and "\n" in pattern:
@@ -1092,6 +1094,10 @@ class SearchTool(Tool):
             lines.append("* truncated: true")
         lines.append("</SearchToolResult>")
         return "\n".join(lines)
+
+    @classmethod
+    def _looks_like_regex_pattern(cls, pattern: str) -> bool:
+        return any(marker in pattern for marker in ("\\", ".*", ".+", "\\b", "\\s", "\\d", "^", "$", "[", "]", "(", ")"))
 
     def _call_rg(self, rg: str) -> str:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
