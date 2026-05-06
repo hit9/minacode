@@ -73,7 +73,7 @@ def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_pat
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
-    tool = SearchTool.make(session, ["re:class .*Tool", "path=nanocode.py", "context=0"])
+    tool = SearchTool.make(session, ["class .*Tool", "path=nanocode.py", "context=0"])
     result = tool.call()
 
     assert tool.target_path == str(path)
@@ -91,10 +91,10 @@ def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
 
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
-    assert tool.regex is False
+    assert tool.regex is True
 
 
-def test_search_tool_keeps_pipe_or_as_fixed_multi_pattern(tmp_path):
+def test_search_tool_uses_pipe_as_regex_or(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -102,7 +102,7 @@ def test_search_tool_keeps_pipe_or_as_fixed_multi_pattern(tmp_path):
     tool = SearchTool.make(session, ["alpha|beta", "sample.txt"])
     result = tool.call()
 
-    assert tool.regex is False
+    assert tool.regex is True
     assert "* sample.txt:1: alpha" in result
     assert "* sample.txt:2: beta" in result
 
@@ -163,7 +163,7 @@ def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
-    result = SearchTool.make(session, [r"re:def __init__\([^)]*,[^)]*\)", "sample.py"]).call()
+    result = SearchTool.make(session, [r"def __init__\([^)]*,[^)]*\)", "sample.py"]).call()
 
     assert "* engine: python" in result
     assert "* sample.py:5:     def __init__(self, name):" in result
@@ -266,10 +266,10 @@ def test_search_tool_rejects_invalid_regex(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="invalid regex"):
-        SearchTool.make(session, ["re:[", "."])
+        SearchTool.make(session, ["[", "."])
 
 
-def test_search_tool_auto_regex_for_regex_looking_pattern(tmp_path):
+def test_search_tool_defaults_to_regex(tmp_path):
     (tmp_path / "sample.py").write_text("class SearchTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
@@ -284,7 +284,7 @@ def test_search_tool_rejects_multiline_regex(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="multiline regex is not supported"):
-        SearchTool.make(session, ["re:^@dataclass\nclass Session", "nanocode.py", "context=2"])
+        SearchTool.make(session, ["^@dataclass\nclass Session", "nanocode.py", "context=2"])
 
 
 def test_search_tool_rejects_invalid_context(tmp_path):

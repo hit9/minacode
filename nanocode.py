@@ -839,8 +839,7 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Search files before Read; fixed text by default, auto-regex for regex-looking patterns, or prefix re:.",
-            "Use A|B|C or 3+ plain args for fixed-text OR; final existing path narrows scope.",
+            "Search files with regex before Read; pass A|B|C or 3+ plain args for regex OR; final existing path narrows scope.",
             "Options: path=string, context=N|N, glob=*.py or bare glob.",
         ]
 
@@ -858,7 +857,6 @@ class SearchTool(Tool):
             'Example args: ["class Bar|def main", "nanocode.py", "6"]',
             'Example args: ["TODO", ".", "*.py", "8"]',
             'Example args: ["def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
-            'Example args: ["re:^class .*Tool", "nanocode.py"]',
         ]
 
     @classmethod
@@ -873,7 +871,7 @@ class SearchTool(Tool):
             raise ToolCallError("pattern cannot be empty")
         explicit_regex = raw_pattern.startswith("re:")
         pattern = raw_pattern[3:] if explicit_regex else raw_pattern
-        regex = explicit_regex or cls._looks_like_regex_pattern(pattern)
+        regex = True
         if not pattern:
             raise ToolCallError("pattern cannot be empty")
         if regex and "\n" in pattern:
@@ -905,14 +903,13 @@ class SearchTool(Tool):
             if glob_pattern:
                 raise ToolCallError("unexpected search option: " + option)
             glob_pattern = option
-        patterns = [pattern] if regex else [part for part in pattern.split("|") if part]
+        patterns = [pattern]
         if not patterns:
             raise ToolCallError("no valid search patterns")
-        if regex:
-            try:
-                re.compile(pattern)
-            except re.error as error:
-                raise ToolCallError("invalid regex: " + str(error))
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ToolCallError("invalid regex: " + str(error))
         return cls(
             pattern=raw_pattern,
             patterns=patterns,
@@ -1095,10 +1092,6 @@ class SearchTool(Tool):
             lines.append("* truncated: true")
         lines.append("</SearchToolResult>")
         return "\n".join(lines)
-
-    @classmethod
-    def _looks_like_regex_pattern(cls, pattern: str) -> bool:
-        return any(marker in pattern for marker in ("\\", ".*", ".+", "\\b", "\\s", "\\d", "^", "$", "[", "]", "(", ")"))
 
     def _call_rg(self, rg: str) -> str:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
@@ -2071,6 +2064,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Latest_User_Input>
 {latest_user_input}
 </Latest_User_Input>
+
+<USER_RULES>
+YOU MUST SET KNOWN AND CONTEXT IMMEDIATELY FOR TOOL CALL RESULTS, OTHERWISE THE TOOL RESULT WILL NEVER SHOWN AGAIN.
+</USER_RULES>
 """
 
 
