@@ -989,7 +989,7 @@ class SearchTool(Tool):
             "Search files or directories before Read; default is fixed text.",
             "Prefix pattern with re: for regex search.",
             "Search is line-oriented; regex patterns must not contain newlines.",
-            "Use A|B|C for literal OR search in fixed mode.",
+            "Use A|B|C for literal OR search; the second arg is path, not another term.",
             "Optional context=N or N sets nearby context lines, from 0 to 30.",
             "Optional glob matches file basename or path relative to cwd.",
         ]

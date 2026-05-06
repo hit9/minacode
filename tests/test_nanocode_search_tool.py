@@ -36,6 +36,16 @@ def test_search_tool_python_backend_finds_or_patterns_and_applies_glob(tmp_path,
     assert "hidden.txt" not in result
 
 
+def test_search_tool_does_not_treat_extra_args_as_search_terms(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "TOOLS", "TOOL_CLASSES"])
+
+    assert tool.pattern == "class Edit"
+    assert tool.target_path == str(tmp_path / "TOOLS")
+    assert tool.glob_pattern == "TOOL_CLASSES"
+
+
 def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("needle\n", encoding="utf-8")
@@ -218,6 +228,14 @@ def test_search_tool_rejects_missing_target(tmp_path):
 
     with pytest.raises(ToolCallError, match="not a file or directory"):
         tool.call()
+
+
+def test_search_tool_keeps_plain_second_arg_as_path_when_only_two_args(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool = SearchTool.make(session, ["needle", "TOOLS"])
+
+    assert tool.pattern == "needle"
+    assert tool.target_path == str(tmp_path / "TOOLS")
 
 
 def test_search_tool_rejects_placeholder_path_with_guidance(tmp_path):
