@@ -1,10 +1,10 @@
 import json
 
 import nanocode
-from nanocode import Agent, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallEvent, ToolCallExecution, VerificationStatus
+from nanocode import Agent, KnownItem, ParsedToolCall, RecentToolCallResultBuffer, Session, ToolCallExecution, VerificationStatus
 
 
-def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path):
+def test_agent_tool_results_go_to_recent_area_without_conversation_or_log(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -20,17 +20,10 @@ def test_agent_tool_results_go_to_recent_area_and_logs_not_conversation(tmp_path
         ]
     )
 
-    event = session.conversation[-1]
-    assert isinstance(event, ToolCallEvent)
     assert "alpha" in latest
-    assert "alpha" not in event.format()
-    assert event.result_file
-    assert event.outcome == "success"
-    assert "<outcome>success</outcome>" in event.format()
-    assert nanocode.ToolCallRunner.TOOL_RESULTS_DIR in event.result_file
-    assert "alpha" in (tmp_path / event.result_file).read_text(encoding="utf-8")
-
-    assert "alpha\n  </content>" not in event.format()
+    assert "<result_file>" not in latest
+    assert session.conversation == []
+    assert not (tmp_path / ".nanocode" / "tool_results").exists()
 
 
 def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks():
@@ -39,8 +32,6 @@ def test_recent_tool_call_result_buffer_keeps_last_batch_and_trims_older_blocks(
             call=ParsedToolCall(name="Read", intention="read " + name, args=[name]),
             outcome="success",
             output=output,
-            result_file=name + ".log",
-            result_file_lines=1,
         )
 
     keep_buffer = RecentToolCallResultBuffer(older_char_budget=1000)
@@ -533,10 +524,8 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
 
     assert "Cancelled: user refused: please inspect tests first" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
-    event = agent.latest_tool_call_events[0]
-    assert event.outcome == "failure"
-    log_path = tmp_path / event.result_file
-    assert "Cancelled: user refused: please inspect tests first" in log_path.read_text(encoding="utf-8")
+    assert session.conversation == []
+    assert not (tmp_path / ".nanocode" / "tool_results").exists()
 
 
 def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp_path):
@@ -556,18 +545,16 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     assert path.read_text(encoding="utf-8") == "old\n"
 
 
-def test_agent_execute_tool_calls_logs_malformed_tool_call(tmp_path):
+def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
     assert "ToolCallError: tool call missing name" in latest
-    event = agent.latest_tool_call_events[0]
-    assert event.outcome == "failure"
-    assert event.executed.startswith("InvalidToolCall(")
-    log_path = tmp_path / event.result_file
-    assert "ToolCallError: tool call missing name" in log_path.read_text(encoding="utf-8")
+    assert "InvalidToolCall(" in latest
+    assert session.conversation == []
+    assert not (tmp_path / ".nanocode" / "tool_results").exists()
 
 
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
@@ -630,7 +617,8 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[0].startswith("Tool Calls\n")
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
-    assert "log: .nanocode/tool_results/" in messages[0]
+    assert "result:" in messages[0]
+    assert "log:" not in messages[0]
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
@@ -697,37 +685,6 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
     assert "Retrying: Known was not reviewed after tool results." not in messages
     assert "done too early" in messages
     assert len(agent.model_client.user_prompts) == 2
-
-
-def test_tool_result_file_read_does_not_create_conversation_event_or_new_log(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    result_dir = tmp_path / ".nanocode" / "tool_results"
-    result_dir.mkdir(parents=True)
-    result_file = result_dir / "result.log"
-    result_file.write_text(
-        "\n".join(
-            [
-                "<Tool_Call_Result_Log>",
-                "  <tool>ListDir</tool>",
-                "  <raw_result>",
-                "<ListDirToolResult>",
-                "* (file): nanocode.py",
-                "</ListDirToolResult>",
-                "  </raw_result>",
-                "</Tool_Call_Result_Log>",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read old result log", "args": [".nanocode/tool_results/result.log"]}])
-
-    assert "nanocode.py" in latest
-    assert agent.latest_tool_call_events == []
-    assert session.conversation == []
-    assert sorted(path.name for path in result_dir.iterdir()) == ["result.log"]
-    assert "source: .nanocode/tool_results/result.log" in agent.tool_runner.format_latest_report()
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):

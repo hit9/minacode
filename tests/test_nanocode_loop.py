@@ -1,36 +1,7 @@
-import os
-
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 from nanocode import AgentLoop, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
-
-
-def test_cleanup_old_logs_removes_only_logs_older_than_three_days(tmp_path):
-    now = 10_000_000.0
-    log_dir = tmp_path / ".nanocode" / "tool_results"
-    nested = log_dir / "nested"
-    nested.mkdir(parents=True)
-    old_log = log_dir / "old.log"
-    new_log = log_dir / "new.log"
-    old_text = log_dir / "old.txt"
-    nested_old_log = nested / "nested-old.log"
-    for path in [old_log, new_log, old_text, nested_old_log]:
-        path.write_text("x", encoding="utf-8")
-    old_time = now - 4 * 86400
-    new_time = now - 2 * 86400
-    os.utime(old_log, (old_time, old_time))
-    os.utime(nested_old_log, (old_time, old_time))
-    os.utime(old_text, (old_time, old_time))
-    os.utime(new_log, (new_time, new_time))
-
-    session = Session(cwd=str(tmp_path))
-    session.cleanup_old_logs(days=3, now=now)
-
-    assert not old_log.exists()
-    assert not nested_old_log.exists()
-    assert new_log.exists()
-    assert old_text.exists()
 
 
 def test_session_reports_missing_required_envs(tmp_path):

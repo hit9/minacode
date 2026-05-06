@@ -99,7 +99,6 @@ class PromptItem:
 class Role(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
-    TOOL_CALL = "tool_call"
 
 
 @dataclass
@@ -132,31 +131,6 @@ class AssistantMessage(ConversationItem):
     @override
     def format(self, indent: str = "") -> str:
         lines = [f'<AssistantMessage at="{self.format_ts()}">', self.content, "</AssistantMessage>"]
-        return _format_lines(lines, indent)
-
-
-@final
-@dataclass
-class ToolCallEvent(ConversationItem):
-    role: Role = Role.TOOL_CALL
-    intent: str = ""
-    executed: str = ""
-    outcome: str = ""
-    result_file: str = ""
-    result_file_lines: int = 0
-
-    @override
-    def format(self, indent: str = "") -> str:
-        lines = [
-            f'<ToolCall at="{self.format_ts()}">',
-            "  <intent>" + self.intent + "</intent>",
-            "  <executed>" + self.executed + "</executed>",
-            "  <outcome>" + self.outcome + "</outcome>",
-        ]
-        if self.result_file:
-            lines.append("  <result_file>" + self.result_file + "</result_file>")
-            lines.append("  <result_file_lines>" + str(self.result_file_lines) + "</result_file_lines>")
-        lines.append("</ToolCall>")
         return _format_lines(lines, indent)
 
 
@@ -466,27 +440,8 @@ class Session:
     def append_conversation(self, item: ConversationItem) -> None:
         self.conversation.append(item)
 
-    def tool_results_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, ToolCallRunner.TOOL_RESULTS_DIR))
-
     def debug_dir(self) -> str:
         return self.resolve_path(os.path.join(self.nanocode_dir, "debug"))
-
-    def cleanup_old_logs(self, *, days: int = 3, now: float | None = None) -> None:
-        directory = self.tool_results_dir()
-        if not os.path.isdir(directory):
-            return
-        cutoff = (time.time() if now is None else now) - days * 86400
-        for root, _, filenames in os.walk(directory):
-            for filename in filenames:
-                if not filename.endswith(".log"):
-                    continue
-                filepath = os.path.join(root, filename)
-                try:
-                    if os.path.getmtime(filepath) < cutoff:
-                        os.remove(filepath)
-                except OSError:
-                    pass
 
     def missing_required_envs(self) -> list[str]:
         return [env_name for env_name, attr_name in self.REQUIRED_ENVS if not getattr(self, attr_name)]
@@ -534,9 +489,6 @@ class ToolCallExecution:
     call: ParsedToolCall
     outcome: str
     output: str
-    result_file: str
-    result_file_lines: int
-    log_written: bool = True
 
 
 @final
@@ -589,7 +541,6 @@ class RecentToolCallResultBuffer:
                 "  <intention>" + execution.call.intention + "</intention>",
                 "  <executed>" + execution.call.executed + "</executed>",
                 "  <outcome>" + execution.outcome + "</outcome>",
-                "  <result_file>" + execution.result_file + "</result_file>",
                 "  <raw_result>",
                 execution.output,
                 "  </raw_result>",
@@ -2484,12 +2435,10 @@ class ModelClient:
 
 @final
 class ToolCallRunner:
-    TOOL_RESULTS_DIR: ClassVar[str] = "tool_results"
     DISPLAY_LIMIT: ClassVar[int] = 5
 
     def __init__(self, session: Session):
         self.session = session
-        self.latest_events: list[ToolCallEvent] = []
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -2500,7 +2449,6 @@ class ToolCallRunner:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         executions = []
-        events = []
         for item in tool_calls:
             call: ParsedToolCall | None = None
             outcome = "success"
@@ -2534,33 +2482,13 @@ class ToolCallRunner:
             if call is None:
                 call = self._invalid_tool_call(item)
 
-            log_written = not self._is_tool_result_file_read(call)
-            if log_written:
-                result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
-            else:
-                result_file = os.path.relpath(self.session.resolve_path(call.args[0]), self.session.cwd)
-                result_file_lines = len(output.splitlines())
             execution = ToolCallExecution(
                 call=call,
                 outcome=outcome,
                 output=output,
-                result_file=result_file,
-                result_file_lines=result_file_lines,
-                log_written=log_written,
             )
-            if log_written:
-                event = ToolCallEvent(
-                    intent=call.intention,
-                    executed=call.executed,
-                    outcome=outcome,
-                    result_file=result_file,
-                    result_file_lines=result_file_lines,
-                )
-                self.session.append_conversation(event)
-                events.append(event)
             executions.append(execution)
 
-        self.latest_events = events
         self.latest_executions = executions
         return RecentToolCallResultBuffer.format_executions(executions)
 
@@ -2576,8 +2504,7 @@ class ToolCallRunner:
             lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
             if execution.call.intention:
                 lines.append("     why: " + execution.call.intention)
-            label = "log" if execution.log_written else "source"
-            lines.append("     " + label + ": " + execution.result_file + " (" + str(execution.result_file_lines) + " lines)")
+            lines.append("     result: " + str(len(execution.output.splitlines())) + " lines")
         return "\n".join(lines)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -2608,38 +2535,6 @@ class ToolCallRunner:
             return ""
         return str(preview_error())
 
-    def _is_tool_result_file_read(self, call: ParsedToolCall) -> bool:
-        if call.name != ReadTool.name() or not call.args:
-            return False
-        tool_results_dir = os.path.realpath(self.session.tool_results_dir())
-        path = os.path.realpath(self.session.resolve_path(call.args[0]))
-        try:
-            return os.path.commonpath([tool_results_dir, path]) == tool_results_dir
-        except ValueError:
-            return False
-
-    def _write_tool_result_log(self, call: ParsedToolCall, outcome: str, output: str) -> tuple[str, int]:
-        directory = self.session.tool_results_dir()
-        os.makedirs(directory, exist_ok=True)
-        filepath = os.path.join(directory, datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
-        content = "\n".join(
-            [
-                "<Tool_Call_Result_Log>",
-                "  <tool>" + call.name + "</tool>",
-                "  <intention>" + call.intention + "</intention>",
-                "  <executed>" + call.executed + "</executed>",
-                "  <outcome>" + outcome + "</outcome>",
-                "  <raw_result>",
-                output,
-                "  </raw_result>",
-                "</Tool_Call_Result_Log>",
-            ]
-        )
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        return os.path.relpath(filepath, self.session.cwd), len(content.splitlines())
-
-
 ############################
 # AgentStateUpdater
 ############################
@@ -2649,9 +2544,8 @@ class ToolCallRunner:
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
 
-    def __init__(self, session: Session, tool_runner: ToolCallRunner):
+    def __init__(self, session: Session):
         self.session = session
-        self.tool_runner = tool_runner
         self.latest_report = ""
 
     def apply(self, response: Json) -> None:
@@ -2923,14 +2817,10 @@ class Agent:
         self.prompt_builder = PromptBuilder(session)
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session)
-        self.state_updater = AgentStateUpdater(session, self.tool_runner)
+        self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
         self.recent_tool_call_results = RecentToolCallResultBuffer()
         self.latest_agent_feedback = ""
-
-    @property
-    def latest_tool_call_events(self) -> list[ToolCallEvent]:
-        return self.tool_runner.latest_events
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
@@ -3938,7 +3828,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
         args = parser.parse_args(argv)
         session = Session(yolo=args.yolo, debug=args.debug)
-        session.cleanup_old_logs(days=3)
         missing = session.missing_required_envs()
         if missing:
             print("Missing env: " + ", ".join(missing), file=sys.stderr)

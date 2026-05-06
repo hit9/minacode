@@ -1,4 +1,4 @@
-from nanocode import Agent, AssistantMessage, Session, ToolCallEvent, UserMessage
+from nanocode import Agent, AssistantMessage, Session, UserMessage
 
 
 class FakeModelClient:
@@ -14,17 +14,11 @@ class FakeModelClient:
 def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    fake_client = FakeModelClient("LLM kept the old goal and the old result file.")
+    fake_client = FakeModelClient("LLM kept the old user request and assistant note.")
     agent.compactor.model_client = fake_client
     session.conversation = [
         UserMessage(content="old user\nmessage"),
-        ToolCallEvent(
-            intent="inspect file",
-            executed='Read("a.py", "0", "1")',
-            outcome="success",
-            result_file=".nanocode/tool_results/old.log",
-            result_file_lines=9,
-        ),
+        AssistantMessage(content='old assistant note: inspected Read("a.py", "0", "1")'),
         AssistantMessage(content="old answer"),
         UserMessage(content="keep 1"),
         AssistantMessage(content="keep 2"),
@@ -40,7 +34,7 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     assert isinstance(session.conversation[0], AssistantMessage)
     assert session.conversation[1].content == "keep 1"
     summary = session.conversation[0].content
-    assert summary == "Conversation compact summary:\nLLM kept the old goal and the old result file."
+    assert summary == "Conversation compact summary:\nLLM kept the old user request and assistant note."
     assert len(fake_client.requests) == 1
     system_prompt, user_prompt, activity = fake_client.requests[0]
     assert activity == "compact"
@@ -48,7 +42,6 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     assert "Preserve continuity-critical facts" in system_prompt
     assert "old user\nmessage" in user_prompt
     assert 'Read("a.py", "0", "1")' in user_prompt
-    assert ".nanocode/tool_results/old.log" in user_prompt
     assert "keep 1" not in user_prompt
     assert "<raw_result>" not in summary
 
