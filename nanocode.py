@@ -2005,6 +2005,11 @@ Core:
 - Plan before action.
 - Follow the plan, but revise it when facts require it.
 
+State:
+- Keep Goal, Plan, Known, and Current_Context current.
+- Before tool actions, set or patch Goal and Plan when missing or stale.
+- After meaningful findings, update known/context or Blackboard before continuing.
+
 Tools:
 - MUST use tool actions. Do not use native <tool_call>Tool(args...) syntax.
 - Keep each tool batch small: never more than 10 tool actions unless the user explicitly asked for broad parallel work.
