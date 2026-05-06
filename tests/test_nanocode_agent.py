@@ -223,6 +223,104 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     assert session.session_total_tokens == 5
 
 
+def test_agent_request_stream_sets_first_token_timeout(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.timeouts = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            self.timeouts.append(timeout)
+
+        def __iter__(self):
+            chunk = '{"type":"message","text":"ok"}__END_ACTION__'
+            yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(request, timeout):
+        response = FakeResponse()
+        captured["timeout"] = timeout
+        captured["response"] = response
+        return response
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(
+        cwd=str(tmp_path),
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        model_timeout=90,
+        stream_first_token_timeout=30,
+    )
+
+    response = Agent(session).request("system", "user")
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert captured["timeout"] == 90
+    assert captured["response"].timeouts == [30, 90]
+
+
+def test_agent_request_retries_stream_first_token_timeout(tmp_path, monkeypatch):
+    attempts = {"count": 0}
+
+    class TimeoutResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            return None
+
+        def __iter__(self):
+            raise nanocode.socket.timeout
+
+    class GoodResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def settimeout(self, timeout):
+            return None
+
+        def __iter__(self):
+            chunk = '{"type":"message","text":"ok"}__END_ACTION__'
+            yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(request, timeout):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            return TimeoutResponse()
+        return GoodResponse()
+
+    sleeps = []
+    messages = []
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream_first_token_timeout=30)
+
+    response = Agent(session).request("system", "user", on_message=messages.append)
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert attempts["count"] == 3
+    assert sleeps == [3, 6]
+    assert messages == [
+        "Retrying: request model timeout; retry 1/3 in 3s.",
+        "Retrying: request model timeout; retry 2/3 in 6s.",
+    ]
+
+
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     captured_payloads = []
