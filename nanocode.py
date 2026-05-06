@@ -2001,6 +2001,7 @@ STEPS:
    - Use Known and Active_Evidence first.
    - If needed context is hidden, call batched Evidence(key...).
    - Only Read files when memory is missing or insufficient.
+   - Evidence description must say what the value contains and when to reuse it.
 
 4. Plan:
    - Create or revise the plan based on facts and the goal.
