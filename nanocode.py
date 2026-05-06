@@ -970,7 +970,7 @@ class SearchTool(Tool):
             "Search files or directories before Read; default is fixed text.",
             "Prefix pattern with re: for regex search.",
             "Search is line-oriented; regex patterns must not contain newlines.",
-            "Use A|B|C for literal OR search; the second arg is path, not another term.",
+            "Use A|B|C for literal OR; 3+ plain args also OR-search unless the final one is an existing path.",
             "Optional context=N or N sets nearby context lines, from 0 to 30.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
@@ -992,8 +992,11 @@ class SearchTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) < 1 or len(args) > 20:
+            raise ToolCallError("requires 1 to 20 args: pattern[, path][, glob_pattern][, context=N]")
+        args = cls._normalize_multi_pattern_args(session, args)
         if len(args) not in (1, 2, 3, 4):
-            raise ToolCallError("requires 1 to 4 args: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallError("requires 1 to 4 args after normalization: pattern[, path][, glob_pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallError("pattern cannot be empty")
@@ -1041,6 +1044,49 @@ class SearchTool(Tool):
             cwd=session.cwd,
             gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
         )
+
+    @classmethod
+    def _normalize_multi_pattern_args(cls, session: Session, args: list[str]) -> list[str]:
+        values = [str(arg) for arg in args]
+        if len(values) < 3 or values[0].startswith("re:"):
+            return values
+        positional, options, has_glob_option = cls._split_search_positionals_and_options(values)
+        if len(positional) < 3:
+            return values
+        if has_glob_option and len(positional) == 2:
+            return values
+        if any(not item for item in positional):
+            return values
+        final = positional[-1]
+        if os.path.exists(session.resolve_path(final)):
+            pattern_parts = positional[:-1]
+            target_path_arg = final
+        else:
+            pattern_parts = positional
+            target_path_arg = "."
+        return ["|".join(pattern_parts), target_path_arg] + options
+
+    @classmethod
+    def _split_search_positionals_and_options(cls, values: list[str]) -> tuple[list[str], list[str], bool]:
+        option_start = len(values)
+        has_glob_option = False
+        while option_start > 1:
+            option_kind = cls._search_option_kind(values[option_start - 1])
+            if option_kind is None:
+                break
+            has_glob_option = has_glob_option or option_kind == "glob"
+            option_start -= 1
+        return values[:option_start], values[option_start:], has_glob_option
+
+    @classmethod
+    def _search_option_kind(cls, value: str) -> str | None:
+        if value.startswith("context=") or value.isdigit():
+            return "context"
+        if value.startswith("glob=") or value.startswith("glob_pattern="):
+            return "glob"
+        if any(marker in value for marker in ("*", "?", "[", "]")):
+            return "glob"
+        return None
 
     @classmethod
     def _parse_context_arg(cls, value: str) -> int:
