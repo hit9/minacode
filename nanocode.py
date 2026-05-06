@@ -192,7 +192,7 @@ class ContextItem(PromptItem):
 
     @override
     def format(self, indent: str = "") -> str:
-        return _format_lines(["<Context>", "  <description>" + self.description + "</description>", "</Context>"], indent)
+        return _format_lines(["<ContextItem>", "  <description>" + self.description + "</description>", "</ContextItem>"], indent)
 
 
 @final
@@ -1923,7 +1923,7 @@ class ContextTool(Tool):
             if key not in self.context:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
-            lines.extend(['  <Context key="' + key + '">', self.context[key].value, "  </Context>"])
+            lines.extend(['  <ContextItem key="' + key + '">', self.context[key].value, "  </ContextItem>"])
         lines.append("</ContextToolResult>")
         result = "\n".join(lines)
         if len(result) <= self.MAX_OUTPUT_CHARS:
@@ -2043,9 +2043,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {known}
 </Known>
 
-<Context>
+<Context_Store>
 {context}
-</Context>
+</Context_Store>
 
 <Goal>
 {goal}
@@ -2166,7 +2166,7 @@ class PromptBuilder:
             return "(empty)"
         lines = []
         for key, item in self.session.context_store.items():
-            lines.extend(['<Context key="' + key + '">', "  <description>" + item.description + "</description>", "</Context>"])
+            lines.extend(['<ContextItem key="' + key + '">', "  <description>" + item.description + "</description>", "</ContextItem>"])
         return "\n".join(lines)
 
     def _format_plan(self) -> str:

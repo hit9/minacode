@@ -10,9 +10,9 @@ def test_context_tool_gets_multiple_keys(tmp_path):
     result = ContextTool.make(session, ["parser.notes", "missing"]).call()
     prefixed_result = ContextTool.make(session, ["get", "parser.notes"]).call()
 
-    assert '<Context key="parser.notes">\nline 1\nline 2\n  </Context>' in result
+    assert '<ContextItem key="parser.notes">\nline 1\nline 2\n  </ContextItem>' in result
     assert '<Missing key="missing"/>' in result
-    assert '<Context key="parser.notes">\nline 1\nline 2\n  </Context>' in prefixed_result
+    assert '<ContextItem key="parser.notes">\nline 1\nline 2\n  </ContextItem>' in prefixed_result
 
 
 def test_prompt_shows_context_descriptions_without_values(tmp_path):
@@ -23,14 +23,15 @@ def test_prompt_shows_context_descriptions_without_values(tmp_path):
     prompt = Agent(session).build_user_prompt()
 
     assert "<Details_Keys>" not in prompt
-    assert "<Context>" in prompt
+    assert "<Context_Store>" in prompt
+    assert "<ContextItem" in prompt
     assert "<Active_Context>" not in prompt
     assert "Parser notes were captured." in prompt
     assert "parser.notes" in prompt
     assert "Parser notes from sample output." in prompt
     assert "line 1" not in prompt
     known_section = prompt.split("<Known>", 1)[1].split("</Known>", 1)[0]
-    context_section = prompt.split("<Context>", 1)[1].split("</Context>", 1)[0]
+    context_section = prompt.split("<Context_Store>", 1)[1].split("</Context_Store>", 1)[0]
     assert "Parser notes were captured." in known_section
     assert "parser.notes" not in known_section
     assert "parser.notes" in context_section
