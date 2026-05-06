@@ -1939,9 +1939,10 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
-DETAILS ARE CRITICAL; STORE IMPORTANT RAW CONTEXT, LONG EVIDENCE, AND REUSABLE NOTES IN DETAILS IMMEDIATELY.
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
-TOOL RESULTS ARE SHOWN ONCE; EXTRACT KNOWN FACTS AND DETAILS IMMEDIATELY.
+KNOWN IS CRITICAL; STORE NON-EMPTY FACTS WITH NON-EMPTY DETAIL KEYS.
+DETAIL VALUES ARE HIDDEN; STORE VALUES WITH details ACTION AND FETCH THEM WITH Details(key...).
+TOOL RESULTS ARE ONE-SHOT; EXTRACT KNOWN FACTS AND DETAIL KEYS IMMEDIATELY BEFORE CONTINUING.
 
 STEPS:
 
@@ -1959,7 +1960,7 @@ Rules:
 
 1. Call at most 10 tools in one turn.
 2. Prefer batched Search/Read when useful.
-3. Tool results are one-shot; batch independent tools and extract known facts immediately.
+3. Tool results are one-shot; batch independent tools and extract known facts/detail keys immediately.
 4. EVERY TURN MUST EMIT AT LEAST ONE ACTION FRAME.
 
 Output format (Strict)
@@ -1969,8 +1970,8 @@ Output multiple JSON objects separated by __END_ACTION__:
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"} __END_ACTION__
-{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]} __END_ACTION__
-{"type": "details", "items": [{"key": "string", "value": "string"}]} __END_ACTION__
+{"type": "known", "items": [{"fact": "non-empty string", "details": ["non-empty detail key"]}]} __END_ACTION__
+{"type": "details", "items": [{"key": "non-empty detail key", "value": "non-empty string"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -1987,10 +1988,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Known>
 {known}
 </Known>
-
-<Details_Keys>
-{details_keys}
-</Details_Keys>
 
 <Goal>
 {goal}
@@ -2030,7 +2027,7 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- details keys needed later
+- known facts and known detail keys needed later
 - unresolved blockers and open questions
 - verification evidence
 
@@ -2039,7 +2036,7 @@ Omit noise:
 - repeated output
 - full stack traces
 - chatter
-- details values unless needed for continuity
+- detail values unless needed for continuity
 
 Write the shortest complete continuation summary.
 
@@ -2068,7 +2065,6 @@ class PromptBuilder:
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
             known=self._format_known(),
-            details_keys=self._format_details_keys(),
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
@@ -2097,11 +2093,6 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.current.known)
-
-    def _format_details_keys(self) -> str:
-        if not self.session.details:
-            return "(empty)"
-        return "\n".join("- " + key for key in self.session.details)
 
     def _format_plan(self) -> str:
         if not self.session.current.plan:
@@ -2718,7 +2709,10 @@ class AgentStateUpdater:
 
     def _apply_details(self, response: Json) -> None:
         for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "details"]:
-            for raw in _json_list(action.get("items")):
+            items = _json_list(action.get("items"))
+            if not items and ("key" in action or "value" in action):
+                items = [action]
+            for raw in items:
                 item = _json_dict(raw)
                 key = _json_str(item.get("key"))
                 value = _json_str(item.get("value"))
@@ -2727,11 +2721,16 @@ class AgentStateUpdater:
 
     def _known_item_from_json(self, value: JsonValue) -> KnownItem | None:
         item = _json_dict(value)
-        fact = _json_str(item.get("fact")) if item else _json_str(value)
+        if not item:
+            return None
+        fact = (_json_str(item.get("fact")) or "").strip()
         if not fact:
             return None
-        details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-        return KnownItem(fact=fact, details=[detail for detail in details if detail])
+        details = [(_json_str(detail) or "").strip() for detail in _json_list(item.get("details"))]
+        details = [detail for detail in details if detail]
+        if not details:
+            return None
+        return KnownItem(fact=fact, details=details)
 
     def _add_known_item(self, item: KnownItem) -> None:
         if not any(known.fact == item.fact for known in self.session.current.known):
@@ -2900,10 +2899,7 @@ class Agent:
                             + self._format_gate_debug_details(response, format_error),
                         )
                         raise LLMError(
-                            "model returned invalid output "
-                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                            + " times in a row: "
-                            + _shorten(format_error, 300)
+                            "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
                         )
                     self._report_gate(
                         on_message,
@@ -3765,6 +3761,8 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
+            elif line.startswith("  Details"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):

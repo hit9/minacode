@@ -421,6 +421,29 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
     assert session.current.known == [KnownItem(fact="Search only supports rg and Python fallback.", details=["grep was removed"])]
 
 
+def test_agent_ignores_known_items_without_fact_or_detail_keys(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "known",
+                    "items": [
+                        {"fact": "", "details": ["parser.notes"]},
+                        {"fact": "Parser notes exist.", "details": []},
+                        {"fact": "Whitespace details are ignored.", "details": ["   "]},
+                        {"fact": "Parser notes were captured.", "details": [" parser.notes "]},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert session.current.known == [KnownItem(fact="Parser notes were captured.", details=["parser.notes"])]
+
+
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
