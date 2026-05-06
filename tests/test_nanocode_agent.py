@@ -500,6 +500,7 @@ def test_agent_system_prompt_guides_blackboard_use_for_repeated_discovery(tmp_pa
     assert "{ __tools__ }" not in prompt
     assert "- Read(filepath" in prompt
     assert "Before repeating similar Search/Read/discovery" in prompt
+    assert "When locating related symbols, prefer one OR search over repeated Search calls." in prompt
     assert "Blackboard(set, key, value)" in prompt
     assert "Known = small stable conclusions useful for later steps" in prompt
     assert "Blackboard = larger notes, raw excerpts, tool-result notes" in prompt

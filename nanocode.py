@@ -971,6 +971,7 @@ class SearchTool(Tool):
             "Prefix pattern with re: for regex search.",
             "Search is line-oriented; regex patterns must not contain newlines.",
             "Use A|B|C for literal OR; 3+ plain args also OR-search unless the final one is an existing path.",
+            "When locating related symbols, prefer one OR search over repeated Search calls.",
             "Optional context=N or N sets nearby context lines, from 0 to 30.",
             "Optional glob matches file basename or path relative to cwd.",
         ]
