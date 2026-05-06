@@ -806,6 +806,87 @@ def test_agent_run_retries_format_error_with_last_tool_calls(tmp_path):
     assert messages[-1] == "done"
 
 
+def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 3
+    assert "model returned invalid output" in agent.model_client.user_prompts[1]
+    assert "Rule: return valid JSON action frames only." in agent.model_client.user_prompts[1]
+    assert "model returned invalid output" in agent.model_client.user_prompts[2]
+    assert agent.agent_feedback_errors == []
+
+
+def test_agent_feedback_records_message_before_goal_complete(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "message", "text": "progress"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["text"] == "done"
+    assert "message before goal.complete=true" in agent.model_client.user_prompts[1]
+    assert agent.agent_feedback_errors == []
+
+
+def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                KeyboardInterrupt(),
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            response = self.responses.pop(0)
+            if isinstance(response, KeyboardInterrupt):
+                raise response
+            return response
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+
+    try:
+        agent.run("answer")
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt")
+
+    assert agent.agent_feedback_errors == []
+    assert session.current.goal_reached is False
+
+
 def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
     class FakeModelClient:
         def __init__(self):

@@ -1939,8 +1939,11 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
 
 NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
+DETAILS ARE CRITICAL; STORE IMPORTANT RAW CONTEXT, LONG EVIDENCE, AND REUSABLE NOTES IN DETAILS IMMEDIATELY.
+USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
+TOOL RESULTS ARE SHOWN ONCE; EXTRACT KNOWN FACTS AND DETAILS IMMEDIATELY.
 
-Steps:
+STEPS:
 
 1. If the goal is not set, determine the current goal first.
 2. Extract facts from the latest tool call results.
@@ -1949,8 +1952,6 @@ Steps:
 5. Report progress to the user with message when appropriate.
 
 Available tools:
-USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN:
-TOOL RESULTS ARE SHOWN ONCE; EXTRACT KNOWN FACTS AND DETAILS IMMEDIATELY.
 
 { __tools__ }
 
@@ -2003,9 +2004,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {verification_state}
 </Verification_State>
 
-<Agent_Feedback>
-{agent_feedback}
-</Agent_Feedback>
+<Errors>
+{errors}
+</Errors>
 
 <Last_Tool_Calls>
 {last_tool_calls}
@@ -2061,7 +2062,7 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
 
-    def user_prompt(self, last_tool_calls: str, agent_feedback: str) -> str:
+    def user_prompt(self, last_tool_calls: str, errors: str) -> str:
         current = self.session.current
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
@@ -2071,7 +2072,7 @@ class PromptBuilder:
             goal=current.goal or "(empty)",
             plan=self._format_plan(),
             verification_state=current.verification.format(),
-            agent_feedback=agent_feedback or "(empty)",
+            errors=errors or "(empty)",
             last_tool_calls=last_tool_calls or "(empty)",
             latest_user_input=current.user_input or "(empty)",
         ).strip()
@@ -2832,6 +2833,8 @@ class ConversationCompactor:
 @final
 class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
+    MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
+    MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
 
     def __init__(self, session: Session):
         self.session = session
@@ -2841,16 +2844,13 @@ class Agent:
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
         self.last_tool_calls = ""
-        self.latest_agent_feedback = ""
+        self.agent_feedback_errors: list[str] = []
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
-    def build_user_prompt(self, *, consume_agent_feedback: bool = True) -> str:
-        prompt = self.prompt_builder.user_prompt(self.last_tool_calls, self.latest_agent_feedback)
-        if consume_agent_feedback:
-            self.latest_agent_feedback = ""
-        return prompt
+    def build_user_prompt(self) -> str:
+        return self.prompt_builder.user_prompt(self.last_tool_calls, self._format_agent_feedback())
 
     def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
         if isinstance(self.model_client, ModelClient):
@@ -2863,6 +2863,10 @@ class Agent:
     def maybe_auto_compact(self) -> bool:
         return self.compactor.maybe_compact()
 
+    def cancel_current_goal(self) -> None:
+        self._clear_agent_feedback()
+        self.session.current.goal_reached = False
+
     def run(
         self,
         user_input: str,
@@ -2872,81 +2876,123 @@ class Agent:
         on_message: MessageCallback | None = None,
     ) -> Json:
         self.last_tool_calls = ""
-        self.latest_agent_feedback = ""
+        self._clear_agent_feedback()
         self.session.current.user_input = user_input
         self.session.current.goal_reached = False
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
         consecutive_format_errors = 0
 
-        for _ in range(self.session.max_agent_steps):
-            response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None)
-            format_error = _json_str(response.get("_format_error"))
-            if format_error:
-                consecutive_format_errors += 1
-                self.latest_agent_feedback = format_error
-                if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+        try:
+            for _ in range(self.session.max_agent_steps):
+                response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None)
+                format_error = _json_str(response.get("_format_error"))
+                if format_error:
+                    consecutive_format_errors += 1
+                    self._remember_agent_error(self._format_agent_feedback_format_error(format_error))
+                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+                        self._report_gate(
+                            on_message,
+                            "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
+                            "Format_Gate: stopped after "
+                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                            + " consecutive invalid model outputs. "
+                            + self._format_gate_debug_details(response, format_error),
+                        )
+                        raise LLMError(
+                            "model returned invalid output "
+                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                            + " times in a row: "
+                            + _shorten(format_error, 300)
+                        )
                     self._report_gate(
                         on_message,
-                        "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
-                        "Format_Gate: stopped after "
-                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                        + " consecutive invalid model outputs. "
-                        + self._format_gate_debug_details(response, format_error),
+                        self._format_gate_user_message("Retrying: model returned invalid output", format_error),
+                        "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
                     )
-                    raise LLMError(
-                        "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
+                    continue
+                consecutive_format_errors = 0
+                actions = self._response_actions(response)
+                tool_calls = self._tool_calls_from_actions(actions)
+                messages = self._messages_from_actions(actions)
+                if self.session.debug and on_message is not None:
+                    frame_error_report = self._format_frame_error_report(response)
+                    if frame_error_report:
+                        on_message(frame_error_report)
+                self.apply_response(response)
+                if on_message is not None and self.state_updater.latest_report:
+                    on_message(self.state_updater.latest_report)
+                for message in messages:
+                    self.session.append_conversation(AssistantMessage(content=message))
+                    if on_message is not None:
+                        on_message(message)
+                if tool_calls:
+                    self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+                    if on_message is not None:
+                        report = self.tool_runner.format_latest_report()
+                        if report:
+                            on_message(report)
+                    self.maybe_auto_compact()
+                    continue
+                if self.session.current.verification.status == VerificationStatus.REQUIRED:
+                    self.session.current.goal_reached = False
+                    self._remember_agent_error(self._format_agent_feedback_verification_error())
+                    self._report_gate(
+                        on_message,
+                        "Retrying: verification is required before completion.",
+                        "Verification_Gate: retrying until verification is passed or blocked.",
                     )
-                self._report_gate(
-                    on_message,
-                    self._format_gate_user_message("Retrying: model returned invalid output", format_error),
-                    "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
-                )
-                continue
-            consecutive_format_errors = 0
-            actions = self._response_actions(response)
-            tool_calls = self._tool_calls_from_actions(actions)
-            messages = self._messages_from_actions(actions)
-            if self.session.debug and on_message is not None:
-                frame_error_report = self._format_frame_error_report(response)
-                if frame_error_report:
-                    on_message(frame_error_report)
-            self.apply_response(response)
-            if on_message is not None and self.state_updater.latest_report:
-                on_message(self.state_updater.latest_report)
-            for message in messages:
-                self.session.append_conversation(AssistantMessage(content=message))
-                if on_message is not None:
-                    on_message(message)
-            if tool_calls:
-                self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-                if on_message is not None:
-                    report = self.tool_runner.format_latest_report()
-                    if report:
-                        on_message(report)
-                self.maybe_auto_compact()
-                continue
-            if self.session.current.verification.status == VerificationStatus.REQUIRED:
+                    continue
+                if messages and self.session.current.goal_reached:
+                    self._clear_agent_feedback()
+                    return response
                 self.session.current.goal_reached = False
-                self.latest_agent_feedback = self._format_verification_gate()
-                self._report_gate(
-                    on_message,
-                    "Retrying: verification is required before completion.",
-                    "Verification_Gate: retrying until verification is passed or blocked.",
-                )
+                if not actions:
+                    self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
+                    self._report_gate(
+                        on_message,
+                        "Continuing: goal is not complete yet.",
+                        "Continuation_Gate: goal not reached; retrying next useful action.",
+                    )
+                elif messages:
+                    self._remember_agent_error(self._format_agent_feedback_message_before_complete_error())
                 continue
-            if messages and self.session.current.goal_reached:
-                return response
-            self.session.current.goal_reached = False
-            self.latest_agent_feedback = self._format_continuation_hint()
-            if not actions:
-                self._report_gate(
-                    on_message,
-                    "Continuing: goal is not complete yet.",
-                    "Continuation_Gate: goal not reached; retrying next useful action.",
-                )
-            continue
+        except KeyboardInterrupt:
+            self.cancel_current_goal()
+            raise
         raise LLMError("agent step limit reached")
+
+    def _clear_agent_feedback(self) -> None:
+        self.agent_feedback_errors = []
+
+    def _remember_agent_error(self, text: str) -> None:
+        text = " ".join(text.split())
+        if not text:
+            return
+        text = _shorten(text, self.MAX_AGENT_FEEDBACK_ERROR_LEN)
+        if text in self.agent_feedback_errors:
+            return
+        self.agent_feedback_errors.append(text)
+        if len(self.agent_feedback_errors) > self.MAX_AGENT_FEEDBACK_ERRORS:
+            self.agent_feedback_errors = self.agent_feedback_errors[-self.MAX_AGENT_FEEDBACK_ERRORS :]
+
+    def _format_agent_feedback(self) -> str:
+        if not self.agent_feedback_errors:
+            return ""
+        return "\n".join("- " + error for error in self.agent_feedback_errors)
+
+    def _format_agent_feedback_format_error(self, format_error: str) -> str:
+        message = self._format_gate_user_message("Error: model returned invalid output", format_error)
+        return message + " Rule: return valid JSON action frames only."
+
+    def _format_agent_feedback_verification_error(self) -> str:
+        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with evidence.'
+
+    def _format_agent_feedback_empty_actions_error(self) -> str:
+        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
+
+    def _format_agent_feedback_message_before_complete_error(self) -> str:
+        return "Error: returned message before goal.complete=true. Rule: only finish with message after the goal is achieved and verified."
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is not None:
@@ -2977,13 +3023,12 @@ class Agent:
         return headline
 
     def step(self, *, on_action: ActionCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_agent_feedback=False), activity="main", on_action=on_action)
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main", on_action=on_action)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
         if invalid_response is not None:
             return invalid_response
-        self.latest_agent_feedback = ""
         return response
 
     def apply_response(self, response: Json) -> None:
@@ -3039,20 +3084,6 @@ class Agent:
     ) -> str:
         self.last_tool_calls = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
         return self.last_tool_calls
-
-    def _format_verification_gate(self) -> str:
-        verification = self.session.current.verification
-        method = verification.method or "Pick the cheapest relevant compile, lint, smoke test, targeted command, or prompt/file inspection."
-        return "\n".join(
-            [
-                "Verification_Gate: required before completion.",
-                "Method: " + method,
-                'Next_Action: run a relevant tool action, or return a verify action with status="passed" or "blocked" and evidence if verification is already resolved.',
-            ]
-        )
-
-    def _format_continuation_hint(self) -> str:
-        return "No tool actions and no message action. Continue with the next useful action."
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
@@ -3542,8 +3573,10 @@ class AgentLoop:
                 on_message=self._emit,
             )
         except KeyboardInterrupt:
+            self.agent.cancel_current_goal()
             self._emit("Cancelled")
         except Cancellation as error:
+            self.agent.cancel_current_goal()
             self._emit("Cancelled: " + str(error))
         except Exception as error:
             self._emit("Error: " + str(error))

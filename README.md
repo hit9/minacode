@@ -69,6 +69,7 @@ USE AT YOUR OWN RISK.
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
 - Edit: `Edit`, `ReplaceRange`, `BatchReplaceRanges`, `ApplyPatch`.
 - Shell: `Bash`, `Git`.
+- Memory: `Details`.
 
 ## Commands
 
@@ -89,4 +90,3 @@ USE AT YOUR OWN RISK.
 
 - Status bar: model, reasoning, context, tokens/cost, elapsed time, and active model-call time.
 - `/status`: model, reasoning, stream, yolo, conversation, tokens/cost, goal, and verification.
-
