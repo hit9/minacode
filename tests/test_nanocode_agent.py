@@ -267,6 +267,65 @@ def test_agent_request_stream_sets_first_token_timeout(tmp_path, monkeypatch):
     assert captured["response"].timeouts == [30, 90]
 
 
+def test_agent_request_stream_sets_first_token_timeout_on_nested_socket(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeSocket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, timeout):
+            self.timeouts.append(timeout)
+
+    class FakeRaw:
+        def __init__(self, sock):
+            self._sock = sock
+
+    class FakeBuffered:
+        def __init__(self, sock):
+            self.raw = FakeRaw(sock)
+
+    class FakeHttpResponse:
+        def __init__(self, sock):
+            self.fp = FakeBuffered(sock)
+
+    class FakeResponse:
+        def __init__(self):
+            self.inner_socket = FakeSocket()
+            self.fp = FakeHttpResponse(self.inner_socket)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            chunk = '{"type":"message","text":"ok"}__END_ACTION__'
+            yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    def fake_urlopen(request, timeout):
+        response = FakeResponse()
+        captured["response"] = response
+        return response
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(
+        cwd=str(tmp_path),
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        model_timeout=90,
+        stream_first_token_timeout=30,
+    )
+
+    response = Agent(session).request("system", "user")
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert captured["response"].inner_socket.timeouts == [30, 90]
+
+
 def test_agent_request_retries_stream_first_token_timeout(tmp_path, monkeypatch):
     attempts = {"count": 0}
 

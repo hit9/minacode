@@ -2296,13 +2296,21 @@ class ModelClient:
         return "".join(parts), usage
 
     def _set_stream_read_timeout(self, response: Any, timeout: int) -> bool:
-        raw = getattr(response, "fp", None)
-        raw = getattr(raw, "raw", raw)
+        fp = getattr(response, "fp", None)
+        nested_fp = getattr(fp, "fp", None)
+        raw = getattr(fp, "raw", fp)
+        nested_raw = getattr(nested_fp, "raw", nested_fp)
         candidates = [
             response,
             getattr(response, "sock", None),
+            fp,
+            getattr(fp, "_sock", None),
             raw,
             getattr(raw, "_sock", None),
+            nested_fp,
+            getattr(nested_fp, "_sock", None),
+            nested_raw,
+            getattr(nested_raw, "_sock", None),
         ]
         for candidate in candidates:
             setter = getattr(candidate, "settimeout", None)
