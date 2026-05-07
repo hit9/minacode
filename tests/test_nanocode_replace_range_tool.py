@@ -1,8 +1,6 @@
-import json
-
 import pytest
 
-from nanocode import Agent, BatchReplaceRangesTool, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallError
+from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallError
 
 
 def _fingerprint(read_result: str) -> str:
@@ -198,80 +196,3 @@ def test_replace_range_tool_rejects_no_change(tmp_path):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
-
-def test_replace_ranges_tool_applies_multiple_ranges_against_one_snapshot(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    beta = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    delta = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
-    edits = json.dumps(
-        [
-            {"start": 1, "end": 2, "fingerprint": beta, "content": "BETA\nextra\n"},
-            {"start": 3, "end": 4, "fingerprint": delta, "content": "DELTA\n"},
-        ]
-    )
-
-    tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
-    display = tool.display()
-    result = tool.call()
-
-    assert BatchReplaceRangesTool.name() == "BatchReplaceRanges"
-    assert tool.requires_confirmation(session) is True
-    assert "-beta\n" in display
-    assert "+BETA\n" in display
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\nextra\ngamma\nDELTA\n"
-    assert "* edits: 2" in result
-    assert "* range 1: 1:2" in result
-    assert "* range 2: 3:4" in result
-
-
-def test_replace_ranges_tool_adds_line_break_before_following_content(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    beta = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    edits = json.dumps([{"start": 1, "end": 2, "fingerprint": beta, "content": "BETA"}])
-
-    BatchReplaceRangesTool.make(session, ["sample.txt", edits]).call()
-
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
-
-
-def test_replace_ranges_tool_rejects_overlapping_ranges(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    first = _fingerprint(ReadTool.make(session, ["sample.txt", "0", "2"]).call())
-    second = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "3"]).call())
-    edits = json.dumps(
-        [
-            {"start": 0, "end": 2, "fingerprint": first, "content": "one\n"},
-            {"start": 1, "end": 3, "fingerprint": second, "content": "two\n"},
-        ]
-    )
-
-    tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
-
-    with pytest.raises(ToolCallError, match="resolved ranges overlap"):
-        tool.call()
-    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
-
-
-def test_replace_ranges_tool_accepts_full_file_fingerprint_for_partial_range(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
-    edits = json.dumps([{"start": 1, "end": 2, "fingerprint": fingerprint, "content": "BETA\n"}])
-
-    tool = BatchReplaceRangesTool.make(session, ["sample.txt", edits])
-    display = tool.display()
-    result = tool.call()
-
-    assert display.startswith("--- ")
-    assert "# preview unavailable" not in display
-    assert "-beta\n" in display
-    assert "+BETA\n" in display
-    assert "* edits: 1" in result
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"

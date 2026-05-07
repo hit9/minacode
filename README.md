@@ -67,7 +67,7 @@ USE AT YOUR OWN RISK.
 ## Tools
 
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
-- Edit: `Edit`, `ReplaceRange`, `BatchReplaceRanges`, `ApplyPatch`.
+- Edit: `Edit`, `ReplaceRange`, `ApplyPatch`.
 - Shell: `Bash`, `Git`.
 - Memory: `Evidence` reads hidden raw evidence values by key.
 

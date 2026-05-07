@@ -525,13 +525,6 @@ def _parse_line_range_token(value: str) -> tuple[int, int]:
     return _parse_line_range(match.group(1), match.group(2))
 
 
-def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
-    lines = content.splitlines(keepends=True)
-    if content and has_following_line and not content.endswith("\n"):
-        lines[-1] += "\n"
-    return lines
-
-
 def _range_fingerprint(content: str) -> str:
     return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
 
@@ -1346,144 +1339,16 @@ class ReplaceRangeTool(Tool):
             end=self.end,
             fingerprint=self.fingerprint,
         )
-        replacement = _replacement_lines(self.content, has_following_line=resolved.end < len(lines))
+        replacement = self._replacement_lines(self.content, has_following_line=resolved.end < len(lines))
         new_lines = lines[: resolved.start] + replacement + lines[resolved.end :]
         return original, "".join(new_lines), resolved, replacement
 
-
-@final
-@dataclass
-class BatchReplaceRangesTool(Tool):
-    @final
-    @dataclass
-    class Edit:
-        start: int
-        end: int
-        fingerprint: str
-        content: str
-
-    filepath: str = ""
-    edits: list[Edit] = field(default_factory=list)
-    cwd: str = ""
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-
-    @classmethod
-    def name(cls) -> str:
-        return "BatchReplaceRanges"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Replace multiple non-overlapping ranges in one file using Read fingerprints.",
-            "Use for several edits in the same file; ranges refer to one snapshot and do not shift within the call.",
-            "Fingerprints may come from exact or covering Read ranges; same-range cached content can relocate.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "BatchReplaceRanges(filepath, edits_json) -> BatchReplaceRangesToolResult<path, edits>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "[{\\"start\\":10,\\"end\\":12,\\"fingerprint\\":\\"a1b2c3\\",\\"content\\":\\"new text\\\\n\\"}]"]']
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 2:
-            raise ToolCallArgError("requires exactly 2 args: filepath, edits_json")
-        try:
-            raw_edits = json.loads(str(args[1]))
-        except json.JSONDecodeError as error:
-            raise ToolCallArgError("invalid edits_json: " + str(error))
-        if not isinstance(raw_edits, list) or not raw_edits:
-            raise ToolCallArgError("edits_json must be a non-empty JSON array")
-        edits = [cls._edit_from_json(raw) for raw in raw_edits]
-        return cls(
-            filepath=session.resolve_path(args[0]),
-            edits=edits,
-            cwd=session.cwd,
-            range_fingerprints=session.range_fingerprints,
-        )
-
-    @classmethod
-    def _edit_from_json(cls, raw: JsonValue) -> Edit:
-        if not isinstance(raw, dict):
-            raise ToolCallArgError("each edit must be a JSON object")
-        start, end = _parse_line_range(str(raw.get("start", "")), str(raw.get("end", "")))
-        fingerprint = str(raw.get("fingerprint", ""))
-        if not fingerprint:
-            raise ToolCallArgError("edit fingerprint cannot be empty")
-        content = raw.get("content")
-        if not isinstance(content, str):
-            raise ToolCallArgError("edit content must be a string")
-        return cls.Edit(start=start, end=end, fingerprint=fingerprint, content=content)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
-
-    def display(self) -> str:
-        label = f"BatchReplaceRanges({self.filepath}, edits={len(self.edits)})"
-        try:
-            original, new_content, _ = self._preview()
-        except (OSError, ToolCallError) as error:
-            return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
-
-    def preview_error(self) -> str:
-        try:
-            self._preview()
-        except (OSError, ToolCallError) as error:
-            return str(error)
-        return ""
-
-    def call(self) -> str:
-        original, new_content, resolved_edits = self._preview()
-        if new_content == original:
-            raise ToolCallError("range replacements produced no changes")
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        lines = [
-            "<BatchReplaceRangesToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-            f"* edits: {len(resolved_edits)}",
-        ]
-        for index, (resolved, _) in enumerate(resolved_edits, start=1):
-            line = f"* range {index}: {resolved.start}:{resolved.end}"
-            if resolved.relocated_from:
-                old_start, old_end = resolved.relocated_from
-                line += f" relocated_from={old_start}:{old_end}"
-            lines.append(line)
-        lines.append("</BatchReplaceRangesToolResult>")
-        return "\n".join(lines)
-
-    def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
-        lines = original.splitlines(keepends=True)
-        resolved_edits = []
-        for edit in self.edits:
-            resolved = self.range_fingerprints.resolve(
-                lines,
-                filepath=self.filepath,
-                start=edit.start,
-                end=edit.end,
-                fingerprint=edit.fingerprint,
-            )
-            resolved_edits.append((resolved, _replacement_lines(edit.content, has_following_line=resolved.end < len(lines))))
-        self._ensure_non_overlapping(resolved_edits)
-
-        new_lines = list(lines)
-        for resolved, replacement in sorted(resolved_edits, key=lambda item: item[0].start, reverse=True):
-            new_lines[resolved.start : resolved.end] = replacement
-        return original, "".join(new_lines), resolved_edits
-
-    def _ensure_non_overlapping(self, resolved_edits: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
-        last_end = -1
-        for resolved, _ in sorted(resolved_edits, key=lambda item: (item[0].start, item[0].end)):
-            if resolved.start < last_end:
-                raise ToolCallError("resolved ranges overlap")
-            last_end = max(last_end, resolved.end)
+    @staticmethod
+    def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
+        lines = content.splitlines(keepends=True)
+        if content and has_following_line and not content.endswith("\n"):
+            lines[-1] += "\n"
+        return lines
 
 
 @final
@@ -1933,7 +1798,6 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     SearchTool.name(): SearchTool,
     EditTool.name(): EditTool,
     ReplaceRangeTool.name(): ReplaceRangeTool,
-    BatchReplaceRangesTool.name(): BatchReplaceRangesTool,
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
