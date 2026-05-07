@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallError
+from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
 
 
 def _fingerprint(read_result: str) -> str:
@@ -32,6 +32,46 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
             "</ReplaceRangeToolResult>",
         ]
     )
+
+
+def test_replace_range_tool_rejects_public_multi_range_args(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
+
+    with pytest.raises(ToolCallArgError, match="requires exactly 5 args"):
+        ReplaceRangeTool.make(
+            session,
+            ["sample.txt", "1", "2", beta_fingerprint, "BETA\n", "3", "4", delta_fingerprint, "DELTA\n"],
+        )
+
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\ndelta\n"
+
+
+def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
+    agent = Agent(session)
+    confirmations = []
+
+    latest = agent.execute_tool_calls(
+        [
+            {"name": "ReplaceRange", "intention": "replace beta", "args": ["sample.txt", "1", "2", beta_fingerprint, "BETA\n"]},
+            {"name": "ReplaceRange", "intention": "replace delta", "args": ["sample.txt", "3", "4", delta_fingerprint, "DELTA\n"]},
+        ],
+        confirm=lambda call, tool: confirmations.append(call.executed) or True,
+    )
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert confirmations[0].startswith('ReplaceRange("sample.txt", "1", "2"')
+    assert "replace beta; replace delta" in session.tool_result_store["tr.1"].description
+    assert "* replacements: 2" in latest
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
 
 
 def test_replace_range_tool_adds_line_break_before_following_content(tmp_path):
@@ -195,4 +235,3 @@ def test_replace_range_tool_rejects_no_change(tmp_path):
     with pytest.raises(ToolCallError, match="range replacement produced no changes"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
-

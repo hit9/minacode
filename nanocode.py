@@ -504,6 +504,13 @@ class ToolCallExecution:
 
 @final
 @dataclass
+class PreparedToolCall:
+    call: ParsedToolCall
+    tool: Tool
+
+
+@final
+@dataclass
 class BoundedToolOutput:
     value: str
     excerpted: bool
@@ -1347,12 +1354,22 @@ class EditTool(Tool):
 
 @final
 @dataclass
+class ReplaceRangeEdit:
+    start: int
+    end: int
+    fingerprint: str
+    content: str
+
+
+@final
+@dataclass
 class ReplaceRangeTool(Tool):
     filepath: str = ""
     start: int = 0
     end: int = 0
     fingerprint: str = ""
     content: str = ""
+    edits: list[ReplaceRangeEdit] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
@@ -1388,12 +1405,22 @@ class ReplaceRangeTool(Tool):
         fingerprint = str(args[3])
         if not fingerprint:
             raise ToolCallArgError("fingerprint cannot be empty")
+        return cls._from_edits(
+            session,
+            filepath=args[0],
+            edits=[ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=str(args[4]))],
+        )
+
+    @classmethod
+    def _from_edits(cls, session: Session, *, filepath: str, edits: list[ReplaceRangeEdit]) -> Self:
+        first = edits[0]
         return cls(
-            filepath=session.resolve_path(args[0]),
-            start=start,
-            end=end,
-            fingerprint=fingerprint,
-            content=str(args[4]),
+            filepath=session.resolve_path(filepath),
+            start=first.start,
+            end=first.end,
+            fingerprint=first.fingerprint,
+            content=first.content,
+            edits=edits,
             cwd=session.cwd,
             range_fingerprints=session.range_fingerprints,
         )
@@ -1402,9 +1429,9 @@ class ReplaceRangeTool(Tool):
         return True
 
     def display(self) -> str:
-        label = f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
+        label = self._label()
         try:
-            original, new_content, _, _ = self._preview()
+            original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
         return _make_unified_diff(original, new_content, self.filepath) or label
@@ -1417,38 +1444,74 @@ class ReplaceRangeTool(Tool):
         return ""
 
     def call(self) -> str:
-        original, new_content, resolved, _ = self._preview()
+        original, new_content, replacements = self._preview()
         if new_content == original:
             raise ToolCallError("range replacement produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 
+        relpath = os.path.relpath(self.filepath, self.cwd)
+        if len(replacements) == 1:
+            resolved, _ = replacements[0]
+            lines = [
+                "<ReplaceRangeToolResult>",
+                f"* path: {relpath}",
+                f"* range: {resolved.start}:{resolved.end}",
+                f"* fingerprint: {resolved.fingerprint}",
+            ]
+            if resolved.relocated_from:
+                old_start, old_end = resolved.relocated_from
+                lines.append(f"* relocated_from: {old_start}:{old_end}")
+            lines.append("</ReplaceRangeToolResult>")
+            return "\n".join(lines)
+
         lines = [
             "<ReplaceRangeToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-            f"* range: {resolved.start}:{resolved.end}",
-            f"* fingerprint: {resolved.fingerprint}",
+            f"* path: {relpath}",
+            f"* replacements: {len(replacements)}",
         ]
-        if resolved.relocated_from:
-            old_start, old_end = resolved.relocated_from
-            lines.append(f"* relocated_from: {old_start}:{old_end}")
+        for index, (resolved, _) in enumerate(replacements, start=1):
+            lines.append(f"* range[{index}]: {resolved.start}:{resolved.end}")
+            lines.append(f"* fingerprint[{index}]: {resolved.fingerprint}")
+            if resolved.relocated_from:
+                old_start, old_end = resolved.relocated_from
+                lines.append(f"* relocated_from[{index}]: {old_start}:{old_end}")
         lines.append("</ReplaceRangeToolResult>")
         return "\n".join(lines)
 
-    def _preview(self) -> tuple[str, str, RangeFingerprintStore.Resolved, list[str]]:
+    def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
         with open(self.filepath, "r", encoding="utf-8") as f:
             original = f.read()
         lines = original.splitlines(keepends=True)
-        resolved = self.range_fingerprints.resolve(
-            lines,
-            filepath=self.filepath,
-            start=self.start,
-            end=self.end,
-            fingerprint=self.fingerprint,
-        )
-        replacement = self._replacement_lines(self.content, has_following_line=resolved.end < len(lines))
-        new_lines = lines[: resolved.start] + replacement + lines[resolved.end :]
-        return original, "".join(new_lines), resolved, replacement
+        replacements = []
+        for edit in self.edits:
+            resolved = self.range_fingerprints.resolve(
+                lines,
+                filepath=self.filepath,
+                start=edit.start,
+                end=edit.end,
+                fingerprint=edit.fingerprint,
+            )
+            replacement = self._replacement_lines(edit.content, has_following_line=resolved.end < len(lines))
+            replacements.append((resolved, replacement))
+        self._reject_overlapping_ranges(replacements)
+        new_lines = list(lines)
+        for resolved, replacement in sorted(replacements, key=lambda item: item[0].start, reverse=True):
+            new_lines[resolved.start : resolved.end] = replacement
+        return original, "".join(new_lines), replacements
+
+    def _label(self) -> str:
+        if len(self.edits) <= 1:
+            return f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
+        return f"ReplaceRange({self.filepath}, {len(self.edits)} ranges)"
+
+    @staticmethod
+    def _reject_overlapping_ranges(replacements: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
+        previous: RangeFingerprintStore.Resolved | None = None
+        for resolved, _ in sorted(replacements, key=lambda item: item[0].start):
+            if previous is not None and resolved.start < previous.end:
+                raise ToolCallError(f"range replacements overlap: {previous.start}:{previous.end} and {resolved.start}:{resolved.end}")
+            previous = resolved
 
     @staticmethod
     def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
@@ -2048,6 +2111,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {latest_user_input}
 </Latest_User_Input>
 
+AGAIN, EACH OUTPUT JSON OBJECT MUST FOLLOWED BY A `__END_ACTION__`:
+
+HERES'S YOUR OUTPUT:
 """
 
 
@@ -2528,14 +2594,18 @@ class ToolCallRunner:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         executions = []
-        for item in self._dedupe_readonly_tool_calls(tool_calls):
+        for item in self._merge_adjacent_replace_range_calls(self._dedupe_readonly_tool_calls(tool_calls)):
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
             error_type: Type[Exception] | None = None
             try:
-                call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
-                tool = self._make_tool(call)
+                if isinstance(item, PreparedToolCall):
+                    call = item.call
+                    tool = item.tool
+                else:
+                    call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
+                    tool = self._make_tool(call)
                 preview_error = self._preview_error(tool)
                 if preview_error:
                     raise ToolCallError("preview unavailable: " + preview_error)
@@ -2606,6 +2676,60 @@ class ToolCallRunner:
                     continue
             filtered.append(item)
         return filtered
+
+    def _merge_adjacent_replace_range_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
+        merged: list[JsonValue | ParsedToolCall | PreparedToolCall] = []
+        index = 0
+        while index < len(tool_calls):
+            item = tool_calls[index]
+            if not self._is_single_replace_range_call(item):
+                merged.append(item)
+                index += 1
+                continue
+
+            group = [item]
+            filepath = item.args[0]
+            index += 1
+            while index < len(tool_calls):
+                next_item = tool_calls[index]
+                if not self._is_single_replace_range_call(next_item) or next_item.args[0] != filepath:
+                    break
+                group.append(next_item)
+                index += 1
+
+            if len(group) == 1:
+                merged.append(item)
+                continue
+
+            prepared = self._make_merged_replace_range_call(group)
+            if prepared is None:
+                merged.extend(group)
+            else:
+                merged.append(prepared)
+        return merged
+
+    @staticmethod
+    def _is_single_replace_range_call(call: JsonValue | ParsedToolCall) -> bool:
+        return isinstance(call, ParsedToolCall) and call.name == ReplaceRangeTool.name() and len(call.args) == 5
+
+    def _make_merged_replace_range_call(self, group: list[ParsedToolCall]) -> PreparedToolCall | None:
+        filepath = group[0].args[0]
+        edits = []
+        intentions = []
+        for call in group:
+            try:
+                start, end = _parse_line_range(call.args[1], call.args[2])
+            except ToolCallArgError:
+                return None
+            fingerprint = call.args[3]
+            if not fingerprint:
+                return None
+            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=call.args[4]))
+            if call.intention:
+                intentions.append(call.intention)
+        tool = ReplaceRangeTool._from_edits(self.session, filepath=filepath, edits=edits)
+        call = ParsedToolCall(name=ReplaceRangeTool.name(), intention="; ".join(intentions), args=list(group[0].args))
+        return PreparedToolCall(call=call, tool=tool)
 
     def format_latest_report(self) -> str:
         if not self.latest_executions:
