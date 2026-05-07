@@ -55,17 +55,17 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
-def test_tool_result_store_keeps_latest_128_items(tmp_path):
+def test_tool_result_store_keeps_latest_256_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    for index in range(129):
+    for index in range(257):
         agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
 
-    assert len(session.tool_result_store) == 128
+    assert len(session.tool_result_store) == 256
     assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
-    assert list(session.tool_result_store)[-1] == "tr.129"
-    assert session.tool_result_counter == 129
+    assert list(session.tool_result_store)[-1] == "tr.257"
+    assert session.tool_result_counter == 257
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -894,7 +894,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
 
 def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
-    for index in range(6):
+    for index in range(51):
         (tmp_path / f"sample-{index}.txt").write_text(f"line {index}\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -903,7 +903,7 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
                 {
                     "actions": [
                         {"type": "tool", "name": "Read", "intention": f"read {index}", "args": [f"sample-{index}.txt", "0", "1"]}
-                        for index in range(6)
+                        for index in range(51)
                     ]
                 },
                 {"actions": [{"type": "goal", "text": "read samples", "complete": True}, {"type": "message", "text": "done"}]},
@@ -918,8 +918,10 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
 
     agent.run("read samples")
 
-    assert list(session.tool_result_store) == ["tr.2", "tr.3", "tr.4", "tr.5", "tr.6"]
-    assert session.tool_result_counter == 6
+    assert len(session.tool_result_store) == 50
+    assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
+    assert list(session.tool_result_store)[-1] == "tr.51"
+    assert session.tool_result_counter == 51
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):

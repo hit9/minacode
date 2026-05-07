@@ -2442,7 +2442,7 @@ class ModelClient:
 @final
 class ToolCallRunner:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 128
+    MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
     def __init__(self, session: Session):
         self.session = session
@@ -2876,7 +2876,7 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
-    MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 5
+    MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
 
     def __init__(self, session: Session):
         self.session = session
