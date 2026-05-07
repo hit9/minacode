@@ -3104,7 +3104,7 @@ class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
-    MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
+    MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20)
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
