@@ -2042,12 +2042,13 @@ MAX to 10 tool calls this time:
 Rules:
 
 1. Every turn must emit at least one action frame.
-2. Output known only for new durable facts; do not repeat or rephrase existing Known.
-3. Call at most 10 tools in one turn.
-4. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-5. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
-6. Batch only independent tools.
-7. If a tool result is needed for the next decision, stop after that tool batch.
+2. For user questions, first consider them as codebase questions about the current directory.
+3. Output known only for new durable facts; do not repeat or rephrase existing Known.
+4. Call at most 10 tools in one turn.
+5. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
+6. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+7. Batch only independent tools.
+8. If a tool result is needed for the next decision, stop after that tool batch.
 
 Action types:
 * message: tell the user progress, result, or blocker.
