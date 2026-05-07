@@ -2629,17 +2629,13 @@ class ToolCallRunner:
         if offset:
             lines.append("  ... " + str(offset) + " older")
         for index, execution in enumerate(visible, start=offset + 1):
-            lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
-            if execution.call.intention:
-                lines.append("     why: " + execution.call.intention)
+            status = "ok" if execution.outcome == "success" else "fail"
+            line = "  " + str(index) + ". " + status + " " + execution.call.executed
             if execution.result_key:
-                result_line = "     result: " + execution.result_key
-                item = self.session.tool_result_store.get(execution.result_key)
-                if item is not None and item.log_path:
-                    result_line += " | log: " + item.log_path
-                    if item.original_lines or item.original_chars:
-                        result_line += " (" + str(item.original_lines) + " lines, " + str(item.original_chars) + " chars)"
-                lines.append(result_line)
+                line += " | " + execution.result_key
+            if execution.call.intention:
+                line += " | why: " + execution.call.intention
+            lines.append(line)
         return "\n".join(lines)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
