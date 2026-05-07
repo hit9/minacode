@@ -552,8 +552,16 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
 
 
 def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
-    blocks = [_format_recent_tool_call(execution) for execution in executions]
-    return "\n\n".join(blocks) or "(empty)"
+    blocks = _format_recent_tool_call_blocks(executions)
+    return _join_tool_call_blocks(blocks) or "(empty)"
+
+
+def _format_recent_tool_call_blocks(executions: list[ToolCallExecution]) -> list[str]:
+    return [_format_recent_tool_call(execution) for execution in executions]
+
+
+def _join_tool_call_blocks(blocks: list[str]) -> str:
+    return "\n\n".join(blocks)
 
 
 def _format_recent_tool_call(execution: ToolCallExecution) -> str:
@@ -1948,6 +1956,7 @@ USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBI
 Memory:
 - Known = concise stable facts.
 - Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
+- Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
 
 STEPS:
 
@@ -2988,7 +2997,7 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
-    RECENT_TOOL_CALL_BATCHES: ClassVar[int] = 3
+    RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
 
     def __init__(self, session: Session):
@@ -2998,15 +3007,17 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
+        self.latest_tool_batch = ""
+        self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_calls = ""
-        self.recent_tool_call_batches: list[str] = []
+        self.recent_tool_call_blocks: list[str] = []
         self.agent_feedback_errors: list[str] = []
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self) -> str:
-        return self.prompt_builder.user_prompt(self.recent_tool_calls, self._format_agent_feedback())
+        return self.prompt_builder.user_prompt(self._format_recent_tool_call_context(), self._format_agent_feedback())
 
     def request(
         self,
@@ -3168,17 +3179,31 @@ class Agent:
         self._trim_tool_result_store_after_goal_complete()
 
     def _clear_recent_tool_calls(self) -> None:
-        self.recent_tool_call_batches = []
+        self.latest_tool_batch = ""
+        self.latest_tool_call_blocks = []
         self.recent_tool_calls = ""
+        self.recent_tool_call_blocks = []
 
-    def _append_recent_tool_calls(self, batch: str) -> None:
-        if not batch:
+    def _format_recent_tool_call_context(self) -> str:
+        return _join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
+
+    def _append_latest_tool_batch(self, executions: list[ToolCallExecution]) -> None:
+        if not executions:
             return
-        self.recent_tool_call_batches.append(batch)
-        del self.recent_tool_call_batches[: max(0, len(self.recent_tool_call_batches) - self.RECENT_TOOL_CALL_BATCHES)]
-        while len("\n\n".join(self.recent_tool_call_batches)) > self.RECENT_TOOL_CALL_CHARS and len(self.recent_tool_call_batches) > 1:
-            self.recent_tool_call_batches.pop(0)
-        self.recent_tool_calls = "\n\n".join(self.recent_tool_call_batches)
+        self._append_recent_tool_call_blocks(self.latest_tool_call_blocks)
+        self.latest_tool_call_blocks = _format_recent_tool_call_blocks(executions)
+        self.latest_tool_batch = _join_tool_call_blocks(self.latest_tool_call_blocks)
+
+    def _append_recent_tool_call_blocks(self, blocks: list[str]) -> None:
+        if not blocks:
+            return
+        self.recent_tool_call_blocks.extend(blocks)
+        overflow = len(self.recent_tool_call_blocks) - self.RECENT_TOOL_CALLS
+        if overflow > 0:
+            del self.recent_tool_call_blocks[:overflow]
+        while len(_join_tool_call_blocks(self.recent_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS and self.recent_tool_call_blocks:
+            self.recent_tool_call_blocks.pop(0)
+        self.recent_tool_calls = _join_tool_call_blocks(self.recent_tool_call_blocks)
 
     def _trim_tool_result_store_after_goal_complete(self) -> None:
         overflow = len(self.session.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
@@ -3307,13 +3332,13 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
-        batch = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        self._append_recent_tool_calls(batch)
-        self.session.turn_tool_calls += len(tool_calls)
+        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self._append_latest_tool_batch(self.tool_runner.latest_executions)
+        self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
-        return self.recent_tool_calls
+        return self.latest_tool_batch
 
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."

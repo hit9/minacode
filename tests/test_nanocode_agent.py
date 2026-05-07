@@ -95,20 +95,25 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
-def test_agent_keeps_recent_tool_call_batches(tmp_path):
+def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
+    agent.RECENT_TOOL_CALLS = 2
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
 
+    assert "four.txt" in agent.latest_tool_batch
+    assert "four.txt" not in agent.recent_tool_calls
     assert "one.txt" not in agent.recent_tool_calls
     assert "two.txt" in agent.recent_tool_calls
     assert "three.txt" in agent.recent_tool_calls
-    assert "four.txt" in agent.recent_tool_calls
-    assert len(agent.recent_tool_call_batches) == 3
+    assert len(agent.recent_tool_call_blocks) == 2
+    context = agent._format_recent_tool_call_context()
+    assert "one.txt" not in context
+    assert context.index("two.txt") < context.index("three.txt") < context.index("four.txt")
 
 
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
@@ -116,12 +121,12 @@ def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     agent = Agent(session)
     agent.RECENT_TOOL_CALL_CHARS = 80
 
-    agent._append_recent_tool_calls("old batch " + "x" * 40)
-    agent._append_recent_tool_calls("new batch " + "y" * 40)
+    agent._append_recent_tool_call_blocks(["old call " + "x" * 40])
+    agent._append_recent_tool_call_blocks(["new call " + "y" * 40])
 
-    assert "old batch" not in agent.recent_tool_calls
-    assert "new batch" in agent.recent_tool_calls
-    assert len(agent.recent_tool_call_batches) == 1
+    assert "old call" not in agent.recent_tool_calls
+    assert "new call" in agent.recent_tool_calls
+    assert len(agent.recent_tool_call_blocks) == 1
 
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):
@@ -952,6 +957,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "tr.1" in fake_client.user_prompts[1]
+    assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
     assert session.current.known == ["Read sample.txt and found alpha."]
     assert session.current.user_input == "read sample"
@@ -990,6 +996,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
+    assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
 
 
@@ -1018,7 +1025,8 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
     session.current.known = ["keep this fact"]
     session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
-    agent._append_recent_tool_calls("old tool call")
+    agent.latest_tool_batch = "old tool call"
+    agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
     agent.run("read samples")
@@ -1301,7 +1309,8 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
     session.current.known = ["keep this fact"]
     session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
-    agent._append_recent_tool_calls("old tool call")
+    agent.latest_tool_batch = "old tool call"
+    agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
     try:
@@ -1312,6 +1321,7 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
         raise AssertionError("expected KeyboardInterrupt")
 
     assert agent.agent_feedback_errors == []
+    assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
     assert session.current.goal == ""
     assert session.current.plan == []
