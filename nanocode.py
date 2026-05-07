@@ -2630,12 +2630,14 @@ class ToolCallRunner:
             lines.append("  ... " + str(offset) + " older")
         for index, execution in enumerate(visible, start=offset + 1):
             status = "ok" if execution.outcome == "success" else "fail"
-            line = "  " + str(index) + ". " + status + " " + execution.call.executed
+            lines.append("  " + str(index) + ". " + status + " " + execution.call.executed)
+            details = []
             if execution.result_key:
-                line += " | " + execution.result_key
+                details.append(execution.result_key)
             if execution.call.intention:
-                line += " | why: " + execution.call.intention
-            lines.append(line)
+                details.append("why: " + execution.call.intention)
+            if details:
+                lines.append("     " + " | ".join(details))
         return "\n".join(lines)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
@@ -4041,6 +4043,11 @@ class AgentLoop:
         for index, line in enumerate(lines):
             if index == 0:
                 segments.extend([("bold ansiblue", line), ("", "\n")])
+            elif line.startswith("  ") and (". ok " in line or ". fail " in line):
+                prefix, _, rest = line.partition(". ")
+                status, _, tail = rest.partition(" ")
+                status_style = "ansigreen" if status == "ok" else "ansired"
+                segments.extend([("ansibrightblack", prefix + ". "), (status_style, status + " " + tail + "\n")])
             elif line.startswith("  ") and ". [" in line:
                 style = "ansigreen" if "[success]" in line else "ansired"
                 segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])

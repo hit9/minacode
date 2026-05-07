@@ -949,8 +949,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert messages[0].startswith("Tool Calls\n")
     assert '1. ok Read("sample.txt", "0", "1")' in messages[0]
-    assert "why: read sample" in messages[0]
-    assert "| tr.1" in messages[0]
+    assert "     tr.1 | why: read sample" in messages[0]
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]

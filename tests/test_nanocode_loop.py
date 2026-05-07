@@ -97,6 +97,20 @@ def test_agent_loop_styles_queued_tool_preview(tmp_path):
     ]
 
 
+def test_agent_loop_styles_compact_tool_call_report(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+
+    segments = loop._tool_segments('Tool Calls\n  1. ok Read("sample.txt", "0", "1")\n     tr.1 | why: read sample')
+
+    assert ("bold ansiblue", "Tool Calls") in segments
+    assert ("ansigreen", 'ok Read("sample.txt", "0", "1")\n') in segments
+    assert ("ansibrightblack", "     tr.1 | why: read sample\n") in segments
+
+
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeAgent:
         def __init__(self):
