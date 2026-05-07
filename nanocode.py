@@ -663,7 +663,9 @@ class ReadTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
-            raise ToolCallArgError('Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().')
+            raise ToolCallArgError(
+                'Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().'
+            )
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
@@ -1314,7 +1316,11 @@ class EditTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 3:
-            raise ToolCallArgError('Edit args error: got ' + str(len(args)) + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().')
+            raise ToolCallArgError(
+                "Edit args error: got "
+                + str(len(args))
+                + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().'
+            )
         find = str(args[1])
         if not find:
             raise ToolCallArgError("find text cannot be empty")
@@ -2046,21 +2052,18 @@ MAX to 10 tool calls this time:
 Rules:
 
 1. Every turn must emit at least one action frame.
-2. The first action of every user turn must be chat or task.
-3. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
-4. Use task for code/work questions; then continue with goal/plan/tool/verify/known/message actions.
-5. For user questions, first consider them as codebase questions about the current directory.
-6. Output known only for new durable facts; do not repeat or rephrase existing Known.
-7. Output project_map only for the most essential top-level stable repo structure; keep it extremely minimal and brief. No raw logs, temporary findings, file snapshots, line numbers, or line ranges. Avoid storing too much - only the highest-level architecture.
-8. Call at most 10 tools in one turn.
-9. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-10. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
-11. Batch only independent tools.
-12. If a tool result is needed for the next decision, stop after that tool batch.
+2. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
+3. For user questions, first consider them as codebase questions about the current directory.
+4. Output known only for new durable facts; do not repeat or rephrase existing Known.
+5. Output project_map only for the most essential top-level stable repo structure; keep it extremely minimal and brief. No raw logs, temporary findings, file snapshots, line numbers, or line ranges. Avoid storing too much - only the highest-level architecture.
+6. Call at most 10 tools in one turn.
+7. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
+8. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+9. Batch only independent tools.
+10. If a tool result is needed for the next decision, stop after that tool batch.
 
 Action types:
 * chat: reply once to greetings or non-actionable conversation and end the user turn.
-* task: declare this user turn needs work; use as first action before task actions.
 * message: tell the user progress, result, or blocker.
 * goal: set/update the current goal; complete=true only after success + verification. When marking complete without a separate message action, include "message_for_complete": "string" to supply the completion message.
 * verify: record verification status for the current goal.
@@ -2075,7 +2078,6 @@ Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "chat", "text": "string"} __END_ACTION__
-{"type": "task", "text": "string"} __END_ACTION__
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": "string"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
@@ -3287,7 +3289,6 @@ class Agent:
                     if on_message is not None:
                         on_message(chat_message)
                     return response
-                actions = self._task_actions(actions)
                 tool_calls = self._tool_calls_from_actions(actions)
                 messages = self._messages_from_actions(actions)
                 if not messages:
@@ -3363,7 +3364,7 @@ class Agent:
                     self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
                     self._report_gate(
                         on_message,
-                        "Continuing: goal is not complete yet.",
+                        "Continuing: assistant must set current task's goal.",
                         "Continuation_Gate: goal not reached; retrying next useful action.",
                     )
                 elif messages:
@@ -3585,11 +3586,6 @@ class Agent:
         if not actions or _json_str(actions[0].get("type")) != "chat":
             return None
         return _json_str(actions[0].get("text")) or ""
-
-    def _task_actions(self, actions: list[Json]) -> list[Json]:
-        if actions and _json_str(actions[0].get("type")) == "task":
-            return actions[1:]
-        return actions
 
     def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
         return [action for action in actions if _json_str(action.get("type")) == "tool"]

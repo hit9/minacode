@@ -1167,31 +1167,6 @@ def test_agent_run_stops_after_chat_action(tmp_path):
     assert len(agent.model_client.user_prompts) == 1
 
 
-def test_agent_run_ignores_task_action_and_continues_task_flow(tmp_path):
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "task", "text": "answer the request"}, {"type": "goal", "text": "answer", "complete": False}]},
-                {"actions": _final_actions()},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.model_client = FakeModelClient()
-    messages = []
-
-    response = agent.run("answer", on_message=messages.append)
-
-    assert response["actions"][-1]["text"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
-    assert any(message.startswith("State Updated") for message in messages)
-
-
 def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
     class FakeModelClient:
         def __init__(self):
@@ -1233,7 +1208,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["text"] == "done"
-    assert "Continuing: goal is not complete yet." in messages
+    assert "Continuing: assistant must set current task's goal." in messages
 
 
 def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
