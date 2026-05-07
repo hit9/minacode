@@ -5,18 +5,38 @@ from nanocode import Agent, Session, ToolCallError, ToolResultItem, ToolResultTo
 
 def test_tool_result_tool_gets_multiple_keys(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.tool_result_store = {"tr.1": ToolResultItem(description="Read sample.", value="line 1\nline 2")}
+    session.tool_result_store = {
+        "tr.1": ToolResultItem(
+            description="Read sample.",
+            value="line 1\nline 2",
+            log_path=".nanocode/tool_results/sample.log",
+            original_lines=2,
+            original_chars=13,
+        )
+    }
 
     result = ToolResultTool.make(session, ["tr.1", "missing"]).call()
 
-    assert '<ToolResult key="tr.1">\nline 1\nline 2\n  </ToolResult>' in result
+    assert '<ToolResult key="tr.1">' in result
+    assert "<log_path>.nanocode/tool_results/sample.log</log_path>" in result
+    assert "<original_lines>2</original_lines>" in result
+    assert "<original_chars>13</original_chars>" in result
+    assert "line 1\nline 2" in result
     assert '<Missing key="missing"/>' in result
 
 
 def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.current.known = ["Parser notes were captured."]
-    session.tool_result_store = {"tr.1": ToolResultItem(description='success Read("sample.txt")', value="line 1\nline 2")}
+    session.tool_result_store = {
+        "tr.1": ToolResultItem(
+            description='success Read("sample.txt")',
+            value="line 1\nline 2",
+            log_path=".nanocode/tool_results/sample.log",
+            original_lines=2,
+            original_chars=13,
+        )
+    }
 
     prompt = Agent(session).build_user_prompt()
 
@@ -27,6 +47,7 @@ def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
     assert "Parser notes were captured." in prompt
     assert "tr.1" in prompt
     assert 'success Read("sample.txt")' in prompt
+    assert ".nanocode/tool_results/sample.log" in prompt
     assert "line 1" not in prompt
     known_section = prompt.split("<Known>", 1)[1].split("</Known>", 1)[0]
     store_section = prompt.split("<Tool_Result_Store>", 1)[1].split("</Tool_Result_Store>", 1)[0]

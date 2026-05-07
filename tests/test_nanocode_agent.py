@@ -24,8 +24,35 @@ def test_agent_tool_results_go_to_last_tool_calls_and_store(tmp_path):
     assert "<result_key>tr.1</result_key>" in latest
     assert session.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.tool_result_store["tr.1"].value
+    assert session.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
+    assert session.tool_result_store["tr.1"].original_chars > 0
+    assert session.tool_result_store["tr.1"].original_lines > 0
+    assert session.tool_result_store["tr.1"].excerpted is False
+    assert (tmp_path / session.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.tool_result_store["tr.1"].value
     assert session.conversation == []
-    assert not (tmp_path / ".nanocode" / "tool_results").exists()
+    assert (tmp_path / ".nanocode" / "tool_results").exists()
+
+
+def test_agent_tool_results_are_bounded_and_logged(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("H" * 5000 + "M" * 5000 + "T" * 5000 + "\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0", "1"]}])
+
+    item = session.tool_result_store["tr.1"]
+    assert item.excerpted is True
+    assert len(item.value) <= nanocode.MAX_TOOL_OUTPUT_CHARS
+    assert "excerpted: true" in item.value
+    assert "original_lines: " + str(item.original_lines) in item.value
+    assert "original_chars: " + str(item.original_chars) in item.value
+    assert "full_log: " + item.log_path in item.value
+    assert "H" * 50 in item.value
+    assert "M" * 50 in item.value
+    assert "T" * 50 in item.value
+    assert "[tool result excerpt]" in latest
+    assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
 def test_tool_result_store_keeps_latest_128_items(tmp_path):
@@ -706,7 +733,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert "Cancelled: user refused: please inspect tests first" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
     assert session.conversation == []
-    assert not (tmp_path / ".nanocode" / "tool_results").exists()
+    assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
 def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp_path):
@@ -735,7 +762,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     assert "ToolCallError: tool call missing name" in latest
     assert "InvalidToolCall(" in latest
     assert session.conversation == []
-    assert not (tmp_path / ".nanocode" / "tool_results").exists()
+    assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
 def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
@@ -822,7 +849,8 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "why: read sample" in messages[0]
     assert "result: tr.1" in messages[0]
-    assert "log:" not in messages[0]
+    assert "log: .nanocode/tool_results/" in messages[0]
+    assert "lines," in messages[0]
     assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]

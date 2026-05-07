@@ -42,6 +42,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
+MAX_TOOL_OUTPUT_CHARS = 12_000
 __version__ = "0.2.9"
 
 
@@ -195,10 +196,22 @@ class Verification(PromptItem):
 class ToolResultItem(PromptItem):
     description: str
     value: str
+    log_path: str = ""
+    original_lines: int = 0
+    original_chars: int = 0
+    excerpted: bool = False
 
     @override
     def format(self, indent: str = "") -> str:
-        return _format_lines(["<ToolResultItem>", "  <description>" + self.description + "</description>", "</ToolResultItem>"], indent)
+        lines = ["<ToolResultItem>", "  <description>" + self.description + "</description>"]
+        if self.log_path:
+            lines.append("  <log_path>" + self.log_path + "</log_path>")
+        if self.original_lines or self.original_chars:
+            lines.append("  <original_lines>" + str(self.original_lines) + "</original_lines>")
+            lines.append("  <original_chars>" + str(self.original_chars) + "</original_chars>")
+        lines.append("  <excerpted>" + str(self.excerpted).lower() + "</excerpted>")
+        lines.append("</ToolResultItem>")
+        return _format_lines(lines, indent)
 
 
 @final
@@ -418,6 +431,9 @@ class Session:
     def debug_dir(self) -> str:
         return self.resolve_path(os.path.join(self.nanocode_dir, "debug"))
 
+    def tool_results_dir(self) -> str:
+        return self.resolve_path(os.path.join(self.nanocode_dir, "tool_results"))
+
     def missing_required_envs(self) -> list[str]:
         return [env_name for env_name, attr_name in self.REQUIRED_ENVS if not getattr(self, attr_name)]
 
@@ -466,6 +482,58 @@ class ToolCallExecution:
     output: str
     error_type: Type[Exception] | None = None
     result_key: str = ""
+
+
+@final
+@dataclass
+class BoundedToolOutput:
+    value: str
+    excerpted: bool
+    original_lines: int
+    original_chars: int
+
+
+def _tool_output_line_count(output: str) -> int:
+    if not output:
+        return 0
+    return output.count("\n") + (0 if output.endswith("\n") else 1)
+
+
+def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> BoundedToolOutput:
+    original_chars = len(output)
+    original_lines = _tool_output_line_count(output)
+    if original_chars <= max_chars:
+        return BoundedToolOutput(output, False, original_lines, original_chars)
+
+    header = (
+        "[tool result excerpt]\n"
+        "excerpted: true\n"
+        "original_lines: "
+        + str(original_lines)
+        + "\noriginal_chars: "
+        + str(original_chars)
+        + ("\nfull_log: " + log_path if log_path else "")
+        + "\n"
+    )
+    labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
+    body_budget = max_chars - len(header) - sum(len(label) for label in labels)
+    if body_budget <= 0:
+        return BoundedToolOutput(header[:max_chars], True, original_lines, original_chars)
+
+    head_size = body_budget // 3
+    middle_size = body_budget // 3
+    tail_size = body_budget - head_size - middle_size
+    middle_start = max(0, original_chars // 2 - middle_size // 2)
+    value = (
+        header
+        + labels[0]
+        + output[:head_size]
+        + labels[1]
+        + output[middle_start : middle_start + middle_size]
+        + labels[2]
+        + output[-tail_size:]
+    )
+    return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
 def _format_last_tool_calls(executions: list[ToolCallExecution]) -> str:
@@ -1742,8 +1810,6 @@ class GitTool(Tool):
 @final
 @dataclass
 class ToolResultTool(Tool):
-    MAX_OUTPUT_CHARS: ClassVar[int] = 20_000
-
     keys: list[str]
     results: dict[str, ToolResultItem]
 
@@ -1753,11 +1819,11 @@ class ToolResultTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read stored raw tool results by key; batch multiple keys when useful."]
+        return ["Read stored bounded tool result excerpts by key; use log_path with Read for original details."]
 
     @classmethod
     def signature(cls) -> str:
-        return "ToolResult(key[, key...]) -> ToolResultToolResult<content>"
+        return "ToolResult(key[, key...]) -> ToolResultToolResult<excerpt>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -1783,12 +1849,22 @@ class ToolResultTool(Tool):
             if key not in self.results:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
-            lines.extend(['  <ToolResult key="' + key + '">', self.results[key].value, "  </ToolResult>"])
+            item = self.results[key]
+            lines.append('  <ToolResult key="' + key + '">')
+            lines.append("    <description>" + item.description + "</description>")
+            if item.log_path:
+                lines.append("    <log_path>" + item.log_path + "</log_path>")
+            if item.original_lines or item.original_chars:
+                lines.append("    <original_lines>" + str(item.original_lines) + "</original_lines>")
+                lines.append("    <original_chars>" + str(item.original_chars) + "</original_chars>")
+            lines.append("    <excerpted>" + str(item.excerpted).lower() + "</excerpted>")
+            lines.append("    <content>")
+            lines.append(item.value)
+            lines.append("    </content>")
+            lines.append("  </ToolResult>")
         lines.append("</ToolResultToolResult>")
         result = "\n".join(lines)
-        if len(result) <= self.MAX_OUTPUT_CHARS:
-            return result
-        return result[: self.MAX_OUTPUT_CHARS] + "\n...<truncated>\n</ToolResultToolResult>"
+        return _bound_tool_output(result).value
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1817,7 +1893,7 @@ USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBI
 
 Memory:
 - Known = concise stable facts.
-- Tool_Result_Store = raw tool results saved automatically; use ToolResult(key...) to read full content when needed.
+- Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
 
 STEPS:
 
@@ -1830,7 +1906,8 @@ STEPS:
 
 3. Memory check:
    - Use Known for stable facts.
-   - Use ToolResult(key...) only when you need a previous tool result by key.
+   - Use ToolResult(key...) only when you need a previous tool result excerpt by key.
+   - Use Read(log_path, range) when an excerpt is insufficient and exact original tool output is needed.
    - Use Read/Search/ListDir for current source state.
 
 4. Plan:
@@ -2016,7 +2093,15 @@ class PromptBuilder:
             return "(empty)"
         lines = []
         for key, item in self.session.tool_result_store.items():
-            lines.extend(['<ToolResult key="' + key + '">', "  <description>" + item.description + "</description>", "</ToolResult>"])
+            lines.append('<ToolResult key="' + key + '">')
+            lines.append("  <description>" + item.description + "</description>")
+            if item.log_path:
+                lines.append("  <log_path>" + item.log_path + "</log_path>")
+            if item.original_lines or item.original_chars:
+                lines.append("  <original_lines>" + str(item.original_lines) + "</original_lines>")
+                lines.append("  <original_chars>" + str(item.original_chars) + "</original_chars>")
+            lines.append("  <excerpted>" + str(item.excerpted).lower() + "</excerpted>")
+            lines.append("</ToolResult>")
         return "\n".join(lines)
 
     def _format_plan(self) -> str:
@@ -2409,6 +2494,9 @@ class ToolCallRunner:
             result_key = ""
             if call.name != ToolResultTool.name():
                 result_key = self._store_tool_result(call, outcome, output)
+                output = self.session.tool_result_store[result_key].value
+            else:
+                output = _bound_tool_output(output).value
 
             execution = ToolCallExecution(
                 call=call,
@@ -2435,7 +2523,13 @@ class ToolCallRunner:
             if execution.call.intention:
                 lines.append("     why: " + execution.call.intention)
             if execution.result_key:
-                lines.append("     result: " + execution.result_key)
+                result_line = "     result: " + execution.result_key
+                item = self.session.tool_result_store.get(execution.result_key)
+                if item is not None and item.log_path:
+                    result_line += " | log: " + item.log_path
+                    if item.original_lines or item.original_chars:
+                        result_line += " (" + str(item.original_lines) + " lines, " + str(item.original_chars) + " chars)"
+                lines.append(result_line)
         return "\n".join(lines)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
@@ -2444,9 +2538,27 @@ class ToolCallRunner:
         description = outcome + " " + call.executed
         if call.intention:
             description += " - " + call.intention
-        self.session.tool_result_store[key] = ToolResultItem(description=description, value=output)
+        log_path = self._write_tool_result_log(key, output)
+        bounded = _bound_tool_output(output, log_path=log_path)
+        self.session.tool_result_store[key] = ToolResultItem(
+            description=description,
+            value=bounded.value,
+            log_path=log_path,
+            original_lines=bounded.original_lines,
+            original_chars=bounded.original_chars,
+            excerpted=bounded.excerpted,
+        )
         self._trim_tool_result_store()
         return key
+
+    def _write_tool_result_log(self, key: str, output: str) -> str:
+        directory = self.session.tool_results_dir()
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        filepath = os.path.join(directory, timestamp + "-" + key + ".log")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(output)
+        return os.path.relpath(filepath, self.session.cwd)
 
     def _trim_tool_result_store(self) -> None:
         overflow = len(self.session.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
@@ -3763,8 +3875,8 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
             elif line.startswith("     why:"):
                 segments.extend([("ansibrightblack", "     why: "), ("ansimagenta", line[10:] + "\n")])
-            elif line.startswith("     log:"):
-                segments.extend([("ansibrightblack", "     log: "), ("ansiblue", line[10:] + "\n")])
+            elif line.startswith("     result:"):
+                segments.extend([("ansibrightblack", "     result: "), ("ansiblue", line[13:] + "\n")])
             else:
                 segments.extend([("ansibrightblack", line + "\n")])
         return segments
