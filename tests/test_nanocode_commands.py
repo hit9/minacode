@@ -62,6 +62,55 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "blackboard" not in result.message
 
 
+def test_project_map_command_shows_session_project_map(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.project_map = [
+        "nanocode is a single-file Python CLI.",
+        "Tests live in tests/.",
+    ]
+    dispatcher = CommandDispatcher(Agent(session))
+
+    result = dispatcher.dispatch("/project_map")
+    usage_result = dispatcher.dispatch("/project_map extra")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "\n".join(
+        [
+            "1. nanocode is a single-file Python CLI.",
+            "2. Tests live in tests/.",
+        ]
+    )
+    assert usage_result.message == "Usage: /project_map"
+
+
+def test_project_map_command_shows_empty(tmp_path):
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
+
+    result = dispatcher.dispatch("/project_map")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "(empty)"
+
+
+def test_explore_command_runs_project_map_task(tmp_path):
+    prompts = []
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))), run_agent=prompts.append)
+
+    result = dispatcher.dispatch("/explore")
+    usage_result = dispatcher.dispatch("/explore tests")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == ""
+    assert len(prompts) == 1
+    assert "project structure, architecture, language/tech stack" in prompts[0]
+    assert "must update Project_Map" in prompts[0]
+    assert "via project_map action" in prompts[0]
+    assert "Do not store line numbers or line ranges" in prompts[0]
+    assert "Do not edit files" in prompts[0]
+    assert "Do not store file listings or temporary findings" in prompts[0]
+    assert usage_result.message == "Usage: /explore"
+
+
 def test_stream_command_shows_and_updates_streaming_mode(tmp_path):
     session = Session(cwd=str(tmp_path), stream=True)
     dispatcher = CommandDispatcher(Agent(session))

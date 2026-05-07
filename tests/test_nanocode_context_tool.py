@@ -27,6 +27,7 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
 
 def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
     session = Session(cwd=str(tmp_path))
+    session.project_map = ["nanocode is a single-file Python CLI."]
     session.current.known = ["Parser notes were captured."]
     session.tool_result_store = {
         "tr.1": ToolResultItem(
@@ -42,18 +43,24 @@ def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
 
     assert "<Details_Keys>" not in prompt
     assert "<Tool_Result_Store>" in prompt
+    assert "<Project_Map>" in prompt
     assert "<Recent_Tool_Calls>" in prompt
     assert "<Last_Tool_Calls>" not in prompt
     assert "<ToolResult" in prompt
     assert "<Active_Context>" not in prompt
+    assert "nanocode is a single-file Python CLI." in prompt
     assert "Parser notes were captured." in prompt
     assert "tr.1" in prompt
     assert 'success Read("sample.txt")' in prompt
     assert ".nanocode/tool_results/sample.log" in prompt
     assert "line 1" not in prompt
     known_section = prompt.split("<Known>", 1)[1].split("</Known>", 1)[0]
+    project_map_section = prompt.split("<Project_Map>", 1)[1].split("</Project_Map>", 1)[0]
     store_section = prompt.split("<Tool_Result_Store>", 1)[1].split("</Tool_Result_Store>", 1)[0]
     assert "Parser notes were captured." in known_section
+    assert "nanocode is a single-file Python CLI." in project_map_section
+    assert "Parser notes were captured." not in project_map_section
+    assert "nanocode is a single-file Python CLI." not in known_section
     assert "tr.1" not in known_section
     assert "tr.1" in store_section
 

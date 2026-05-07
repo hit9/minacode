@@ -226,7 +226,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 4
     assert agent.session.turn_model_calls == 4
-    assert sleeps == [3, 6, 10]
+    assert sleeps == [3, 10, 20]
 
 
 def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
@@ -251,10 +251,10 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 3
     assert agent.session.turn_model_calls == 3
-    assert sleeps == [3, 6]
+    assert sleeps == [3, 10]
     assert messages == [
-        "Retrying: request model timeout; retry 1/3 in 3s.",
-        "Retrying: request model timeout; retry 2/3 in 6s.",
+        "Retrying: request model timeout; retry 1/6 in 3s.",
+        "Retrying: request model timeout; retry 2/6 in 10s.",
     ]
 
 
@@ -279,9 +279,9 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
     else:
         raise AssertionError("expected LLMError")
 
-    assert agent.model_client.calls == 4
-    assert agent.session.turn_model_calls == 4
-    assert sleeps == [3, 6, 10]
+    assert agent.model_client.calls == 7
+    assert agent.session.turn_model_calls == 7
+    assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
 def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
@@ -383,7 +383,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
         raise AssertionError("expected LLMError")
 
     assert session.current_model_call_started_at == 0.0
-    assert sleeps == [3, 6, 10]
+    assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
@@ -764,6 +764,46 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
     ]
 
 
+def test_agent_project_map_action_appends_session_facts(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "project_map",
+                    "items": [
+                        "",
+                        "nanocode is a single-file Python CLI.",
+                        "nanocode is a single-file Python CLI.",
+                        "Tests live in tests/.",
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert session.project_map == [
+        "nanocode is a single-file Python CLI.",
+        "Tests live in tests/.",
+    ]
+    assert session.current.known == []
+    assert "  Project_Map\n" in agent.state_updater.latest_report
+    assert "    1. nanocode is a single-file Python CLI." in agent.state_updater.latest_report
+
+
+def test_agent_keeps_latest_30_project_map_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response({"actions": [{"type": "project_map", "items": ["map " + str(index) for index in range(31)]}]})
+
+    assert len(session.project_map) == 30
+    assert session.project_map[0] == "map 1"
+    assert session.project_map[-1] == "map 30"
+
+
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -1103,6 +1143,52 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Continuing: goal is not complete yet." not in messages
+    assert any(message.startswith("State Updated") for message in messages)
+
+
+def test_agent_run_stops_after_chat_action(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return {"actions": [{"type": "chat", "text": "你好"}]}
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("你好", on_message=messages.append)
+
+    assert response["actions"] == [{"type": "chat", "text": "你好"}]
+    assert messages == ["你好"]
+    assert len(agent.model_client.user_prompts) == 1
+
+
+def test_agent_run_ignores_task_action_and_continues_task_flow(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "task", "text": "answer the request"}, {"type": "goal", "text": "answer", "complete": False}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
     assert any(message.startswith("State Updated") for message in messages)
 
 
@@ -1473,3 +1559,114 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
     assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
     assert "model returned invalid output 3 times in a row" in message
     assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
+
+
+def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "Task completed successfully"}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "Task completed successfully" in messages
+    assert "Retrying: goal is complete but no message provided." not in " ".join(messages)
+
+def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp_path):
+    """Empty string message_for_complete is falsy, so retry should still happen."""
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
+                {"actions": [{"type": "message", "text": "done without goal"}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 3
+    assert "Retrying: goal is complete but no message provided." in messages
+    assert agent.agent_feedback_errors == []
+
+
+def test_agent_run_ignores_message_for_complete_when_message_actions_exist(tmp_path):
+    """message_for_complete fallback only triggers when no message actions are present."""
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "fallback message"},
+                        {"type": "message", "text": "explicit message"},
+                    ]
+                },
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+
+
+def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path):
+    """message_for_complete should be ignored when complete=false."""
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": False, "message_for_complete": "should be ignored"}]},
+                {"actions": [{"type": "message", "text": "done without goal"}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 3
+    assert "should be ignored" not in messages
+    assert agent.agent_feedback_errors == []

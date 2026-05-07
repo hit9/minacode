@@ -20,12 +20,19 @@ def test_read_tool_reads_requested_line_range(tmp_path):
     assert "alpha" not in result
 
 
+def test_read_tool_rejects_empty_args_with_actionable_error(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match=r'Read args error: got 0 args; expected \["filepath"\]'):
+        ReadTool.make(session, [])
+
+
 def test_read_tool_rejects_multiple_start_end_pairs(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="for multiple ranges use comma tokens"):
+    with pytest.raises(ToolCallError, match="Read args error: for multiple ranges use comma tokens"):
         ReadTool.make(session, ["sample.txt", "1", "2", "3", "5"])
 
 
@@ -181,5 +188,5 @@ def test_read_tool_rejects_partial_range(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="invalid range"):
+    with pytest.raises(ToolCallError, match="Read args error: invalid range token"):
         ReadTool.make(session, ["sample.txt", "0"])

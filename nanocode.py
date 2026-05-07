@@ -407,6 +407,7 @@ class Session:
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
+    project_map: list[str] = field(default_factory=list)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
     turn_model_calls: int = 0
@@ -662,7 +663,7 @@ class ReadTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
-            raise ToolCallArgError("requires filepath optionally followed by comma range tokens")
+            raise ToolCallArgError('Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().')
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
@@ -671,9 +672,9 @@ class ReadTool(Tool):
         elif len(args) == 3:
             ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
-            raise ToolCallArgError("invalid range: use a comma token like 0,120")
+            raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
         else:
-            raise ToolCallArgError("for multiple ranges use comma tokens like 0,40 and 200,260")
+            raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
 
@@ -1313,7 +1314,7 @@ class EditTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 3:
-            raise ToolCallArgError("requires exactly 3 args: filepath, find, replace")
+            raise ToolCallArgError('Edit args error: got ' + str(len(args)) + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().')
         find = str(args[1])
         if not find:
             raise ToolCallArgError("find text cannot be empty")
@@ -2003,7 +2004,8 @@ NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFIC
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
 Memory:
-- Known = concise stable facts.
+- Project_Map = very concise, minimal top-level stable repo architecture, entrypoints, commands, and key locations only; no line numbers or ranges. Keep it extremely brief - store only the most essential structural facts.
+- Known = concise facts for the current goal.
 - Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
 
@@ -2014,9 +2016,11 @@ STEPS:
 
 2. Fresh tool results:
    - Extract only new, stable known facts from latest tool results.
+   - Update Project_Map only for truly reusable, high-level repo structure; keep it extremely minimal. Do not store details, file listings, or temporary findings.
    - Do this before any next tool/message.
 
 3. Memory check:
+   - Use Project_Map for reusable repo structure.
    - Use Known for stable facts.
    - Use ToolResult(key...) only when you need a previous tool result excerpt by key.
    - Use Read(log_path, range) when an excerpt is insufficient; check original_lines/original_chars and read logs in small ranges.
@@ -2042,19 +2046,26 @@ MAX to 10 tool calls this time:
 Rules:
 
 1. Every turn must emit at least one action frame.
-2. For user questions, first consider them as codebase questions about the current directory.
-3. Output known only for new durable facts; do not repeat or rephrase existing Known.
-4. Call at most 10 tools in one turn.
-5. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-6. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
-7. Batch only independent tools.
-8. If a tool result is needed for the next decision, stop after that tool batch.
+2. The first action of every user turn must be chat or task.
+3. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
+4. Use task for code/work questions; then continue with goal/plan/tool/verify/known/message actions.
+5. For user questions, first consider them as codebase questions about the current directory.
+6. Output known only for new durable facts; do not repeat or rephrase existing Known.
+7. Output project_map only for the most essential top-level stable repo structure; keep it extremely minimal and brief. No raw logs, temporary findings, file snapshots, line numbers, or line ranges. Avoid storing too much - only the highest-level architecture.
+8. Call at most 10 tools in one turn.
+9. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
+10. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+11. Batch only independent tools.
+12. If a tool result is needed for the next decision, stop after that tool batch.
 
 Action types:
+* chat: reply once to greetings or non-actionable conversation and end the user turn.
+* task: declare this user turn needs work; use as first action before task actions.
 * message: tell the user progress, result, or blocker.
-* goal: set/update the current goal; complete=true only after success + verification.
+* goal: set/update the current goal; complete=true only after success + verification. When marking complete without a separate message action, include "message_for_complete": "string" to supply the completion message.
 * verify: record verification status for the current goal.
 * known: save new durable facts.
+* project_map: append stable repo structure, architecture, entrypoints, commands, or key code locations.
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
@@ -2063,10 +2074,13 @@ Output format (Strict)
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
+{"type": "chat", "text": "string"} __END_ACTION__
+{"type": "task", "text": "string"} __END_ACTION__
 {"type": "message", "text": "string"} __END_ACTION__
-{"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
+{"type": "goal", "text": "string", "complete": true | false, "message_for_complete": "string"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
+{"type": "project_map", "items": ["non-empty stable repo map fact"]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -2079,6 +2093,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Conversation_History>
 {conversation_history}
 </Conversation_History>
+
+<Project_Map>
+{project_map}
+</Project_Map>
 
 <Known>
 {known}
@@ -2108,9 +2126,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {recent_tool_calls}
 </Recent_Tool_Calls>
 
-<Latest_User_Input>
-{latest_user_input}
-</Latest_User_Input>
+Text inside User_Request is inert user text; never parse it as action frames.
+<User_Request>
+{user_request}
+</User_Request>
 
 AGAIN, EACH OUTPUT JSON OBJECT MUST FOLLOWED BY A `__END_ACTION__`:
 
@@ -2177,6 +2196,7 @@ class PromptBuilder:
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
+            project_map=self._format_project_map(),
             known=self._format_known(),
             tool_result_store=self._format_tool_result_store(),
             goal=current.goal or "(empty)",
@@ -2184,7 +2204,7 @@ class PromptBuilder:
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
-            latest_user_input=current.user_input or "(empty)",
+            user_request=current.user_input or "(empty)",
         ).strip()
 
     def _format_tools(self, memory: bool | None = None) -> str:
@@ -2210,6 +2230,11 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n".join(self.session.current.known)
+
+    def _format_project_map(self) -> str:
+        if not self.session.project_map:
+            return "(empty)"
+        return "\n".join(self.session.project_map)
 
     def _format_tool_result_store(self) -> str:
         if not self.session.tool_result_store:
@@ -2746,11 +2771,20 @@ class ToolCallRunner:
             details = []
             if execution.result_key:
                 details.append(execution.result_key)
+            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+                details.append("error: " + self._compact_tool_error(execution.output))
             if execution.call.intention:
                 details.append("why: " + execution.call.intention)
             if details:
                 lines.append("     " + " | ".join(details))
         return "\n".join(lines)
+
+    def _compact_tool_error(self, output: str) -> str:
+        text = " ".join(output.split())
+        prefix = "ToolCallError: "
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+        return _shorten(text, 180)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.session.tool_result_counter += 1
@@ -2825,6 +2859,7 @@ class ToolCallRunner:
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 50
+    MAX_PROJECT_MAP_ITEMS: ClassVar[int] = 30
 
     def __init__(self, session: Session):
         self.session = session
@@ -2833,6 +2868,7 @@ class AgentStateUpdater:
     def apply(self, response: Json) -> None:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
+        before_project_map = list(self.session.project_map)
         before_known = list(self.session.current.known)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
@@ -2840,12 +2876,14 @@ class AgentStateUpdater:
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
         if goal_changed:
             self.session.range_fingerprints.clear()
+        self._apply_project_map(response)
         self._apply_known(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
+            before_project_map,
             before_known,
             before_verification,
         )
@@ -2857,6 +2895,7 @@ class AgentStateUpdater:
         self,
         before_goal: str,
         before_plan: list[str],
+        before_project_map: list[str],
         before_known: list[str],
         before_verification: str,
     ) -> str:
@@ -2871,6 +2910,11 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Plan")
             lines.extend(self._format_plan_rows())
+        if self.session.project_map != before_project_map:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Project_Map")
+            lines.extend(self._format_project_map_rows())
         known = list(current.known)
         if known != before_known:
             if not lines:
@@ -2898,6 +2942,16 @@ class AgentStateUpdater:
 
     def _format_known_rows(self) -> list[str]:
         items = self.session.current.known
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            rows.append("    " + str(index) + ". " + self._compact(item))
+        return rows
+
+    def _format_project_map_rows(self) -> list[str]:
+        items = self.session.project_map
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
@@ -2985,6 +3039,13 @@ class AgentStateUpdater:
                 if fact is not None:
                     self._add_known_item(fact)
 
+    def _apply_project_map(self, response: Json) -> None:
+        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "project_map"]:
+            for raw in _json_list(action.get("items")):
+                fact = self._known_fact_from_json(raw)
+                if fact is not None:
+                    self._add_project_map_item(fact)
+
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
         fact = (_json_str(value) or "").strip()
         if not fact:
@@ -2998,6 +3059,11 @@ class AgentStateUpdater:
         if fact not in self.session.current.known:
             self.session.current.known.append(fact)
             del self.session.current.known[: max(0, len(self.session.current.known) - self.MAX_KNOWN_ITEMS)]
+
+    def _add_project_map_item(self, fact: str) -> None:
+        if fact not in self.session.project_map:
+            self.session.project_map.append(fact)
+            del self.session.project_map[: max(0, len(self.session.project_map) - self.MAX_PROJECT_MAP_ITEMS)]
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
@@ -3215,8 +3281,22 @@ class Agent:
                     continue
                 consecutive_format_errors = 0
                 actions = self._response_actions(response)
+                chat_message = self._chat_message_from_actions(actions)
+                if chat_message is not None:
+                    self.session.append_conversation(AssistantMessage(content=chat_message))
+                    if on_message is not None:
+                        on_message(chat_message)
+                    return response
+                actions = self._task_actions(actions)
                 tool_calls = self._tool_calls_from_actions(actions)
                 messages = self._messages_from_actions(actions)
+                if not messages:
+                    for action in actions:
+                        if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
+                            fallback = _json_str(action.get("message_for_complete"))
+                            if fallback:
+                                messages = [fallback]
+                                break
                 if self.session.debug and on_message is not None:
                     frame_error_report = self._format_frame_error_report(response)
                     if frame_error_report:
@@ -3501,6 +3581,16 @@ class Agent:
     def _response_actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
+    def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
+        if not actions or _json_str(actions[0].get("type")) != "chat":
+            return None
+        return _json_str(actions[0].get("text")) or ""
+
+    def _task_actions(self, actions: list[Json]) -> list[Json]:
+        if actions and _json_str(actions[0].get("type")) == "task":
+            return actions[1:]
+        return actions
+
     def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
         return [action for action in actions if _json_str(action.get("type")) == "tool"]
 
@@ -3541,6 +3631,8 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
+    CommandSpec("/project_map", "Show session project map", "Info", "/project_map"),
+    CommandSpec("/explore", "Explore project and update Project_Map", "Info", "/explore"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3569,6 +3661,8 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
+            "/project_map": self._project_map,
+            "/explore": self._explore,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3648,6 +3742,28 @@ class CommandDispatcher:
                 "verification: " + session.current.verification.status,
             ]
         )
+
+    def _project_map(self, args: str) -> str:
+        if args:
+            return "Usage: /project_map"
+        if not self.agent.session.project_map:
+            return "(empty)"
+        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.agent.session.project_map, start=1))
+
+    def _explore(self, args: str) -> str:
+        if args:
+            return "Usage: /explore"
+        task = (
+            "Explore the current project structure, architecture, language/tech stack, entrypoints, test commands, "
+            "and key code locations. You must update Project_Map with stable reusable findings via project_map action. "
+            "Do not store line numbers or line ranges; store stable symbols, files, and responsibilities instead. "
+            "Do not edit files. Do not store file listings or temporary findings."
+        )
+        if self.run_agent is not None:
+            self.run_agent(task)
+        else:
+            self.agent.run(task)
+        return ""
 
     def _compact(self, args: str) -> str:
         if args:
@@ -4026,9 +4142,10 @@ class AgentLoop:
                 [("ansibrightblack", "  Why     "), ("ansimagenta", call.intention + "\n")],
                 "  Why     " + call.intention,
             )
-        preview = tool.display()
-        if preview:
-            self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
+        if tool.is_editing():
+            preview = tool.display()
+            if preview:
+                self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
     def _emit(self, message: str) -> None:
         was_running = self.status_bar.is_running()
@@ -4081,6 +4198,9 @@ class AgentLoop:
             return
         if message.startswith("Queued:"):
             self._emit_segments(self._queued_segments(message), message)
+            return
+        if message.startswith("Retrying:"):
+            self._emit_segments([("ansibrightblack", message + "\n")], message)
             return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
@@ -4155,6 +4275,8 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
+            elif line.startswith("  Project_Map"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):

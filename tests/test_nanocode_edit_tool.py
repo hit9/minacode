@@ -37,6 +37,13 @@ def test_edit_tool_raises_when_find_text_is_missing(tmp_path):
         tool.call()
 
 
+def test_edit_tool_rejects_wrong_arg_count_with_actionable_error(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match=r'Edit args error: got 0 args; expected \["filepath", "find", "replace"\]'):
+        EditTool.make(session, [])
+
+
 def test_edit_tool_rejects_empty_find_text(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")

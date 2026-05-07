@@ -111,6 +111,19 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     assert ("ansibrightblack", "     tr.1 | why: read sample\n") in segments
 
 
+def test_agent_loop_styles_tool_arg_error_report(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+
+    segments = loop._tool_segments("Tool Calls\n  1. fail Read()\n     tr.1 | error: Read args error: got 0 args | why: read sample")
+
+    assert ("ansired", "fail Read()\n") in segments
+    assert ("ansibrightblack", "     tr.1 | error: Read args error: got 0 args | why: read sample\n") in segments
+
+
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -119,6 +132,9 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeTool:
         def display(self):
             return "preview"
+
+        def is_editing(self):
+            return True
 
     outputs = []
     loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
