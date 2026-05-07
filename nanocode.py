@@ -521,7 +521,7 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
 def _parse_line_range_token(value: str) -> tuple[int, int]:
     match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
     if match is None:
-        raise ToolCallArgError("invalid range: should be start-end, start:end, or start,end")
+        raise ToolCallArgError("invalid range: use a comma token like 0,120")
     return _parse_line_range(match.group(1), match.group(2))
 
 
@@ -554,38 +554,38 @@ class ReadTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Read file lines and cache fingerprints for range edits.",
-            "Ranges are 0-based [start,end); end=0 means EOF; pass repeated start/end pairs or start-end/start:end/start,end tokens.",
+            "Ranges are 0-based [start,end); use comma tokens like 0,120; multiple ranges must be separate tokens.",
             "Returns at most 600 lines per range; use Search/LineCount before broad reads.",
             "For ReplaceRange, read an exact or covering range first; empty inserts require an exact empty-range Read.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Read(filepath[, start, end... | start-end/start:end/start,end...]) -> ReadToolResult<fingerprint, content>"
+        return "Read(filepath[, range...]) -> ReadToolResult<fingerprint, content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            'Example: ["code.py", "0", "120"]',
-            'Example: ["code.py", "0", "40", "200", "260"]',
-            'Example: ["code.py", "0-40", "200-260"]',
-            'Example: ["code.py", "0:40", "200,260"]',
+            'Example: ["code.py", "0,120"]',
+            'Example: ["code.py", "0,40", "200,260"]',
             'Example: ["code.py"]',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
-            raise ToolCallArgError("requires filepath optionally followed by start/end pairs")
+            raise ToolCallArgError("requires filepath optionally followed by comma range tokens")
         filepath = session.resolve_path(args[0])
         if len(args) == 1:
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
             ranges = [_parse_line_range_token(arg) for arg in args[1:]]
+        elif len(args) == 3:
+            ranges = [_parse_line_range(args[1], args[2])]
+        elif len(args) == 2:
+            raise ToolCallArgError("invalid range: use a comma token like 0,120")
         else:
-            if len(args) % 2 == 0:
-                raise ToolCallArgError("requires filepath optionally followed by start/end pairs")
-            ranges = [_parse_line_range(args[index], args[index + 1]) for index in range(1, len(args), 2)]
+            raise ToolCallArgError("for multiple ranges use comma tokens like 0,40 and 200,260")
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
 

@@ -20,31 +20,13 @@ def test_read_tool_reads_requested_line_range(tmp_path):
     assert "alpha" not in result
 
 
-def test_read_tool_reads_multiple_line_ranges(tmp_path):
+def test_read_tool_rejects_multiple_start_end_pairs(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt", "1", "2", "3", "5"])
-    result = tool.call()
-
-    assert tool.start == 1
-    assert tool.end == 2
-    assert tool.ranges == [(1, 2), (3, 5)]
-    assert tool.requires_confirmation(session) is False
-    assert "Read(" in tool.display()
-    assert "1:2, 3:5" in tool.display()
-    assert result.startswith("<ReadToolResult>")
-    assert "<range_count>2</range_count>" in result
-    assert result.count("<ReadRange>") == 2
-    assert "<range>1:2</range>" in result
-    assert "<range>3:5</range>" in result
-    assert result.count("<fingerprint>") == 2
-    assert "one\n" in result
-    assert "three\nfour\n" in result
-    assert "zero\n" not in result
-    assert "two\n" not in result
-    assert len(session.range_fingerprints) == 2
+    with pytest.raises(ToolCallError, match="for multiple ranges use comma tokens"):
+        ReadTool.make(session, ["sample.txt", "1", "2", "3", "5"])
 
 
 def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
@@ -199,5 +181,5 @@ def test_read_tool_rejects_partial_range(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="requires filepath optionally followed by start/end pairs"):
+    with pytest.raises(ToolCallError, match="invalid range"):
         ReadTool.make(session, ["sample.txt", "0"])
