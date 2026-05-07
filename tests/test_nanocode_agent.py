@@ -1212,6 +1212,37 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert session.current.verification.status == VerificationStatus.IDLE
 
 
+def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
+                {"actions": [{"type": "message", "text": "done without goal"}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 3
+    assert "Retrying: goal is complete but no message provided." in messages
+    assert "done without goal" in messages
+    assert "goal.complete=true without a message" in agent.model_client.user_prompts[1]
+    assert "message before goal.complete=true" in agent.model_client.user_prompts[2]
+    assert agent.agent_feedback_errors == []
+    assert session.current.goal_reached is False
+
+
 def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
     class FakeModelClient:
         def __init__(self):

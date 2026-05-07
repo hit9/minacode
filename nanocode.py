@@ -3144,6 +3144,15 @@ class Agent:
                 if messages and self.session.current.goal_reached:
                     self._finish_current_goal()
                     return response
+                if self.session.current.goal_reached:
+                    self.session.current.goal_reached = False
+                    self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+                    self._report_gate(
+                        on_message,
+                        "Retrying: goal is complete but no message provided.",
+                        "Completion_Gate: goal.complete=true requires a message action.",
+                    )
+                    continue
                 self.session.current.goal_reached = False
                 if not actions:
                     self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
@@ -3237,6 +3246,9 @@ class Agent:
 
     def _format_agent_feedback_message_before_complete_error(self) -> str:
         return "Error: returned message before goal.complete=true. Rule: only finish with message after the goal is achieved and verified."
+
+    def _format_agent_feedback_completion_without_message_error(self) -> str:
+        return "Error: returned goal.complete=true without a message. Rule: finish with both goal complete=true and a final message."
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is not None:
