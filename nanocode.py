@@ -621,22 +621,22 @@ class ReadTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Read file lines and cache fingerprints for range edits.",
-            "Ranges are 0-based [start,end); use comma tokens like 0,120; multiple ranges must be separate tokens.",
-            "Returns at most 600 lines per range; use Search/LineCount before broad reads.",
-            "For ReplaceRange, read an exact or covering range first; empty inserts require an exact empty-range Read.",
+            "Read UTF-8 file lines and cache fingerprints for range edits.",
+            "Range tokens are 0-based start,end; end=0 means EOF; for batches pass each range as its own token.",
+            "Use LineCount/Search before broad reads; each range returns at most 600 lines.",
+            "Before ReplaceRange, Read the exact target range and reuse that fingerprint.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Read(filepath[, range...]) -> ReadToolResult<fingerprint, content>"
+        return "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, content>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            'Example: ["code.py", "0,120"]',
-            'Example: ["code.py", "0,40", "200,260"]',
-            'Example: ["code.py"]',
+            'Example args: ["code.py", "0,120"]',
+            'Example args: ["code.py", "0,40", "200,260"]',
+            'Example args: ["code.py"]',
         ]
 
     @classmethod
@@ -768,11 +768,11 @@ class LineCountTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Count file lines before choosing Read ranges."]
+        return ["Count lines in one file before choosing Read range tokens."]
 
     @classmethod
     def signature(cls) -> str:
-        return "LineCount(filepath) -> LineCountToolResult<lines>"
+        return "LineCount(filepath) -> LineCountToolResult<line_count>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -809,21 +809,21 @@ class ListDirTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "List immediate directory entries; optional glob filters entry names.",
+            "List one directory, non-recursive; optional glob filters immediate entry names.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return 'ListDir(dir_path?: "."[, glob_pattern]) -> ListDirToolResult<entries>'
+        return 'ListDir([dirpath][, glob]) -> ListDirToolResult<entries>'
 
     @classmethod
     def example(cls) -> list[str]:
-        return ["Example args: []", 'Example args: ["."]', 'Example args: ["src", "*.py"]']
+        return ["Example args: []", 'Example args: ["src"]', 'Example args: ["src", "*.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) not in (0, 1, 2):
-            raise ToolCallArgError("requires 0 to 2 args: [dir_path][, glob_pattern]")
+            raise ToolCallArgError("requires 0 to 2 args: [dirpath][, glob]")
         dir_path = str(args[0]) if args else "."
         glob_pattern = str(args[1]) if len(args) == 2 else ""
         return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
@@ -903,33 +903,35 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Search files with regex before Read; pass A|B|C or 3+ plain args for regex OR; final existing path narrows scope.",
-            "Options: path=string, context=N|N, glob=*.py or bare glob.",
+            "Regex search before Read; first arg is one pattern, so use A|B|C for alternatives.",
+            "Scope explicitly with path=FILE_OR_DIR; filter with glob=*.py; set context=N for 0..30 surrounding lines.",
+            "Only supported options are path=, glob=, and context=; ignore_case is not supported.",
+            "For literal text containing regex symbols, escape them.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; options: path, context=N|N (0..30), glob"
+        return "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
             'Example args: ["TODO"]',
-            'Example args: ["class Foo", "code.py"]',
-            'Example args: ["class .*Tool", "nanocode.py", "0"]',
-            'Example args: ["TODO", ".", "*.py"]',
-            'Example args: ["class Bar|def main", "nanocode.py", "6"]',
-            'Example args: ["TODO", ".", "*.py", "8"]',
-            'Example args: ["def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
+            'Example args: ["class Foo", "path=code.py"]',
+            'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
+            'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
+            'Example args: ["def __init__\\(", "path=.", "glob=*.py"]',
         ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) < 1 or len(args) > 20:
-            raise ToolCallArgError("requires 1 to 20 args: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallArgError("requires 1 to 20 args: pattern[, path=path][, glob=pattern][, context=N]")
+        if any(str(arg).startswith("ignore_case") or str(arg).startswith("case_sensitive") for arg in args[1:]):
+            raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
         args = cls._normalize_multi_pattern_args(session, args)
         if len(args) not in (1, 2, 3, 4):
-            raise ToolCallArgError("requires 1 to 4 args after normalization: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallArgError("requires 1 to 4 args after normalization: pattern[, path=path][, glob=pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallArgError("pattern cannot be empty")
@@ -941,6 +943,8 @@ class SearchTool(Tool):
         if regex and "\n" in pattern:
             raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
         target_path_arg = str(args[1]) if len(args) >= 2 else "."
+        if target_path_arg.startswith("ignore_case") or target_path_arg.startswith("case_sensitive"):
+            raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
         if target_path_arg.startswith("path="):
             target_path_arg = target_path_arg.split("=", 1)[1]
         if not target_path_arg:
@@ -949,6 +953,8 @@ class SearchTool(Tool):
         context_lines = cls.CONTEXT_LINES
         for raw_option in args[2:]:
             option = str(raw_option)
+            if option.startswith("ignore_case") or option.startswith("case_sensitive"):
+                raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
             if option.startswith("path="):
                 if target_path_arg != ".":
                     raise ToolCallArgError("path option cannot be combined with positional path")
@@ -1258,7 +1264,7 @@ class EditTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace the first exact text block in a file; use for small unambiguous edits."]
+        return ["Replace the first exact literal text block; use only for small unambiguous edits, not regex."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1328,18 +1334,18 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based line range using a Read fingerprint.",
-            "Read an exact or covering range first; if fingerprint mismatch, Read target range and retry once.",
-            "Can relocate shifted old content only when it still matches exactly once.",
+            "Replace one 0-based [start,end) line range using a fingerprint from Read.",
+            "Pass start and end as separate args; do not pass a comma range token here.",
+            "If fingerprint mismatch, Read the exact target range again and retry once.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "ReplaceRange(filepath, start: 0-N, end: 0-N, fingerprint, content) -> ReplaceRangeToolResult<path, range>"
+        return "ReplaceRange(filepath, start, end, fingerprint, content) -> ReplaceRangeToolResult<path, range>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "10", "12", "a1b2c3", "new text\\n"]']
+        return ['Example args: ["code.py", "10", "12", "a1b2c3", "replacement lines\\n"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1432,7 +1438,7 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Apply one single-file unified diff; use when range fingerprints are awkward."]
+        return ["Apply one unified diff to one file; use when exact-text or range edits are awkward."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1440,7 +1446,7 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old\\n+new\\n"]']
+        return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1678,7 +1684,7 @@ class BashTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Run a shell command with bash -lc."]
+        return ["Run one shell command string via bash -lc in the workspace cwd."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1752,15 +1758,15 @@ class GitTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Run git without a shell; pass each argument separately."]
+        return ["Run git without a shell; pass each git argument separately, with optional cwd=path first."]
 
     @classmethod
     def signature(cls) -> str:
-        return "Git(args...[, cwd=path]) -> GitToolResult<exit_code, stdout, stderr>"
+        return "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["status", "--short"]', 'Example args: ["diff", "--", "nanocode.py"]']
+        return ['Example args: ["status", "--short"]', 'Example args: ["diff", "--", "nanocode.py"]', 'Example args: ["cwd=src", "status", "--short"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1819,16 +1825,17 @@ class ToolResultTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read stored bounded tool result excerpts by key; for log_path details, check size and Read small ranges."]
+        return ["Read stored bounded tool result excerpts by key; use Read(log_path, range) for original log details."]
 
     @classmethod
     def signature(cls) -> str:
-        return "ToolResult(key[, key...]) -> ToolResultToolResult<excerpt>"
+        return "ToolResult(key...) -> ToolResultToolResult<excerpt>"
 
     @classmethod
     def example(cls) -> list[str]:
         return [
-            '{"name": "ToolResult", "intention": "Read stored tool result", "args": ["tr.1"]}',
+            'Example args: ["tr.1"]',
+            'Example args: ["tr.1", "tr.2"]',
         ]
 
     @classmethod
@@ -1932,7 +1939,7 @@ Rules:
 1. Every turn must emit at least one action frame.
 2. Output known only for new durable facts; do not repeat or rephrase existing Known.
 3. Call at most 10 tools in one turn.
-4. Prefer batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F"), Read("filepath", "1-500", "500-1000", ...) etc.
+4. Prefer batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
 5. Batch only independent tools.
 6. If a tool result is needed for the next decision, stop after that tool batch.
 

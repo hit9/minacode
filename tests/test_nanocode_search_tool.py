@@ -82,6 +82,17 @@ def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_pat
     assert "* nanocode.py:2: class BashTool:" in result
 
 
+def test_search_tool_accepts_explicit_path_option_as_second_arg(tmp_path):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "path=nanocode.py"])
+
+    assert tool.target_path == str(path)
+    assert tool.context_lines == SearchTool.CONTEXT_LINES
+
+
 def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
     path = tmp_path / "nanocode.py"
     path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
@@ -92,6 +103,16 @@ def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
     assert tool.regex is True
+
+
+def test_search_tool_rejects_ignore_case_option(tmp_path):
+    (tmp_path / "sample.py").write_text("Needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match="ignore_case is not supported"):
+        SearchTool.make(session, ["needle", "ignore_case=true"])
+    with pytest.raises(ToolCallError, match="ignore_case is not supported"):
+        SearchTool.make(session, ["needle", "path=sample.py", "ignore_case=true"])
 
 
 def test_search_tool_uses_pipe_as_regex_or(tmp_path):
