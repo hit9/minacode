@@ -526,6 +526,14 @@ def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
     assert response == {"actions": [{"type": "message", "text": "ok"}, {"type": "goal", "text": "next"}]}
 
 
+def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('{"type":"message","text":"ok"}')
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+
+
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -566,8 +574,17 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
-    assert "expected at least one valid action frame" in response["_format_error"]
+    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
     assert "plain answer" in response["_format_error"]
+
+
+def test_agent_request_rejects_unmarked_json_action_array(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('[{"type":"message","text":"ok"}]')
+
+    assert response["actions"] == []
+    assert "expected JSON object action" in response["_format_error"]
 
 
 def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, monkeypatch):

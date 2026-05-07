@@ -1954,6 +1954,7 @@ Action types:
 Output format (Strict)
 
 Output multiple JSON objects separated by __END_ACTION__:
+If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "message", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false} __END_ACTION__
@@ -2282,6 +2283,11 @@ class ModelClient:
         text = self._strip_leaked_think_tags(text)
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
+        if not self._has_action_frame_end(text):
+            action, error = self._parse_single_unmarked_action(text)
+            if action is not None:
+                return {"actions": [action]}
+            return self._invalid_model_response(content, "expected one JSON action object or action frames ending with " + self.ACTION_FRAME_END + "; " + error)
         actions: list[Json] = []
         frame_errors: list[str] = []
         for frame_number, frame in enumerate(self._action_frames(text), start=1):
@@ -2348,6 +2354,17 @@ class ModelClient:
             return None, "frame " + str(frame_number) + ": expected JSON object action"
         if not _json_str(value.get("type")):
             return None, "frame " + str(frame_number) + ": action missing type"
+        return value, ""
+
+    def _parse_single_unmarked_action(self, text: str) -> tuple[Json | None, str]:
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            return None, str(error)
+        if not isinstance(value, dict):
+            return None, "expected JSON object action"
+        if not _json_str(value.get("type")):
+            return None, "action missing type"
         return value, ""
 
     def _has_action_frame_end(self, line: str) -> bool:
