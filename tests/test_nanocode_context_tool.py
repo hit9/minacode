@@ -42,6 +42,8 @@ def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
 
     assert "<Details_Keys>" not in prompt
     assert "<Tool_Result_Store>" in prompt
+    assert "<Recent_Tool_Calls>" in prompt
+    assert "<Last_Tool_Calls>" not in prompt
     assert "<ToolResult" in prompt
     assert "<Active_Context>" not in prompt
     assert "Parser notes were captured." in prompt

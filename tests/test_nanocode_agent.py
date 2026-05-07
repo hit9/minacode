@@ -4,7 +4,7 @@ import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
 
 
-def test_agent_tool_results_go_to_last_tool_calls_and_store(tmp_path):
+def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -53,6 +53,35 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert "T" * 50 in item.value
     assert "[tool result excerpt]" in latest
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
+
+
+def test_agent_keeps_recent_tool_call_batches(tmp_path):
+    for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
+        (tmp_path / name).write_text(name + "\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
+        agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
+
+    assert "one.txt" not in agent.recent_tool_calls
+    assert "two.txt" in agent.recent_tool_calls
+    assert "three.txt" in agent.recent_tool_calls
+    assert "four.txt" in agent.recent_tool_calls
+    assert len(agent.recent_tool_call_batches) == 3
+
+
+def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.RECENT_TOOL_CALL_CHARS = 80
+
+    agent._append_recent_tool_calls("old batch " + "x" * 40)
+    agent._append_recent_tool_calls("new batch " + "y" * 40)
+
+    assert "old batch" not in agent.recent_tool_calls
+    assert "new batch" in agent.recent_tool_calls
+    assert len(agent.recent_tool_call_batches) == 1
 
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):
@@ -866,7 +895,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "tr.1" in fake_client.user_prompts[1]
-    assert agent.last_tool_calls == ""
+    assert agent.recent_tool_calls == ""
     assert session.current.known == ["Read sample.txt and found alpha."]
     assert session.current.user_input == "read sample"
     assert session.current.goal == ""
@@ -904,7 +933,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert agent.last_tool_calls == ""
+    assert agent.recent_tool_calls == ""
 
 
 def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
@@ -932,7 +961,7 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
     session.current.known = ["keep this fact"]
     session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
-    agent.last_tool_calls = "old tool call"
+    agent._append_recent_tool_calls("old tool call")
     agent.model_client = FakeModelClient()
 
     agent.run("read samples")
@@ -1084,7 +1113,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert "Retrying: verification is required before completion." in messages
 
 
-def test_agent_run_retries_format_error_with_last_tool_calls(tmp_path):
+def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -1182,7 +1211,7 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
     session.current.known = ["keep this fact"]
     session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
-    agent.last_tool_calls = "old tool call"
+    agent._append_recent_tool_calls("old tool call")
     agent.model_client = FakeModelClient()
 
     try:
@@ -1193,7 +1222,7 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
         raise AssertionError("expected KeyboardInterrupt")
 
     assert agent.agent_feedback_errors == []
-    assert agent.last_tool_calls == ""
+    assert agent.recent_tool_calls == ""
     assert session.current.goal == ""
     assert session.current.plan == []
     assert session.current.known == ["keep this fact"]

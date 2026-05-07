@@ -536,12 +536,12 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
-def _format_last_tool_calls(executions: list[ToolCallExecution]) -> str:
-    blocks = [_format_last_tool_call(execution) for execution in executions]
+def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
+    blocks = [_format_recent_tool_call(execution) for execution in executions]
     return "\n\n".join(blocks) or "(empty)"
 
 
-def _format_last_tool_call(execution: ToolCallExecution) -> str:
+def _format_recent_tool_call(execution: ToolCallExecution) -> str:
     return "\n".join(
         [
             "<Last_Tool_Call>",
@@ -1996,9 +1996,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {errors}
 </Errors>
 
-<Last_Tool_Calls>
-{last_tool_calls}
-</Last_Tool_Calls>
+<Recent_Tool_Calls>
+{recent_tool_calls}
+</Recent_Tool_Calls>
 
 <Latest_User_Input>
 {latest_user_input}
@@ -2061,7 +2061,7 @@ class PromptBuilder:
             .strip()
         )
 
-    def user_prompt(self, last_tool_calls: str, errors: str) -> str:
+    def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
         current = self.session.current
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
@@ -2072,7 +2072,7 @@ class PromptBuilder:
             plan=self._format_plan(),
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
-            last_tool_calls=last_tool_calls or "(empty)",
+            recent_tool_calls=recent_tool_calls or "(empty)",
             latest_user_input=current.user_input or "(empty)",
         ).strip()
 
@@ -2520,7 +2520,7 @@ class ToolCallRunner:
             executions.append(execution)
 
         self.latest_executions = executions
-        return _format_last_tool_calls(executions)
+        return _format_recent_tool_calls(executions)
 
     def format_latest_report(self) -> str:
         if not self.latest_executions:
@@ -2899,6 +2899,8 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 6, 10)
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
+    RECENT_TOOL_CALL_BATCHES: ClassVar[int] = 3
+    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
 
     def __init__(self, session: Session):
         self.session = session
@@ -2907,14 +2909,15 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
-        self.last_tool_calls = ""
+        self.recent_tool_calls = ""
+        self.recent_tool_call_batches: list[str] = []
         self.agent_feedback_errors: list[str] = []
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self) -> str:
-        return self.prompt_builder.user_prompt(self.last_tool_calls, self._format_agent_feedback())
+        return self.prompt_builder.user_prompt(self.recent_tool_calls, self._format_agent_feedback())
 
     def request(
         self,
@@ -2965,7 +2968,7 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> Json:
-        self.last_tool_calls = ""
+        self._clear_recent_tool_calls()
         self._clear_agent_feedback()
         self.session.turn_tool_calls = 0
         self.session.turn_model_calls = 0
@@ -3055,13 +3058,26 @@ class Agent:
         self.agent_feedback_errors = []
 
     def _finish_current_goal(self) -> None:
-        self.last_tool_calls = ""
+        self._clear_recent_tool_calls()
         self._clear_agent_feedback()
         self.session.current.goal = ""
         self.session.current.goal_reached = False
         self.session.current.plan = []
         self.session.current.verification.reset()
         self._trim_tool_result_store_after_goal_complete()
+
+    def _clear_recent_tool_calls(self) -> None:
+        self.recent_tool_call_batches = []
+        self.recent_tool_calls = ""
+
+    def _append_recent_tool_calls(self, batch: str) -> None:
+        if not batch:
+            return
+        self.recent_tool_call_batches.append(batch)
+        del self.recent_tool_call_batches[: max(0, len(self.recent_tool_call_batches) - self.RECENT_TOOL_CALL_BATCHES)]
+        while len("\n\n".join(self.recent_tool_call_batches)) > self.RECENT_TOOL_CALL_CHARS and len(self.recent_tool_call_batches) > 1:
+            self.recent_tool_call_batches.pop(0)
+        self.recent_tool_calls = "\n\n".join(self.recent_tool_call_batches)
 
     def _trim_tool_result_store_after_goal_complete(self) -> None:
         overflow = len(self.session.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
@@ -3187,12 +3203,13 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
-        self.last_tool_calls = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        batch = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self._append_recent_tool_calls(batch)
         self.session.turn_tool_calls += len(tool_calls)
         for execution in self.tool_runner.latest_executions:
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
-        return self.last_tool_calls
+        return self.recent_tool_calls
 
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
