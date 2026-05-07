@@ -2002,7 +2002,7 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 
 SUMMARIZER_AGENT_COMPACT_PROMPT = """You are nanocode's conversation-history compactor.
 
-Compress conversation history so the main coding agent can continue later.
+Compress conversation history and Known facts so the main coding agent can continue later.
 Do not solve the task or add unsupported facts.
 
 Preserve continuity-critical facts:
@@ -2024,12 +2024,17 @@ Omit noise:
 - context values unless needed for continuity
 
 Write the shortest complete continuation summary.
+Compress Known to at most 30 concise stable facts.
 
-Output strict JSON only: {"summary": "string"}
+Output strict JSON only: {"summary": "string", "known": ["string"]}
 """
 
 
 COMPACT_USER_PROMPT_TEMPLATE = """
+----------- Known_To_Compact Begin ------------
+{known}
+--------- Known_To_Compact End ----------------
+
 ----------- Conversation_To_Compact Begin ------
 {conversation}
 -------- Conversation_To_Compact End -----------
@@ -2604,6 +2609,7 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
+    MAX_KNOWN_ITEMS: ClassVar[int] = 50
 
     def __init__(self, session: Session):
         self.session = session
@@ -2776,6 +2782,7 @@ class AgentStateUpdater:
     def _add_known_item(self, fact: str) -> None:
         if fact not in self.session.current.known:
             self.session.current.known.append(fact)
+            del self.session.current.known[: max(0, len(self.session.current.known) - self.MAX_KNOWN_ITEMS)]
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
@@ -2834,6 +2841,7 @@ class AgentStateUpdater:
 @final
 class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
+    MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 30
 
     def __init__(self, session: Session, model_client: ModelClient):
         self.session = session
@@ -2845,8 +2853,9 @@ class ConversationCompactor:
             return 0
         old_items = self.session.conversation[: -self.KEEP_RECENT]
         keep_items = self.session.conversation[-self.KEEP_RECENT :]
-        summary = self._summarize(old_items)
+        summary, known = self._summarize(old_items)
         self.session.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
+        self.session.current.known = known
         return count
 
     def maybe_compact(self) -> bool:
@@ -2856,13 +2865,19 @@ class ConversationCompactor:
             return False
         return self.compact() > 0
 
-    def _summarize(self, items: list[ConversationItem]) -> str:
-        user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(conversation="\n\n".join(item.format() for item in items)).strip()
+    def _summarize(self, items: list[ConversationItem]) -> tuple[str, list[str]]:
+        user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(
+            known="\n".join(self.session.current.known) or "(empty)",
+            conversation="\n\n".join(item.format() for item in items),
+        ).strip()
         response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
-        return summary
+        known = [fact for fact in (_json_str(item) for item in _json_list(response.get("known"))) if fact]
+        if not known:
+            known = list(self.session.current.known)
+        return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
 
 
 ############################
@@ -2933,8 +2948,7 @@ class Agent:
         return self.compactor.maybe_compact()
 
     def cancel_current_goal(self) -> None:
-        self._clear_agent_feedback()
-        self.session.current.goal_reached = False
+        self._finish_current_goal()
 
     def run(
         self,
@@ -3012,8 +3026,7 @@ class Agent:
                     )
                     continue
                 if messages and self.session.current.goal_reached:
-                    self._clear_agent_feedback()
-                    self._trim_tool_result_store_after_goal_complete()
+                    self._finish_current_goal()
                     return response
                 self.session.current.goal_reached = False
                 if not actions:
@@ -3033,6 +3046,15 @@ class Agent:
 
     def _clear_agent_feedback(self) -> None:
         self.agent_feedback_errors = []
+
+    def _finish_current_goal(self) -> None:
+        self.last_tool_calls = ""
+        self._clear_agent_feedback()
+        self.session.current.goal = ""
+        self.session.current.goal_reached = False
+        self.session.current.plan = []
+        self.session.current.verification.reset()
+        self._trim_tool_result_store_after_goal_complete()
 
     def _trim_tool_result_store_after_goal_complete(self) -> None:
         overflow = len(self.session.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS

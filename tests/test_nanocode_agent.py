@@ -621,6 +621,17 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
     ]
 
 
+def test_agent_keeps_latest_50_known_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(51)]}]})
+
+    assert len(session.current.known) == 50
+    assert session.current.known[0] == "fact 1"
+    assert session.current.known[-1] == "fact 50"
+
+
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -855,10 +866,13 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "tr.1" in fake_client.user_prompts[1]
-    assert "alpha" in agent.last_tool_calls
+    assert agent.last_tool_calls == ""
     assert session.current.known == ["Read sample.txt and found alpha."]
     assert session.current.user_input == "read sample"
-    assert session.current.goal_reached is True
+    assert session.current.goal == ""
+    assert session.current.plan == []
+    assert session.current.verification.status == VerificationStatus.IDLE
+    assert session.current.goal_reached is False
 
 
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
@@ -890,7 +904,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "alpha" in agent.last_tool_calls
+    assert agent.last_tool_calls == ""
 
 
 def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
@@ -913,7 +927,12 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
+    session.current.goal = "answer"
+    session.current.plan = [nanocode.PlanItem(text="try answer")]
+    session.current.known = ["keep this fact"]
+    session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
+    agent.last_tool_calls = "old tool call"
     agent.model_client = FakeModelClient()
 
     agent.run("read samples")
@@ -922,6 +941,11 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
     assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
     assert list(session.tool_result_store)[-1] == "tr.51"
     assert session.tool_result_counter == 51
+    assert session.current.goal == ""
+    assert session.current.plan == []
+    assert session.current.known == ["keep this fact"]
+    assert session.current.verification.status == VerificationStatus.IDLE
+    assert session.current.goal_reached is False
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
@@ -1055,8 +1079,8 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert session.current.verification.status == VerificationStatus.DONE
-    assert session.current.verification.context == "tests passed"
+    assert session.current.verification.status == VerificationStatus.IDLE
+    assert session.current.verification.context == ""
     assert "Retrying: verification is required before completion." in messages
 
 
@@ -1153,7 +1177,12 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
             return response
 
     session = Session(cwd=str(tmp_path))
+    session.current.goal = "answer"
+    session.current.plan = [nanocode.PlanItem(text="try answer")]
+    session.current.known = ["keep this fact"]
+    session.current.verification.status = VerificationStatus.REQUIRED
     agent = Agent(session)
+    agent.last_tool_calls = "old tool call"
     agent.model_client = FakeModelClient()
 
     try:
@@ -1164,6 +1193,11 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
         raise AssertionError("expected KeyboardInterrupt")
 
     assert agent.agent_feedback_errors == []
+    assert agent.last_tool_calls == ""
+    assert session.current.goal == ""
+    assert session.current.plan == []
+    assert session.current.known == ["keep this fact"]
+    assert session.current.verification.status == VerificationStatus.IDLE
     assert session.current.goal_reached is False
 
 
