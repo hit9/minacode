@@ -4275,8 +4275,6 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
-            elif line.startswith("  Context"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):
                 status = line[10:].strip().split(" ", 1)[0]
                 segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])
