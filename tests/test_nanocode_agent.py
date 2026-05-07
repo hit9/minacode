@@ -1113,6 +1113,39 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert "Retrying: verification is required before completion." in messages
 
 
+def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "change file", "complete": False},
+                        {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True}, {"type": "message", "text": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("change file", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "Retrying: verification is done but goal is not complete." in messages
+    assert "verification is done but goal.complete is not true" in agent.model_client.user_prompts[1]
+    assert "goal complete=true" in agent.model_client.user_prompts[1]
+    assert session.current.verification.status == VerificationStatus.IDLE
+
+
 def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
     class FakeModelClient:
         def __init__(self):

@@ -3014,6 +3014,18 @@ class Agent:
                 self.apply_response(response)
                 if on_message is not None and self.state_updater.latest_report:
                     on_message(self.state_updater.latest_report)
+                if (
+                    not tool_calls
+                    and not self.session.current.goal_reached
+                    and self.session.current.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+                ):
+                    self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
+                    self._report_gate(
+                        on_message,
+                        "Retrying: verification is done but goal is not complete.",
+                        "Completion_Gate: verification is done but goal.complete is not true.",
+                    )
+                    continue
                 for message in messages:
                     self.session.append_conversation(AssistantMessage(content=message))
                     if on_message is not None:
@@ -3108,6 +3120,9 @@ class Agent:
 
     def _format_agent_feedback_verification_error(self) -> str:
         return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with context.'
+
+    def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
+        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message; otherwise continue with tool/plan/verify."
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
         return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
