@@ -21,7 +21,10 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     )
 
     assert "alpha" in latest
-    assert "<result_key>tr.1</result_key>" in latest
+    assert '<ToolCall ok key="tr.1">' in latest
+    assert 'call: Read("sample.txt", "0", "1")' in latest
+    assert "why: read sample" in latest
+    assert "result:\n<ReadToolResult>" in latest
     assert session.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.tool_result_store["tr.1"].value
     assert session.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
@@ -908,7 +911,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert auto_approvals[0][0] == 'Edit("sample.txt", "old", "new")'
     assert "-old" in auto_approvals[0][1]
     assert "+new" in auto_approvals[0][1]
-    assert "outcome>success" in latest
+    assert "<ToolCall ok" in latest
     assert path.read_text(encoding="utf-8") == "new\n"
 
 

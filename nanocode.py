@@ -565,20 +565,16 @@ def _join_tool_call_blocks(blocks: list[str]) -> str:
 
 
 def _format_recent_tool_call(execution: ToolCallExecution) -> str:
-    return "\n".join(
-        [
-            "<Last_Tool_Call>",
-            "  <tool>" + execution.call.name + "</tool>",
-            "  <intention>" + execution.call.intention + "</intention>",
-            "  <executed>" + execution.call.executed + "</executed>",
-            "  <outcome>" + execution.outcome + "</outcome>",
-            "  <result_key>" + execution.result_key + "</result_key>",
-            "  <raw_result>",
-            execution.output,
-            "  </raw_result>",
-            "</Last_Tool_Call>",
-        ]
-    )
+    status = "ok" if execution.outcome == "success" else "fail"
+    key = (' key="' + execution.result_key + '"') if execution.result_key else ""
+    lines = [
+        "<ToolCall " + status + key + ">",
+        "call: " + execution.call.executed,
+    ]
+    if execution.call.intention:
+        lines.append("why: " + execution.call.intention)
+    lines.extend(["result:", execution.output, "</ToolCall>"])
+    return "\n".join(lines)
 
 
 ConfirmationResult: TypeAlias = bool | str
