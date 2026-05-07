@@ -1819,7 +1819,7 @@ class ToolResultTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read stored bounded tool result excerpts by key; use log_path with Read for original details."]
+        return ["Read stored bounded tool result excerpts by key; for log_path details, check size and Read small ranges."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1907,7 +1907,7 @@ STEPS:
 3. Memory check:
    - Use Known for stable facts.
    - Use ToolResult(key...) only when you need a previous tool result excerpt by key.
-   - Use Read(log_path, range) when an excerpt is insufficient and exact original tool output is needed.
+   - Use Read(log_path, range) when an excerpt is insufficient; check original_lines/original_chars and read logs in small ranges.
    - Use Read/Search/ListDir for current source state.
 
 4. Plan:
