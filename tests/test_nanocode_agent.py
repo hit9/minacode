@@ -4,6 +4,18 @@ import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
 
 
+def _verify_passed_action():
+    return {"type": "verify", "method": "unit", "status": "passed", "context": "checked"}
+
+
+def _final_actions(goal="answer", message="done"):
+    return [
+        _verify_passed_action(),
+        {"type": "goal", "text": goal, "complete": True},
+        {"type": "message", "text": message},
+    ]
+
+
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -383,6 +395,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
             '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
         ],
         [
+            '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__',
             '{"type":"goal","text":"read sample","complete":true}__END_ACTION__',
             '{"type":"message","text":"done"}__END_ACTION__',
         ],
@@ -931,6 +944,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "type": "known",
                             "items": ["Read sample.txt and found alpha."],
                         },
+                        _verify_passed_action(),
                         {"type": "goal", "text": "read sample", "complete": True},
                         {"type": "message", "text": "done"},
                     ],
@@ -977,12 +991,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {
-                    "actions": [
-                        {"type": "goal", "text": "read sample", "complete": True},
-                        {"type": "message", "text": "done"},
-                    ]
-                },
+                {"actions": _final_actions("read sample")},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1014,7 +1023,7 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
                         for index in range(51)
                     ]
                 },
-                {"actions": [{"type": "goal", "text": "read samples", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions("read samples")},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1051,7 +1060,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": [{"type": "goal", "text": "read sample", "complete": True}, {"type": "message", "text": "done too early"}]},
+                {"actions": _final_actions("read sample", "done too early")},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1077,7 +1086,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1102,7 +1111,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
         def __init__(self):
             self.responses = [
                 {"actions": [{"type": "known", "items": []}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1124,7 +1133,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
         def __init__(self):
             self.responses = [
                 {"actions": []},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1190,7 +1199,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
                         {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
                     ],
                 },
-                {"actions": [{"type": "goal", "text": "change file", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions("change file")},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1219,7 +1228,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
                 {"actions": [{"type": "message", "text": "done without goal"}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1249,7 +1258,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1276,7 +1285,7 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
                 {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1303,7 +1312,7 @@ def test_agent_feedback_records_message_before_goal_complete(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "message", "text": "progress"}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1368,7 +1377,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [], "message_to_user": "old protocol"},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1390,7 +1399,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
         def __init__(self):
             self.responses = [
                 {
-                    "actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}],
+                    "actions": _final_actions(),
                     "_format_frame_errors": ["frame 1: expected JSON object action"],
                 }
             ]
@@ -1424,7 +1433,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
         def __init__(self):
             self.responses = [
                 {"_format_error": "Invalid model output: plain answer", "_format_bad_output": "plain answer", "actions": []},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}, {"type": "message", "text": "done"}]},
+                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):

@@ -461,12 +461,15 @@ class Tool(Protocol):
     @classmethod
     def effect(cls) -> ToolEffect:
         return ToolEffect.OTHER
+
     @classmethod
     def is_readonly(cls) -> bool:
         return cls.effect() == ToolEffect.READONLY
+
     @classmethod
     def is_editing(cls) -> bool:
         return cls.effect() == ToolEffect.EDIT
+
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
     def requires_confirmation(self, session: Session) -> bool: ...
@@ -523,12 +526,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     header = (
         "[tool result excerpt]\n"
         "excerpted: true\n"
-        "original_lines: "
-        + str(original_lines)
-        + "\noriginal_chars: "
-        + str(original_chars)
-        + ("\nfull_log: " + log_path if log_path else "")
-        + "\n"
+        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + ("\nfull_log: " + log_path if log_path else "") + "\n"
     )
     labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
     body_budget = max_chars - len(header) - sum(len(label) for label in labels)
@@ -539,15 +537,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     middle_size = body_budget // 3
     tail_size = body_budget - head_size - middle_size
     middle_start = max(0, original_chars // 2 - middle_size // 2)
-    value = (
-        header
-        + labels[0]
-        + output[:head_size]
-        + labels[1]
-        + output[middle_start : middle_start + middle_size]
-        + labels[2]
-        + output[-tail_size:]
-    )
+    value = header + labels[0] + output[:head_size] + labels[1] + output[middle_start : middle_start + middle_size] + labels[2] + output[-tail_size:]
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
@@ -845,7 +835,7 @@ class ListDirTool(Tool):
 
     @classmethod
     def signature(cls) -> str:
-        return 'ListDir([dirpath][, glob]) -> ListDirToolResult<entries>'
+        return "ListDir([dirpath][, glob]) -> ListDirToolResult<entries>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -1991,9 +1981,10 @@ Rules:
 1. Every turn must emit at least one action frame.
 2. Output known only for new durable facts; do not repeat or rephrase existing Known.
 3. Call at most 10 tools in one turn.
-4. Prefer batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-5. Batch only independent tools.
-6. If a tool result is needed for the next decision, stop after that tool batch.
+4. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
+5. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+6. Batch only independent tools.
+7. If a tool result is needed for the next decision, stop after that tool batch.
 
 Action types:
 * message: tell the user progress, result, or blocker.
@@ -3132,6 +3123,15 @@ class Agent:
                             on_message(report)
                     self.maybe_auto_compact()
                     continue
+                if self.session.current.goal_reached and not messages:
+                    self.session.current.goal_reached = False
+                    self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+                    self._report_gate(
+                        on_message,
+                        "Retrying: goal is complete but no message provided.",
+                        "Completion_Gate: goal.complete=true requires a message action.",
+                    )
+                    continue
                 if self.session.current.verification.status == VerificationStatus.REQUIRED:
                     self.session.current.goal_reached = False
                     self._remember_agent_error(self._format_agent_feedback_verification_error())
@@ -3141,18 +3141,18 @@ class Agent:
                         "Verification_Gate: retrying until verification is passed or blocked.",
                     )
                     continue
+                if self.session.current.goal_reached and self.session.current.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED):
+                    self.session.current.goal_reached = False
+                    self._remember_agent_error(self._format_agent_feedback_verification_error())
+                    self._report_gate(
+                        on_message,
+                        "Retrying: verification must pass before completion.",
+                        "Verification_Gate: goal.complete=true requires verification passed or blocked before completion.",
+                    )
+                    continue
                 if messages and self.session.current.goal_reached:
                     self._finish_current_goal()
                     return response
-                if self.session.current.goal_reached:
-                    self.session.current.goal_reached = False
-                    self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
-                    self._report_gate(
-                        on_message,
-                        "Retrying: goal is complete but no message provided.",
-                        "Completion_Gate: goal.complete=true requires a message action.",
-                    )
-                    continue
                 self.session.current.goal_reached = False
                 if not actions:
                     self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
