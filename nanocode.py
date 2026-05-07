@@ -443,6 +443,12 @@ class Session:
 ###########
 
 
+class ToolEffect(StrEnum):
+    READONLY = "readonly"
+    EDIT = "edit"
+    OTHER = "other"
+
+
 class Tool(Protocol):
     @classmethod
     def name(cls) -> str: ...
@@ -452,6 +458,15 @@ class Tool(Protocol):
     def signature(cls) -> str: ...
     @classmethod
     def example(cls) -> list[str]: ...
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.OTHER
+    @classmethod
+    def is_readonly(cls) -> bool:
+        return cls.effect() == ToolEffect.READONLY
+    @classmethod
+    def is_editing(cls) -> bool:
+        return cls.effect() == ToolEffect.EDIT
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
     def requires_confirmation(self, session: Session) -> bool: ...
@@ -619,6 +634,10 @@ class ReadTool(Tool):
         return "Read"
 
     @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.READONLY
+
+    @classmethod
     def description(cls) -> list[str]:
         return [
             "Read UTF-8 file lines and cache fingerprints for range edits.",
@@ -767,6 +786,10 @@ class LineCountTool(Tool):
         return "LineCount"
 
     @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.READONLY
+
+    @classmethod
     def description(cls) -> list[str]:
         return ["Count lines in one file before choosing Read range tokens."]
 
@@ -805,6 +828,10 @@ class ListDirTool(Tool):
     @classmethod
     def name(cls) -> str:
         return "ListDir"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.READONLY
 
     @classmethod
     def description(cls) -> list[str]:
@@ -899,6 +926,10 @@ class SearchTool(Tool):
     @classmethod
     def name(cls) -> str:
         return "Search"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.READONLY
 
     @classmethod
     def description(cls) -> list[str]:
@@ -1263,6 +1294,10 @@ class EditTool(Tool):
         return "Edit"
 
     @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.EDIT
+
+    @classmethod
     def description(cls) -> list[str]:
         return ["Replace the first exact literal text block; use only for small unambiguous edits, not regex."]
 
@@ -1330,6 +1365,10 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def name(cls) -> str:
         return "ReplaceRange"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.EDIT
 
     @classmethod
     def description(cls) -> list[str]:
@@ -1435,6 +1474,10 @@ class ApplyPatchTool(Tool):
     @classmethod
     def name(cls) -> str:
         return "ApplyPatch"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.EDIT
 
     @classmethod
     def description(cls) -> list[str]:
@@ -1822,6 +1865,10 @@ class ToolResultTool(Tool):
     @classmethod
     def name(cls) -> str:
         return "ToolResult"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.READONLY
 
     @classmethod
     def description(cls) -> list[str]:
@@ -2485,13 +2532,13 @@ class ToolCallRunner:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         executions = []
-        for item in tool_calls:
+        for item in self._dedupe_readonly_tool_calls(tool_calls):
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
             error_type: Type[Exception] | None = None
             try:
-                call = self.parse_tool_call(item)
+                call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
                 tool = self._make_tool(call)
                 preview_error = self._preview_error(tool)
                 if preview_error:
@@ -2538,6 +2585,31 @@ class ToolCallRunner:
 
         self.latest_executions = executions
         return _format_recent_tool_calls(executions)
+
+    def _dedupe_readonly_tool_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue | ParsedToolCall]:
+        parsed_calls: list[JsonValue | ParsedToolCall] = []
+        latest_by_key: dict[tuple[str, tuple[str, ...]], int] = {}
+        for item in tool_calls:
+            try:
+                call = self.parse_tool_call(item)
+            except ToolCallArgError:
+                parsed_calls.append(item)
+                continue
+            parsed_calls.append(call)
+            tool_class = TOOL_REGISTRY.get(call.name)
+            if tool_class is None or not tool_class.is_readonly():
+                continue
+            latest_by_key[(call.name, tuple(call.args))] = len(parsed_calls) - 1
+        keep_indexes = set(latest_by_key.values())
+        filtered = []
+        for index, item in enumerate(parsed_calls):
+            if isinstance(item, ParsedToolCall):
+                key = (item.name, tuple(item.args))
+                tool_class = TOOL_REGISTRY.get(item.name)
+                if tool_class is not None and tool_class.is_readonly() and index not in keep_indexes:
+                    continue
+            filtered.append(item)
+        return filtered
 
     def format_latest_report(self) -> str:
         if not self.latest_executions:

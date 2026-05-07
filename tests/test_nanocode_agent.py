@@ -33,6 +33,46 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
+def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls(
+        [
+            {"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]},
+            {"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]},
+        ]
+    )
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].call.intention == "second read"
+    assert list(session.tool_result_store) == ["tr.1"]
+    assert "second read" in session.tool_result_store["tr.1"].description
+    assert "first read" not in latest
+
+
+def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.execute_tool_calls(
+        [
+            {"name": "Edit", "intention": "first edit", "args": ["sample.txt", "old", "new"]},
+            {"name": "Edit", "intention": "second edit", "args": ["sample.txt", "old", "new"]},
+        ],
+        confirm=lambda call, tool: True,
+    )
+
+    assert len(agent.tool_runner.latest_executions) == 2
+    assert [execution.outcome for execution in agent.tool_runner.latest_executions] == ["success", "failure"]
+    assert list(session.tool_result_store) == ["tr.1", "tr.2"]
+    assert path.read_text(encoding="utf-8") == "new\n"
+
+
 def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("H" * 5000 + "M" * 5000 + "T" * 5000 + "\n", encoding="utf-8")
