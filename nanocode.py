@@ -2072,6 +2072,8 @@ Action types:
 
 Output format (Strict)
 
+USE THE SAME LANGUAGE OF LATEST USER INPUT:
+
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
@@ -3233,7 +3235,7 @@ class ProjectMapExtractor:
         item = _json_dict(value)
         if not item:
             return (_json_str(value) or "").strip()
-        return ((_json_str(item.get("text")) or "").strip() or (_json_str(item.get("fact")) or "").strip())
+        return (_json_str(item.get("text")) or "").strip() or (_json_str(item.get("fact")) or "").strip()
 
     def _append(self, fact: str) -> bool:
         if fact in self.session.project_map:
