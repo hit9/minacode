@@ -64,6 +64,89 @@ class ModelRequestTimeout(Exception): ...
 class Cancellation(Exception): ...
 
 
+############################
+# Config
+############################
+
+
+class Config:
+    """Configuration manager: env vars > config file > defaults.
+
+    Usage: config.get_str("NANOCODE_API_URL", "default")
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[str, Any] | None = None
+
+    def _config_path(self) -> str:
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, "config", "nanocode.json")
+
+    def _load(self) -> dict[str, Any]:
+        if self._cache is not None:
+            return self._cache
+        path = self._config_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._cache = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._cache = {}
+        else:
+            self._cache = {}
+        return self._cache
+
+    def _config_key(self, env_var: str) -> str:
+        """Derive config key from env var by stripping NANOCODE_ prefix and lowercasing."""
+        if env_var.startswith("NANOCODE_"):
+            return env_var[len("NANOCODE_") :].lower()
+        return env_var.lower()
+
+    def get_str(self, env_var: str, default: str) -> str:
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            return env_val
+        cfg = self._load()
+        key = self._config_key(env_var)
+        if key in cfg:
+            return str(cfg[key])
+        return default
+
+    def get_bool(self, env_var: str, default: bool) -> bool:
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "on", "yes")
+        cfg = self._load()
+        key = self._config_key(env_var)
+        if key in cfg:
+            return bool(cfg[key])
+        return default
+
+    def get_int(self, env_var: str, default: int) -> int:
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            return int(env_val)
+        cfg = self._load()
+        key = self._config_key(env_var)
+        if key in cfg:
+            return int(cfg[key])
+        return default
+
+    def get_float(self, env_var: str, default: float) -> float:
+        env_val = os.environ.get(env_var)
+        if env_val is not None:
+            return float(env_val)
+        cfg = self._load()
+        key = self._config_key(env_var)
+        if key in cfg:
+            return float(cfg[key])
+        return default
+
+
+# Module-level singleton
+config = Config()
+
+
 class PromptItem:
     @abstractmethod
     def format(self, indent: str = "") -> str:
@@ -371,20 +454,20 @@ class Session:
     bash: str = field(default_factory=lambda: shutil.which("bash") or "")
 
     # ---- env configs ----
-    api_url: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_URL", ""))  # reqiured
-    api_key: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_KEY", ""))  # reqiured
-    model: str = field(default_factory=lambda: os.environ.get("NANOCODE_MODEL", ""))  # reqiured
-    nanocode_dir: str = field(default_factory=lambda: os.environ.get("NANOCODE_DIR", ".nanocode"))
-    temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
-    reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
-    reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
-    stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
-    model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
-    shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
-    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "50")))
-    max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
-    prompt_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0")))
-    completion_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0")))
+    api_url: str = field(default_factory=lambda: config.get_str("NANOCODE_API_URL", ""))  # reqiured
+    api_key: str = field(default_factory=lambda: config.get_str("NANOCODE_API_KEY", ""))  # reqiured
+    model: str = field(default_factory=lambda: config.get_str("NANOCODE_MODEL", ""))  # reqiured
+    nanocode_dir: str = field(default_factory=lambda: config.get_str("NANOCODE_DIR", ".nanocode"))
+    temperature: float = field(default_factory=lambda: config.get_float("NANOCODE_TEMPERATURE", 0.7))
+    reasoning: bool = field(default_factory=lambda: config.get_bool("NANOCODE_REASONING", True))
+    reasoning_effort: str = field(default_factory=lambda: config.get_str("NANOCODE_REASONING_EFFORT", "medium"))
+    stream: bool = field(default_factory=lambda: config.get_bool("NANOCODE_STREAM", True))
+    model_timeout: int = field(default_factory=lambda: config.get_int("NANOCODE_MODEL_TIMEOUT", 60))
+    shell_timeout: int = field(default_factory=lambda: config.get_int("NANOCODE_SHELL_TIMEOUT", 60))
+    compact_at: int = field(default_factory=lambda: config.get_int("NANOCODE_COMPACT_AT", 50))
+    max_agent_steps: int = field(default_factory=lambda: config.get_int("NANOCODE_MAX_AGENT_STEPS", 50))
+    prompt_price_per_1m_tokens: float = field(default_factory=lambda: config.get_float("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", 0.0))
+    completion_price_per_1m_tokens: float = field(default_factory=lambda: config.get_float("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", 0.0))
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -407,7 +490,6 @@ class Session:
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
-    project_map: list[str] = field(default_factory=list)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
     turn_model_calls: int = 0
@@ -580,7 +662,6 @@ ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 ActionCallback: TypeAlias = Callable[[Json], None]
-ProjectMapProgressCallback: TypeAlias = Callable[[str, int], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
@@ -2011,7 +2092,6 @@ NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFIC
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
 Memory:
-- Project_Map = read-only concise top-level repo architecture, entrypoints, commands, and key locations.
 - Known = concise facts for the current goal.
 - Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
@@ -2026,7 +2106,6 @@ STEPS:
    - Do this before any next tool/message.
 
 3. Memory check:
-   - Use Project_Map for reusable repo structure.
    - Use Known for stable facts.
    - Use ToolResult(key...) only when you need a previous tool result excerpt by key.
    - Use Read(log_path, range) when an excerpt is insufficient; check original_lines/original_chars and read logs in small ranges.
@@ -2055,7 +2134,7 @@ Rules:
 2. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
 3. For user questions, first consider them as codebase questions about the current directory.
 4. Output known only for new durable facts; do not repeat or rephrase existing Known.
-5. Call at most 10 tools in one turn.
+5. PREFER MULTIPLE TOOL CALLS IN ONE TURN (UP TP 10).
 6. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
 7. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
 8. Batch only independent tools.
@@ -2094,10 +2173,6 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Conversation_History>
 {conversation_history}
 </Conversation_History>
-
-<Project_Map>
-{project_map}
-</Project_Map>
 
 <Known>
 {known}
@@ -2178,30 +2253,6 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 -------- Conversation_To_Compact End -----------
 """
 
-PROJECT_MAP_EXTRACTOR_PROMPT = """Extract stable Project_Map updates from the provided session context.
-Use only the provided text; do not invent, explore, or include task-specific details.
-Return strict JSON only: {"mode": "patch", "items": [{"op": "append|delete|update", "index": null, "old_text": null, "text": "short stable project-level note"}]}.
-Prefer update/delete over duplicating existing entries. Keep at most 3 item operations.
-Exclude line numbers, raw logs, temporary tasks, and exact code snippets.
-Return {"items": []} if nothing stable and reusable was learned.
-"""
-
-
-PROJECT_MAP_EXTRACT_USER_PROMPT_TEMPLATE = """
------------ Existing_Project_Map Begin --------
-{project_map}
---------- Existing_Project_Map End ------------
-
------------ Recent_Tool_Calls Begin -----------
-{recent_tool_calls}
---------- Recent_Tool_Calls End ---------------
-
------------ Conversation_Tail Begin -----------
-{conversation_tail}
---------- Conversation_Tail End ---------------
-"""
-
-
 @final
 class PromptBuilder:
     def __init__(self, session: Session):
@@ -2220,7 +2271,6 @@ class PromptBuilder:
         return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
-            project_map=self._format_project_map(),
             known=self._format_known(),
             tool_result_store=self._format_tool_result_store(),
             goal=current.goal or "(empty)",
@@ -2254,11 +2304,6 @@ class PromptBuilder:
         if not self.session.current.known:
             return "(empty)"
         return "\n".join(self.session.current.known)
-
-    def _format_project_map(self) -> str:
-        if not self.session.project_map:
-            return "(empty)"
-        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.session.project_map, start=1))
 
     def _format_tool_result_store(self) -> str:
         if not self.session.tool_result_store:
@@ -3184,127 +3229,6 @@ class ConversationCompactor:
         return self.model_client.request(system_prompt, user_prompt, activity=activity)
 
 
-@final
-class ProjectMapExtractor:
-    MAX_ITEMS: ClassVar[int] = 3
-    MAX_STORED_ITEMS: ClassVar[int] = 30
-    CONVERSATION_TAIL: ClassVar[int] = 5
-
-    def __init__(self, session: Session, model_client: ModelClient):
-        self.session = session
-        self.model_client = model_client
-
-    def extract(self, recent_tool_calls: str = "") -> int:
-        user_prompt = PROJECT_MAP_EXTRACT_USER_PROMPT_TEMPLATE.format(
-            project_map=self._format_project_map(),
-            recent_tool_calls=recent_tool_calls.strip() or "(empty)",
-            conversation_tail=self._format_conversation_tail(),
-        ).strip()
-        response = self._request_json(PROJECT_MAP_EXTRACTOR_PROMPT.strip(), user_prompt, activity="project_map")
-        return self._apply(self._limit_items(response))
-
-    def _apply(self, response: Json) -> int:
-        items = _json_list(response.get("items"))
-        if _json_str(response.get("mode")) == "replace":
-            replacement = [fact for fact in (self._fact(raw) for raw in items) if fact]
-            replacement = list(dict.fromkeys(replacement))[-self.MAX_STORED_ITEMS :]
-            if replacement == self.session.project_map:
-                return 0
-            self.session.project_map = replacement
-            return 1
-        changed = 0
-        for raw in items:
-            if isinstance(raw, str):
-                fact = self._fact(raw)
-                if fact and self._append(fact):
-                    changed += 1
-                continue
-            patch = _json_dict(raw)
-            op = _json_str(patch.get("op")) or "append"
-            if op == "append":
-                fact = self._fact(patch)
-                if fact and self._append(fact):
-                    changed += 1
-            elif op == "delete" and self._delete(patch):
-                changed += 1
-            elif op == "update" and self._update(patch):
-                changed += 1
-        return changed
-
-    def _fact(self, value: JsonValue) -> str:
-        item = _json_dict(value)
-        if not item:
-            return (_json_str(value) or "").strip()
-        return (_json_str(item.get("text")) or "").strip() or (_json_str(item.get("fact")) or "").strip()
-
-    def _append(self, fact: str) -> bool:
-        if fact in self.session.project_map:
-            return False
-        self.session.project_map.append(fact)
-        self._trim()
-        return True
-
-    def _delete(self, patch: Json) -> bool:
-        index = self._index(patch)
-        if index is not None:
-            del self.session.project_map[index]
-            return True
-        old_text = (_json_str(patch.get("old_text")) or "").strip()
-        if old_text not in self.session.project_map:
-            return False
-        self.session.project_map.remove(old_text)
-        return True
-
-    def _update(self, patch: Json) -> bool:
-        fact = self._fact(patch)
-        if not fact:
-            return False
-        index = self._index(patch)
-        if index is None:
-            old_text = (_json_str(patch.get("old_text")) or "").strip()
-            index = self.session.project_map.index(old_text) if old_text in self.session.project_map else None
-        if index is None or self.session.project_map[index] == fact:
-            return False
-        if fact in self.session.project_map:
-            del self.session.project_map[index]
-        else:
-            self.session.project_map[index] = fact
-        return True
-
-    def _index(self, patch: Json) -> int | None:
-        index = _json_int(patch.get("index"))
-        if index < 1 or index > len(self.session.project_map):
-            return None
-        return index - 1
-
-    def _trim(self) -> None:
-        del self.session.project_map[: max(0, len(self.session.project_map) - self.MAX_STORED_ITEMS)]
-
-    def _limit_items(self, response: Json) -> Json:
-        items = _json_list(response.get("items"))
-        if not items:
-            return response
-        limited = dict(response)
-        limited["items"] = items[: self.MAX_ITEMS]
-        return limited
-
-    def _format_project_map(self) -> str:
-        if not self.session.project_map:
-            return "(empty)"
-        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.session.project_map, start=1))
-
-    def _format_conversation_tail(self) -> str:
-        tail = self.session.conversation[-self.CONVERSATION_TAIL :]
-        if not tail:
-            return "(empty)"
-        return "\n\n".join(item.format() for item in tail)
-
-    def _request_json(self, system_prompt: str, user_prompt: str, *, activity: str) -> Json:
-        if isinstance(self.model_client, ModelClient):
-            return self.model_client.request_json(system_prompt, user_prompt, activity=activity)
-        return self.model_client.request(system_prompt, user_prompt, activity=activity)
-
-
 ############################
 # Agent
 ############################
@@ -3327,7 +3251,6 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
-        self.project_map_extractor = ProjectMapExtractor(session, self.model_client)
         self.latest_tool_batch = ""
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_calls = ""
@@ -3378,15 +3301,6 @@ class Agent:
     def maybe_auto_compact(self) -> bool:
         return self.compactor.maybe_compact()
 
-    def learn_project_map(self, recent_tool_calls: str | None = None, *, require_tool_context: bool = False) -> int:
-        context = self._format_recent_tool_call_context() if recent_tool_calls is None else recent_tool_calls
-        if require_tool_context and not context.strip():
-            return 0
-        try:
-            return self.project_map_extractor.extract(context)
-        except LLMError:
-            return 0
-
     def cancel_current_goal(self) -> None:
         self._finish_current_goal()
 
@@ -3397,7 +3311,6 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
-        on_project_map_progress: ProjectMapProgressCallback | None = None,
     ) -> Json:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
@@ -3510,17 +3423,6 @@ class Agent:
                     )
                     continue
                 if messages and self.session.current.goal_reached:
-                    if on_project_map_progress is not None:
-                        project_map_count = 0
-                        on_project_map_progress("updating", 0)
-                        try:
-                            project_map_count = self.learn_project_map(require_tool_context=True)
-                        finally:
-                            on_project_map_progress("updated", project_map_count)
-                    else:
-                        project_map_count = self.learn_project_map(require_tool_context=True)
-                        if project_map_count > 0 and on_message is not None:
-                            on_message("Project_Map updated: " + str(project_map_count) + " change(s)")
                     self._finish_current_goal()
                     return response
                 self.session.current.goal_reached = False
@@ -3791,8 +3693,6 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
-    CommandSpec("/project_map", "Show session project map", "Info", "/project_map"),
-    CommandSpec("/explore", "Explore project and update Project_Map", "Info", "/explore [instructions]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3821,8 +3721,6 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
-            "/project_map": self._project_map,
-            "/explore": self._explore,
             "/compact": self._compact,
             "/model": self._model,
             "/compact-at": self._compact_at,
@@ -3862,7 +3760,6 @@ class CommandDispatcher:
             lines.append("  " + spec.display_name() + " - " + spec.description)
         lines.append("")
         lines.append("Tip: use @path to autocomplete file paths in prompts.")
-        lines.append("Tip: use /explore [instructions] to learn the project structure.")
         return "\n".join(lines)
 
     def _format_source_help_question(self, question: str) -> str:
@@ -3903,32 +3800,6 @@ class CommandDispatcher:
                 "verification: " + session.current.verification.status,
             ]
         )
-
-    def _project_map(self, args: str) -> str:
-        if args:
-            return "Usage: /project_map"
-        if not self.agent.session.project_map:
-            return "(empty)"
-        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.agent.session.project_map, start=1))
-
-    def _explore(self, args: str) -> str:
-        task = self._format_explore_task(args)
-        if self.run_agent is not None:
-            self.run_agent(task)
-        else:
-            self.agent.run(task)
-        return ""
-
-    def _format_explore_task(self, instructions: str) -> str:
-        lines = [
-            "Explore the current project structure, architecture, language/tech stack, entrypoints, tests, and key code responsibilities.",
-            "Use tools as needed. Do not edit files.",
-            "Summarize the stable project structure and important reusable findings in the final answer.",
-            "Do not store line numbers, raw logs, file listings, temporary findings, or exact code snippets.",
-        ]
-        if instructions:
-            lines.extend(["", "Extra user instructions:", instructions])
-        return "\n".join(lines)
 
     def _compact(self, args: str) -> str:
         if args:
@@ -4175,9 +4046,6 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
-        self.inline_output = create_output(sys.stdout)
-        self.project_map_status_active = False
-        self.project_map_status_paused_bar = False
         self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
         self.prompt_session = prompt_session
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
@@ -4245,7 +4113,6 @@ class AgentLoop:
                 confirm=self._confirm_tool_call,
                 on_auto_approve=self._show_auto_tool_call,
                 on_message=self._emit,
-                on_project_map_progress=self._show_project_map_progress,
             )
         except KeyboardInterrupt:
             self.agent.cancel_current_goal()
@@ -4316,42 +4183,6 @@ class AgentLoop:
             if preview:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
-    def _show_project_map_progress(self, phase: str, count: int) -> None:
-        if not self._can_update_inline():
-            if phase == "updated" and count > 0:
-                self._emit("Project_Map updated: " + str(count) + " change(s)")
-            return
-        if phase == "updating":
-            if self.status_bar.is_running():
-                self.status_bar.pause()
-                self.project_map_status_paused_bar = True
-            self.project_map_status_active = True
-            self._write_inline_status([("ansibrightblack", "Updating Project_Map...")], newline=False)
-            return
-        if phase != "updated":
-            return
-        if count > 0:
-            self._write_inline_status([("ansibrightgreen", "Project_Map updated: " + str(count) + " change(s)")], newline=True)
-        elif self.project_map_status_active:
-            self._clear_inline_status()
-        self.project_map_status_active = False
-        if self.project_map_status_paused_bar:
-            self.project_map_status_paused_bar = False
-            self.status_bar.resume()
-
-    def _can_update_inline(self) -> bool:
-        return self.output_fn is print and sys.stdout.isatty()
-
-    def _write_inline_status(self, segments: list[tuple[str, str]], *, newline: bool) -> None:
-        self.inline_output.write_raw("\r")
-        self.inline_output.erase_end_of_line()
-        print_formatted_text(FormattedText(segments), output=self.inline_output, end="\n" if newline else "", flush=True)
-
-    def _clear_inline_status(self) -> None:
-        self.inline_output.write_raw("\r")
-        self.inline_output.erase_end_of_line()
-        self.inline_output.flush()
-
     def _emit(self, message: str) -> None:
         was_running = self.status_bar.is_running()
         if was_running:
@@ -4406,9 +4237,6 @@ class AgentLoop:
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
-            return
-        if message.startswith("Project_Map updated:"):
-            self._emit_segments([("ansibrightgreen", message + "\n")], message)
             return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
@@ -4483,8 +4311,6 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Project_Map"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Context"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):

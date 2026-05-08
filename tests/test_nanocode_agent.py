@@ -423,12 +423,6 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
     agent = Agent(session)
-
-    class FakeProjectMapClient:
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return {"items": []}
-
-    agent.project_map_extractor.model_client = FakeProjectMapClient()
     messages = []
 
     response = agent.run("read sample", on_message=messages.append)
@@ -771,104 +765,6 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
     ]
 
 
-def test_agent_ignores_project_map_actions_from_main_response(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "project_map",
-                    "items": [
-                        "",
-                        "nanocode is a single-file Python CLI.",
-                        "nanocode is a single-file Python CLI.",
-                        "Tests live in tests/.",
-                    ],
-                }
-            ]
-        }
-    )
-
-    assert session.project_map == []
-    assert session.current.known == []
-    assert "Project_Map" not in agent.state_updater.latest_report
-
-
-def test_project_map_updater_keeps_latest_30_project_map_items(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.project_map_extractor._apply({"items": ["map " + str(index) for index in range(31)]})
-
-    assert len(session.project_map) == 30
-    assert session.project_map[0] == "map 1"
-    assert session.project_map[-1] == "map 30"
-
-
-def test_project_map_updater_supports_patch_operations(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.project_map = ["old architecture", "remove me", "keep me"]
-    agent = Agent(session)
-
-    changed = agent.project_map_extractor._apply(
-        {
-            "mode": "patch",
-            "items": [
-                {"op": "update", "index": 1, "text": "updated architecture"},
-                {"op": "delete", "old_text": "remove me"},
-                {"op": "append", "text": "new stable fact"},
-            ],
-        }
-    )
-
-    assert changed == 3
-    assert session.project_map == ["updated architecture", "keep me", "new stable fact"]
-
-
-def test_project_map_extractor_stores_patch_text_not_raw_dict(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    changed = agent.project_map_extractor._apply({"items": [{"op": "append", "index": None, "old_text": None, "text": "stable fact"}]})
-
-    assert changed == 1
-    assert session.project_map == ["stable fact"]
-
-
-def test_agent_learns_project_map_from_recent_tool_context(tmp_path):
-    class FakeProjectMapClient:
-        def __init__(self):
-            self.requests = []
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.requests.append((system_prompt, user_prompt, activity))
-            return {
-                "items": [
-                    "nanocode.py contains the agent loop.",
-                    "",
-                    "nanocode.py contains the agent loop.",
-                ]
-            }
-
-    session = Session(cwd=str(tmp_path))
-    session.project_map = ["Tests live in tests/."]
-    agent = Agent(session)
-    fake_client = FakeProjectMapClient()
-    agent.project_map_extractor.model_client = fake_client
-
-    added = agent.learn_project_map('Tool Calls\n  1. ok Read("nanocode.py", "0,20")')
-
-    assert added == 1
-    assert session.project_map == [
-        "Tests live in tests/.",
-        "nanocode.py contains the agent loop.",
-    ]
-    assert fake_client.requests[0][2] == "project_map"
-    assert 'Read("nanocode.py", "0,20")' in fake_client.requests[0][1]
-
-
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -1060,20 +956,10 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
-    class FakeProjectMapClient:
-        def __init__(self):
-            self.requests = []
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.requests.append((system_prompt, user_prompt, activity))
-            return {"items": ["ReadTool can read fixture files during tests."]}
-
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     fake_client = FakeModelClient()
-    fake_project_map_client = FakeProjectMapClient()
     agent.model_client = fake_client
-    agent.project_map_extractor.model_client = fake_project_map_client
 
     messages = []
     response = agent.run("read sample", on_message=messages.append)
@@ -1083,8 +969,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert '1. ok Read("sample.txt", "0", "1")' in messages[0]
     assert "     tr.1 | why: read sample" in messages[0]
     assert "log: .nanocode/tool_results/" not in messages[0]
-    assert messages[-2] == "done"
-    assert messages[-1] == "Project_Map updated: 1 change(s)"
+    assert messages[-1] == "done"
     assert "alpha" not in fake_client.user_prompts[0]
     assert "alpha" in fake_client.user_prompts[1]
     assert "tr.1" in fake_client.user_prompts[1]
@@ -1096,9 +981,6 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert session.current.plan == []
     assert session.current.verification.status == VerificationStatus.IDLE
     assert session.current.goal_reached is False
-    assert session.project_map == ["ReadTool can read fixture files during tests."]
-    assert fake_project_map_client.requests[0][2] == "project_map"
-    assert "alpha" in fake_project_map_client.requests[0][1]
 
 
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
