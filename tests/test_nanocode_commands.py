@@ -62,6 +62,15 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "blackboard" not in result.message
 
 
+def test_help_tips_include_explore(tmp_path):
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
+
+    result = dispatcher.dispatch("/help")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "Tip: use /explore [instructions] to learn the project structure." in result.message
+
+
 def test_project_map_command_shows_session_project_map(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.project_map = [
@@ -97,18 +106,20 @@ def test_explore_command_runs_project_map_task(tmp_path):
     dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))), run_agent=prompts.append)
 
     result = dispatcher.dispatch("/explore")
-    usage_result = dispatcher.dispatch("/explore tests")
+    custom_result = dispatcher.dispatch("/explore focus on tests")
 
     assert result.status == CommandStatus.HANDLED
     assert result.message == ""
-    assert len(prompts) == 1
+    assert custom_result.status == CommandStatus.HANDLED
+    assert custom_result.message == ""
+    assert len(prompts) == 2
     assert "project structure, architecture, language/tech stack" in prompts[0]
-    assert "must update Project_Map" in prompts[0]
-    assert "via project_map action" in prompts[0]
-    assert "Do not store line numbers or line ranges" in prompts[0]
+    assert "Summarize the stable project structure" in prompts[0]
+    assert "project_map action" not in prompts[0]
+    assert "Do not store line numbers" in prompts[0]
     assert "Do not edit files" in prompts[0]
-    assert "Do not store file listings or temporary findings" in prompts[0]
-    assert usage_result.message == "Usage: /explore"
+    assert "Extra user instructions" not in prompts[0]
+    assert "Extra user instructions:\nfocus on tests" in prompts[1]
 
 
 def test_stream_command_shows_and_updates_streaming_mode(tmp_path):

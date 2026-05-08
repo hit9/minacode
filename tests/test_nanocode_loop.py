@@ -148,6 +148,20 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     assert any("Preview\npreview" in output for output in outputs)
 
 
+def test_agent_loop_project_map_progress_falls_back_to_final_message(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    outputs = []
+    loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
+
+    loop._show_project_map_progress("updating", 0)
+    loop._show_project_map_progress("updated", 2)
+
+    assert outputs == ["Project_Map updated: 2 change(s)"]
+
+
 def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -203,7 +217,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.session = Session(cwd=str(tmp_path), model="model")
             self.runs = []
 
-        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
+        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None, on_project_map_progress=None):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")

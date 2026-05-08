@@ -580,6 +580,7 @@ ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 ActionCallback: TypeAlias = Callable[[Json], None]
+ProjectMapProgressCallback: TypeAlias = Callable[[str, int], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
@@ -2010,7 +2011,7 @@ NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFIC
 USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
 
 Memory:
-- Project_Map = very concise, minimal top-level stable repo architecture, entrypoints, commands, and key locations only; no line numbers or ranges. Keep it extremely brief - store only the most essential structural facts.
+- Project_Map = read-only concise top-level repo architecture, entrypoints, commands, and key locations.
 - Known = concise facts for the current goal.
 - Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
@@ -2022,7 +2023,6 @@ STEPS:
 
 2. Fresh tool results:
    - Extract only new, stable known facts from latest tool results.
-   - Update Project_Map only for truly reusable, high-level repo structure; keep it extremely minimal. Do not store details, file listings, or temporary findings.
    - Do this before any next tool/message.
 
 3. Memory check:
@@ -2055,12 +2055,11 @@ Rules:
 2. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
 3. For user questions, first consider them as codebase questions about the current directory.
 4. Output known only for new durable facts; do not repeat or rephrase existing Known.
-5. Output project_map only for the most essential top-level stable repo structure; keep it extremely minimal and brief. No raw logs, temporary findings, file snapshots, line numbers, or line ranges. Avoid storing too much - only the highest-level architecture.
-6. Call at most 10 tools in one turn.
-7. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-8. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
-9. Batch only independent tools.
-10. If a tool result is needed for the next decision, stop after that tool batch.
+5. Call at most 10 tools in one turn.
+6. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
+7. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+8. Batch only independent tools.
+9. If a tool result is needed for the next decision, stop after that tool batch.
 
 Action types:
 * chat: reply once to greetings or non-actionable conversation and end the user turn.
@@ -2068,7 +2067,6 @@ Action types:
 * goal: set/update the current goal; complete=true only after success + verification. When marking complete without a separate message action, include "message_for_complete": "string" to supply the completion message.
 * verify: record verification status for the current goal.
 * known: save new durable facts.
-* project_map: append stable repo structure, architecture, entrypoints, commands, or key code locations.
 * plan: create or update the work plan.
 * tool: call a tool through JSON action frame only.
 
@@ -2082,7 +2080,6 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": "string"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
-{"type": "project_map", "items": ["non-empty stable repo map fact"]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 """
@@ -2179,6 +2176,29 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 -------- Conversation_To_Compact End -----------
 """
 
+PROJECT_MAP_EXTRACTOR_PROMPT = """Extract stable Project_Map updates from the provided session context.
+Use only the provided text; do not invent, explore, or include task-specific details.
+Return strict JSON only: {"mode": "patch", "items": [{"op": "append|delete|update", "index": null, "old_text": null, "text": "short stable project-level note"}]}.
+Prefer update/delete over duplicating existing entries. Keep at most 3 item operations.
+Exclude line numbers, raw logs, temporary tasks, and exact code snippets.
+Return {"items": []} if nothing stable and reusable was learned.
+"""
+
+
+PROJECT_MAP_EXTRACT_USER_PROMPT_TEMPLATE = """
+----------- Existing_Project_Map Begin --------
+{project_map}
+--------- Existing_Project_Map End ------------
+
+----------- Recent_Tool_Calls Begin -----------
+{recent_tool_calls}
+--------- Recent_Tool_Calls End ---------------
+
+----------- Conversation_Tail Begin -----------
+{conversation_tail}
+--------- Conversation_Tail End ---------------
+"""
+
 
 @final
 class PromptBuilder:
@@ -2236,7 +2256,7 @@ class PromptBuilder:
     def _format_project_map(self) -> str:
         if not self.session.project_map:
             return "(empty)"
-        return "\n".join(self.session.project_map)
+        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.session.project_map, start=1))
 
     def _format_tool_result_store(self) -> str:
         if not self.session.tool_result_store:
@@ -2277,7 +2297,18 @@ class ModelClient:
     def _timeout_handler(self, signum: int, frame: Any) -> None:
         raise ModelRequestTimeout()
 
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
+    def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+        return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
+
+    def request(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        activity: str = "main",
+        on_action: ActionCallback | None = None,
+        parse_actions: bool = True,
+    ) -> Json:
         if not self.session.api_url:
             raise LLMError("NANOCODE_API_URL is required")
         if not self.session.api_key:
@@ -2350,6 +2381,8 @@ class ModelClient:
             content = self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
+        if not parse_actions:
+            return self._parse_json_content(content)
         return self._parse_model_content(content)
 
     def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> tuple[str, Json]:
@@ -2443,6 +2476,19 @@ class ModelClient:
         if frame_errors:
             response["_format_frame_errors"] = frame_errors
         return response
+
+    def _parse_json_content(self, content: str) -> Json:
+        text = content.strip()
+        text = self._strip_leaked_think_tags(text)
+        text = self._strip_json_fence(text)
+        text = self._strip_leaked_think_tags(text)
+        try:
+            value = json_repair.loads(text)
+        except Exception as error:
+            raise LLMError("model returned invalid JSON: " + str(error))
+        if not isinstance(value, dict):
+            raise LLMError("model returned JSON that is not an object")
+        return value
 
     def _action_frames(self, text: str) -> list[str]:
         frames: list[str] = []
@@ -2861,7 +2907,6 @@ class ToolCallRunner:
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 50
-    MAX_PROJECT_MAP_ITEMS: ClassVar[int] = 30
 
     def __init__(self, session: Session):
         self.session = session
@@ -2870,7 +2915,6 @@ class AgentStateUpdater:
     def apply(self, response: Json) -> None:
         before_goal = self.session.current.goal
         before_plan = [item.format() for item in self.session.current.plan]
-        before_project_map = list(self.session.project_map)
         before_known = list(self.session.current.known)
         before_verification = self.session.current.verification.format()
         goal_changed = self._apply_goal(response)
@@ -2878,14 +2922,12 @@ class AgentStateUpdater:
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
         if goal_changed:
             self.session.range_fingerprints.clear()
-        self._apply_project_map(response)
         self._apply_known(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
-            before_project_map,
             before_known,
             before_verification,
         )
@@ -2897,7 +2939,6 @@ class AgentStateUpdater:
         self,
         before_goal: str,
         before_plan: list[str],
-        before_project_map: list[str],
         before_known: list[str],
         before_verification: str,
     ) -> str:
@@ -2912,11 +2953,6 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Plan")
             lines.extend(self._format_plan_rows())
-        if self.session.project_map != before_project_map:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Project_Map")
-            lines.extend(self._format_project_map_rows())
         known = list(current.known)
         if known != before_known:
             if not lines:
@@ -2944,16 +2980,6 @@ class AgentStateUpdater:
 
     def _format_known_rows(self) -> list[str]:
         items = self.session.current.known
-        if not items:
-            return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(item))
-        return rows
-
-    def _format_project_map_rows(self) -> list[str]:
-        items = self.session.project_map
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
@@ -3041,13 +3067,6 @@ class AgentStateUpdater:
                 if fact is not None:
                     self._add_known_item(fact)
 
-    def _apply_project_map(self, response: Json) -> None:
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "project_map"]:
-            for raw in _json_list(action.get("items")):
-                fact = self._known_fact_from_json(raw)
-                if fact is not None:
-                    self._add_project_map_item(fact)
-
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
         fact = (_json_str(value) or "").strip()
         if not fact:
@@ -3061,11 +3080,6 @@ class AgentStateUpdater:
         if fact not in self.session.current.known:
             self.session.current.known.append(fact)
             del self.session.current.known[: max(0, len(self.session.current.known) - self.MAX_KNOWN_ITEMS)]
-
-    def _add_project_map_item(self, fact: str) -> None:
-        if fact not in self.session.project_map:
-            self.session.project_map.append(fact)
-            del self.session.project_map[: max(0, len(self.session.project_map) - self.MAX_PROJECT_MAP_ITEMS)]
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
@@ -3153,7 +3167,7 @@ class ConversationCompactor:
             known="\n".join(self.session.current.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
+        response = self._request_json(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
@@ -3161,6 +3175,132 @@ class ConversationCompactor:
         if not known:
             known = list(self.session.current.known)
         return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
+
+    def _request_json(self, system_prompt: str, user_prompt: str, *, activity: str) -> Json:
+        if isinstance(self.model_client, ModelClient):
+            return self.model_client.request_json(system_prompt, user_prompt, activity=activity)
+        return self.model_client.request(system_prompt, user_prompt, activity=activity)
+
+
+@final
+class ProjectMapExtractor:
+    MAX_ITEMS: ClassVar[int] = 3
+    MAX_STORED_ITEMS: ClassVar[int] = 30
+    CONVERSATION_TAIL: ClassVar[int] = 5
+
+    def __init__(self, session: Session, model_client: ModelClient):
+        self.session = session
+        self.model_client = model_client
+
+    def extract(self, recent_tool_calls: str = "") -> int:
+        user_prompt = PROJECT_MAP_EXTRACT_USER_PROMPT_TEMPLATE.format(
+            project_map=self._format_project_map(),
+            recent_tool_calls=recent_tool_calls.strip() or "(empty)",
+            conversation_tail=self._format_conversation_tail(),
+        ).strip()
+        response = self._request_json(PROJECT_MAP_EXTRACTOR_PROMPT.strip(), user_prompt, activity="project_map")
+        return self._apply(self._limit_items(response))
+
+    def _apply(self, response: Json) -> int:
+        items = _json_list(response.get("items"))
+        if _json_str(response.get("mode")) == "replace":
+            replacement = [fact for fact in (self._fact(raw) for raw in items) if fact]
+            replacement = list(dict.fromkeys(replacement))[-self.MAX_STORED_ITEMS :]
+            if replacement == self.session.project_map:
+                return 0
+            self.session.project_map = replacement
+            return 1
+        changed = 0
+        for raw in items:
+            if isinstance(raw, str):
+                fact = self._fact(raw)
+                if fact and self._append(fact):
+                    changed += 1
+                continue
+            patch = _json_dict(raw)
+            op = _json_str(patch.get("op")) or "append"
+            if op == "append":
+                fact = self._fact(patch)
+                if fact and self._append(fact):
+                    changed += 1
+            elif op == "delete" and self._delete(patch):
+                changed += 1
+            elif op == "update" and self._update(patch):
+                changed += 1
+        return changed
+
+    def _fact(self, value: JsonValue) -> str:
+        item = _json_dict(value)
+        if not item:
+            return (_json_str(value) or "").strip()
+        return ((_json_str(item.get("text")) or "").strip() or (_json_str(item.get("fact")) or "").strip())
+
+    def _append(self, fact: str) -> bool:
+        if fact in self.session.project_map:
+            return False
+        self.session.project_map.append(fact)
+        self._trim()
+        return True
+
+    def _delete(self, patch: Json) -> bool:
+        index = self._index(patch)
+        if index is not None:
+            del self.session.project_map[index]
+            return True
+        old_text = (_json_str(patch.get("old_text")) or "").strip()
+        if old_text not in self.session.project_map:
+            return False
+        self.session.project_map.remove(old_text)
+        return True
+
+    def _update(self, patch: Json) -> bool:
+        fact = self._fact(patch)
+        if not fact:
+            return False
+        index = self._index(patch)
+        if index is None:
+            old_text = (_json_str(patch.get("old_text")) or "").strip()
+            index = self.session.project_map.index(old_text) if old_text in self.session.project_map else None
+        if index is None or self.session.project_map[index] == fact:
+            return False
+        if fact in self.session.project_map:
+            del self.session.project_map[index]
+        else:
+            self.session.project_map[index] = fact
+        return True
+
+    def _index(self, patch: Json) -> int | None:
+        index = _json_int(patch.get("index"))
+        if index < 1 or index > len(self.session.project_map):
+            return None
+        return index - 1
+
+    def _trim(self) -> None:
+        del self.session.project_map[: max(0, len(self.session.project_map) - self.MAX_STORED_ITEMS)]
+
+    def _limit_items(self, response: Json) -> Json:
+        items = _json_list(response.get("items"))
+        if not items:
+            return response
+        limited = dict(response)
+        limited["items"] = items[: self.MAX_ITEMS]
+        return limited
+
+    def _format_project_map(self) -> str:
+        if not self.session.project_map:
+            return "(empty)"
+        return "\n".join(str(index) + ". " + item for index, item in enumerate(self.session.project_map, start=1))
+
+    def _format_conversation_tail(self) -> str:
+        tail = self.session.conversation[-self.CONVERSATION_TAIL :]
+        if not tail:
+            return "(empty)"
+        return "\n\n".join(item.format() for item in tail)
+
+    def _request_json(self, system_prompt: str, user_prompt: str, *, activity: str) -> Json:
+        if isinstance(self.model_client, ModelClient):
+            return self.model_client.request_json(system_prompt, user_prompt, activity=activity)
+        return self.model_client.request(system_prompt, user_prompt, activity=activity)
 
 
 ############################
@@ -3185,6 +3325,7 @@ class Agent:
         self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session)
         self.compactor = ConversationCompactor(session, self.model_client)
+        self.project_map_extractor = ProjectMapExtractor(session, self.model_client)
         self.latest_tool_batch = ""
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_calls = ""
@@ -3235,6 +3376,15 @@ class Agent:
     def maybe_auto_compact(self) -> bool:
         return self.compactor.maybe_compact()
 
+    def learn_project_map(self, recent_tool_calls: str | None = None, *, require_tool_context: bool = False) -> int:
+        context = self._format_recent_tool_call_context() if recent_tool_calls is None else recent_tool_calls
+        if require_tool_context and not context.strip():
+            return 0
+        try:
+            return self.project_map_extractor.extract(context)
+        except LLMError:
+            return 0
+
     def cancel_current_goal(self) -> None:
         self._finish_current_goal()
 
@@ -3245,6 +3395,7 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
+        on_project_map_progress: ProjectMapProgressCallback | None = None,
     ) -> Json:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
@@ -3357,6 +3508,17 @@ class Agent:
                     )
                     continue
                 if messages and self.session.current.goal_reached:
+                    if on_project_map_progress is not None:
+                        project_map_count = 0
+                        on_project_map_progress("updating", 0)
+                        try:
+                            project_map_count = self.learn_project_map(require_tool_context=True)
+                        finally:
+                            on_project_map_progress("updated", project_map_count)
+                    else:
+                        project_map_count = self.learn_project_map(require_tool_context=True)
+                        if project_map_count > 0 and on_message is not None:
+                            on_message("Project_Map updated: " + str(project_map_count) + " change(s)")
                     self._finish_current_goal()
                     return response
                 self.session.current.goal_reached = False
@@ -3628,7 +3790,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/project_map", "Show session project map", "Info", "/project_map"),
-    CommandSpec("/explore", "Explore project and update Project_Map", "Info", "/explore"),
+    CommandSpec("/explore", "Explore project and update Project_Map", "Info", "/explore [instructions]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
     CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
@@ -3698,6 +3860,7 @@ class CommandDispatcher:
             lines.append("  " + spec.display_name() + " - " + spec.description)
         lines.append("")
         lines.append("Tip: use @path to autocomplete file paths in prompts.")
+        lines.append("Tip: use /explore [instructions] to learn the project structure.")
         return "\n".join(lines)
 
     def _format_source_help_question(self, question: str) -> str:
@@ -3747,19 +3910,23 @@ class CommandDispatcher:
         return "\n".join(str(index) + ". " + item for index, item in enumerate(self.agent.session.project_map, start=1))
 
     def _explore(self, args: str) -> str:
-        if args:
-            return "Usage: /explore"
-        task = (
-            "Explore the current project structure, architecture, language/tech stack, entrypoints, test commands, "
-            "and key code locations. You must update Project_Map with stable reusable findings via project_map action. "
-            "Do not store line numbers or line ranges; store stable symbols, files, and responsibilities instead. "
-            "Do not edit files. Do not store file listings or temporary findings."
-        )
+        task = self._format_explore_task(args)
         if self.run_agent is not None:
             self.run_agent(task)
         else:
             self.agent.run(task)
         return ""
+
+    def _format_explore_task(self, instructions: str) -> str:
+        lines = [
+            "Explore the current project structure, architecture, language/tech stack, entrypoints, tests, and key code responsibilities.",
+            "Use tools as needed. Do not edit files.",
+            "Summarize the stable project structure and important reusable findings in the final answer.",
+            "Do not store line numbers, raw logs, file listings, temporary findings, or exact code snippets.",
+        ]
+        if instructions:
+            lines.extend(["", "Extra user instructions:", instructions])
+        return "\n".join(lines)
 
     def _compact(self, args: str) -> str:
         if args:
@@ -4006,6 +4173,9 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
+        self.inline_output = create_output(sys.stdout)
+        self.project_map_status_active = False
+        self.project_map_status_paused_bar = False
         self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
         self.prompt_session = prompt_session
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
@@ -4073,6 +4243,7 @@ class AgentLoop:
                 confirm=self._confirm_tool_call,
                 on_auto_approve=self._show_auto_tool_call,
                 on_message=self._emit,
+                on_project_map_progress=self._show_project_map_progress,
             )
         except KeyboardInterrupt:
             self.agent.cancel_current_goal()
@@ -4143,6 +4314,42 @@ class AgentLoop:
             if preview:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
+    def _show_project_map_progress(self, phase: str, count: int) -> None:
+        if not self._can_update_inline():
+            if phase == "updated" and count > 0:
+                self._emit("Project_Map updated: " + str(count) + " change(s)")
+            return
+        if phase == "updating":
+            if self.status_bar.is_running():
+                self.status_bar.pause()
+                self.project_map_status_paused_bar = True
+            self.project_map_status_active = True
+            self._write_inline_status([("ansibrightblack", "Updating Project_Map...")], newline=False)
+            return
+        if phase != "updated":
+            return
+        if count > 0:
+            self._write_inline_status([("ansibrightgreen", "Project_Map updated: " + str(count) + " change(s)")], newline=True)
+        elif self.project_map_status_active:
+            self._clear_inline_status()
+        self.project_map_status_active = False
+        if self.project_map_status_paused_bar:
+            self.project_map_status_paused_bar = False
+            self.status_bar.resume()
+
+    def _can_update_inline(self) -> bool:
+        return self.output_fn is print and sys.stdout.isatty()
+
+    def _write_inline_status(self, segments: list[tuple[str, str]], *, newline: bool) -> None:
+        self.inline_output.write_raw("\r")
+        self.inline_output.erase_end_of_line()
+        print_formatted_text(FormattedText(segments), output=self.inline_output, end="\n" if newline else "", flush=True)
+
+    def _clear_inline_status(self) -> None:
+        self.inline_output.write_raw("\r")
+        self.inline_output.erase_end_of_line()
+        self.inline_output.flush()
+
     def _emit(self, message: str) -> None:
         was_running = self.status_bar.is_running()
         if was_running:
@@ -4197,6 +4404,9 @@ class AgentLoop:
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
+            return
+        if message.startswith("Project_Map updated:"):
+            self._emit_segments([("ansibrightgreen", message + "\n")], message)
             return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
