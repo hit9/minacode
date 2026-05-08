@@ -43,7 +43,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
 MAX_TOOL_OUTPUT_CHARS = 12_000
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 
 
 class Error(Exception): ...
