@@ -45,7 +45,7 @@ JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
 MAX_TOOL_OUTPUT_CHARS = 12_000
 EXPLORE_MESSAGE_PREFIX = "[explore] "
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 
 class Error(Exception): ...
