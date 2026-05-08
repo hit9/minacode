@@ -81,6 +81,7 @@ USE AT YOUR OWN RISK.
 ## Configuration
 
 - Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
+- Use `nanocode --config path/to/config.toml` to load another config file.
 - Model layers: `[main_model]` and `[worker_model]`.
 - Explore config: `[explore_agent] max_turns`.
 - Runtime config: `[paths]` and `[runtime]`.

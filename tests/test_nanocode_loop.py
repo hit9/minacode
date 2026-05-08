@@ -1,6 +1,7 @@
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
+import nanocode
 from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
 
 
@@ -31,6 +32,50 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["main_model"]["temperature"] == 0.7
     assert config["explore_agent"]["max_turns"] == 50
     assert config["runtime"]["compact_at"] == 50
+
+
+def test_main_init_config_uses_config_argument(tmp_path, capsys):
+    config_path = tmp_path / "custom.toml"
+
+    result = nanocode.main(["--config", str(config_path), "--init-config"])
+    output = capsys.readouterr()
+
+    assert result == 0
+    assert config_path.exists()
+    assert "Created config: " + str(config_path) in output.out
+
+
+def test_main_loads_config_argument(tmp_path, monkeypatch):
+    config_path = tmp_path / "custom.toml"
+    config_path.write_text(
+        """
+[api]
+url = "https://example.test/v1"
+key = "key"
+
+[main_model]
+model = "custom-main"
+
+[paths]
+nanocode_dir = ".custom-nanocode"
+""".strip(),
+        encoding="utf-8",
+    )
+    sessions = []
+
+    def fake_run(self):
+        sessions.append(self.agent.session)
+        return 0
+
+    monkeypatch.setattr(nanocode.AgentLoop, "run", fake_run)
+
+    result = nanocode.main(["--config", str(config_path)])
+
+    assert result == 0
+    assert sessions[0].api_url == "https://example.test/v1"
+    assert sessions[0].api_key == "key"
+    assert sessions[0].model == "custom-main"
+    assert sessions[0].nanocode_dir == ".custom-nanocode"
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):

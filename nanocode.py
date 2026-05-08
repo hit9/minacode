@@ -224,6 +224,7 @@ class Blackboard:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
+    verification_required: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     verification: Verification = field(default_factory=Verification)
@@ -343,7 +344,7 @@ max_agent_steps = 50
 
     @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:
-        config_path = path or cls.path()
+        config_path = os.path.expanduser(path) if path else cls.path()
         if os.path.exists(config_path):
             return config_path, False
         parent = os.path.dirname(config_path)
@@ -355,7 +356,7 @@ max_agent_steps = 50
 
     @classmethod
     def load(cls, path: str | None = None) -> Json:
-        config_path = path or cls.path()
+        config_path = os.path.expanduser(path) if path else cls.path()
         try:
             with open(config_path, "rb") as file:
                 data = tomllib.load(file)
@@ -813,6 +814,7 @@ class ToolCallExecution:
     output: str
     error_type: Type[Exception] | None = None
     result_key: str = ""
+    requires_verification: bool = False
 
 
 @final
@@ -2322,7 +2324,7 @@ Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
-- Do not mark the goal complete until the task is done and verification has passed or is blocked.
+- Do not mark the goal complete until the task is done and required verification has passed or is blocked.
 - For greetings or non-actionable chat, output one chat action and stop.
 - If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
 
@@ -2337,7 +2339,7 @@ Workflow:
 2. If files, code areas, symbols, or call paths are unknown, use explore.
 3. If the target is clear, do small direct checks, answer, or edit.
 4. Record new durable facts in known.
-5. Verify before completion.
+5. Verify before completion when needed.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
@@ -3108,6 +3110,7 @@ class ToolCallRunner:
             outcome = "success"
             output = ""
             error_type: Type[Exception] | None = None
+            requires_verification = False
             try:
                 if isinstance(item, PreparedToolCall):
                     call = item.call
@@ -3118,7 +3121,8 @@ class ToolCallRunner:
                 preview_error = self._preview_error(tool)
                 if preview_error:
                     raise ToolCallError("preview unavailable: " + preview_error)
-                if tool.requires_confirmation(self.session):
+                requires_verification = tool.requires_confirmation(self.session)
+                if requires_verification:
                     if self.session.yolo:
                         if on_auto_approve is not None:
                             on_auto_approve(call, tool)
@@ -3155,6 +3159,7 @@ class ToolCallRunner:
                 output=output,
                 error_type=error_type,
                 result_key=result_key,
+                requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
 
@@ -3470,10 +3475,13 @@ class AgentStateUpdater:
             action_type = _json_str(action.get("type"))
             if action_type == "goal":
                 update = _json_str(action.get("text"))
-                if update is not None:
-                    changed = changed or update != self.blackboard.goal
-                    self.blackboard.goal = update
                 complete = action.get("complete")
+                if update is not None:
+                    goal_changed = update != self.blackboard.goal
+                    changed = changed or goal_changed
+                    self.blackboard.goal = update
+                    if goal_changed and complete is not True:
+                        self.blackboard.verification_required = False
                 if isinstance(complete, bool):
                     self.blackboard.goal_reached = complete
         return changed
@@ -3795,6 +3803,7 @@ class BaseAgent:
         self.latest_agent_report = ""
         self.blackboard.goal = ""
         self.blackboard.goal_reached = False
+        self.blackboard.verification_required = False
         self.blackboard.plan = []
         self.blackboard.verification.reset()
         self._trim_tool_result_store_after_goal_complete()
@@ -3946,6 +3955,8 @@ class BaseAgent:
         self._append_latest_tool_batch(self.tool_runner.latest_executions)
         self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
+            if self.activity == "main" and execution.requires_verification:
+                self.blackboard.verification_required = True
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
         return self.latest_tool_batch
@@ -4323,10 +4334,6 @@ class MainAgent(BaseAgent):
                 "Completion_Gate: verification is done but goal.complete is not true.",
             )
             return AgentRunResult()
-        for message in messages:
-            self.session.append_conversation(AssistantMessage(content=message))
-            if on_message is not None:
-                on_message(message)
         if explore_actions:
             self.execute_explore_actions(explore_actions, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message)
             self.maybe_auto_compact()
@@ -4357,15 +4364,23 @@ class MainAgent(BaseAgent):
                 "Verification_Gate: retrying until verification is passed or blocked.",
             )
             return AgentRunResult()
-        if self.blackboard.goal_reached and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED):
+        if (
+            self.blackboard.goal_reached
+            and self.blackboard.verification_required
+            and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        ):
             self.blackboard.goal_reached = False
             self._remember_agent_error(self._format_agent_feedback_verification_error())
             self._report_gate(
                 on_message,
                 "Retrying: verification must pass before completion.",
-                "Verification_Gate: goal.complete=true requires verification passed or blocked before completion.",
+                "Verification_Gate: this goal used tools that require verification before completion.",
             )
             return AgentRunResult()
+        for message in messages:
+            self.session.append_conversation(AssistantMessage(content=message))
+            if on_message is not None:
+                on_message(message)
         if messages and self.blackboard.goal_reached:
             self._finish_current_goal()
             return AgentRunResult(done=True, value=response)
@@ -5441,17 +5456,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
         parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
-        parser.add_argument("--init-config", action="store_true", help="Create a default config file at ~/.nanocode/config.toml")
+        parser.add_argument("--config", default=None, help="Path to config file (default: ~/.nanocode/config.toml)")
+        parser.add_argument("--init-config", action="store_true", help="Create a default config file at --config or ~/.nanocode/config.toml")
         args = parser.parse_args(argv)
         if args.init_config:
-            config_path, created = ConfigFile.init()
+            config_path, created = ConfigFile.init(args.config)
             print(("Created config: " if created else "Config already exists: ") + config_path)
             return 0
-        session = Session.from_config_file(yolo=args.yolo, debug=args.debug)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
         missing = session.missing_required_config()
         if missing:
             print("Missing config: " + ", ".join(missing), file=sys.stderr)
-            print("Edit " + ConfigFile.path() + " or run `nanocode --init-config`.", file=sys.stderr)
+            print("Edit " + (os.path.expanduser(args.config) if args.config else ConfigFile.path()) + " or run `nanocode --init-config`.", file=sys.stderr)
             return 2
         return AgentLoop(MainAgent(session)).run()
     except ConfigError as error:
