@@ -2326,7 +2326,7 @@ Hard rules:
 - If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
 
 Context:
-- Treat user questions as codebase questions about the current directory unless clearly otherwise.
+- Before answering codebase-answerable questions, use explore or tools to inspect current code.
 - Known = concise durable facts for the current goal; add only new facts.
 - Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
