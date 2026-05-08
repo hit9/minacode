@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
+from nanocode import MainAgent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
 
 
 def _fingerprint(read_result: str) -> str:
@@ -56,7 +56,7 @@ def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):
     session = Session(cwd=str(tmp_path))
     beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
     delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
-    agent = Agent(session)
+    agent = MainAgent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -180,7 +180,7 @@ def test_replace_range_cache_clears_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
 
-    Agent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
+    MainAgent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
     assert len(session.range_fingerprints) == 0
 

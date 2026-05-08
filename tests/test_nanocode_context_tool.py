@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import Agent, Session, ToolCallError, ToolResultItem, ToolResultTool
+from nanocode import MainAgent, Session, ToolCallError, ToolResultItem, ToolResultTool
 
 
 def test_tool_result_tool_gets_multiple_keys(tmp_path):
@@ -15,9 +15,11 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
         )
     }
 
+    assert ToolResultTool.name() == "Recall"
     result = ToolResultTool.make(session, ["tr.1", "missing"]).call()
 
-    assert '<ToolResult key="tr.1">' in result
+    assert result.startswith("<RecallToolResult>")
+    assert '<Result key="tr.1">' in result
     assert "<log_path>.nanocode/tool_results/sample.log</log_path>" in result
     assert "<original_lines>2</original_lines>" in result
     assert "<original_chars>13</original_chars>" in result
@@ -27,7 +29,6 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
 
 def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.current.known = ["Parser notes were captured."]
     session.tool_result_store = {
         "tr.1": ToolResultItem(
             description='success Read("sample.txt")',
@@ -37,14 +38,18 @@ def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
             original_chars=13,
         )
     }
+    agent = MainAgent(session)
+    agent.blackboard.known = ["Parser notes were captured."]
 
-    prompt = Agent(session).build_user_prompt()
+    prompt = agent.build_user_prompt()
 
     assert "<Details_Keys>" not in prompt
     assert "<Tool_Result_Store>" in prompt
     assert "<Recent_Tool_Calls>" in prompt
     assert "<Last_Tool_Calls>" not in prompt
-    assert "<ToolResult" in prompt
+    assert "Memory Tools" not in agent.build_system_prompt()
+    assert "Recall(key...) -> RecallToolResult<content>" in agent.build_system_prompt()
+    assert "<StoredResult" in prompt
     assert "<Active_Context>" not in prompt
     assert "Parser notes were captured." in prompt
     assert "tr.1" in prompt
@@ -60,7 +65,7 @@ def test_prompt_shows_tool_result_descriptions_without_values(tmp_path):
 
 def test_known_action_accepts_string_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.apply_response(
         {
@@ -75,12 +80,12 @@ def test_known_action_accepts_string_items(tmp_path):
         }
     )
 
-    assert session.current.known == ["Parser notes were captured."]
+    assert agent.blackboard.known == ["Parser notes were captured."]
     assert session.tool_result_store == {}
 
 
 def test_tool_result_invalid_args(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="ToolResult requires"):
+    with pytest.raises(ToolCallError, match="Recall requires"):
         ToolResultTool.make(session, []).call()

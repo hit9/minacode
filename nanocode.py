@@ -24,6 +24,7 @@ import threading
 import difflib
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -43,7 +44,8 @@ from prompt_toolkit.patch_stdout import patch_stdout
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
 MAX_TOOL_OUTPUT_CHARS = 12_000
-__version__ = "0.3.0"
+EXPLORE_MESSAGE_PREFIX = "[explore] "
+__version__ = "0.3.1"
 
 
 class Error(Exception): ...
@@ -56,6 +58,9 @@ class ToolCallArgError(ToolCallError): ...
 
 
 class LLMError(Exception): ...
+
+
+class ConfigError(Exception): ...
 
 
 class ModelRequestTimeout(Exception): ...
@@ -114,7 +119,7 @@ class AssistantMessage(ConversationItem):
 
 
 ############################
-# Current (dataclasses)
+# Blackboard (dataclasses)
 ############################
 
 
@@ -214,15 +219,256 @@ class ToolResultItem(PromptItem):
         return _format_lines(lines, indent)
 
 
-@final
 @dataclass
-class Current:
+class Blackboard:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     verification: Verification = field(default_factory=Verification)
+
+
+@dataclass
+class ModelConfig:
+    model: str = ""
+    temperature: float | None = None
+    reasoning: bool | None = None
+    reasoning_effort: str = ""
+    stream: bool | None = None
+    timeout: int | None = None
+    prompt_price_per_1m_tokens: float | None = None
+    completion_price_per_1m_tokens: float | None = None
+
+    def resolved(self, fallback: "ModelConfig") -> "ModelConfig":
+        return ModelConfig(
+            model=self.model or fallback.model,
+            temperature=self.temperature if self.temperature is not None else fallback.temperature,
+            reasoning=self.reasoning if self.reasoning is not None else fallback.reasoning,
+            reasoning_effort=self.reasoning_effort or fallback.reasoning_effort,
+            stream=self.stream if self.stream is not None else fallback.stream,
+            timeout=self.timeout if self.timeout is not None else fallback.timeout,
+            prompt_price_per_1m_tokens=(
+                self.prompt_price_per_1m_tokens if self.prompt_price_per_1m_tokens is not None else fallback.prompt_price_per_1m_tokens
+            ),
+            completion_price_per_1m_tokens=(
+                self.completion_price_per_1m_tokens if self.completion_price_per_1m_tokens is not None else fallback.completion_price_per_1m_tokens
+            ),
+        )
+
+
+@dataclass
+class ModelUsage:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+
+    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int, cost: float) -> None:
+        self.calls += 1
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
+        self.cost += cost
+
+
+############################
+# Config
+############################
+
+
+DEFAULT_MODEL_CONFIG = ModelConfig(
+    temperature=0.7,
+    reasoning=True,
+    reasoning_effort="medium",
+    stream=True,
+    timeout=60,
+    prompt_price_per_1m_tokens=0.0,
+    completion_price_per_1m_tokens=0.0,
+)
+
+
+@final
+class ConfigFile:
+    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
+# Location: ~/.nanocode/config.toml
+
+[api]
+# OpenAI-compatible chat completions base URL, for example "https://api.openai.com/v1".
+url = ""
+# API key for the configured provider.
+key = ""
+
+[main_model]
+# Default model used by the main interactive agent.
+model = ""
+temperature = 0.7
+reasoning = true
+reasoning_effort = "medium"
+stream = true
+timeout = 60
+# Optional usage pricing per 1M tokens. Leave 0.0 if unknown.
+prompt_price_per_1m_tokens = 0.0
+completion_price_per_1m_tokens = 0.0
+
+[worker_model]
+# Default model config for worker agents. Empty model falls back to main_model.model.
+model = ""
+temperature = 0.7
+reasoning = true
+reasoning_effort = "medium"
+stream = true
+timeout = 60
+prompt_price_per_1m_tokens = 0.0
+completion_price_per_1m_tokens = 0.0
+
+[explore_agent]
+# ExploreAgent removes uncertainty about unknown file/code targets before editing.
+max_turns = 50
+
+[paths]
+# Relative paths are resolved from the current project directory.
+nanocode_dir = ".nanocode"
+
+[runtime]
+shell_timeout = 60
+compact_at = 50
+max_agent_steps = 50
+"""
+
+    @classmethod
+    def path(cls) -> str:
+        return os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
+
+    @classmethod
+    def init(cls, path: str | None = None) -> tuple[str, bool]:
+        config_path = path or cls.path()
+        if os.path.exists(config_path):
+            return config_path, False
+        parent = os.path.dirname(config_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as file:
+            file.write(cls.DEFAULT_TEXT)
+        return config_path, True
+
+    @classmethod
+    def load(cls, path: str | None = None) -> Json:
+        config_path = path or cls.path()
+        try:
+            with open(config_path, "rb") as file:
+                data = tomllib.load(file)
+        except FileNotFoundError as error:
+            raise ConfigError(f"Config file not found: {config_path}. Run `nanocode --init-config` to create one.") from error
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigError(f"Invalid config file {config_path}: {error}") from error
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def table(cls, config: Json, name: str) -> Json:
+        value = config.get(name)
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def str(cls, config: Json, key: str, default: str = "") -> str:
+        value = config.get(key)
+        if value is None:
+            return default
+        return str(value)
+
+    @classmethod
+    def bool(cls, config: Json, key: str, default: bool | None = None) -> bool | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        raise ConfigError(f"config value `{key}` must be a boolean")
+
+    @classmethod
+    def float(cls, config: Json, key: str, default: float | None = None) -> float | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"config value `{key}` must be a number")
+        return float(value)
+
+    @classmethod
+    def int(cls, config: Json, key: str, default: int | None = None) -> int | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"config value `{key}` must be an integer")
+        return value
+
+    @classmethod
+    def model_config(cls, config: Json, defaults: ModelConfig) -> ModelConfig:
+        return ModelConfig(
+            model=cls.str(config, "model", defaults.model),
+            temperature=cls.float(config, "temperature", defaults.temperature),
+            reasoning=cls.bool(config, "reasoning", defaults.reasoning),
+            reasoning_effort=cls.str(config, "reasoning_effort", defaults.reasoning_effort),
+            stream=cls.bool(config, "stream", defaults.stream),
+            timeout=cls.int(config, "timeout", defaults.timeout),
+            prompt_price_per_1m_tokens=cls.float(config, "prompt_price_per_1m_tokens", defaults.prompt_price_per_1m_tokens),
+            completion_price_per_1m_tokens=cls.float(
+                config,
+                "completion_price_per_1m_tokens",
+                defaults.completion_price_per_1m_tokens,
+            ),
+        )
+
+
+@dataclass
+class AgentRuntime:
+    tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
+    tool_result_counter: int = 0
+
+
+@dataclass
+class PromptContext:
+    blackboard: Blackboard
+    runtime: AgentRuntime
+    parent_known: list[str] = field(default_factory=list)
+    scope: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AgentRunResult:
+    done: bool = False
+    value: JsonValue = None
+
+
+@final
+@dataclass(frozen=True)
+class ExploreReport(PromptItem):
+    targets: list[Json]
+    known: list[str]
+    verification: Verification
+
+    @override
+    def format(self, indent: str = "") -> str:
+        lines = ["<ExploreReport>"]
+        lines.append("  <targets>")
+        if self.targets:
+            for item in self.targets:
+                lines.append("    " + json.dumps(item, ensure_ascii=False))
+        else:
+            lines.append("    (empty)")
+        lines.append("  </targets>")
+        lines.append("  <known>")
+        if self.known:
+            for item in self.known:
+                lines.append("    " + item)
+        else:
+            lines.append("    (empty)")
+        lines.append("  </known>")
+        lines.append("  " + self.verification.format().replace("\n", "\n  "))
+        lines.append("</ExploreReport>")
+        return _format_lines(lines, indent)
 
 
 @final
@@ -358,33 +604,29 @@ class RangeFingerprintStore:
 @final
 @dataclass
 class Session:
-    REQUIRED_ENVS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("NANOCODE_API_URL", "api_url"),
-        ("NANOCODE_API_KEY", "api_key"),
-        ("NANOCODE_MODEL", "model"),
-    )
-
     # ---- system ----
     system: str = field(default_factory=platform.system)
     arch: str = field(default_factory=platform.machine)
     cwd: str = field(default_factory=os.getcwd)
     bash: str = field(default_factory=lambda: shutil.which("bash") or "")
 
-    # ---- env configs ----
-    api_url: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_URL", ""))  # reqiured
-    api_key: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_KEY", ""))  # reqiured
-    model: str = field(default_factory=lambda: os.environ.get("NANOCODE_MODEL", ""))  # reqiured
-    nanocode_dir: str = field(default_factory=lambda: os.environ.get("NANOCODE_DIR", ".nanocode"))
-    temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
-    reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
-    reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
-    stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
-    model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
-    shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
-    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "50")))
-    max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
-    prompt_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0")))
-    completion_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0")))
+    # ---- configs ----
+    api_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    nanocode_dir: str = ".nanocode"
+    temperature: float = 0.7
+    reasoning: bool = True
+    reasoning_effort: str = "medium"
+    stream: bool = True
+    model_timeout: int = 60
+    shell_timeout: int = 60
+    compact_at: int = 50
+    max_agent_steps: int = 50
+    prompt_price_per_1m_tokens: float = 0.0
+    completion_price_per_1m_tokens: float = 0.0
+    worker_model_config: ModelConfig = field(default_factory=ModelConfig)
+    explore_agent_max_turns: int = 50
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -395,21 +637,64 @@ class Session:
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
-    last_cost_usd: float = 0.0
+    last_cost: float = 0.0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
-    session_cost_usd: float = 0.0
+    session_cost: float = 0.0
+    model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     current_model_call_started_at: float = 0.0
+    current_model_call_label: str = ""
+    current_model_call_reasoning_label: str = ""
 
-    # ---- current and conversation ---
-    current: Current = field(default_factory=Current)
+    # ---- conversation ---
     conversation: list[ConversationItem] = field(default_factory=list)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
     turn_model_calls: int = 0
+
+    @classmethod
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
+        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, debug=debug)
+
+    @classmethod
+    def from_config_data(cls, config: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
+        api = ConfigFile.table(config, "api")
+        paths = ConfigFile.table(config, "paths")
+        runtime = ConfigFile.table(config, "runtime")
+        main_model = ConfigFile.model_config(ConfigFile.table(config, "main_model"), DEFAULT_MODEL_CONFIG)
+        worker_model = ConfigFile.model_config(ConfigFile.table(config, "worker_model"), ModelConfig())
+        explore_agent = ConfigFile.table(config, "explore_agent")
+        shell_timeout = ConfigFile.int(runtime, "shell_timeout", 60)
+        compact_at = ConfigFile.int(runtime, "compact_at", 50)
+        max_agent_steps = ConfigFile.int(runtime, "max_agent_steps", 50)
+        explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 50)
+        return cls(
+            api_url=ConfigFile.str(api, "url"),
+            api_key=ConfigFile.str(api, "key"),
+            model=main_model.model,
+            nanocode_dir=ConfigFile.str(paths, "nanocode_dir", ".nanocode"),
+            temperature=main_model.temperature if main_model.temperature is not None else 0.7,
+            reasoning=main_model.reasoning if main_model.reasoning is not None else True,
+            reasoning_effort=main_model.reasoning_effort or "medium",
+            stream=main_model.stream if main_model.stream is not None else True,
+            model_timeout=main_model.timeout if main_model.timeout is not None else 60,
+            shell_timeout=shell_timeout if shell_timeout is not None else 60,
+            compact_at=compact_at if compact_at is not None else 50,
+            max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
+            prompt_price_per_1m_tokens=(
+                main_model.prompt_price_per_1m_tokens if main_model.prompt_price_per_1m_tokens is not None else 0.0
+            ),
+            completion_price_per_1m_tokens=(
+                main_model.completion_price_per_1m_tokens if main_model.completion_price_per_1m_tokens is not None else 0.0
+            ),
+            worker_model_config=worker_model,
+            explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 50),
+            yolo=yolo,
+            debug=debug,
+        )
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -434,8 +719,36 @@ class Session:
     def tool_results_dir(self) -> str:
         return self.resolve_path(os.path.join(self.nanocode_dir, "tool_results"))
 
-    def missing_required_envs(self) -> list[str]:
-        return [env_name for env_name, attr_name in self.REQUIRED_ENVS if not getattr(self, attr_name)]
+    def missing_required_config(self) -> list[str]:
+        missing = []
+        if not self.api_url:
+            missing.append("api.url")
+        if not self.api_key:
+            missing.append("api.key")
+        if not self.model:
+            missing.append("main_model.model")
+        return missing
+
+    @property
+    def main_model_config(self) -> ModelConfig:
+        return ModelConfig(
+            model=self.model,
+            temperature=self.temperature,
+            reasoning=self.reasoning,
+            reasoning_effort=self.reasoning_effort,
+            stream=self.stream,
+            timeout=self.model_timeout,
+            prompt_price_per_1m_tokens=self.prompt_price_per_1m_tokens,
+            completion_price_per_1m_tokens=self.completion_price_per_1m_tokens,
+        )
+
+    def model_config_for(self, activity: str, override: ModelConfig | None = None) -> ModelConfig:
+        config = self.main_model_config
+        if activity in {"worker", "explore"}:
+            config = self.worker_model_config.resolved(config)
+        if override is not None:
+            config = override.resolved(config)
+        return config
 
 
 ###########
@@ -1927,7 +2240,7 @@ class ToolResultTool(Tool):
 
     @classmethod
     def name(cls) -> str:
-        return "ToolResult"
+        return "Recall"
 
     @classmethod
     def effect(cls) -> ToolEffect:
@@ -1935,11 +2248,11 @@ class ToolResultTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Read stored bounded tool result excerpts by key; use Read(log_path, range) for original log details."]
+        return ["Recall stored tool results by tr.* key; use Read(log_path, range) for full log details."]
 
     @classmethod
     def signature(cls) -> str:
-        return "ToolResult(key...) -> ToolResultToolResult<excerpt>"
+        return "Recall(key...) -> RecallToolResult<content>"
 
     @classmethod
     def example(cls) -> list[str]:
@@ -1956,18 +2269,18 @@ class ToolResultTool(Tool):
         return False
 
     def display(self) -> str:
-        return "ToolResult " + ", ".join(self.keys)
+        return "Recall " + ", ".join(self.keys)
 
     def call(self) -> str:
         if not self.keys:
-            raise ToolCallArgError("ToolResult requires at least one key")
-        lines = ["<ToolResultToolResult>"]
+            raise ToolCallArgError("Recall requires at least one key")
+        lines = ["<RecallToolResult>"]
         for key in self.keys:
             if key not in self.results:
                 lines.append('  <Missing key="' + key + '"/>')
                 continue
             item = self.results[key]
-            lines.append('  <ToolResult key="' + key + '">')
+            lines.append('  <Result key="' + key + '">')
             lines.append("    <description>" + item.description + "</description>")
             if item.log_path:
                 lines.append("    <log_path>" + item.log_path + "</log_path>")
@@ -1978,8 +2291,8 @@ class ToolResultTool(Tool):
             lines.append("    <content>")
             lines.append(item.value)
             lines.append("    </content>")
-            lines.append("  </ToolResult>")
-        lines.append("</ToolResultToolResult>")
+            lines.append("  </Result>")
+        lines.append("</RecallToolResult>")
         result = "\n".join(lines)
         return _bound_tool_output(result).value
 
@@ -2003,72 +2316,58 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 #######################
 
-MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping Agent Loop.
+MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a looping agent.
 
-NEVER MARK THE GOAL AS COMPLETE UNLESS THE GOAL IS ACTUALLY ACHIEVED AND VERIFICATION HAS PASSED; OTHERWISE CONTINUE THE LOOP.
-USE ONLY JSON ACTION FRAMES FOR TOOL CALLS; NATIVE/FUNCTION TOOL CALLS ARE FORBIDDEN.
+Hard rules:
+- Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
+- Use the same language as the latest user input.
+- Do not mark the goal complete until the task is done and verification has passed or is blocked.
+- For greetings or non-actionable chat, output one chat action and stop.
+- If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
 
-Memory:
-- Known = concise facts for the current goal.
-- Tool_Result_Store = bounded tool result excerpts with full log paths; use ToolResult(key...) for excerpts or Read(log_path, range) for original details.
+Context:
+- Treat user questions as codebase questions about the current directory unless clearly otherwise.
+- Known = concise durable facts for the current goal; add only new facts.
+- Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
 
-STEPS:
-
-1. Goal:
-   - If the goal is not set, output goal first.
-
-2. Fresh tool results:
-   - Extract only new, stable known facts from latest tool results.
-   - Do this before any next tool/message.
-
-3. Memory check:
-   - Use Known for stable facts.
-   - Use ToolResult(key...) only when you need a previous tool result excerpt by key.
-   - Use Read(log_path, range) when an excerpt is insufficient; check original_lines/original_chars and read logs in small ranges.
-   - Use Read/Search/ListDir for current source state.
-
-4. Plan:
-   - Create or revise the plan based on facts and the goal.
-
-5. Act:
-   - Use tools, verify, or message.
-   - Verify before marking the goal as complete.
-   - Report progress with message when appropriate.
-
-Memory Tools:
-
-{ __memory_tools__ }
+Workflow:
+1. Set or update the goal.
+2. If files, code areas, symbols, or call paths are unknown, use explore.
+3. If the target is clear, do small direct checks, answer, or edit.
+4. Record new durable facts in known.
+5. Verify before completion.
 
 Available tools:
-MAX to 10 tool calls this time:
+Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
 
-{ __other_tools__ }
+{ __tools__ }
 
-Rules:
+Tool guidance:
+- Use explore whenever the relevant file/code target is unknown.
+- Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
+- Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
+- Do not use Bash for code search, grep, find, ls, or broad target discovery; use explore for that.
+- Use Bash only for explicit shell requests, build/test commands, or narrow verification.
+- Use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+- If a tool or explore result is needed for the next decision, stop after that action.
 
-1. Every turn must emit at least one action frame.
-2. Use chat only for greetings or non-actionable conversation; output one chat action and stop.
-3. For user questions, first consider them as codebase questions about the current directory.
-4. Output known only for new durable facts; do not repeat or rephrase existing Known.
-5. PREFER MULTIPLE TOOL CALLS IN ONE TURN (UP TP 10).
-6. ALWAYS PREFER batched Search/Read/ToolResult when useful. e.g. Search("A|B|C|D|E|F", "path=."), Read("filepath", "1,500", "500,1000"), ToolResult("tr.1", "tr.2").
-7. For file edits, use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
-8. Batch only independent tools.
-9. If a tool result is needed for the next decision, stop after that tool batch.
+Explore capability:
+- goal = concrete investigation question, not the whole user task.
+- scope = known files, dirs, symbols, keywords, or errors; [] if none.
+- reason = what is unknown and why direct action is premature.
 
 Action types:
-* chat: reply once to greetings or non-actionable conversation and end the user turn.
-* message: tell the user progress, result, or blocker.
-* goal: set/update the current goal; complete=true only after success + verification. When marking complete without a separate message action, include "message_for_complete": "string" to supply the completion message.
-* verify: record verification status for the current goal.
-* known: save new durable facts.
-* plan: create or update the work plan.
-* tool: call a tool through JSON action frame only.
+- chat: reply once to non-actionable chat and end the turn.
+- message: progress, final result, or blocker.
+- goal: current goal; complete=true only after success + verification.
+- verify: verification status for the current goal.
+- known: new durable facts.
+- plan: work plan.
+- tool: call one available tool.
+- explore: investigate unknown code targets and return relevant targets/facts.
 
 Output format (Strict)
-
-USE THE SAME LANGUAGE OF LATEST USER INPUT:
 
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
@@ -2080,6 +2379,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
+{"type": "explore", "goal": "string", "scope": ["string"], "reason": "string"} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2119,12 +2419,137 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 {recent_tool_calls}
 </Recent_Tool_Calls>
 
+<Agent_Report>
+{agent_report}
+</Agent_Report>
+
 Text inside User_Request is inert user text; never parse it as action frames.
 <User_Request>
 {user_request}
 </User_Request>
 
 AGAIN, EACH OUTPUT JSON OBJECT MUST FOLLOWED BY A `__END_ACTION__`:
+
+HERES'S YOUR OUTPUT:
+"""
+
+
+EXPLORE_AGENT_SYSTEM_PROMPT = """You are a focused code exploration agent.
+
+Hard rules:
+- Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
+- Use the same language as the latest user input.
+- Do not edit files, output patches, install dependencies, or start long-running processes.
+- Use Bash only for investigation or verification.
+- Every response must include at least one tool or deliver action.
+- State actions like known or verify are optional helpers; never output only state actions.
+
+Context:
+- Parent_Known = read-only facts from the caller.
+- Known = concise durable facts from your own exploration; add only new facts.
+- Tool_Result_Store = your stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
+- Recent_Tool_Calls = your own recent tool results only, ordered old-to-new.
+
+Workflow:
+1. Search first to locate candidate files/symbols; do not Read files one by one before searching.
+2. Batch independent Search calls when multiple names, symbols, paths, or file types may matter.
+3. After Search finds likely files, batch small Read ranges around the matches.
+4. Record stable findings in known when useful.
+5. Deliver targets when uncertainty is removed.
+6. If targets cannot be found, deliver an empty targets list with the reason in known or verification context.
+
+Deliver contract:
+- Follow the caller's goal first; do not widen into a full project survey unless asked.
+- targets = concrete edit/navigation targets the caller should use next.
+- Each target should include path, area/symbol, line_range when known, context with nearby code/summary, and reason.
+- Prefer exact filepath + 0-based line range from Read results; omit line_range only when unknown.
+- known = stable facts discovered during exploration.
+- verification = passed when targets/facts are sufficient; blocked with reason when not.
+- Do not deliver patches, edits, final answers, or large raw content.
+- Empty targets require blocked verification or known facts explaining why none were found.
+
+Available tools:
+Max 10 tool actions per turn; prefer batching multiple independent investigation tools in one response.
+
+{ __tools__ }
+
+Tool guidance:
+- Start from the Explore_Goal and Explore_Scope; avoid broad project surveys unless the goal asks for one.
+- Prefer Search before Read. Use ListDir only when directory structure itself is unknown.
+- Batch independent Search/ListDir/LineCount/Read/Recall calls instead of spending one turn per call.
+- Batch Read only after Search gives likely files/ranges; read small surrounding ranges for line_range/context.
+- If a tool result is needed for the next decision, stop after that action.
+
+Good tool batches:
+{"type": "tool", "name": "Search", "intention": "Find relevant config code", "args": ["ConfigFile|from_config|init_config", "path=nanocode.py"]} __END_ACTION__
+{"type": "tool", "name": "Search", "intention": "Find CLI entry handling", "args": ["argparse|--init-config|def main", "path=nanocode.py"]} __END_ACTION__
+
+{"type": "tool", "name": "Read", "intention": "Read config class and session loading ranges", "args": ["nanocode.py", "260,360", "640,700"]} __END_ACTION__
+{"type": "tool", "name": "Read", "intention": "Read CLI entrypoint range", "args": ["nanocode.py", "5130,5170"]} __END_ACTION__
+
+Action types:
+- tool: call one available investigation tool.
+- deliver: finish exploration and return relevant targets plus known facts.
+- known: optional durable exploration facts; include only together with tool or deliver.
+- verify: optional exploration verification status; include only together with deliver.
+
+Output format (Strict)
+
+Output multiple JSON objects separated by __END_ACTION__:
+If the entire output is one JSON action object, __END_ACTION__ may be omitted.
+Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
+
+{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"]} __END_ACTION__
+{"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
+{"type": "verify", "method": null | "string", "status": "passed|blocked", "context": null | "string"} __END_ACTION__
+"""
+
+
+EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
+<Environment>
+{environment}
+</Environment>
+
+<Parent_Known>
+{parent_known}
+</Parent_Known>
+
+<Known>
+{known}
+</Known>
+
+<Tool_Result_Store>
+{tool_result_store}
+</Tool_Result_Store>
+
+<Explore_Goal>
+{goal}
+</Explore_Goal>
+
+<Explore_Scope>
+{scope}
+</Explore_Scope>
+
+<Plan>
+{plan}
+</Plan>
+
+<Verification_State>
+{verification_state}
+</Verification_State>
+
+<Errors>
+{errors}
+</Errors>
+
+<Recent_Tool_Calls>
+{recent_tool_calls}
+</Recent_Tool_Calls>
+
+Return deliver when the investigation target is resolved or cannot be resolved within your limit.
+Deliver concrete path/area/line_range/context/reason targets whenever possible.
+Do not output only state actions; each response must include tool or deliver.
 
 HERES'S YOUR OUTPUT:
 """
@@ -2172,37 +2597,49 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 
 @final
 class PromptBuilder:
-    def __init__(self, session: Session):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        system_prompt_template: str = MAIN_AGENT_SYSTEM_PROMPT,
+        user_prompt_template: str = MAIN_AGENT_USER_PROMPT_TEMPLATE,
+        allowed_tools: set[str] | None = None,
+        context: PromptContext | None = None,
+    ):
         self.session = session
-
-    def system_prompt(self) -> str:
-        return (
-            MAIN_AGENT_SYSTEM_PROMPT.replace("{ __memory_tools__ }", self._format_tools(memory=True))
-            .replace("{ __other_tools__ }", self._format_tools(memory=False))
-            .replace("{ __tools__ }", self._format_tools())
-            .strip()
+        self.system_prompt_template = system_prompt_template
+        self.user_prompt_template = user_prompt_template
+        self.allowed_tools = allowed_tools
+        self.context = context or PromptContext(
+            blackboard=Blackboard(),
+            runtime=AgentRuntime(tool_result_store=session.tool_result_store, tool_result_counter=session.tool_result_counter),
         )
 
-    def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
-        current = self.session.current
-        return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
+    def system_prompt(self) -> str:
+        return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).strip()
+
+    def user_prompt(self, recent_tool_calls: str, errors: str, *, agent_report: str = "") -> str:
+        current = self.context.blackboard
+        return self.user_prompt_template.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
+            parent_known=self._format_parent_known(),
             known=self._format_known(),
             tool_result_store=self._format_tool_result_store(),
             goal=current.goal or "(empty)",
+            scope=self._format_scope(),
             plan=self._format_plan(),
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
+            agent_report=agent_report or "(empty)",
             user_request=current.user_input or "(empty)",
         ).strip()
 
-    def _format_tools(self, memory: bool | None = None) -> str:
+    def _format_tools(self) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
-            is_memory_tool = tool.name() == ToolResultTool.name()
-            if memory is not None and is_memory_tool != memory:
+            if self.allowed_tools is not None and tool.name() not in self.allowed_tools:
                 continue
             lines.append("- " + tool.signature())
             for item in tool.description():
@@ -2218,16 +2655,26 @@ class PromptBuilder:
         return "\n\n".join(item.format() for item in self.session.conversation)
 
     def _format_known(self) -> str:
-        if not self.session.current.known:
+        if not self.context.blackboard.known:
             return "(empty)"
-        return "\n".join(self.session.current.known)
+        return "\n".join(self.context.blackboard.known)
+
+    def _format_parent_known(self) -> str:
+        if not self.context.parent_known:
+            return "(empty)"
+        return "\n".join(self.context.parent_known)
+
+    def _format_scope(self) -> str:
+        if not self.context.scope:
+            return "(empty)"
+        return "\n".join(self.context.scope)
 
     def _format_tool_result_store(self) -> str:
-        if not self.session.tool_result_store:
+        if not self.context.runtime.tool_result_store:
             return "(empty)"
         lines = []
-        for key, item in self.session.tool_result_store.items():
-            lines.append('<ToolResult key="' + key + '">')
+        for key, item in self.context.runtime.tool_result_store.items():
+            lines.append('<StoredResult key="' + key + '">')
             lines.append("  <description>" + item.description + "</description>")
             if item.log_path:
                 lines.append("  <log_path>" + item.log_path + "</log_path>")
@@ -2235,13 +2682,13 @@ class PromptBuilder:
                 lines.append("  <original_lines>" + str(item.original_lines) + "</original_lines>")
                 lines.append("  <original_chars>" + str(item.original_chars) + "</original_chars>")
             lines.append("  <excerpted>" + str(item.excerpted).lower() + "</excerpted>")
-            lines.append("</ToolResult>")
+            lines.append("</StoredResult>")
         return "\n".join(lines)
 
     def _format_plan(self) -> str:
-        if not self.session.current.plan:
+        if not self.context.blackboard.plan:
             return "(empty)"
-        return "\n".join(item.format() for item in self.session.current.plan)
+        return "\n".join(item.format() for item in self.context.blackboard.plan)
 
 
 ############################
@@ -2255,11 +2702,15 @@ class ModelClient:
     ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, *, model_config: ModelConfig | None = None, model: str = "", reasoning_effort: str = ""):
         self.session = session
+        self.model_config = model_config or ModelConfig(model=model, reasoning_effort=reasoning_effort)
 
     def _timeout_handler(self, signum: int, frame: Any) -> None:
         raise ModelRequestTimeout()
+
+    def _request_config(self, activity: str) -> ModelConfig:
+        return self.session.model_config_for(activity, self.model_config)
 
     def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
         return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
@@ -2274,25 +2725,29 @@ class ModelClient:
         parse_actions: bool = True,
     ) -> Json:
         if not self.session.api_url:
-            raise LLMError("NANOCODE_API_URL is required")
+            raise LLMError("config api.url is required")
         if not self.session.api_key:
-            raise LLMError("NANOCODE_API_KEY is required")
-        if not self.session.model:
-            raise LLMError("NANOCODE_MODEL is required")
+            raise LLMError("config api.key is required")
+        config = self._request_config(activity)
+        model = config.model
+        if not model:
+            raise LLMError("config main_model.model is required")
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         payload: Json = {
-            "model": self.session.model,
+            "model": model,
             "messages": messages,
-            "temperature": self.session.temperature,
+            "temperature": config.temperature if config.temperature is not None else 0.7,
         }
-        if self.session.stream:
+        stream = config.stream is not False
+        if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
-        extra_params = self._reasoning_params()
+        timeout = config.timeout if config.timeout is not None else 60
+        extra_params = self._reasoning_params(config)
         payload.update(extra_params)
         self._write_debug_prompt(activity=activity, messages=messages)
 
@@ -2306,12 +2761,14 @@ class ModelClient:
         )
         try:
             self.session.current_model_call_started_at = time.monotonic()
+            self.session.current_model_call_label = model
+            self.session.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
-            signal.setitimer(signal.ITIMER_REAL, max(0, self.session.model_timeout))
+            signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
             try:
-                with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
-                    if self.session.stream:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    if stream:
                         content, usage = self._read_streaming_content(response, on_action=on_action)
                         result: Json = {"usage": usage}
                     else:
@@ -2320,6 +2777,8 @@ class ModelClient:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
                 self.session.current_model_call_started_at = 0.0
+                self.session.current_model_call_label = ""
+                self.session.current_model_call_reasoning_label = ""
         except ModelRequestTimeout:
             raise LLMError("request model timeout")
         except (socket.timeout, TimeoutError):
@@ -2334,14 +2793,14 @@ class ModelClient:
         except Exception as error:
             raise LLMError(str(error))
 
-        if not self.session.stream:
+        if not stream:
             try:
                 result = json.loads(body)
             except json.JSONDecodeError:
                 raise LLMError("API response is not JSON: " + _shorten(body))
 
-        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None))
-        if not self.session.stream:
+        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config)
+        if not stream:
             content = self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
@@ -2566,11 +3025,11 @@ class ModelClient:
             return url
         return url + "/chat/completions"
 
-    def _reasoning_params(self) -> Json:
-        if not self.session.reasoning:
+    def _reasoning_params(self, config: ModelConfig) -> Json:
+        if config.reasoning is False:
             return {}
         if "openrouter.ai" in self.session.api_url:
-            return {"reasoning": {"effort": self.session.reasoning_effort}}
+            return {"reasoning": {"effort": config.reasoning_effort or "medium"}}
         return {}
 
     def _message_content(self, result: JsonValue) -> str | None:
@@ -2593,21 +3052,29 @@ class ModelClient:
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
-    def _record_usage(self, usage: Json) -> None:
+    def _record_usage(self, usage: Json, config: ModelConfig) -> None:
         prompt_tokens = _json_int(usage.get("prompt_tokens"))
         completion_tokens = _json_int(usage.get("completion_tokens"))
         total_tokens = _json_int(usage.get("total_tokens"))
-        prompt_cost = prompt_tokens * self.session.prompt_price_per_1m_tokens / 1_000_000
-        completion_cost = completion_tokens * self.session.completion_price_per_1m_tokens / 1_000_000
+        prompt_price = config.prompt_price_per_1m_tokens if config.prompt_price_per_1m_tokens is not None else 0.0
+        completion_price = config.completion_price_per_1m_tokens if config.completion_price_per_1m_tokens is not None else 0.0
+        prompt_cost = prompt_tokens * prompt_price / 1_000_000
+        completion_cost = completion_tokens * completion_price / 1_000_000
         total_cost = prompt_cost + completion_cost
         self.session.last_prompt_tokens = prompt_tokens
         self.session.last_completion_tokens = completion_tokens
         self.session.last_total_tokens = total_tokens
-        self.session.last_cost_usd = total_cost
+        self.session.last_cost = total_cost
         self.session.session_prompt_tokens += prompt_tokens
         self.session.session_completion_tokens += completion_tokens
         self.session.session_total_tokens += total_tokens
-        self.session.session_cost_usd += total_cost
+        self.session.session_cost += total_cost
+        self.session.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost=total_cost,
+        )
 
 
 ############################
@@ -2620,8 +3087,10 @@ class ToolCallRunner:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, runtime: AgentRuntime, allowed_tools: set[str] | None = None):
         self.session = session
+        self.runtime = runtime
+        self.allowed_tools = allowed_tools
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -2674,7 +3143,7 @@ class ToolCallRunner:
             result_key = ""
             if call.name != ToolResultTool.name():
                 result_key = self._store_tool_result(call, outcome, output)
-                output = self.session.tool_result_store[result_key].value
+                output = self.runtime.tool_result_store[result_key].value
             else:
                 output = _bound_tool_output(output).value
 
@@ -2701,7 +3170,7 @@ class ToolCallRunner:
                 continue
             parsed_calls.append(call)
             tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None or not tool_class.is_readonly():
+            if tool_class is None or not self._is_tool_allowed(call.name) or not tool_class.is_readonly():
                 continue
             latest_by_key[(call.name, tuple(call.args))] = len(parsed_calls) - 1
         keep_indexes = set(latest_by_key.values())
@@ -2710,7 +3179,7 @@ class ToolCallRunner:
             if isinstance(item, ParsedToolCall):
                 key = (item.name, tuple(item.args))
                 tool_class = TOOL_REGISTRY.get(item.name)
-                if tool_class is not None and tool_class.is_readonly() and index not in keep_indexes:
+                if tool_class is not None and self._is_tool_allowed(item.name) and tool_class.is_readonly() and index not in keep_indexes:
                     continue
             filtered.append(item)
         return filtered
@@ -2769,7 +3238,7 @@ class ToolCallRunner:
         call = ParsedToolCall(name=ReplaceRangeTool.name(), intention="; ".join(intentions), args=list(group[0].args))
         return PreparedToolCall(call=call, tool=tool)
 
-    def format_latest_report(self) -> str:
+    def format_latest_report(self, *, include_intention: bool = True) -> str:
         if not self.latest_executions:
             return ""
         offset = max(0, len(self.latest_executions) - self.DISPLAY_LIMIT)
@@ -2778,17 +3247,31 @@ class ToolCallRunner:
         if offset:
             lines.append("  ... " + str(offset) + " older")
         for index, execution in enumerate(visible, start=offset + 1):
-            status = "ok" if execution.outcome == "success" else "fail"
-            lines.append("  " + str(index) + ". " + status + " " + execution.call.executed)
+            marker = "[success]" if execution.outcome == "success" else "[failure]"
+            lines.append("  " + str(index) + ". " + marker + " " + execution.call.executed)
             details = []
             if execution.result_key:
                 details.append(execution.result_key)
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 details.append("error: " + self._compact_tool_error(execution.output))
-            if execution.call.intention:
+            if include_intention and execution.call.intention:
                 details.append("why: " + execution.call.intention)
             if details:
                 lines.append("     " + " | ".join(details))
+        return "\n".join(lines)
+
+    def format_latest_compact_report(self, *, include_result_key: bool = True) -> str:
+        if not self.latest_executions:
+            return ""
+        lines = []
+        for execution in self.latest_executions:
+            marker = "[success]" if execution.outcome == "success" else "[failure]"
+            text = marker + " " + execution.call.executed
+            if include_result_key and execution.result_key:
+                text += " | " + execution.result_key
+            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+                text += " | error: " + self._compact_tool_error(execution.output)
+            lines.append(text)
         return "\n".join(lines)
 
     def _compact_tool_error(self, output: str) -> str:
@@ -2799,14 +3282,16 @@ class ToolCallRunner:
         return _shorten(text, 180)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
-        self.session.tool_result_counter += 1
-        key = "tr." + str(self.session.tool_result_counter)
+        self.runtime.tool_result_counter += 1
+        if self.runtime.tool_result_store is self.session.tool_result_store:
+            self.session.tool_result_counter = self.runtime.tool_result_counter
+        key = "tr." + str(self.runtime.tool_result_counter)
         description = outcome + " " + call.executed
         if call.intention:
             description += " - " + call.intention
         log_path = self._write_tool_result_log(key, output)
         bounded = _bound_tool_output(output, log_path=log_path)
-        self.session.tool_result_store[key] = ToolResultItem(
+        self.runtime.tool_result_store[key] = ToolResultItem(
             description=description,
             value=bounded.value,
             log_path=log_path,
@@ -2827,11 +3312,11 @@ class ToolCallRunner:
         return os.path.relpath(filepath, self.session.cwd)
 
     def _trim_tool_result_store(self) -> None:
-        overflow = len(self.session.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
+        overflow = len(self.runtime.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
         if overflow <= 0:
             return
-        for old_key in list(self.session.tool_result_store)[:overflow]:
-            self.session.tool_result_store.pop(old_key)
+        for old_key in list(self.runtime.tool_result_store)[:overflow]:
+            self.runtime.tool_result_store.pop(old_key)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
@@ -2853,7 +3338,14 @@ class ToolCallRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
+        if not self._is_tool_allowed(call.name):
+            raise ToolCallArgError("tool not allowed for this agent: " + call.name)
+        if call.name == ToolResultTool.name():
+            return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
         return tool_class.make(self.session, call.args)
+
+    def _is_tool_allowed(self, name: str) -> bool:
+        return self.allowed_tools is None or name in self.allowed_tools
 
     def _preview_error(self, tool: Tool) -> str:
         preview_error = getattr(tool, "preview_error", None)
@@ -2872,19 +3364,21 @@ class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 50
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, blackboard: Blackboard, *, clear_range_fingerprints_on_goal_change: bool = True):
         self.session = session
+        self.blackboard = blackboard
+        self.clear_range_fingerprints_on_goal_change = clear_range_fingerprints_on_goal_change
         self.latest_report = ""
 
     def apply(self, response: Json) -> None:
-        before_goal = self.session.current.goal
-        before_plan = [item.format() for item in self.session.current.plan]
-        before_known = list(self.session.current.known)
-        before_verification = self.session.current.verification.format()
+        before_goal = self.blackboard.goal
+        before_plan = [item.format() for item in self.blackboard.plan]
+        before_known = list(self.blackboard.known)
+        before_verification = self.blackboard.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        if goal_changed:
+        if goal_changed and self.clear_range_fingerprints_on_goal_change:
             self.session.range_fingerprints.clear()
         self._apply_known(response)
         self._apply_verification(response)
@@ -2906,7 +3400,7 @@ class AgentStateUpdater:
         before_known: list[str],
         before_verification: str,
     ) -> str:
-        current = self.session.current
+        current = self.blackboard
         lines = []
         if current.goal != before_goal:
             lines.append("State Updated | " + self._verification_badge())
@@ -2931,7 +3425,7 @@ class AgentStateUpdater:
         return "\n".join(lines)
 
     def _format_plan_rows(self) -> list[str]:
-        items = self.session.current.plan
+        items = self.blackboard.plan
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
@@ -2943,7 +3437,7 @@ class AgentStateUpdater:
         return rows
 
     def _format_known_rows(self) -> list[str]:
-        items = self.session.current.known
+        items = self.blackboard.known
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
@@ -2953,7 +3447,7 @@ class AgentStateUpdater:
         return rows
 
     def _format_verification(self) -> str:
-        verification = self.session.current.verification
+        verification = self.blackboard.verification
         parts = [verification.status]
         if verification.method:
             parts.append(self._compact(verification.method))
@@ -2962,7 +3456,7 @@ class AgentStateUpdater:
         return " | ".join(parts)
 
     def _verification_badge(self) -> str:
-        return "VERIFY:" + self.session.current.verification.status
+        return "VERIFY:" + self.blackboard.verification.status
 
     def _compact(self, text: str, limit: int = 140) -> str:
         text = " ".join(text.split())
@@ -2975,11 +3469,11 @@ class AgentStateUpdater:
             if action_type == "goal":
                 update = _json_str(action.get("text"))
                 if update is not None:
-                    changed = changed or update != self.session.current.goal
-                    self.session.current.goal = update
+                    changed = changed or update != self.blackboard.goal
+                    self.blackboard.goal = update
                 complete = action.get("complete")
                 if isinstance(complete, bool):
-                    self.session.current.goal_reached = complete
+                    self.blackboard.goal_reached = complete
         return changed
 
     def _apply_plan(self, response: Json) -> bool:
@@ -2987,7 +3481,7 @@ class AgentStateUpdater:
         for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
             if update.get("mode") == "replace":
-                self.session.current.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+                self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
                 replaced = True
                 continue
             for raw in items:
@@ -2995,18 +3489,18 @@ class AgentStateUpdater:
                 op = _json_str(patch.get("op")) or "add"
                 item_id = _json_str(patch.get("id")) or ""
                 if op == "remove":
-                    self.session.current.plan = [item for item in self.session.current.plan if item.id != item_id]
+                    self.blackboard.plan = [item for item in self.blackboard.plan if item.id != item_id]
                     continue
                 plan_item = self._plan_item_from_json(patch)
                 if plan_item is None:
                     continue
-                existing = next((item for item in self.session.current.plan if item.id == plan_item.id and item.id), None)
+                existing = next((item for item in self.blackboard.plan if item.id == plan_item.id and item.id), None)
                 if existing:
                     existing.text = plan_item.text
                     existing.status = plan_item.status
                     existing.context = plan_item.context
                 else:
-                    self.session.current.plan.append(plan_item)
+                    self.blackboard.plan.append(plan_item)
         return replaced
 
     def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
@@ -3041,36 +3535,36 @@ class AgentStateUpdater:
         return fact
 
     def _add_known_item(self, fact: str) -> None:
-        if fact not in self.session.current.known:
-            self.session.current.known.append(fact)
-            del self.session.current.known[: max(0, len(self.session.current.known) - self.MAX_KNOWN_ITEMS)]
+        if fact not in self.blackboard.known:
+            self.blackboard.known.append(fact)
+            del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
             method = _json_str(data.get("method"))
             if method is not None:
-                if method != self.session.current.verification.method:
-                    self.session.current.verification.context = ""
-                self.session.current.verification.method = method
+                if method != self.blackboard.verification.method:
+                    self.blackboard.verification.context = ""
+                self.blackboard.verification.method = method
             status = _json_str(data.get("status"))
             if status == "pending":
-                self.session.current.verification.status = VerificationStatus.REQUIRED
+                self.blackboard.verification.status = VerificationStatus.REQUIRED
                 if "context" not in data:
-                    self.session.current.verification.context = ""
+                    self.blackboard.verification.context = ""
             elif status == "passed":
-                self.session.current.verification.status = VerificationStatus.DONE
+                self.blackboard.verification.status = VerificationStatus.DONE
             elif status == "blocked":
-                self.session.current.verification.status = VerificationStatus.BLOCKED
+                self.blackboard.verification.status = VerificationStatus.BLOCKED
             context = _json_str(data.get("context"))
             if context is not None:
-                self.session.current.verification.context = context
+                self.blackboard.verification.context = context
 
     def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
-        verification = self.session.current.verification
+        verification = self.blackboard.verification
         if goal_changed:
             verification.reset()
             return
-        if verification.goal and verification.goal != self.session.current.goal:
+        if verification.goal and verification.goal != self.blackboard.goal:
             verification.reset()
             return
         if (
@@ -3086,12 +3580,12 @@ class AgentStateUpdater:
             verification.reset()
 
     def _bind_verification_goal(self) -> None:
-        verification = self.session.current.verification
+        verification = self.blackboard.verification
         if not verification.has_context():
             verification.goal = ""
             return
-        if self.session.current.goal:
-            verification.goal = self.session.current.goal
+        if self.blackboard.goal:
+            verification.goal = self.blackboard.goal
 
 
 ############################
@@ -3104,9 +3598,10 @@ class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
     MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 30
 
-    def __init__(self, session: Session, model_client: ModelClient):
+    def __init__(self, session: Session, model_client: ModelClient, blackboard: Blackboard):
         self.session = session
         self.model_client = model_client
+        self.blackboard = blackboard
 
     def compact(self) -> int:
         count = len(self.session.conversation)
@@ -3116,7 +3611,7 @@ class ConversationCompactor:
         keep_items = self.session.conversation[-self.KEEP_RECENT :]
         summary, known = self._summarize(old_items)
         self.session.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
-        self.session.current.known = known
+        self.blackboard.known = known
         return count
 
     def maybe_compact(self) -> bool:
@@ -3128,7 +3623,7 @@ class ConversationCompactor:
 
     def _summarize(self, items: list[ConversationItem]) -> tuple[str, list[str]]:
         user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(
-            known="\n".join(self.session.current.known) or "(empty)",
+            known="\n".join(self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
         response = self._request_json(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
@@ -3137,7 +3632,7 @@ class ConversationCompactor:
             raise LLMError("compact response missing summary")
         known = [fact for fact in (_json_str(item) for item in _json_list(response.get("known"))) if fact]
         if not known:
-            known = list(self.session.current.known)
+            known = list(self.blackboard.known)
         return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
 
     def _request_json(self, system_prompt: str, user_prompt: str, *, activity: str) -> Json:
@@ -3151,8 +3646,7 @@ class ConversationCompactor:
 ############################
 
 
-@final
-class Agent:
+class BaseAgent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
@@ -3161,24 +3655,47 @@ class Agent:
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
 
-    def __init__(self, session: Session):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        blackboard: Blackboard | None = None,
+        runtime: AgentRuntime | None = None,
+        prompt_builder: PromptBuilder | None = None,
+        allowed_tools: set[str] | None = None,
+        activity: str = "main",
+        clear_range_fingerprints_on_goal_change: bool = True,
+    ):
         self.session = session
-        self.prompt_builder = PromptBuilder(session)
+        self.blackboard = blackboard or Blackboard()
+        self.runtime = runtime or AgentRuntime(tool_result_store=session.tool_result_store, tool_result_counter=session.tool_result_counter)
+        self.activity = activity
+        self.prompt_context = PromptContext(blackboard=self.blackboard, runtime=self.runtime)
+        self.prompt_builder = prompt_builder or PromptBuilder(session, allowed_tools=allowed_tools, context=self.prompt_context)
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session)
-        self.state_updater = AgentStateUpdater(session)
-        self.compactor = ConversationCompactor(session, self.model_client)
+        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=allowed_tools)
+        self.state_updater = AgentStateUpdater(
+            session,
+            self.blackboard,
+            clear_range_fingerprints_on_goal_change=clear_range_fingerprints_on_goal_change,
+        )
+        self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.latest_tool_batch = ""
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_calls = ""
         self.recent_tool_call_blocks: list[str] = []
+        self.latest_agent_report = ""
         self.agent_feedback_errors: list[str] = []
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self) -> str:
-        return self.prompt_builder.user_prompt(self._format_recent_tool_call_context(), self._format_agent_feedback())
+        return self.prompt_builder.user_prompt(
+            self._format_recent_tool_call_context(),
+            self._format_agent_feedback(),
+            agent_report=self.latest_agent_report,
+        )
 
     def request(
         self,
@@ -3221,32 +3738,26 @@ class Agent:
     def cancel_current_goal(self) -> None:
         self._finish_current_goal()
 
-    def run(
+    def run_loop(
         self,
-        user_input: str,
         *,
-        confirm: ConfirmCallback | None = None,
-        on_auto_approve: ToolDisplayCallback | None = None,
+        max_steps: int,
         on_message: MessageCallback | None = None,
-    ) -> Json:
-        self._clear_recent_tool_calls()
-        self._clear_agent_feedback()
-        self.session.turn_tool_calls = 0
-        self.session.turn_model_calls = 0
-        self.session.current.user_input = user_input
-        self.session.current.goal_reached = False
-        self.maybe_auto_compact()
-        self.session.append_conversation(UserMessage(content=user_input))
+        on_step: Callable[[Json], AgentRunResult],
+        on_step_limit: Callable[[], JsonValue],
+        on_format_error_limit: Callable[[Json, str], JsonValue] | None = None,
+    ) -> JsonValue:
         consecutive_format_errors = 0
-
         try:
-            for _ in range(self.session.max_agent_steps):
+            for _ in range(max_steps):
                 response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None, on_message=on_message)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
                     self._remember_agent_error(self._format_agent_feedback_format_error(format_error))
                     if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+                        if on_format_error_limit is not None:
+                            return on_format_error_limit(response, format_error)
                         self._report_gate(
                             on_message,
                             "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
@@ -3265,98 +3776,13 @@ class Agent:
                     )
                     continue
                 consecutive_format_errors = 0
-                actions = self._response_actions(response)
-                chat_message = self._chat_message_from_actions(actions)
-                if chat_message is not None:
-                    self.session.append_conversation(AssistantMessage(content=chat_message))
-                    if on_message is not None:
-                        on_message(chat_message)
-                    return response
-                tool_calls = self._tool_calls_from_actions(actions)
-                messages = self._messages_from_actions(actions)
-                if not messages:
-                    for action in actions:
-                        if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
-                            fallback = _json_str(action.get("message_for_complete"))
-                            if fallback:
-                                messages = [fallback]
-                                break
-                if self.session.debug and on_message is not None:
-                    frame_error_report = self._format_frame_error_report(response)
-                    if frame_error_report:
-                        on_message(frame_error_report)
-                self.apply_response(response)
-                if on_message is not None and self.state_updater.latest_report:
-                    on_message(self.state_updater.latest_report)
-                if (
-                    not tool_calls
-                    and not self.session.current.goal_reached
-                    and self.session.current.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
-                ):
-                    self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
-                    self._report_gate(
-                        on_message,
-                        "Retrying: verification is done but goal is not complete.",
-                        "Completion_Gate: verification is done but goal.complete is not true.",
-                    )
-                    continue
-                for message in messages:
-                    self.session.append_conversation(AssistantMessage(content=message))
-                    if on_message is not None:
-                        on_message(message)
-                if tool_calls:
-                    self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-                    if on_message is not None:
-                        report = self.tool_runner.format_latest_report()
-                        if report:
-                            on_message(report)
-                    self.maybe_auto_compact()
-                    continue
-                if self.session.current.goal_reached and not messages:
-                    self.session.current.goal_reached = False
-                    self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
-                    self._report_gate(
-                        on_message,
-                        "Retrying: goal is complete but no message provided.",
-                        "Completion_Gate: goal.complete=true requires a message action.",
-                    )
-                    continue
-                if self.session.current.verification.status == VerificationStatus.REQUIRED:
-                    self.session.current.goal_reached = False
-                    self._remember_agent_error(self._format_agent_feedback_verification_error())
-                    self._report_gate(
-                        on_message,
-                        "Retrying: verification is required before completion.",
-                        "Verification_Gate: retrying until verification is passed or blocked.",
-                    )
-                    continue
-                if self.session.current.goal_reached and self.session.current.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED):
-                    self.session.current.goal_reached = False
-                    self._remember_agent_error(self._format_agent_feedback_verification_error())
-                    self._report_gate(
-                        on_message,
-                        "Retrying: verification must pass before completion.",
-                        "Verification_Gate: goal.complete=true requires verification passed or blocked before completion.",
-                    )
-                    continue
-                if messages and self.session.current.goal_reached:
-                    self._finish_current_goal()
-                    return response
-                self.session.current.goal_reached = False
-                if not actions:
-                    self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
-                    self._report_gate(
-                        on_message,
-                        "Continuing: assistant must set current task's goal.",
-                        "Continuation_Gate: goal not reached; retrying next useful action.",
-                    )
-                elif messages:
-                    self._remember_agent_error(self._format_agent_feedback_message_before_complete_error())
-                continue
+                result = on_step(response)
+                if result.done:
+                    return result.value
+            return on_step_limit()
         except KeyboardInterrupt:
             self.cancel_current_goal()
             raise
-        raise LLMError("agent step limit reached")
 
     def _clear_agent_feedback(self) -> None:
         self.agent_feedback_errors = []
@@ -3364,10 +3790,11 @@ class Agent:
     def _finish_current_goal(self) -> None:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
-        self.session.current.goal = ""
-        self.session.current.goal_reached = False
-        self.session.current.plan = []
-        self.session.current.verification.reset()
+        self.latest_agent_report = ""
+        self.blackboard.goal = ""
+        self.blackboard.goal_reached = False
+        self.blackboard.plan = []
+        self.blackboard.verification.reset()
         self._trim_tool_result_store_after_goal_complete()
 
     def _clear_recent_tool_calls(self) -> None:
@@ -3398,11 +3825,11 @@ class Agent:
         self.recent_tool_calls = _join_tool_call_blocks(self.recent_tool_call_blocks)
 
     def _trim_tool_result_store_after_goal_complete(self) -> None:
-        overflow = len(self.session.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
+        overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
         if overflow <= 0:
             return
-        for key in list(self.session.tool_result_store)[:overflow]:
-            self.session.tool_result_store.pop(key)
+        for key in list(self.runtime.tool_result_store)[:overflow]:
+            self.runtime.tool_result_store.pop(key)
 
     def _remember_agent_error(self, text: str) -> None:
         text = " ".join(text.split())
@@ -3423,21 +3850,6 @@ class Agent:
     def _format_agent_feedback_format_error(self, format_error: str) -> str:
         message = self._format_gate_user_message("Error: model returned invalid output", format_error)
         return message + " Rule: return valid JSON action frames only."
-
-    def _format_agent_feedback_verification_error(self) -> str:
-        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with context.'
-
-    def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
-        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message; otherwise continue with tool/plan/verify."
-
-    def _format_agent_feedback_empty_actions_error(self) -> str:
-        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
-
-    def _format_agent_feedback_message_before_complete_error(self) -> str:
-        return "Error: returned message before goal.complete=true. Rule: only finish with message after the goal is achieved and verified."
-
-    def _format_agent_feedback_completion_without_message_error(self) -> str:
-        return "Error: returned goal.complete=true without a message. Rule: finish with both goal complete=true and a final message."
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is not None:
@@ -3468,7 +3880,7 @@ class Agent:
         return headline
 
     def step(self, *, on_action: ActionCallback | None = None, on_message: MessageCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="main", on_action=on_action, on_message=on_message)
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity=self.activity, on_action=on_action, on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -3490,7 +3902,8 @@ class Agent:
         return preview
 
     def _format_stream_action_preview(self, action: Json) -> str:
-        if _json_str(action.get("type")) != "tool":
+        action_type = _json_str(action.get("type"))
+        if action_type != "tool":
             return ""
         try:
             call = self.tool_runner.parse_tool_call(action)
@@ -3565,16 +3978,406 @@ class Agent:
     def _response_actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
+    def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
+        return [action for action in actions if _json_str(action.get("type")) == "tool"]
+
+
+EXPLORE_AGENT_ALLOWED_TOOLS: set[str] = {
+    ReadTool.name(),
+    LineCountTool.name(),
+    ListDirTool.name(),
+    SearchTool.name(),
+    GitTool.name(),
+    ToolResultTool.name(),
+    BashTool.name(),
+}
+
+MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
+    ReadTool.name(),
+    LineCountTool.name(),
+    ListDirTool.name(),
+    EditTool.name(),
+    ReplaceRangeTool.name(),
+    ApplyPatchTool.name(),
+    BashTool.name(),
+    GitTool.name(),
+    ToolResultTool.name(),
+}
+
+
+@final
+class ExploreAgent(BaseAgent):
+    DEFAULT_MAX_STEPS: ClassVar[int] = 50
+
+    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str]):
+        self.parent_session = parent_session
+        self.parent_blackboard = parent_blackboard
+        self.parent_known = list(self.parent_blackboard.known)
+        self.max_steps = parent_session.explore_agent_max_turns
+        blackboard = Blackboard(user_input=goal, goal=goal)
+        runtime = AgentRuntime()
+        prompt_context = PromptContext(
+            blackboard=blackboard,
+            runtime=runtime,
+            parent_known=self.parent_known,
+            scope=scope,
+        )
+        prompt_builder = PromptBuilder(
+            parent_session,
+            system_prompt_template=EXPLORE_AGENT_SYSTEM_PROMPT,
+            user_prompt_template=EXPLORE_AGENT_USER_PROMPT_TEMPLATE,
+            allowed_tools=EXPLORE_AGENT_ALLOWED_TOOLS,
+            context=prompt_context,
+        )
+        super().__init__(
+            parent_session,
+            blackboard=blackboard,
+            runtime=runtime,
+            prompt_builder=prompt_builder,
+            allowed_tools=EXPLORE_AGENT_ALLOWED_TOOLS,
+            activity="explore",
+            clear_range_fingerprints_on_goal_change=False,
+        )
+
+    def run(
+        self,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> ExploreReport:
+        self._clear_recent_tool_calls()
+        self._clear_agent_feedback()
+
+        return self.run_loop(
+            max_steps=self.max_steps,
+            on_message=on_message,
+            on_step=lambda response: self.handle_response(
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_message=on_message,
+            ),
+            on_step_limit=lambda: self._blocked_report("explore step limit reached"),
+            on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
+        )
+
+    def _format_stream_action_preview(self, action: Json) -> str:
+        return ""
+
+    def handle_response(
+        self,
+        response: Json,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> AgentRunResult:
+        actions = self._response_actions(response)
+        if self.session.debug and on_message is not None:
+            frame_error_report = self._format_frame_error_report(response)
+            if frame_error_report:
+                on_message(frame_error_report)
+        self.apply_response(response)
+        report = self._deliver_from_actions(actions)
+        if report is not None:
+            return AgentRunResult(done=True, value=report)
+        tool_calls = self._tool_calls_from_actions(actions)
+        if tool_calls:
+            self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            if on_message is not None:
+                latest_report = self.tool_runner.format_latest_compact_report(include_result_key=False)
+                if latest_report:
+                    on_message(latest_report)
+            return AgentRunResult()
+        self._remember_agent_error("Error: previous output had only state actions. Rule: every ExploreAgent response must include tool or deliver.")
+        self._report_gate(
+            on_message,
+            "Retrying: explore returned only state actions; return tool or deliver.",
+            "Explore_Gate: expected tool or deliver action.",
+        )
+        return AgentRunResult()
+
+    def _deliver_from_actions(self, actions: list[Json]) -> ExploreReport | None:
+        for action in reversed(actions):
+            if _json_str(action.get("type")) != "deliver":
+                continue
+            targets = [self._target_from_json(raw) for raw in _json_list(action.get("targets"))]
+            targets = [target for target in targets if target]
+            known = list(self.blackboard.known)
+            for raw in _json_list(action.get("known")):
+                fact = (_json_str(raw) or "").strip()
+                if fact and fact not in known:
+                    known.append(fact)
+            return ExploreReport(targets=targets, known=known, verification=self._verification_snapshot())
+        return None
+
+    def _target_from_json(self, value: JsonValue) -> Json:
+        item = _json_dict(value)
+        if not item:
+            return {}
+        return {
+            "path": _json_str(item.get("path")) or "",
+            "area": _json_str(item.get("area")) or "",
+            "line_range": _json_str(item.get("line_range")) or "",
+            "context": _json_str(item.get("context")) or "",
+            "reason": _json_str(item.get("reason")) or "",
+        }
+
+    def _blocked_report(self, reason: str) -> ExploreReport:
+        verification = Verification(
+            goal=self.blackboard.goal,
+            status=VerificationStatus.BLOCKED,
+            method="explore",
+            context=reason,
+        )
+        known = list(self.blackboard.known)
+        if reason and reason not in known:
+            known.append(reason)
+        return ExploreReport(targets=[], known=known, verification=verification)
+
+    def _verification_snapshot(self) -> Verification:
+        current = self.blackboard.verification
+        return Verification(
+            goal=current.goal,
+            status=current.status,
+            method=current.method,
+            context=current.context,
+        )
+
+
+@final
+class MainAgent(BaseAgent):
+    def __init__(self, session: Session):
+        super().__init__(session, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS)
+
+    def _format_stream_action_preview(self, action: Json) -> str:
+        if _json_str(action.get("type")) == "explore":
+            reason = _json_str(action.get("reason")) or _json_str(action.get("goal")) or ""
+            return "Queued: Explore" + ((" - " + _shorten(reason, 80)) if reason else "")
+        return super()._format_stream_action_preview(action)
+
     def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
         if not actions or _json_str(actions[0].get("type")) != "chat":
             return None
         return _json_str(actions[0].get("text")) or ""
 
-    def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
-        return [action for action in actions if _json_str(action.get("type")) == "tool"]
+    def _explore_actions_from_actions(self, actions: list[Json]) -> list[Json]:
+        return [action for action in actions if _json_str(action.get("type")) == "explore"]
 
     def _messages_from_actions(self, actions: list[Json]) -> list[str]:
         return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "message") if message]
+
+    def execute_explore_actions(
+        self,
+        actions: list[Json],
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> list[ExploreReport]:
+        reports = []
+        for action in actions:
+            goal = _json_str(action.get("goal")) or self.blackboard.goal or self.blackboard.user_input
+            scope = [item for item in (_json_str(raw) for raw in _json_list(action.get("scope"))) if item]
+            if on_message is not None:
+                on_message("Exploring: " + _shorten(goal, 120))
+            report = self._make_explore_agent(goal=goal, scope=scope).run(
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_message=self._explore_message_callback(on_message),
+            )
+            reports.append(report)
+            self.latest_agent_report = report.format()
+            if on_message is not None:
+                on_message(self._format_explore_done(report))
+        return reports
+
+    def _format_explore_done(self, report: ExploreReport) -> str:
+        if report.targets:
+            lines = ["Explore done: " + str(len(report.targets)) + " target(s)"]
+            for index, target in enumerate(report.targets[:3], start=1):
+                summary = self._format_explore_target(target)
+                if summary:
+                    lines.append("  " + str(index) + ". " + summary)
+            remaining = len(report.targets) - 3
+            if remaining > 0:
+                lines.append("  +" + str(remaining) + " more")
+            return "\n".join(lines)
+        if report.known:
+            return "Explore done: 0 target(s)\n  " + _shorten(report.known[0], 180)
+        if report.verification.context:
+            return "Explore done: 0 target(s)\n  " + _shorten(report.verification.context, 180)
+        return "Explore done: 0 target(s)"
+
+    def _format_explore_target(self, target: Json) -> str:
+        path = _json_str(target.get("path")) or ""
+        area = _json_str(target.get("area")) or ""
+        line_range = _json_str(target.get("line_range")) or ""
+        if path and line_range:
+            path = path + ":" + line_range
+        parts = [part for part in (path, area) if part]
+        return " ".join(parts)
+
+    def _explore_message_callback(self, on_message: MessageCallback | None) -> MessageCallback | None:
+        if on_message is None:
+            return None
+
+        def emit(message: str) -> None:
+            on_message(EXPLORE_MESSAGE_PREFIX + message)
+
+        return emit
+
+    def _make_explore_agent(self, *, goal: str, scope: list[str]) -> ExploreAgent:
+        return ExploreAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
+
+    def _format_agent_feedback_verification_error(self) -> str:
+        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with context.'
+
+    def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
+        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message; otherwise continue with tool/plan/verify."
+
+    def _format_agent_feedback_empty_actions_error(self) -> str:
+        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
+
+    def _format_agent_feedback_message_before_complete_error(self) -> str:
+        return "Error: returned message before goal.complete=true. Rule: only finish with message after the goal is achieved and verified."
+
+    def _format_agent_feedback_completion_without_message_error(self) -> str:
+        return "Error: returned goal.complete=true without a message. Rule: finish with both goal complete=true and a final message."
+
+    def run(
+        self,
+        user_input: str,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> Json:
+        self._clear_recent_tool_calls()
+        self._clear_agent_feedback()
+        self.latest_agent_report = ""
+        self.session.turn_tool_calls = 0
+        self.session.turn_model_calls = 0
+        self.blackboard.user_input = user_input
+        self.blackboard.goal_reached = False
+        self.maybe_auto_compact()
+        self.session.append_conversation(UserMessage(content=user_input))
+
+        return self.run_loop(
+            max_steps=self.session.max_agent_steps,
+            on_message=on_message,
+            on_step=lambda response: self.handle_response(
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_message=on_message,
+            ),
+            on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
+        )
+
+    def handle_response(
+        self,
+        response: Json,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> AgentRunResult:
+        actions = self._response_actions(response)
+        chat_message = self._chat_message_from_actions(actions)
+        if chat_message is not None:
+            self.session.append_conversation(AssistantMessage(content=chat_message))
+            if on_message is not None:
+                on_message(chat_message)
+            return AgentRunResult(done=True, value=response)
+        tool_calls = self._tool_calls_from_actions(actions)
+        explore_actions = self._explore_actions_from_actions(actions)
+        messages = self._messages_from_actions(actions)
+        if not messages:
+            for action in actions:
+                if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
+                    fallback = _json_str(action.get("message_for_complete"))
+                    if fallback:
+                        messages = [fallback]
+                        break
+        if self.session.debug and on_message is not None:
+            frame_error_report = self._format_frame_error_report(response)
+            if frame_error_report:
+                on_message(frame_error_report)
+        self.apply_response(response)
+        if on_message is not None and self.state_updater.latest_report:
+            on_message(self.state_updater.latest_report)
+        if (
+            not tool_calls
+            and not explore_actions
+            and not self.blackboard.goal_reached
+            and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        ):
+            self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification is done but goal is not complete.",
+                "Completion_Gate: verification is done but goal.complete is not true.",
+            )
+            return AgentRunResult()
+        for message in messages:
+            self.session.append_conversation(AssistantMessage(content=message))
+            if on_message is not None:
+                on_message(message)
+        if explore_actions:
+            self.execute_explore_actions(explore_actions, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message)
+            self.maybe_auto_compact()
+            return AgentRunResult()
+        if tool_calls:
+            self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            if on_message is not None:
+                report = self.tool_runner.format_latest_report()
+                if report:
+                    on_message(report)
+            self.maybe_auto_compact()
+            return AgentRunResult()
+        if self.blackboard.goal_reached and not messages:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+            self._report_gate(
+                on_message,
+                "Retrying: goal is complete but no message provided.",
+                "Completion_Gate: goal.complete=true requires a message action.",
+            )
+            return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_verification_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification is required before completion.",
+                "Verification_Gate: retrying until verification is passed or blocked.",
+            )
+            return AgentRunResult()
+        if self.blackboard.goal_reached and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED):
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_verification_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification must pass before completion.",
+                "Verification_Gate: goal.complete=true requires verification passed or blocked before completion.",
+            )
+            return AgentRunResult()
+        if messages and self.blackboard.goal_reached:
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=response)
+        self.blackboard.goal_reached = False
+        if not actions:
+            self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
+            self._report_gate(
+                on_message,
+                "Continuing: assistant must set current task's goal.",
+                "Continuation_Gate: goal not reached; retrying next useful action.",
+            )
+        elif messages:
+            self._remember_agent_error(self._format_agent_feedback_message_before_complete_error())
+        return AgentRunResult()
 
 
 ############################
@@ -3611,24 +4414,49 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
-    CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
-    CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
-    CommandSpec("/reason", "Show or toggle reasoning", "Config", "/reason [on|off|status]"),
-    CommandSpec("/reason_effort", "Show or set reasoning effort", "Config", "/reason_effort [minimal|low|medium|high|xhigh]"),
-    CommandSpec("/stream", "Show or toggle streaming responses", "Config", "/stream [on|off|status]"),
-    CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
+    CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
+    CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
 
 
+CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+CONFIG_SET_KEYS: tuple[str, ...] = (
+    "main.model",
+    "main.reasoning",
+    "main.effort",
+    "main.stream",
+    "main.temperature",
+    "main.timeout",
+    "worker.model",
+    "worker.reasoning",
+    "worker.effort",
+    "worker.stream",
+    "worker.temperature",
+    "worker.timeout",
+    "explore.max_turns",
+    "runtime.compact_at",
+    "runtime.shell_timeout",
+    "runtime.max_agent_steps",
+    "runtime.yolo",
+)
+CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
+    "main.reasoning": ("on", "off"),
+    "main.effort": CONFIG_EFFORTS,
+    "main.stream": ("on", "off"),
+    "worker.reasoning": ("on", "off"),
+    "worker.effort": CONFIG_EFFORTS,
+    "worker.stream": ("on", "off"),
+    "runtime.yolo": ("on", "off"),
+}
+
+
 @final
 class CommandDispatcher:
-    EFFORTS: ClassVar[set[str]] = {"minimal", "low", "medium", "high", "xhigh"}
-
     def __init__(
         self,
-        agent: Agent,
+        agent: MainAgent,
         run_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
     ):
@@ -3639,12 +4467,8 @@ class CommandDispatcher:
             "/help": self._help,
             "/status": self._status,
             "/compact": self._compact,
-            "/model": self._model,
-            "/compact-at": self._compact_at,
-            "/reason": self._reason,
-            "/reason_effort": self._reason_effort,
-            "/stream": self._stream,
-            "/yolo": self._yolo,
+            "/config": self._config,
+            "/set": self._set,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -3700,23 +4524,48 @@ class CommandDispatcher:
         if args:
             return "Usage: /status"
         session = self.agent.session
-        reasoning = session.reasoning_effort if session.reasoning else "off"
-        stream = "on" if session.stream else "off"
-        yolo = "on" if session.yolo else "off"
+        blackboard = self.agent.blackboard
         return "\n".join(
             [
-                "model: " + (session.model or "(empty)"),
-                "reasoning: " + reasoning,
-                "stream: " + stream,
-                "yolo: " + yolo,
+                "main: " + self._format_model_status(session.model_config_for("main")),
+                "worker: " + self._format_model_status(session.model_config_for("worker")),
+                "explore: turns=" + str(session.explore_agent_max_turns),
+                "runtime: yolo=" + self._format_bool(session.yolo) + " compact_at=" + str(session.compact_at),
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tool_calls: " + str(session.turn_tool_calls),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
-                "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
-                "goal: " + (session.current.goal or "(empty)"),
-                "verification: " + session.current.verification.status,
+                "cost: last=" + _format_cost(session.last_cost) + " session=" + _format_cost(session.session_cost),
+                "models:",
+                self._format_model_usage(),
+                "goal: " + (blackboard.goal or "(empty)"),
+                "verification: " + blackboard.verification.status,
             ]
         )
+
+    def _format_model_status(self, config: ModelConfig) -> str:
+        reasoning = config.reasoning_effort if config.reasoning else "off"
+        return (
+            (config.model or "(empty)")
+            + " reasoning="
+            + (reasoning or "(empty)")
+            + " stream="
+            + self._format_bool(config.stream)
+        )
+
+    def _format_model_usage(self) -> str:
+        if not self.agent.session.model_usage:
+            return "  (empty)"
+        lines = []
+        for model, usage in self.agent.session.model_usage.items():
+            lines.append(
+                "  "
+                + (model.rsplit("/", 1)[-1] or model)
+                + ": calls="
+                + str(usage.calls)
+                + " tokens="
+                + _format_count(usage.total_tokens)
+            )
+        return "\n".join(lines)
 
     def _compact(self, args: str) -> str:
         if args:
@@ -3729,71 +4578,208 @@ class CommandDispatcher:
             return "Conversation history is empty"
         return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.conversation)) + " item(s)"
 
-    def _model(self, args: str) -> str:
-        if not args:
-            return "Current model: " + (self.agent.session.model or "(empty)")
-        self.agent.session.model = args
-        return "Model set to: " + args
+    def _config(self, args: str) -> str:
+        if args:
+            return "Usage: /config"
+        session = self.agent.session
+        main = session.main_model_config
+        worker = session.model_config_for("worker")
+        return "\n".join(
+            [
+                "config: " + ConfigFile.path(),
+                "main.model: " + (main.model or "(empty)"),
+                "main.reasoning: " + self._format_bool(main.reasoning),
+                "main.effort: " + (main.reasoning_effort or "(empty)"),
+                "main.stream: " + self._format_bool(main.stream),
+                "main.temperature: " + self._format_optional(main.temperature),
+                "main.timeout: " + self._format_optional(main.timeout),
+                "worker.model: " + (worker.model or "(empty)"),
+                "worker.reasoning: " + self._format_bool(worker.reasoning),
+                "worker.effort: " + (worker.reasoning_effort or "(empty)"),
+                "worker.stream: " + self._format_bool(worker.stream),
+                "worker.temperature: " + self._format_optional(worker.temperature),
+                "worker.timeout: " + self._format_optional(worker.timeout),
+                "explore.max_turns: " + str(session.explore_agent_max_turns),
+                "runtime.compact_at: " + str(session.compact_at),
+                "runtime.shell_timeout: " + str(session.shell_timeout),
+                "runtime.max_agent_steps: " + str(session.max_agent_steps),
+                "runtime.yolo: " + self._format_bool(session.yolo),
+            ]
+        )
 
-    def _compact_at(self, args: str) -> str:
+    def _set(self, args: str) -> str:
+        key, value = self._parse_set_args(args)
+        if not key:
+            return self._set_usage()
+        if key not in CONFIG_SET_KEYS:
+            return "Unknown config key: " + key
+        if value is None:
+            return key + " = " + self._config_value(key)
+        error = self._apply_config_value(key, value)
+        if error:
+            return error
+        suffix = ""
+        if key == "runtime.compact_at":
+            compacted = self._with_status(lambda: "yes" if self.agent.maybe_auto_compact() else "") == "yes"
+            suffix = " and compacted history" if compacted else ""
+        return "Set " + key + " = " + self._config_value(key) + suffix
+
+    def _parse_set_args(self, args: str) -> tuple[str, str | None]:
         if not args:
-            return "Current auto-compact threshold: " + str(self.agent.session.compact_at)
+            return "", None
+        key, separator, value = args.partition(" ")
+        if not separator:
+            return key.strip(), None
+        return key.strip(), value.strip()
+
+    def _set_usage(self) -> str:
+        return "Usage: /set <key> <value>"
+
+    def _config_value(self, key: str) -> str:
+        session = self.agent.session
+        if key == "main.model":
+            return session.model or "(empty)"
+        if key == "main.reasoning":
+            return self._format_bool(session.reasoning)
+        if key == "main.effort":
+            return session.reasoning_effort
+        if key == "main.stream":
+            return self._format_bool(session.stream)
+        if key == "main.temperature":
+            return str(session.temperature)
+        if key == "main.timeout":
+            return str(session.model_timeout)
+        if key == "worker.model":
+            return session.worker_model_config.model or "(main fallback)"
+        if key == "worker.reasoning":
+            return self._format_bool(session.worker_model_config.reasoning)
+        if key == "worker.effort":
+            return session.worker_model_config.reasoning_effort or "(main fallback)"
+        if key == "worker.stream":
+            return self._format_bool(session.worker_model_config.stream)
+        if key == "worker.temperature":
+            return self._format_optional(session.worker_model_config.temperature)
+        if key == "worker.timeout":
+            return self._format_optional(session.worker_model_config.timeout)
+        if key == "explore.max_turns":
+            return str(session.explore_agent_max_turns)
+        if key == "runtime.compact_at":
+            return str(session.compact_at)
+        if key == "runtime.shell_timeout":
+            return str(session.shell_timeout)
+        if key == "runtime.max_agent_steps":
+            return str(session.max_agent_steps)
+        if key == "runtime.yolo":
+            return self._format_bool(session.yolo)
+        return "(unknown)"
+
+    def _apply_config_value(self, key: str, value: str) -> str:
+        session = self.agent.session
+        if key.endswith(".reasoning") or key.endswith(".stream") or key == "runtime.yolo":
+            parsed = self._parse_on_off(value)
+            if parsed is None:
+                return "Usage: /set " + key + " [on|off]"
+            self._set_bool_value(key, parsed)
+            return ""
+        if key.endswith(".effort"):
+            if value not in CONFIG_EFFORTS:
+                return "Usage: /set " + key + " [" + "|".join(CONFIG_EFFORTS) + "]"
+            self._set_effort_value(key, value)
+            return ""
+        if key.endswith(".temperature"):
+            parsed_float = self._parse_float(value)
+            if parsed_float is None:
+                return "Usage: /set " + key + " <number>"
+            self._set_temperature_value(key, parsed_float)
+            return ""
+        if key.endswith(".timeout") or key in {"explore.max_turns", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}:
+            parsed_int = self._parse_positive_int(value)
+            if parsed_int is None:
+                return "Usage: /set " + key + " <positive-number>"
+            self._set_int_value(key, parsed_int)
+            return ""
+        if key.endswith(".model"):
+            self._set_model_value(key, value)
+            return ""
+        return self._set_usage()
+
+    def _set_model_value(self, key: str, value: str) -> None:
+        if key == "main.model":
+            self.agent.session.model = value
+        elif key == "worker.model":
+            self.agent.session.worker_model_config.model = value
+
+    def _set_bool_value(self, key: str, value: bool) -> None:
+        if key == "main.reasoning":
+            self.agent.session.reasoning = value
+        elif key == "main.stream":
+            self.agent.session.stream = value
+        elif key == "worker.reasoning":
+            self.agent.session.worker_model_config.reasoning = value
+        elif key == "worker.stream":
+            self.agent.session.worker_model_config.stream = value
+        elif key == "runtime.yolo":
+            self.agent.session.yolo = value
+
+    def _set_effort_value(self, key: str, value: str) -> None:
+        if key == "main.effort":
+            self.agent.session.reasoning_effort = value
+        elif key == "worker.effort":
+            self.agent.session.worker_model_config.reasoning_effort = value
+
+    def _set_temperature_value(self, key: str, value: float) -> None:
+        if key == "main.temperature":
+            self.agent.session.temperature = value
+        elif key == "worker.temperature":
+            self.agent.session.worker_model_config.temperature = value
+
+    def _set_int_value(self, key: str, value: int) -> None:
+        if key == "main.timeout":
+            self.agent.session.model_timeout = value
+        elif key == "worker.timeout":
+            self.agent.session.worker_model_config.timeout = value
+        elif key == "explore.max_turns":
+            self.agent.session.explore_agent_max_turns = value
+        elif key == "runtime.compact_at":
+            self.agent.session.compact_at = value
+        elif key == "runtime.shell_timeout":
+            self.agent.session.shell_timeout = value
+        elif key == "runtime.max_agent_steps":
+            self.agent.session.max_agent_steps = value
+
+    def _parse_on_off(self, value: str) -> bool | None:
+        if value == "on":
+            return True
+        if value == "off":
+            return False
+        return None
+
+    def _parse_float(self, value: str) -> float | None:
         try:
-            value = int(args)
+            parsed = float(value)
         except ValueError:
-            return "Usage: /compact-at [number]"
-        if value <= 0:
-            return "Usage: /compact-at [number] (must be positive)"
-        self.agent.session.compact_at = value
-        compacted = self._with_status(lambda: "yes" if self.agent.maybe_auto_compact() else "") == "yes"
-        suffix = " and compacted history" if compacted else ""
-        return "Auto-compact threshold set to: " + str(value) + suffix
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _parse_positive_int(self, value: str) -> int | None:
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+
+    def _format_bool(self, value: bool | None) -> str:
+        if value is None:
+            return "(fallback)"
+        return "on" if value else "off"
+
+    def _format_optional(self, value: object) -> str:
+        return str(value) if value is not None else "(fallback)"
 
     def _with_status(self, action: StatusAction) -> str:
         if self.run_with_status is None:
             return action()
         return self.run_with_status(action)
-
-    def _reason(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.reasoning = True
-            return "Reasoning enabled"
-        if args == "off":
-            self.agent.session.reasoning = False
-            return "Reasoning disabled"
-        if args in {"", "status"}:
-            return "Reasoning is " + ("on" if self.agent.session.reasoning else "off")
-        return "Usage: /reason [on|off|status]"
-
-    def _reason_effort(self, args: str) -> str:
-        if not args:
-            return "Current reasoning effort: " + self.agent.session.reasoning_effort
-        if args not in self.EFFORTS:
-            return "Usage: /reason_effort [minimal|low|medium|high|xhigh]"
-        self.agent.session.reasoning_effort = args
-        return "Reasoning effort set to: " + args
-
-    def _stream(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.stream = True
-            return "Streaming enabled"
-        if args == "off":
-            self.agent.session.stream = False
-            return "Streaming disabled"
-        if args in {"", "status"}:
-            return "Streaming is " + ("on" if self.agent.session.stream else "off")
-        return "Usage: /stream [on|off|status]"
-
-    def _yolo(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.yolo = True
-            return "YOLO enabled"
-        if args == "off":
-            self.agent.session.yolo = False
-            return "YOLO disabled"
-        if args in {"", "status"}:
-            return "YOLO is " + ("on" if self.agent.session.yolo else "off")
-        return "Usage: /yolo [on|off|status]"
 
 
 def _format_count(value: int) -> str:
@@ -3903,20 +4889,21 @@ class StatusBar:
 
     def _format_line(self, turn_elapsed: float, *, now: float, show_elapsed: bool) -> str:
         session = self.session
-        model = session.model.rsplit("/", 1)[-1] or session.model or "(no model)"
-        reasoning = session.reasoning_effort if session.reasoning else "off"
+        active_model = session.current_model_call_label or session.main_model_config.model
+        model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
+        reasoning = session.current_model_call_reasoning_label or (session.main_model_config.reasoning_effort if session.main_model_config.reasoning else "off")
         yolo = " | yolo" if session.yolo else ""
         context = str(len(session.conversation)) + "/" + str(session.compact_at)
         last_tokens = self._format_count(session.last_total_tokens)
-        last_cost = _format_cost(session.last_cost_usd)
+        last_cost = _format_cost(session.last_cost)
         if last_cost != "-":
             last_tokens += "/" + last_cost
         session_tokens = self._format_count(session.session_total_tokens)
-        session_cost = _format_cost(session.session_cost_usd)
+        session_cost = _format_cost(session.session_cost)
         if session_cost != "-":
             session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.turn_tool_calls), "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.turn_tool_calls), "tok(all):" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.current_model_call_started_at > 0:
@@ -3953,7 +4940,7 @@ class StatusBar:
 class AgentLoop:
     def __init__(
         self,
-        agent: Agent,
+        agent: MainAgent,
         *,
         input_fn: Callable[[str], str] = input,
         output_fn: MessageCallback = print,
@@ -4018,8 +5005,8 @@ class AgentLoop:
             complete_while_typing=True,
         )
 
-    def _command_completer(self) -> WordCompleter:
-        return WordCompleter([spec.name for spec in COMMANDS], ignore_case=False, WORD=True)
+    def _command_completer(self) -> Completer:
+        return CommandCompleter()
 
     def _run_agent(self, user_input: str) -> None:
         try:
@@ -4143,11 +5130,14 @@ class AgentLoop:
             return raw_answer
 
     def _print_message(self, message: str) -> None:
+        if message.startswith(EXPLORE_MESSAGE_PREFIX):
+            self._print_scoped_message("explore", message[len(EXPLORE_MESSAGE_PREFIX) :])
+            return
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
         if message.startswith("Tool Calls"):
-            self._emit_segments(self._tool_segments(message), message)
+            self._emit_segments(self._tool_segments(message), self._display_plain(message))
             return
         if message.startswith("Queued:"):
             self._emit_segments(self._queued_segments(message), message)
@@ -4162,6 +5152,35 @@ class AgentLoop:
             self._emit_segments([("ansiyellow", message + "\n")], message)
             return
         self._emit_segments([("ansicyan", message + "\n")], message)
+
+    def _print_scoped_message(self, scope: str, message: str) -> None:
+        prefix = "[" + scope + "]\n"
+        if message.startswith("State Updated"):
+            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message))
+            return
+        if message.startswith("Tool Calls"):
+            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message))
+            return
+        if message.startswith("Queued:"):
+            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._queued_segments(message), "  "), self._scoped_plain(scope, message))
+            return
+        if message.startswith("Retrying:"):
+            self._emit_segments([("ansibrightblack", prefix), ("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message))
+            return
+        if message.startswith("Error:"):
+            self._emit_segments([("ansibrightblack", prefix), ("ansibrightblack", "  "), ("bold ansired", message + "\n")], self._scoped_plain(scope, message))
+            return
+        self._emit_segments([("ansibrightblack", prefix)] + self._scoped_line_segments(message), self._scoped_plain(scope, message))
+
+    def _scoped_plain(self, scope: str, message: str) -> str:
+        lines = self._display_plain(message).splitlines() or [""]
+        return "[" + scope + "]\n" + "\n".join("  " + line for line in lines)
+
+    def _display_plain(self, message: str) -> str:
+        lines = []
+        for line in message.splitlines():
+            lines.append(line.replace("[success] ", "").replace("[failure] ", ""))
+        return "\n".join(lines)
 
     def _emit_segments(self, segments: list[tuple[str, str]], plain: str) -> None:
         if self.output_fn is print:
@@ -4247,11 +5266,11 @@ class AgentLoop:
         for index, line in enumerate(lines):
             if index == 0:
                 segments.extend([("bold ansiblue", line), ("", "\n")])
-            elif line.startswith("  ") and (". ok " in line or ". fail " in line):
+            elif line.startswith("  ") and (". [success] " in line or ". [failure] " in line):
                 prefix, _, rest = line.partition(". ")
-                status, _, tail = rest.partition(" ")
-                status_style = "ansigreen" if status == "ok" else "ansired"
-                segments.extend([("ansibrightblack", prefix + ". "), (status_style, status + " " + tail + "\n")])
+                marker, _, tail = rest.partition(" ")
+                status_style = "ansigreen" if marker == "[success]" else "ansired"
+                segments.extend([("ansibrightblack", prefix + ". "), (status_style, tail + "\n")])
             elif line.startswith("  ") and ". [" in line:
                 style = "ansigreen" if "[success]" in line else "ansired"
                 segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
@@ -4263,13 +5282,28 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", line + "\n")])
         return segments
 
-    def _queued_segments(self, message: str) -> list[tuple[str, str]]:
+    def _scoped_line_segments(self, message: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        for line in message.splitlines() or [""]:
+            style = "ansicyan"
+            text = line
+            if line.startswith("[success] "):
+                style = "ansigreen"
+                text = line[len("[success] ") :]
+            elif line.startswith("[failure] "):
+                style = "ansired"
+                text = line[len("[failure] ") :]
+            segments.extend([("ansibrightblack", "  "), (style, text + "\n")])
+        return segments
+
+    def _queued_segments(self, message: str, *, newline: bool = True) -> list[tuple[str, str]]:
         body = message[len("Queued:") :].strip()
         target, separator, reason = body.partition(" - ")
         segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", target)]
         if separator:
             segments.extend([("ansibrightblack", " - "), ("ansimagenta", reason)])
-        segments.append(("", "\n"))
+        if newline:
+            segments.append(("", "\n"))
         return segments
 
     def _verify_style(self, badge: str) -> str:
@@ -4336,8 +5370,38 @@ def _shorten(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+class CommandCompleter(Completer):
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if text.startswith("/set "):
+            yield from self._set_completions(text[len("/set ") :])
+            return
+        if text.startswith("/") and " " not in text:
+            yield from self._command_completions(text)
+
+    def _command_completions(self, prefix: str) -> Iterator[Completion]:
+        for spec in COMMANDS:
+            if spec.name.startswith(prefix):
+                yield Completion(spec.name, start_position=-len(prefix))
+
+    def _set_completions(self, text: str) -> Iterator[Completion]:
+        if " " not in text:
+            prefix = text
+            for key in CONFIG_SET_KEYS:
+                if key.startswith(prefix):
+                    yield Completion(key, start_position=-len(prefix))
+            return
+        key, _, value_prefix = text.partition(" ")
+        values = CONFIG_VALUE_COMPLETIONS.get(key)
+        if not values:
+            return
+        for value in values:
+            if value.startswith(value_prefix):
+                yield Completion(value, start_position=-len(value_prefix))
+
+
 class ReferenceFileCompleter(Completer):
-    def __init__(self, cwd: str, command_completer: WordCompleter):
+    def __init__(self, cwd: str, command_completer: Completer):
         self.cwd = cwd
         self.command_completer = command_completer
 
@@ -4375,13 +5439,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
         parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
+        parser.add_argument("--init-config", action="store_true", help="Create a default config file at ~/.nanocode/config.toml")
         args = parser.parse_args(argv)
-        session = Session(yolo=args.yolo, debug=args.debug)
-        missing = session.missing_required_envs()
+        if args.init_config:
+            config_path, created = ConfigFile.init()
+            print(("Created config: " if created else "Config already exists: ") + config_path)
+            return 0
+        session = Session.from_config_file(yolo=args.yolo, debug=args.debug)
+        missing = session.missing_required_config()
         if missing:
-            print("Missing env: " + ", ".join(missing), file=sys.stderr)
+            print("Missing config: " + ", ".join(missing), file=sys.stderr)
+            print("Edit " + ConfigFile.path() + " or run `nanocode --init-config`.", file=sys.stderr)
             return 2
-        return AgentLoop(Agent(session)).run()
+        return AgentLoop(MainAgent(session)).run()
+    except ConfigError as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("Cancelled", file=sys.stderr)
         return 130

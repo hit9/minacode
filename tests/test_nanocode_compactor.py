@@ -1,4 +1,4 @@
-from nanocode import Agent, AssistantMessage, Session, UserMessage
+from nanocode import MainAgent, AssistantMessage, Session, UserMessage
 
 
 class FakeModelClient:
@@ -17,10 +17,10 @@ class FakeModelClient:
 
 def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     fake_client = FakeModelClient("LLM kept the old user request and assistant note.")
     agent.compactor.model_client = fake_client
-    session.current.known = ["old known", "keep known"]
+    agent.blackboard.known = ["old known", "keep known"]
     session.conversation = [
         UserMessage(content="old user\nmessage"),
         AssistantMessage(content='old assistant note: inspected Read("a.py", "0", "1")'),
@@ -40,7 +40,7 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     assert session.conversation[1].content == "keep 1"
     summary = session.conversation[0].content
     assert summary == "Conversation compact summary:\nLLM kept the old user request and assistant note."
-    assert session.current.known == ["old known", "keep known"]
+    assert agent.blackboard.known == ["old known", "keep known"]
     assert len(fake_client.requests) == 1
     system_prompt, user_prompt, activity = fake_client.requests[0]
     assert activity == "compact"
@@ -56,10 +56,10 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
 
 def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     fake_client = FakeModelClient("summary", known=["known " + str(index) for index in range(35)])
     agent.compactor.model_client = fake_client
-    session.current.known = ["old " + str(index) for index in range(40)]
+    agent.blackboard.known = ["old " + str(index) for index in range(40)]
     session.conversation = [
         UserMessage(content="old 1"),
         UserMessage(content="old 2"),
@@ -74,14 +74,14 @@ def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
     count = agent.compact_history()
 
     assert count == 8
-    assert len(session.current.known) == 30
-    assert session.current.known[0] == "known 5"
-    assert session.current.known[-1] == "known 34"
+    assert len(agent.blackboard.known) == 30
+    assert agent.blackboard.known[0] == "known 5"
+    assert agent.blackboard.known[-1] == "known 34"
 
 
 def test_agent_compact_history_skips_when_not_over_keep_recent(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     fake_client = FakeModelClient()
     agent.compactor.model_client = fake_client
     session.conversation = [

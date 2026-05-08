@@ -69,24 +69,23 @@ USE AT YOUR OWN RISK.
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
 - Edit: `Edit`, `ReplaceRange`, `ApplyPatch`.
 - Shell: `Bash`, `Git`.
-- Memory: `Evidence` reads hidden raw evidence values by key.
+- Memory: `Recall` reads stored tool results by key.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/evidence [clear]`.
+- Info: `/help [question]`, `/status`.
 - Session: `/compact`.
-- Config: `/model`, `/compact-at`, `/reason`, `/reason_effort`, `/stream`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`.
 - Exit: `/exit`, `/quit`.
 
 ## Configuration
 
-- Required: `NANOCODE_API_URL`, `NANOCODE_API_KEY`, `NANOCODE_MODEL`.
-- Runtime: `NANOCODE_DIR`, `NANOCODE_TEMPERATURE`, `NANOCODE_STREAM`.
-- Reasoning: `NANOCODE_REASONING`, `NANOCODE_REASONING_EFFORT`.
-- Limits: `NANOCODE_MODEL_TIMEOUT`, `NANOCODE_SHELL_TIMEOUT`, `NANOCODE_COMPACT_AT`, `NANOCODE_MAX_AGENT_STEPS`.
-- Cost: `NANOCODE_PROMPT_PRICE_PER_1M_TOKENS`, `NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS`.
+- Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
+- Model layers: `[main_model]` and `[worker_model]`.
+- Explore config: `[explore_agent] max_turns`.
+- Runtime config: `[paths]` and `[runtime]`.
 
 ## Status
 
 - Status bar: model, reasoning, context, tokens/cost, elapsed time, and active model-call time.
-- `/status`: model, reasoning, stream, yolo, conversation, evidence, tokens/cost, goal, and verification.
+- `/status`: main/worker model state, per-model calls/tokens, total cost, runtime state, goal, and verification.

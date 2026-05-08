@@ -1,32 +1,44 @@
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
-from nanocode import AgentLoop, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
+from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
 
 
-def test_session_reports_missing_required_envs(tmp_path):
+def test_session_reports_missing_required_config(tmp_path):
     session = Session(cwd=str(tmp_path), api_url="", api_key="", model="")
 
-    assert session.REQUIRED_ENVS == (
-        ("NANOCODE_API_URL", "api_url"),
-        ("NANOCODE_API_KEY", "api_key"),
-        ("NANOCODE_MODEL", "model"),
-    )
-    assert session.missing_required_envs() == ["NANOCODE_API_URL", "NANOCODE_API_KEY", "NANOCODE_MODEL"]
+    assert session.missing_required_config() == ["api.url", "api.key", "main_model.model"]
 
     session.api_url = "url"
     session.api_key = "key"
     session.model = "model"
 
-    assert session.missing_required_envs() == []
+    assert session.missing_required_config() == []
+
+
+def test_init_config_file_writes_default_toml(tmp_path):
+    config_path = tmp_path / "config.toml"
+
+    created_path, created = ConfigFile.init(str(config_path))
+    second_path, second_created = ConfigFile.init(str(config_path))
+    config = ConfigFile.load(str(config_path))
+
+    assert created_path == str(config_path)
+    assert created is True
+    assert second_path == str(config_path)
+    assert second_created is False
+    assert config["api"]["url"] == ""
+    assert config["main_model"]["temperature"] == 0.7
+    assert config["explore_agent"]["max_turns"] == 50
+    assert config["runtime"]["compact_at"] == 50
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     session = Session(cwd=str(tmp_path), model="provider/model", compact_at=9)
     session.last_total_tokens = 42
-    session.last_cost_usd = 0.000008
+    session.last_cost = 0.000008
     session.session_total_tokens = 1200
-    session.session_cost_usd = 12.345678
+    session.session_cost = 12.345678
     session.turn_tool_calls = 3
     bar = StatusBar(session)
 
@@ -37,12 +49,12 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "model (medium)" in text
     assert "ctx:0/9" in text
     assert "tools:3" in text
-    assert "tok:last:42/$0.000008 session:1k/$12.345678" in text
-    assert "usd:" not in text
+    assert "tok(all):last:42/$0.000008 session:1k/$12.345678" in text
+    assert "$12.345678" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok:last:42/$0.000008 session:1k/$12.345678"
+    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok(all):last:42/$0.000008 session:1k/$12.345678"
     assert ">" not in snapshot
 
 
@@ -50,10 +62,13 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     session = Session(cwd=str(tmp_path), model="provider/model")
     session.turn_model_calls = 2
     session.current_model_call_started_at = 0.4
+    session.current_model_call_label = "provider/worker-model"
+    session.current_model_call_reasoning_label = "low"
     bar = StatusBar(session)
 
     text = bar._text(0.0, now=1.0)
 
+    assert "worker-model (low)" in text
     assert "calling(2):0.6s" in text
 
 
@@ -104,10 +119,11 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._tool_segments('Tool Calls\n  1. ok Read("sample.txt", "0", "1")\n     tr.1 | why: read sample')
+    segments = loop._tool_segments('Tool Calls\n  1. [success] Read("sample.txt", "0", "1")\n     tr.1 | why: read sample')
 
     assert ("bold ansiblue", "Tool Calls") in segments
-    assert ("ansigreen", 'ok Read("sample.txt", "0", "1")\n') in segments
+    assert ("ansigreen", 'Read("sample.txt", "0", "1")\n') in segments
+    assert all("ok " not in text for _, text in segments)
     assert ("ansibrightblack", "     tr.1 | why: read sample\n") in segments
 
 
@@ -118,10 +134,38 @@ def test_agent_loop_styles_tool_arg_error_report(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._tool_segments("Tool Calls\n  1. fail Read()\n     tr.1 | error: Read args error: got 0 args | why: read sample")
+    segments = loop._tool_segments("Tool Calls\n  1. [failure] Read()\n     tr.1 | error: Read args error: got 0 args | why: read sample")
 
-    assert ("ansired", "fail Read()\n") in segments
+    assert ("ansired", "Read()\n") in segments
+    assert all("fail " not in text for _, text in segments)
     assert ("ansibrightblack", "     tr.1 | error: Read args error: got 0 args | why: read sample\n") in segments
+
+
+def test_agent_loop_styles_explore_tool_report_with_scope_prefix(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: captured.append(message))
+
+    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Read("sample.txt", "0", "1")')
+
+    assert captured == ['[explore]\n  Read("sample.txt", "0", "1")']
+
+
+def test_agent_loop_styles_explore_tool_status_by_color(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")\n[failure] Read("missing.py")')
+
+    assert captured == ['[explore]\n  Search("producer")\n  Read("missing.py")']
+    assert '"producer"' in captured[0]
 
 
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
@@ -157,10 +201,16 @@ def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
     completer = loop._command_completer()
 
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
-    compact_completions = list(completer.get_completions(Document("/compact-"), CompleteEvent(completion_requested=True)))
+    config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
+    set_key_completions = list(completer.get_completions(Document("/set main."), CompleteEvent(completion_requested=True)))
+    set_bool_completions = list(completer.get_completions(Document("/set main.reasoning "), CompleteEvent(completion_requested=True)))
+    set_effort_completions = list(completer.get_completions(Document("/set main.effort h"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
-    assert "/compact-at" in [completion.text for completion in compact_completions]
+    assert "/config" in [completion.text for completion in config_completions]
+    assert "main.reasoning" in [completion.text for completion in set_key_completions]
+    assert [completion.text for completion in set_bool_completions] == ["on", "off"]
+    assert [completion.text for completion in set_effort_completions] == ["high"]
 
 
 def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(tmp_path):
@@ -201,6 +251,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = Session(cwd=str(tmp_path), model="model")
+            self.blackboard = Blackboard()
             self.runs = []
 
         def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
@@ -218,7 +269,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
     assert any("model (medium)" in output for output in outputs)
-    assert any("model: model" in output for output in outputs)
+    assert any("main: model reasoning=medium stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
 

@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
+from nanocode import MainAgent, LLMError, ParsedToolCall, Session, VerificationStatus
 
 
 def _verify_passed_action():
@@ -20,7 +20,7 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls(
         [
@@ -48,11 +48,57 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
+def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "find sample", "complete": False},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                    ]
+                },
+                {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": []}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
+    explorer.model_client = FakeModelClient()
+    messages = []
+
+    explorer.run(on_message=messages.append)
+
+    assert messages == ['[success] Read("sample.txt", "0,1")']
+
+
+def test_agent_formats_explore_done_targets_on_separate_lines(tmp_path):
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+
+    message = agent._format_explore_done(
+        nanocode.ExploreReport(
+            targets=[
+                {"path": "producer.py", "line_range": "440-460", "area": "pipeline integration"},
+                {"path": "detector.py", "line_range": "186-206", "area": "page type detection"},
+            ],
+            known=[],
+            verification=nanocode.Verification(),
+        )
+    )
+
+    assert message == "Explore done: 2 target(s)\n  1. producer.py:440-460 pipeline integration\n  2. detector.py:186-206 page type detection"
+
+
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls(
         [
@@ -72,7 +118,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.execute_tool_calls(
         [
@@ -92,7 +138,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("H" * 5000 + "M" * 5000 + "T" * 5000 + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0", "1"]}])
 
@@ -114,7 +160,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.RECENT_TOOL_CALLS = 2
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
@@ -133,7 +179,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
 
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.RECENT_TOOL_CALL_CHARS = 80
 
     agent._append_recent_tool_call_blocks(["old call " + "x" * 40])
@@ -146,7 +192,7 @@ def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     for index in range(257):
         agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
@@ -187,7 +233,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     session.prompt_price_per_1m_tokens = 1.0
     session.completion_price_per_1m_tokens = 2.0
 
-    response = Agent(session).request("system", "user")
+    response = MainAgent(session).request("system", "user")
 
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
     assert captured["url"] == "https://example.test/v1/chat/completions"
@@ -201,8 +247,54 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
-    assert abs(session.last_cost_usd - 0.000008) < 1e-12
-    assert abs(session.session_cost_usd - 0.000008) < 1e-12
+    assert abs(session.last_cost - 0.000008) < 1e-12
+    assert abs(session.session_cost - 0.000008) < 1e-12
+
+
+def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = Session(cwd=str(tmp_path), api_url="https://openrouter.ai/api/v1", api_key="key", model="main", stream=False)
+    session.worker_model_config = nanocode.ModelConfig(
+        model="worker",
+        temperature=0.2,
+        reasoning=True,
+        reasoning_effort="low",
+        stream=False,
+        timeout=7,
+        prompt_price_per_1m_tokens=3.0,
+        completion_price_per_1m_tokens=4.0,
+    )
+
+    response = MainAgent(session).model_client.request("system", "user", activity="explore")
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert captured["payload"]["model"] == "worker"
+    assert captured["payload"]["temperature"] == 0.2
+    assert captured["payload"]["reasoning"] == {"effort": "low"}
+    assert captured["timeout"] == 7
+    assert abs(session.last_cost - 0.000018) < 1e-12
 
 
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
@@ -218,7 +310,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = Agent(Session(cwd=str(tmp_path)))
+    agent = MainAgent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     response = agent.request("system", "user")
@@ -243,7 +335,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
     sleeps = []
     messages = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = Agent(Session(cwd=str(tmp_path)))
+    agent = MainAgent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     response = agent.request("system", "user", on_message=messages.append)
@@ -269,7 +361,7 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = Agent(Session(cwd=str(tmp_path)))
+    agent = MainAgent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     try:
@@ -295,7 +387,7 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = Agent(Session(cwd=str(tmp_path)))
+    agent = MainAgent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     try:
@@ -343,7 +435,7 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
     actions = []
 
-    response = Agent(session).request("system", "user", on_action=actions.append)
+    response = MainAgent(session).request("system", "user", on_action=actions.append)
 
     assert captured["payload"]["stream"] is True
     assert captured["payload"]["stream_options"] == {"include_usage": True}
@@ -376,7 +468,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12)
 
     try:
-        Agent(session).request("system", "user")
+        MainAgent(session).request("system", "user")
     except LLMError as error:
         assert str(error) == "request model timeout"
     else:
@@ -422,7 +514,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
-    agent = Agent(session)
+    agent = MainAgent(session)
     messages = []
 
     response = agent.run("read sample", on_message=messages.append)
@@ -436,7 +528,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
 
 
 def test_agent_stream_preview_summarizes_long_tool_arguments(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
+    agent = MainAgent(Session(cwd=str(tmp_path)))
 
     bash_preview = agent._format_stream_action_preview(
         {
@@ -492,7 +584,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
         stream=False,
     )
 
-    Agent(session).request("system", "user")
+    MainAgent(session).request("system", "user")
 
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert "reasoning_effort" not in captured["payload"]
@@ -520,7 +612,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
         stream=False,
     )
 
-    response = Agent(session).request("system prompt", "user prompt")
+    response = MainAgent(session).request("system prompt", "user prompt")
 
     files = list((tmp_path / ".nanocode" / "debug").glob("*-0001-main.txt"))
     assert response["actions"][0]["text"] == "ok"
@@ -554,13 +646,13 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = Agent(session).request("system", "user")
+    response = MainAgent(session).request("system", "user")
 
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
 
 
 def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     assert client._parse_model_content('</think>{"type":"message","text":"ok"}\n__END_ACTION__') == {
         "actions": [{"type": "message", "text": "ok"}],
@@ -571,7 +663,7 @@ def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
 
 
 def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content(
         '{\n  "type": "message",\n  "text": "ok"\n}\n**END_ACTION**\n{"type":"goal","text":"next"}\nEND_ACTION'
@@ -581,7 +673,7 @@ def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path
 
 
 def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}__END_ACTION__{"type":"goal","text":"next"}__END_ACTION__')
 
@@ -589,7 +681,7 @@ def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
 
 
 def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}')
 
@@ -597,7 +689,7 @@ def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
 
 
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('plain answer\n__END_ACTION__\n{"type":"message","text":"ok"}\n__END_ACTION__')
 
@@ -606,7 +698,7 @@ def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tm
 
 
 def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
 
@@ -633,7 +725,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = Agent(session).request("system", "user")
+    response = MainAgent(session).request("system", "user")
 
     assert response["actions"] == []
     assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
@@ -641,7 +733,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
 
 
 def test_agent_request_rejects_unmarked_json_action_array(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
+    client = MainAgent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('[{"type":"message","text":"ok"}]')
 
@@ -676,7 +768,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = Agent(session).request("system", "user")
+    response = MainAgent(session).request("system", "user")
 
     assert response["actions"] == []
     assert "expected one JSON object" in response["_format_error"]
@@ -685,7 +777,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
 
 def test_agent_keeps_known_items_structured_in_current(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.apply_response(
         {
@@ -701,12 +793,12 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
         }
     )
 
-    assert session.current.known == ["Search only supports rg and Python fallback."]
+    assert agent.blackboard.known == ["Search only supports rg and Python fallback."]
 
 
 def test_agent_dedupes_exact_known_facts(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.apply_response(
         {
@@ -723,7 +815,7 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
         }
     )
 
-    assert session.current.known == [
+    assert agent.blackboard.known == [
         "Preview logic exists in _format_stream_action_preview.",
         "Preview logic exists in _format_stream_action_preview!",
     ]
@@ -731,18 +823,18 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
 
 def test_agent_keeps_latest_50_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(51)]}]})
 
-    assert len(session.current.known) == 50
-    assert session.current.known[0] == "fact 1"
-    assert session.current.known[-1] == "fact 50"
+    assert len(agent.blackboard.known) == 50
+    assert agent.blackboard.known[0] == "fact 1"
+    assert agent.blackboard.known[-1] == "fact 50"
 
 
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     agent.apply_response(
         {
@@ -759,7 +851,7 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
         }
     )
 
-    assert session.current.known == [
+    assert agent.blackboard.known == [
         "Parser notes exist.",
         "Parser notes were captured.",
     ]
@@ -767,7 +859,7 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     response = {
         "actions": [
@@ -791,38 +883,38 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
 def test_agent_resets_verification_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.current.goal = "old goal"
-    session.current.verification.goal = "old goal"
-    session.current.verification.status = VerificationStatus.DONE
-    session.current.verification.method = "old check"
-    session.current.verification.context = "old context"
-    agent = Agent(session)
+    agent = MainAgent(session)
+    agent.blackboard.goal = "old goal"
+    agent.blackboard.verification.goal = "old goal"
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.method = "old check"
+    agent.blackboard.verification.context = "old context"
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": False}]})
 
-    assert session.current.goal_reached is False
-    assert session.current.verification.goal == ""
-    assert session.current.verification.status == VerificationStatus.IDLE
-    assert session.current.verification.method == ""
-    assert session.current.verification.context == ""
+    assert agent.blackboard.goal_reached is False
+    assert agent.blackboard.verification.goal == ""
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.method == ""
+    assert agent.blackboard.verification.context == ""
 
     agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "pending", "context": None}]})
 
-    assert session.current.verification.goal == "new goal"
-    assert session.current.verification.status == VerificationStatus.REQUIRED
-    assert session.current.verification.method == "run tests"
-    assert session.current.verification.context == ""
+    assert agent.blackboard.verification.goal == "new goal"
+    assert agent.blackboard.verification.status == VerificationStatus.REQUIRED
+    assert agent.blackboard.verification.method == "run tests"
+    assert agent.blackboard.verification.context == ""
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
 
-    assert session.current.goal_reached is True
+    assert agent.blackboard.goal_reached is True
 
 
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -842,7 +934,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls(
         [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}],
@@ -859,7 +951,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -874,7 +966,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
 
 def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
@@ -886,7 +978,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
 
 def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}])
 
@@ -898,7 +990,7 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
 
 def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0", "1"]}])
 
@@ -906,11 +998,131 @@ def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp
     assert agent.agent_feedback_errors == []
 
 
+def test_main_agent_rejects_search_tool(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": ["class Foo"]}])
+
+    system_prompt = agent.build_system_prompt()
+    assert "Search(" not in system_prompt
+    assert "Read(" in system_prompt
+    assert "tool not allowed for this agent: Search" in latest
+
+
+def test_explore_agent_rejects_edit_tools(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="find relevant target",
+        scope=["sample.txt"],
+    )
+
+    latest = explorer.execute_tool_calls([{"name": "Edit", "intention": "try edit", "args": ["sample.txt", "old", "new"]}])
+
+    system_prompt = explorer.build_system_prompt()
+    assert "Read(" in system_prompt
+    assert "Search(" in system_prompt
+    assert "Bash(" in system_prompt
+    assert "Edit(" not in system_prompt
+    assert "ReplaceRange(" not in system_prompt
+    assert "ApplyPatch(" not in system_prompt
+    assert "tool not allowed for this agent: Edit" in latest
+    assert path.read_text(encoding="utf-8") == "old\n"
+    assert explorer.session is parent_session
+    assert parent_session.tool_result_store == {}
+    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
+
+
+def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    parent_agent.blackboard.known = ["MainAgent knows sample.txt exists."]
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {
+                    "actions": [
+                        {"type": "known", "items": ["sample.txt contains alpha."]},
+                        {"type": "verify", "method": "read", "status": "passed", "context": "target found"},
+                        {
+                            "type": "deliver",
+                            "targets": [
+                                {
+                                    "path": "sample.txt",
+                                    "area": "line 1",
+                                    "line_range": "0,1",
+                                    "context": "alpha",
+                                    "reason": "contains alpha",
+                                }
+                            ],
+                            "known": ["relevant target is sample.txt line 1."],
+                        },
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    explorer = nanocode.ExploreAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="find relevant target",
+        scope=["sample.txt"],
+    )
+    explorer.model_client = FakeModelClient()
+
+    report = explorer.run()
+
+    assert report.targets == [
+        {
+            "path": "sample.txt",
+            "area": "line 1",
+            "line_range": "0,1",
+            "context": "alpha",
+            "reason": "contains alpha",
+        }
+    ]
+    assert report.known == ["sample.txt contains alpha.", "relevant target is sample.txt line 1."]
+    assert report.verification.status == VerificationStatus.DONE
+    assert explorer.session is parent_session
+    assert parent_session.tool_result_store == {}
+    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
+    assert "MainAgent knows sample.txt exists." in explorer.model_client.user_prompts[0]
+    assert "alpha" in explorer.model_client.user_prompts[1]
+
+
+def test_explore_agent_goal_changes_do_not_clear_parent_range_fingerprints(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_session.range_fingerprints.remember(filepath=str(tmp_path / "sample.txt"), start=0, end=1, content="alpha\n")
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="find relevant target",
+        scope=["sample.txt"],
+    )
+
+    explorer.apply_response({"actions": [{"type": "goal", "text": "refined target", "complete": False}]})
+
+    assert len(parent_session.range_fingerprints) == 1
+
+
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path), yolo=True)
-    agent = Agent(session)
+    agent = MainAgent(session)
     confirmations = []
     auto_approvals = []
 
@@ -957,7 +1169,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     fake_client = FakeModelClient()
     agent.model_client = fake_client
 
@@ -966,7 +1178,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert messages[0].startswith("Tool Calls\n")
-    assert '1. ok Read("sample.txt", "0", "1")' in messages[0]
+    assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "     tr.1 | why: read sample" in messages[0]
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
@@ -975,12 +1187,58 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "tr.1" in fake_client.user_prompts[1]
     assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
-    assert session.current.known == ["Read sample.txt and found alpha."]
-    assert session.current.user_input == "read sample"
-    assert session.current.goal == ""
-    assert session.current.plan == []
-    assert session.current.verification.status == VerificationStatus.IDLE
-    assert session.current.goal_reached is False
+    assert agent.blackboard.known == ["Read sample.txt and found alpha."]
+    assert agent.blackboard.user_input == "read sample"
+    assert agent.blackboard.goal == ""
+    assert agent.blackboard.plan == []
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.goal_reached is False
+
+
+def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "relevant target", "complete": False},
+                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
+                    ]
+                },
+                {"actions": _final_actions("relevant target")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    class FakeExploreAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            if on_message is not None:
+                on_message("Tool Calls\n  1. [success] Read(\"sample.txt\", \"0\", \"1\")\n     tr.1 | why: inspect sample")
+            return nanocode.ExploreReport(
+                targets=[{"path": "sample.txt", "area": "line 1", "reason": "target found"}],
+                known=["sample.txt line 1 is the relevant target."],
+                verification=nanocode.Verification(status=VerificationStatus.DONE, method="explore", context="target found"),
+            )
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
+    messages = []
+
+    response = agent.run("relevant target", on_message=messages.append)
+
+    assert response["actions"][-1]["text"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "<Agent_Report>" in agent.model_client.user_prompts[1]
+    assert "sample.txt line 1 is the relevant target." in agent.model_client.user_prompts[1]
+    assert session.tool_result_store == {}
+    assert agent.recent_tool_calls == ""
+    assert any(message.startswith("[explore] Tool Calls") for message in messages)
+    assert messages[-1] == "done"
 
 
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
@@ -1000,7 +1258,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("read sample")
@@ -1031,11 +1289,11 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    session.current.goal = "answer"
-    session.current.plan = [nanocode.PlanItem(text="try answer")]
-    session.current.known = ["keep this fact"]
-    session.current.verification.status = VerificationStatus.REQUIRED
-    agent = Agent(session)
+    agent = MainAgent(session)
+    agent.blackboard.goal = "answer"
+    agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
+    agent.blackboard.known = ["keep this fact"]
+    agent.blackboard.verification.status = VerificationStatus.REQUIRED
     agent.latest_tool_batch = "old tool call"
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
@@ -1046,11 +1304,11 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
     assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
     assert list(session.tool_result_store)[-1] == "tr.51"
     assert session.tool_result_counter == 51
-    assert session.current.goal == ""
-    assert session.current.plan == []
-    assert session.current.known == ["keep this fact"]
-    assert session.current.verification.status == VerificationStatus.IDLE
-    assert session.current.goal_reached is False
+    assert agent.blackboard.goal == ""
+    assert agent.blackboard.plan == []
+    assert agent.blackboard.known == ["keep this fact"]
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.goal_reached is False
 
 
 def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
@@ -1069,7 +1327,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1095,7 +1353,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1117,7 +1375,7 @@ def test_agent_run_stops_after_chat_action(tmp_path):
             return {"actions": [{"type": "chat", "text": "你好"}]}
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1140,7 +1398,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1162,7 +1420,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1197,7 +1455,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1205,8 +1463,8 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     assert response["actions"][-1]["text"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert session.current.verification.status == VerificationStatus.IDLE
-    assert session.current.verification.context == ""
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.context == ""
     assert "Retrying: verification is required before completion." in messages
 
 
@@ -1229,7 +1487,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1240,7 +1498,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert "Retrying: verification is done but goal is not complete." in messages
     assert "verification is done but goal.complete is not true" in agent.model_client.user_prompts[1]
     assert "goal complete=true" in agent.model_client.user_prompts[1]
-    assert session.current.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
 
 
 def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
@@ -1258,7 +1516,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1271,7 +1529,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
     assert "goal.complete=true without a message" in agent.model_client.user_prompts[1]
     assert "message before goal.complete=true" in agent.model_client.user_prompts[2]
     assert agent.agent_feedback_errors == []
-    assert session.current.goal_reached is False
+    assert agent.blackboard.goal_reached is False
 
 
 def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
@@ -1288,7 +1546,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1315,7 +1573,7 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("answer")
@@ -1342,7 +1600,7 @@ def test_agent_feedback_records_message_before_goal_complete(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("answer")
@@ -1367,11 +1625,11 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
             return response
 
     session = Session(cwd=str(tmp_path))
-    session.current.goal = "answer"
-    session.current.plan = [nanocode.PlanItem(text="try answer")]
-    session.current.known = ["keep this fact"]
-    session.current.verification.status = VerificationStatus.REQUIRED
-    agent = Agent(session)
+    agent = MainAgent(session)
+    agent.blackboard.goal = "answer"
+    agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
+    agent.blackboard.known = ["keep this fact"]
+    agent.blackboard.verification.status = VerificationStatus.REQUIRED
     agent.latest_tool_batch = "old tool call"
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
@@ -1386,11 +1644,11 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
     assert agent.agent_feedback_errors == []
     assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
-    assert session.current.goal == ""
-    assert session.current.plan == []
-    assert session.current.known == ["keep this fact"]
-    assert session.current.verification.status == VerificationStatus.IDLE
-    assert session.current.goal_reached is False
+    assert agent.blackboard.goal == ""
+    assert agent.blackboard.plan == []
+    assert agent.blackboard.known == ["keep this fact"]
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.goal_reached is False
 
 
 def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
@@ -1407,7 +1665,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("answer")
@@ -1430,7 +1688,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1440,7 +1698,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
     assert messages[-1] == "done"
 
     debug_session = Session(cwd=str(tmp_path), debug=True)
-    debug_agent = Agent(debug_session)
+    debug_agent = MainAgent(debug_session)
     debug_agent.model_client = FakeModelClient()
     debug_messages = []
 
@@ -1462,7 +1720,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path), debug=True)
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1481,7 +1739,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
             return {"_format_error": "Invalid model output: missing content", "actions": []}
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1492,7 +1750,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
     else:
         raise AssertionError("expected LLMError")
 
-    assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
+    assert agent.model_client.calls == MainAgent.MAX_CONSECUTIVE_FORMAT_ERRORS
     assert "model returned invalid output 3 times in a row" in message
     assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
 
@@ -1511,7 +1769,7 @@ def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1538,7 +1796,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1570,7 +1828,7 @@ def test_agent_run_ignores_message_for_complete_when_message_actions_exist(tmp_p
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1596,7 +1854,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
+    agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
