@@ -2321,6 +2321,7 @@ MAIN_AGENT_SYSTEM_PROMPT = """You are an AI coding assistant controlling a loopi
 Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
+- Write tool intention in that language too.
 - Do not mark the goal complete until the task is done and verification has passed or is blocked.
 - For greetings or non-actionable chat, output one chat action and stop.
 - If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
@@ -2439,6 +2440,7 @@ EXPLORE_AGENT_SYSTEM_PROMPT = """You are a focused code exploration agent.
 Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
+- Write tool intention in that language too.
 - Do not edit files, output patches, install dependencies, or start long-running processes.
 - Use Bash only for investigation or verification.
 - Every response must include at least one tool or deliver action.
