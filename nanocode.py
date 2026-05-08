@@ -64,89 +64,6 @@ class ModelRequestTimeout(Exception): ...
 class Cancellation(Exception): ...
 
 
-############################
-# Config
-############################
-
-
-class Config:
-    """Configuration manager: env vars > config file > defaults.
-
-    Usage: config.get_str("NANOCODE_API_URL", "default")
-    """
-
-    def __init__(self) -> None:
-        self._cache: dict[str, Any] | None = None
-
-    def _config_path(self) -> str:
-        home = os.environ.get("HOME", os.path.expanduser("~"))
-        return os.path.join(home, "config", "nanocode.json")
-
-    def _load(self) -> dict[str, Any]:
-        if self._cache is not None:
-            return self._cache
-        path = self._config_path()
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    self._cache = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._cache = {}
-        else:
-            self._cache = {}
-        return self._cache
-
-    def _config_key(self, env_var: str) -> str:
-        """Derive config key from env var by stripping NANOCODE_ prefix and lowercasing."""
-        if env_var.startswith("NANOCODE_"):
-            return env_var[len("NANOCODE_") :].lower()
-        return env_var.lower()
-
-    def get_str(self, env_var: str, default: str) -> str:
-        env_val = os.environ.get(env_var)
-        if env_val is not None:
-            return env_val
-        cfg = self._load()
-        key = self._config_key(env_var)
-        if key in cfg:
-            return str(cfg[key])
-        return default
-
-    def get_bool(self, env_var: str, default: bool) -> bool:
-        env_val = os.environ.get(env_var)
-        if env_val is not None:
-            return env_val.lower() in ("1", "true", "on", "yes")
-        cfg = self._load()
-        key = self._config_key(env_var)
-        if key in cfg:
-            return bool(cfg[key])
-        return default
-
-    def get_int(self, env_var: str, default: int) -> int:
-        env_val = os.environ.get(env_var)
-        if env_val is not None:
-            return int(env_val)
-        cfg = self._load()
-        key = self._config_key(env_var)
-        if key in cfg:
-            return int(cfg[key])
-        return default
-
-    def get_float(self, env_var: str, default: float) -> float:
-        env_val = os.environ.get(env_var)
-        if env_val is not None:
-            return float(env_val)
-        cfg = self._load()
-        key = self._config_key(env_var)
-        if key in cfg:
-            return float(cfg[key])
-        return default
-
-
-# Module-level singleton
-config = Config()
-
-
 class PromptItem:
     @abstractmethod
     def format(self, indent: str = "") -> str:
@@ -454,20 +371,20 @@ class Session:
     bash: str = field(default_factory=lambda: shutil.which("bash") or "")
 
     # ---- env configs ----
-    api_url: str = field(default_factory=lambda: config.get_str("NANOCODE_API_URL", ""))  # reqiured
-    api_key: str = field(default_factory=lambda: config.get_str("NANOCODE_API_KEY", ""))  # reqiured
-    model: str = field(default_factory=lambda: config.get_str("NANOCODE_MODEL", ""))  # reqiured
-    nanocode_dir: str = field(default_factory=lambda: config.get_str("NANOCODE_DIR", ".nanocode"))
-    temperature: float = field(default_factory=lambda: config.get_float("NANOCODE_TEMPERATURE", 0.7))
-    reasoning: bool = field(default_factory=lambda: config.get_bool("NANOCODE_REASONING", True))
-    reasoning_effort: str = field(default_factory=lambda: config.get_str("NANOCODE_REASONING_EFFORT", "medium"))
-    stream: bool = field(default_factory=lambda: config.get_bool("NANOCODE_STREAM", True))
-    model_timeout: int = field(default_factory=lambda: config.get_int("NANOCODE_MODEL_TIMEOUT", 60))
-    shell_timeout: int = field(default_factory=lambda: config.get_int("NANOCODE_SHELL_TIMEOUT", 60))
-    compact_at: int = field(default_factory=lambda: config.get_int("NANOCODE_COMPACT_AT", 50))
-    max_agent_steps: int = field(default_factory=lambda: config.get_int("NANOCODE_MAX_AGENT_STEPS", 50))
-    prompt_price_per_1m_tokens: float = field(default_factory=lambda: config.get_float("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", 0.0))
-    completion_price_per_1m_tokens: float = field(default_factory=lambda: config.get_float("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", 0.0))
+    api_url: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_URL", ""))  # reqiured
+    api_key: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_KEY", ""))  # reqiured
+    model: str = field(default_factory=lambda: os.environ.get("NANOCODE_MODEL", ""))  # reqiured
+    nanocode_dir: str = field(default_factory=lambda: os.environ.get("NANOCODE_DIR", ".nanocode"))
+    temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
+    reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
+    reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
+    stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
+    model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
+    shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
+    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "50")))
+    max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
+    prompt_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0")))
+    completion_price_per_1m_tokens: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0")))
 
     # ---- runtime variables ----
     yolo: bool = False
