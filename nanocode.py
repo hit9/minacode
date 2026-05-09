@@ -2656,6 +2656,8 @@ Worker input contract:
 - Explore context: short facts, hypotheses, or user concern from Main.
 - Edit goal: concrete file change only; no broad investigation or verification.
 - Edit targets: path/area/line_range/context/reason; use Explore first if target is unknown.
+- Edit sources: source-of-truth files/ranges needed to avoid inventing facts.
+- Keep each edit handoff small: one file and one semantic change when possible; split unrelated or distant changes.
 - Verify method: concrete validation target; Verify chooses exact checks.
 - Verify context: what changed, what should be true, relevant files/tests/workflows.
 
@@ -2692,6 +2694,7 @@ Decision rules:
 - Use explore whenever the relevant file/code target is unknown; do not discover broad targets with Bash/ListDir/Read yourself.
 - Use Git for current repository state, history, status, diff, and changed files; use explore for unknown code locations.
 - Use edit for code changes; Main gives the edit goal, targets, constraints, and self_check items.
+- Keep edit goals precise and small; for docs/config/API updates, pass source facts as sources, not only prose context.
 - Do not repeat a worker handoff that already returned changed, no_change, passed, blocked, targets, or issues unless new facts require it.
 - Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
@@ -2726,6 +2729,7 @@ Edit example:
  "goal":"Add --config path support to the CLI startup path",
  "context":"Known facts: config loading is in ConfigFile; CLI args are parsed in main(); keep env-free config behavior intact",
  "targets":[{"path":"nanocode.py","area":"main() argument parsing and Session construction","line_range":"5600,5660","context":"--init-config already accepts an optional config path","reason":"new --config flag should route into Session loading"}],
+ "sources":[{"path":"nanocode.py","area":"ConfigFile and Session config loading","line_range":"430,520","context":"source of truth for config keys and defaults","reason":"avoid inventing config behavior"}],
  "constraints":["do not change unrelated runtime settings"],
  "self_check":["read back CLI parsing range","inspect diff for duplicated args"]} __END_ACTION__
 
@@ -2761,7 +2765,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "explore", "goal": "string", "scope": ["string"], "reason": "string", "context": null | "string"} __END_ACTION__
-{"type": "edit", "goal": "string", "context": null | "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
+{"type": "edit", "goal": "string", "context": null | "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "sources": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -2980,6 +2984,8 @@ Workflow:
 Review boundary:
 - Check only edit-level problems: syntax-looking breakage, duplicated lines, truncated blocks, wrong imports, stale ranges, extra neighboring content.
 - If the target file/symbol is unclear, do narrow Search/Read near the provided scope; deliver blocked rather than doing broad discovery.
+- If the edit depends on source facts such as CLI flags, config keys, APIs, schemas, or commands, Read the relevant source targets first; never invent examples or keys from memory.
+- If required source facts are missing from Edit_Scope and cannot be verified with narrow Search/Read, deliver blocked with issues.
 - If the handoff is too broad, unclear, or outside EditAgent's role, deliver blocked with issues.
 - Keep deliver concise: one-sentence summary, at most 3 checks, issues only for real problems.
 
@@ -4833,12 +4839,14 @@ class ExploreAgent(BaseAgent):
 @final
 class EditAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
+    EDIT_TOOL_NAMES: ClassVar[set[str]] = {EditTool.name(), ReplaceRangeTool.name(), ApplyPatchTool.name()}
 
     def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
         self.max_steps = parent_session.explore_agent_max_turns
+        self.successful_edit_tool_seen = False
         # Each worker handoff gets isolated blackboard/runtime/tool history; only its report is copied back.
         blackboard = Blackboard(user_input=goal, goal=goal)
         runtime = AgentRuntime()
@@ -4875,6 +4883,7 @@ class EditAgent(BaseAgent):
     ) -> EditReport:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
+        self.successful_edit_tool_seen = False
 
         return self.run_loop(
             max_steps=self.max_steps,
@@ -4908,10 +4917,22 @@ class EditAgent(BaseAgent):
         self.apply_response(response)
         report = self._deliver_from_actions(actions)
         if report is not None:
+            if report.status == "changed" and not self.successful_edit_tool_seen:
+                self._remember_agent_error(
+                    "Error: changed delivery rejected because no successful Edit, ReplaceRange, or ApplyPatch tool ran in this edit handoff. "
+                    "Rule: deliver changed only after a successful edit tool."
+                )
+                self._report_gate(
+                    on_message,
+                    "Retrying: edit reported changed without a successful edit tool.",
+                    "Edit_Gate: changed requires a successful edit tool execution.",
+                )
+                return AgentRunResult()
             return AgentRunResult(done=True, value=report)
         tool_calls = self._tool_calls_from_actions(actions)
         if tool_calls:
             self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            self._record_successful_edit_tools()
             if on_message is not None:
                 latest_report = self.tool_runner.format_latest_compact_report(include_result_key=False)
                 if latest_report:
@@ -4924,6 +4945,10 @@ class EditAgent(BaseAgent):
             "Edit_Gate: expected tool or deliver action.",
         )
         return AgentRunResult()
+
+    def _record_successful_edit_tools(self) -> None:
+        if any(execution.outcome == "success" and execution.call.name in self.EDIT_TOOL_NAMES for execution in self.tool_runner.latest_executions):
+            self.successful_edit_tool_seen = True
 
     def _deliver_from_actions(self, actions: list[Json]) -> EditReport | None:
         for action in reversed(actions):
@@ -5099,6 +5124,9 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message_for_complete")) or ""
         return ""
 
+    def _has_learn_action(self, actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "learn" for action in actions)
+
     def _handoff_context_snapshot(self) -> AgentReportHistory:
         return AgentReportHistory(
             explored=list(self.agent_reports.explored),
@@ -5229,6 +5257,22 @@ class MainAgent(BaseAgent):
                 scope.append("target_context: " + context)
             if reason:
                 scope.append("target_reason: " + reason)
+        for raw in _json_list(action.get("sources")):
+            source = _json_dict(raw)
+            if not source:
+                continue
+            path = _json_str(source.get("path")) or ""
+            area = _json_str(source.get("area")) or ""
+            line_range = _json_str(source.get("line_range")) or ""
+            context = _json_str(source.get("context")) or ""
+            reason = _json_str(source.get("reason")) or ""
+            parts = [part for part in (path, area, ("line_range=" + line_range) if line_range else "") if part]
+            if parts:
+                scope.append("source: " + " ".join(parts))
+            if context:
+                scope.append("source_context: " + context)
+            if reason:
+                scope.append("source_reason: " + reason)
         for raw in _json_list(action.get("constraints")):
             value = (_json_str(raw) or "").strip()
             if value:
@@ -5357,6 +5401,7 @@ class MainAgent(BaseAgent):
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
+        stop_after_learn: bool = False,
     ) -> Json:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
@@ -5376,6 +5421,7 @@ class MainAgent(BaseAgent):
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
                 on_message=on_message,
+                stop_after_learn=stop_after_learn,
             ),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
         )
@@ -5387,6 +5433,7 @@ class MainAgent(BaseAgent):
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
+        stop_after_learn: bool = False,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
         chat_message = self._chat_message_from_actions(actions)
@@ -5410,6 +5457,10 @@ class MainAgent(BaseAgent):
         if on_message is not None:
             for message in progress_messages:
                 on_message(message)
+        if stop_after_learn and self._has_learn_action(actions) and not tool_calls and not explore_actions and not edit_actions:
+            self.session.append_conversation(AssistantMessage(content="Project knowledge updated."))
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=response)
         if (
             not tool_calls
             and not explore_actions
@@ -5579,10 +5630,12 @@ class CommandDispatcher:
         self,
         agent: MainAgent,
         run_agent: MessageCallback | None = None,
+        run_learn_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
     ):
         self.agent = agent
         self.run_agent = run_agent
+        self.run_learn_agent = run_learn_agent
         self.run_with_status = run_with_status
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
@@ -5645,10 +5698,12 @@ class CommandDispatcher:
 
     def _learn(self, args: str) -> str:
         task = self._format_learn_task(args)
-        if self.run_agent is not None:
+        if self.run_learn_agent is not None:
+            self.run_learn_agent(task)
+        elif self.run_agent is not None:
             self.run_agent(task)
         else:
-            self.agent.run(task)
+            self.agent.run(task, stop_after_learn=True)
         return ""
 
     def _format_learn_task(self, args: str) -> str:
@@ -6122,7 +6177,7 @@ class AgentLoop:
     def run(self) -> int:
         self._print_welcome()
         with self.status_bar:
-            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_with_status=self._run_with_status)
+            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_learn_agent=self._run_learn_agent, run_with_status=self._run_with_status)
             while True:
                 try:
                     user_input = self._read_input(self._prompt()).strip()
@@ -6172,7 +6227,10 @@ class AgentLoop:
     def _command_completer(self) -> Completer:
         return CommandCompleter()
 
-    def _run_agent(self, user_input: str) -> None:
+    def _run_learn_agent(self, user_input: str) -> None:
+        self._run_agent(user_input, stop_after_learn=True)
+
+    def _run_agent(self, user_input: str, *, stop_after_learn: bool = False) -> None:
         try:
             self._active_scope = None
             self.status_bar.reset_timer()
@@ -6182,6 +6240,7 @@ class AgentLoop:
                 confirm=self._confirm_tool_call,
                 on_auto_approve=self._show_auto_tool_call,
                 on_message=self._emit,
+                stop_after_learn=stop_after_learn,
             )
         except KeyboardInterrupt:
             self.agent.cancel_current_goal()

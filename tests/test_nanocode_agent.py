@@ -25,6 +25,33 @@ def _make_edit_agent(session: Session) -> nanocode.EditAgent:
     )
 
 
+def test_edit_agent_rejects_changed_without_successful_edit_tool(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    editor = _make_edit_agent(session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "deliver", "status": "changed", "summary": "claimed change", "changed_files": ["sample.txt"]}]},
+                {"actions": [{"type": "deliver", "status": "no_change", "summary": "no edit ran", "changed_files": []}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    editor.model_client = FakeModelClient()
+    messages = []
+
+    report = editor.run(on_message=messages.append)
+
+    assert report.status == "no_change"
+    assert len(editor.model_client.user_prompts) == 2
+    assert "changed delivery rejected" in editor.model_client.user_prompts[1]
+    assert "Retrying: edit reported changed without a successful edit tool." in messages
+
+
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -886,6 +913,39 @@ def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
     assert "structure: 1 item(s)" in agent.state_updater.latest_report
 
 
+def test_main_agent_stop_after_learn_finishes_after_learn_action(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.calls += 1
+            return {
+                "actions": [
+                    {
+                        "type": "learn",
+                        "summary": "Single-file CLI coding assistant.",
+                        "structure": ["nanocode.py contains the CLI and agent loop."],
+                    }
+                ]
+            }
+
+    fake_client = FakeModelClient()
+    agent.model_client = fake_client
+    messages = []
+
+    response = agent.run("learn project", stop_after_learn=True, on_message=messages.append)
+
+    assert fake_client.calls == 1
+    assert response["actions"][0]["type"] == "learn"
+    assert session.project_knowledge.summary == "Single-file CLI coding assistant."
+    assert any(message.startswith("State Updated") for message in messages)
+    assert session.conversation[-1].content == "Project knowledge updated."
+
+
 def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -1528,6 +1588,7 @@ def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
                             "goal": "change sample text",
                             "context": "Main confirmed the target is line 1",
                             "targets": [{"path": "sample.txt", "area": "line 1", "line_range": "0,1", "context": "old", "reason": "line needs update"}],
+                            "sources": [{"path": "spec.txt", "area": "source text", "line_range": "0,2", "context": "new wording", "reason": "source of truth"}],
                             "constraints": ["preserve newline"],
                             "self_check": ["read back line 1"],
                         },
@@ -1574,6 +1635,9 @@ def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
                 "target: sample.txt line 1 line_range=0,1",
                 "target_context: old",
                 "target_reason: line needs update",
+                "source: spec.txt source text line_range=0,2",
+                "source_context: new wording",
+                "source_reason: source of truth",
                 "constraint: preserve newline",
                 "self_check: read back line 1",
             ],

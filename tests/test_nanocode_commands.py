@@ -131,6 +131,23 @@ def test_learn_command_dispatches_default_learning_task(tmp_path):
     ]
 
 
+def test_learn_command_uses_learn_runner_when_available(tmp_path):
+    normal_calls = []
+    learn_calls = []
+    dispatcher = CommandDispatcher(
+        MainAgent(Session(cwd=str(tmp_path))),
+        run_agent=normal_calls.append,
+        run_learn_agent=learn_calls.append,
+    )
+
+    result = dispatcher.dispatch("/learn")
+
+    assert result.status == CommandStatus.HANDLED
+    assert normal_calls == []
+    assert len(learn_calls) == 1
+    assert learn_calls[0].startswith("Learn stable project knowledge for this codebase.")
+
+
 def test_learn_command_dispatches_scoped_learning_task(tmp_path):
     calls = []
     dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))), run_agent=calls.append)
