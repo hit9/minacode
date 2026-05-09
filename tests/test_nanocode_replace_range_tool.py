@@ -34,6 +34,17 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     )
 
 
+def test_replace_range_tool_warns_for_broad_preview_ranges(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("".join("line " + str(index) + "\n" for index in range(25)), encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0,25"]).call())
+
+    display = ReplaceRangeTool.make(session, ["sample.txt", "0", "25", fingerprint, "replacement\n"]).display()
+
+    assert display.startswith("# warning: broad range replacement; prefer smaller semantic ranges\n--- ")
+
+
 def test_replace_range_tool_rejects_public_multi_range_args(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")

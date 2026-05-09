@@ -1702,6 +1702,7 @@ class ReplaceRangeTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Replace one 0-based [start,end) line range using a fingerprint from Read.",
+            "Use for one small semantic block; avoid broad ranges mixing imports, classes, and functions.",
             "Pass start and end as separate args; do not pass a comma range token here.",
             "If fingerprint mismatch, Read the exact target range again and retry once.",
         ]
@@ -1751,7 +1752,18 @@ class ReplaceRangeTool(Tool):
             original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
+        warning = self._preview_warning()
+        diff = _make_unified_diff(original, new_content, self.filepath) or label
+        return (warning + "\n" if warning else "") + diff
+
+    def _preview_warning(self) -> str:
+        if len(self.edits) != 1:
+            return ""
+        if self.end == 0:
+            return "# warning: broad range replacement; prefer smaller semantic ranges"
+        if self.end - self.start > 20:
+            return "# warning: broad range replacement; prefer smaller semantic ranges"
+        return ""
 
     def preview_error(self) -> str:
         try:
@@ -2348,7 +2360,7 @@ Tool guidance:
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
 - Do not use Bash for code search, grep, find, ls, or broad target discovery; use explore for that.
 - Use Bash only for explicit shell requests, build/test commands, or narrow verification.
-- Use Edit for small exact replacements, ReplaceRange for Read-backed line ranges, ApplyPatch for one complete unified diff; avoid Bash for editing.
+- Use Edit for small exact replacements, ReplaceRange for one small Read-backed semantic block, ApplyPatch for multi-area diffs; avoid Bash for editing.
 - If a tool or explore result is needed for the next decision, stop after that action.
 
 Explore capability:
