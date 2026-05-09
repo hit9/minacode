@@ -2661,6 +2661,7 @@ Worker input contract:
 
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
+- Agent_Reports = worker results from this task; consume them before choosing the next action.
 - Project_Knowledge = stable project-level knowledge shared across sessions; update only with learn action.
 - Project_Knowledge.workflows stores durable test/lint/build/release/verification commands and project operation flows.
 - Known = concise durable facts for the current goal; add only new facts.
@@ -2669,14 +2670,18 @@ Context:
 
 Workflow:
 1. Classify the request: chat -> chat action; task -> set/update goal.
-2. Choose the next capability:
+2. Review Agent_Reports and current facts before acting:
+   - Explore_History gives targets/facts; use it to answer, edit, or verify instead of exploring the same target again.
+   - Edit_History status=changed/no_change means that edit handoff is finished; verify or complete instead of editing the same target again.
+   - Verify_History status=passed/blocked means verification is finished; complete or explain the blocker instead of verifying the same target again.
+3. Choose the next capability:
    - Unknown file, code area, symbol, call path, or edit target -> explore.
    - Code change with clear target -> edit.
    - Verification needed -> verify pending with method/context as the target.
    - Small check with a clear path -> direct tool.
-3. Optionally emit progress with the external status only.
-4. Update known/plan/learn only when useful.
-5. Finish with goal complete=true and message_for_complete after success and required verification.
+4. Optionally emit progress with the external status only.
+5. Update known/plan/learn only when useful.
+6. Finish with goal complete=true and message_for_complete after success and required verification.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
@@ -2687,6 +2692,7 @@ Decision rules:
 - Use explore whenever the relevant file/code target is unknown; do not discover broad targets with Bash/ListDir/Read yourself.
 - Use Git for current repository state, history, status, diff, and changed files; use explore for unknown code locations.
 - Use edit for code changes; Main gives the edit goal, targets, constraints, and self_check items.
+- Do not repeat a worker handoff that already returned changed, no_change, passed, blocked, targets, or issues unless new facts require it.
 - Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
 - Use Bash only for explicit shell requests or implementation commands.
