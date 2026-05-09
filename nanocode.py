@@ -2640,6 +2640,13 @@ Role boundary:
 - Edit decides HOW to change files.
 - Verify decides HOW to validate completion.
 
+Worker handoff:
+- Give each worker a narrow goal and only the context needed for that goal.
+- Explore: ask for locations, symbols, call paths, evidence ranges, or candidate targets.
+- Edit: ask for focused file changes with target path/area, constraints, and self-checks.
+- Verify: ask for a concrete validation target; Verify chooses the checks.
+- Put Main's short findings in context; do not copy the whole user request.
+
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
 - Project_Knowledge = stable project-level knowledge shared across sessions; update only with learn action.
@@ -2676,10 +2683,32 @@ Decision rules:
 - If a tool or explore result is needed for the next decision, stop after that action.
 
 Explore capability:
-- goal = concrete investigation question, not the whole user task.
+- goal = narrow handoff goal, not the whole user task.
 - scope = known files, dirs, symbols, keywords, or errors; [] if none.
 - reason = what is unknown and why direct action is premature.
-- context = optional short hints from Main's own findings; program Handoff_Context is added separately.
+- context = optional short Main findings or hypotheses; program Handoff_Context is added separately.
+
+Good worker handoffs:
+Explore example:
+{"type":"explore",
+ "goal":"Locate config loading and CLI entry handling",
+ "scope":["ConfigFile","--config","--init-config"],
+ "reason":"Relevant files and call paths are unknown",
+ "context":"Known facts: config is TOML; CLI options are parsed near program startup; user asked about config-file behavior"} __END_ACTION__
+
+Edit example:
+{"type":"edit",
+ "goal":"Add --config path support to the CLI startup path",
+ "context":"Known facts: config loading is in ConfigFile; CLI args are parsed in main(); keep env-free config behavior intact",
+ "targets":[{"path":"nanocode.py","area":"main() argument parsing and Session construction","line_range":"5600,5660","context":"--init-config already accepts an optional config path","reason":"new --config flag should route into Session loading"}],
+ "constraints":["do not change unrelated runtime settings"],
+ "self_check":["read back CLI parsing range","inspect diff for duplicated args"]} __END_ACTION__
+
+Verify example:
+{"type":"verify",
+ "method":"Verify --config CLI support",
+ "status":"pending",
+ "context":"Known facts: changed files are nanocode.py and command tests; check argument parsing, config path propagation, and relevant pytest tests"} __END_ACTION__
 
 Action types:
 - chat: reply once to non-actionable chat and end the turn.
