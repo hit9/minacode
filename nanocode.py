@@ -556,11 +556,17 @@ class AgentReportHistory(PromptItem):
     explore: list[str] = field(default_factory=list)
     edit: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
+    explored: list[str] = field(default_factory=list)
+    edited: list[str] = field(default_factory=list)
+    verified: list[str] = field(default_factory=list)
 
     def clear(self) -> None:
         self.explore.clear()
         self.edit.clear()
         self.verify.clear()
+        self.explored.clear()
+        self.edited.clear()
+        self.verified.clear()
 
     @override
     def format(self, indent: str = "") -> str:
@@ -569,6 +575,14 @@ class AgentReportHistory(PromptItem):
         self._append_section(lines, "Edit_History", self.edit)
         self._append_section(lines, "Verify_History", self.verify)
         lines.append("</Agent_Reports>")
+        return _format_lines(lines, indent)
+
+    def format_handoff_context(self, indent: str = "") -> str:
+        lines = ["<Handoff_Context>"]
+        self._append_section(lines, "explored", self.explored)
+        self._append_section(lines, "edited", self.edited)
+        self._append_section(lines, "verified", self.verified)
+        lines.append("</Handoff_Context>")
         return _format_lines(lines, indent)
 
     @staticmethod
@@ -595,6 +609,7 @@ class PromptContext:
     parent_known: list[str] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
     agent_reports: AgentReportHistory = field(default_factory=AgentReportHistory)
+    handoff_context: AgentReportHistory = field(default_factory=AgentReportHistory)
 
 
 @dataclass
@@ -631,6 +646,25 @@ class ExploreReport(PromptItem):
         lines.append("</ExploreReport>")
         return _format_lines(lines, indent)
 
+    def brief(self) -> list[str]:
+        lines = []
+        for target in self.targets[:3]:
+            path = _json_str(target.get("path")) or ""
+            line_range = _json_str(target.get("line_range")) or ""
+            area = _json_str(target.get("area")) or ""
+            reason = _json_str(target.get("reason")) or ""
+            if path and line_range:
+                path = path + ":" + line_range
+            summary = " | ".join(part for part in (path, area, reason) if part)
+            if summary:
+                lines.append("target " + summary)
+        for item in self.known[:3]:
+            if item:
+                lines.append("known: " + item)
+        if not lines and self.verification.context:
+            lines.append((self.verification.status or VerificationStatus.BLOCKED) + " | " + self.verification.context)
+        return lines
+
 
 @final
 @dataclass(frozen=True)
@@ -657,6 +691,15 @@ class EditReport(PromptItem):
         lines.append("  </issues>")
         lines.append("</EditReport>")
         return _format_lines(lines, indent)
+
+    def brief(self) -> str:
+        files = ", ".join(self.changed_files) if self.changed_files else "(no files)"
+        parts = [self.status or "blocked", files]
+        if self.summary:
+            parts.append(self.summary)
+        if self.issues:
+            parts.append("issue: " + self.issues[0])
+        return " | ".join(parts)
 
     @staticmethod
     def _format_items(items: list[str]) -> list[str]:
@@ -692,6 +735,14 @@ class VerifyReport(PromptItem):
         lines.append("  </next_steps>")
         lines.append("</VerifyReport>")
         return _format_lines(lines, indent)
+
+    def brief(self) -> str:
+        parts = [self.status or VerificationStatus.BLOCKED, self.method or "(no method)"]
+        if self.summary:
+            parts.append(self.summary)
+        if self.issues:
+            parts.append("issue: " + self.issues[0])
+        return " | ".join(parts)
 
     @staticmethod
     def _format_items(items: list[str]) -> list[str]:
@@ -2717,20 +2768,20 @@ YOUR OUTPUT:
 """
 
 
-EXPLORE_AGENT_SYSTEM_PROMPT = """You are a focused code exploration agent.
+EXPLORE_AGENT_SYSTEM_PROMPT = """You are ExploreAgent. Your job is to remove uncertainty about code locations, symbols, call paths, and edit targets.
 
 Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
-- Do not edit files, output patches, install dependencies, or start long-running processes.
-- Use Bash only for investigation or verification.
+- Do not edit files, output patches, answer the user, install dependencies, or start long-running processes.
 - Every response must include at least one tool or deliver action.
 - State actions like known or verify are optional helpers; never output only state actions.
 
 Context:
 - Project_Knowledge = stable project-level knowledge shared across sessions; read-only.
 - Parent_Known = read-only facts from the caller.
+- Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
 - Known = concise durable facts from your own exploration; add only new facts.
 - Tool_Result_Store = your stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
 - Recent_Tool_Calls = your own recent tool results only, ordered old-to-new.
@@ -2741,7 +2792,7 @@ Workflow:
 3. After Search finds likely files, batch small Read ranges around the matches.
 4. Record stable findings in known when useful.
 5. Deliver targets when uncertainty is removed.
-6. If targets cannot be found, deliver an empty targets list with the reason in known or verification context.
+6. If targets cannot be found, deliver an empty targets list with a short reason.
 
 Deliver contract:
 - Follow the caller's goal first; do not widen into a full project survey unless asked.
@@ -2749,9 +2800,7 @@ Deliver contract:
 - Each target should include path, area/symbol, line_range when known, context with nearby code/summary, and reason.
 - Prefer exact filepath + 0-based line range from Read results; omit line_range only when unknown.
 - known = stable facts discovered during exploration.
-- verification = passed when targets/facts are sufficient; blocked with reason when not.
 - Do not deliver patches, edits, final answers, or large raw content.
-- Empty targets require blocked verification or known facts explaining why none were found.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching multiple independent investigation tools in one response.
@@ -2762,6 +2811,7 @@ Tool guidance:
 - Start from the Explore_Goal and Explore_Scope; avoid broad project surveys unless the goal asks for one.
 - Use Git for current repository state, history, status, diff, and changed files; use Search for code locations and symbols.
 - Prefer Search before Read. Use ListDir only when directory structure itself is unknown.
+- Use Bash only when Git/Search/Read cannot answer the investigation.
 - Batch independent Search/ListDir/LineCount/Read/Recall calls instead of spending one turn per call.
 - Batch Read only after Search gives likely files/ranges; read small surrounding ranges for line_range/context.
 - If a tool result is needed for the next decision, stop after that action.
@@ -2769,9 +2819,6 @@ Tool guidance:
 Good tool batches:
 {"type": "tool", "name": "Search", "intention": "Find relevant config code", "args": ["ConfigFile|from_config|init_config", "path=nanocode.py"]} __END_ACTION__
 {"type": "tool", "name": "Search", "intention": "Find CLI entry handling", "args": ["argparse|--init-config|def main", "path=nanocode.py"]} __END_ACTION__
-
-{"type": "tool", "name": "Read", "intention": "Read config class and session loading ranges", "args": ["nanocode.py", "260,360", "640,700"]} __END_ACTION__
-{"type": "tool", "name": "Read", "intention": "Read CLI entrypoint range", "args": ["nanocode.py", "5130,5170"]} __END_ACTION__
 
 Action types:
 - tool: call one available investigation tool.
@@ -2805,6 +2852,8 @@ EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 <Parent_Known>
 {parent_known}
 </Parent_Known>
+
+{handoff_context}
 
 --- Current Task ---
 <Explore_Goal>
@@ -2851,21 +2900,28 @@ YOUR OUTPUT:
 """
 
 
-EDIT_AGENT_SYSTEM_PROMPT = """You are a focused code editing agent.
+EDIT_AGENT_SYSTEM_PROMPT = """You are EditAgent. Your job is to make focused file changes for the given Edit_Goal.
 
 Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
-- Edit only for the given Edit_Goal.
 - Do not answer the user, explore broadly, run tests, install dependencies, or start long-running processes.
 - Every response must include at least one tool or deliver action.
 - State actions like known are optional helpers; never output only state actions.
 
-Mission:
-- Read the target area, perform focused edits, and review the edited area for obvious mistakes.
-- If the target file/symbol is unclear, deliver blocked instead of searching the whole project.
-- Your review is edit-level only: syntax-looking breakage, duplicated lines, truncated blocks, wrong imports, stale ranges.
+Context:
+- Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
+
+Workflow:
+1. Read the target area first; do not edit from memory.
+2. Make the smallest focused edit that satisfies Edit_Goal.
+3. Re-read or inspect the edited area/diff for obvious mistakes.
+4. Deliver changed, no_change, or blocked.
+
+Review boundary:
+- Check only edit-level problems: syntax-looking breakage, duplicated lines, truncated blocks, wrong imports, stale ranges, extra neighboring content.
+- If the target file/symbol is unclear, do narrow Search/Read near the provided scope; deliver blocked rather than doing broad discovery.
 - Keep deliver concise: one-sentence summary, at most 3 checks, issues only for real problems.
 
 Available tools:
@@ -2878,7 +2934,7 @@ Tool guidance:
 - If no range is provided, use Search or LineCount before broad Read.
 - Prefer Edit for tiny exact literal replacements/deletions.
 - Use ReplaceRange only for one complete Read-backed semantic block.
-- ReplaceRange content must contain only the selected [start,end) replacement, never unchanged neighboring lines.
+- ReplaceRange replaces exactly the selected [start,end) range; replacement content must be the full new content for that range only, never unchanged neighboring lines.
 - Use ApplyPatch for multiple separated edits.
 - If fingerprint mismatch happens, Read the exact range again and retry once.
 - Use Git only for status/diff after editing.
@@ -2914,6 +2970,8 @@ EDIT_AGENT_USER_PROMPT_TEMPLATE = """
 <Parent_Known>
 {parent_known}
 </Parent_Known>
+
+{handoff_context}
 
 --- Current Task ---
 <Edit_Goal>
@@ -2955,21 +3013,29 @@ YOUR OUTPUT:
 """
 
 
-VERIFY_AGENT_SYSTEM_PROMPT = """You are a focused verification agent.
+VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent. Your job is to decide whether the goal is actually satisfied.
 
 Hard rules:
 - Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
 - Do not edit files, output patches, install dependencies, or start long-running processes.
-- Use Bash only for verification commands such as tests, lint, build, or narrow checks.
 - Every response must include at least one tool or deliver action.
 - State actions like known are optional helpers; never output only state actions.
 
-Mission:
-- Verify whether the user's goal is correctly and sufficiently completed.
-- Tests are one possible method, not the whole job.
+Context:
+- Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
+
+Workflow:
+1. Start from Verify_Goal and Verification_Scope.
+2. Check changed files/diffs when edits were made.
+3. Use project workflows for test/lint/build commands when relevant.
+4. Deliver passed, failed, or blocked with a concise verdict.
+
+Verdict boundary:
+- Tests are evidence, not the whole job.
 - Check the goal, changed files, relevant diffs, project workflows, and obvious omissions.
+- Deliver summary as the verdict, not a long process log.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching independent verification tools in one response.
@@ -3015,6 +3081,8 @@ VERIFY_AGENT_USER_PROMPT_TEMPLATE = """
 <Parent_Known>
 {parent_known}
 </Parent_Known>
+
+{handoff_context}
 
 --- Current Task ---
 <Verify_Goal>
@@ -3131,6 +3199,7 @@ class PromptBuilder:
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
             agent_reports=self.context.agent_reports.format(),
+            handoff_context=self.context.handoff_context.format_handoff_context(),
             user_request=current.user_input or "(empty)",
         ).strip()
 
@@ -4559,7 +4628,7 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 class ExploreAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
 
-    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str]):
+    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
@@ -4572,6 +4641,7 @@ class ExploreAgent(BaseAgent):
             runtime=runtime,
             parent_known=self.parent_known,
             scope=scope,
+            handoff_context=handoff_context or AgentReportHistory(),
         )
         prompt_builder = PromptBuilder(
             parent_session,
@@ -4701,7 +4771,7 @@ class ExploreAgent(BaseAgent):
 class EditAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
 
-    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str]):
+    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
@@ -4714,6 +4784,7 @@ class EditAgent(BaseAgent):
             runtime=runtime,
             parent_known=self.parent_known,
             scope=scope,
+            handoff_context=handoff_context or AgentReportHistory(),
         )
         prompt_builder = PromptBuilder(
             parent_session,
@@ -4818,7 +4889,7 @@ class EditAgent(BaseAgent):
 class VerifyAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
 
-    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str]):
+    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
@@ -4831,6 +4902,7 @@ class VerifyAgent(BaseAgent):
             runtime=runtime,
             parent_known=self.parent_known,
             scope=scope,
+            handoff_context=handoff_context or AgentReportHistory(),
         )
         prompt_builder = PromptBuilder(
             parent_session,
@@ -4964,6 +5036,13 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message_for_complete")) or ""
         return ""
 
+    def _handoff_context_snapshot(self) -> AgentReportHistory:
+        return AgentReportHistory(
+            explored=list(self.agent_reports.explored),
+            edited=list(self.agent_reports.edited),
+            verified=list(self.agent_reports.verified),
+        )
+
     def execute_explore_actions(
         self,
         actions: list[Json],
@@ -4985,6 +5064,7 @@ class MainAgent(BaseAgent):
             )
             reports.append(report)
             self.agent_reports.explore.append(report.format())
+            self.agent_reports.explored.extend(report.brief())
             if on_message is not None:
                 on_message(self._format_explore_done(report))
         return reports
@@ -5025,7 +5105,13 @@ class MainAgent(BaseAgent):
         return emit
 
     def _make_explore_agent(self, *, goal: str, scope: list[str]) -> ExploreAgent:
-        return ExploreAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
+        return ExploreAgent(
+            parent_session=self.session,
+            parent_blackboard=self.blackboard,
+            goal=goal,
+            scope=scope,
+            handoff_context=self._handoff_context_snapshot(),
+        )
 
     def execute_edit_actions(
         self,
@@ -5048,6 +5134,7 @@ class MainAgent(BaseAgent):
             )
             reports.append(report)
             self.agent_reports.edit.append(report.format())
+            self.agent_reports.edited.append(report.brief())
             if report.status == "changed":
                 self.blackboard.verification.reset()
                 self.blackboard.verification_required = True
@@ -5084,7 +5171,13 @@ class MainAgent(BaseAgent):
         return scope
 
     def _make_edit_agent(self, *, goal: str, scope: list[str]) -> EditAgent:
-        return EditAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
+        return EditAgent(
+            parent_session=self.session,
+            parent_blackboard=self.blackboard,
+            goal=goal,
+            scope=scope,
+            handoff_context=self._handoff_context_snapshot(),
+        )
 
     def _edit_message_callback(self, on_message: MessageCallback | None) -> MessageCallback | None:
         if on_message is None:
@@ -5129,12 +5222,19 @@ class MainAgent(BaseAgent):
             on_message=self._verify_message_callback(on_message),
         )
         self.agent_reports.verify.append(report.format())
+        self.agent_reports.verified.append(report.brief())
         if on_message is not None:
             on_message(self._format_verify_done(report))
         return report
 
     def _make_verify_agent(self, *, goal: str, scope: list[str]) -> VerifyAgent:
-        return VerifyAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
+        return VerifyAgent(
+            parent_session=self.session,
+            parent_blackboard=self.blackboard,
+            goal=goal,
+            scope=scope,
+            handoff_context=self._handoff_context_snapshot(),
+        )
 
     def _verify_message_callback(self, on_message: MessageCallback | None) -> MessageCallback | None:
         if on_message is None:

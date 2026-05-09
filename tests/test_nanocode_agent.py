@@ -1230,6 +1230,35 @@ def test_edit_agent_rejects_bash_and_allows_edit_tools(tmp_path):
     assert list(editor.runtime.tool_result_store) == ["tr.1"]
 
 
+def test_worker_prompt_receives_compact_handoff_context(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    handoff_context = nanocode.AgentReportHistory(
+        explored=["target sample.py:1,3 | parser | parser target"],
+        edited=["changed | sample.py | renamed message to progress"],
+        verified=["failed | pytest | assertion failed | issue: old prompt expected"],
+    )
+    editor = nanocode.EditAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="edit sample",
+        scope=["target: sample.py"],
+        handoff_context=handoff_context,
+    )
+
+    prompt = editor.build_user_prompt()
+
+    assert "<Handoff_Context>" in prompt
+    assert "<explored>" in prompt
+    assert "target sample.py:1,3 | parser | parser target" in prompt
+    assert "<edited>" in prompt
+    assert "changed | sample.py | renamed message to progress" in prompt
+    assert "<verified>" in prompt
+    assert "failed | pytest | assertion failed" in prompt
+    assert "<Edit_Goal>" in prompt
+    assert prompt.index("<Handoff_Context>") < prompt.index("<Edit_Goal>")
+
+
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
@@ -1810,6 +1839,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
 def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+    handoff_prompts = []
 
     class FakeEditAgent:
         def __init__(self):
@@ -1869,7 +1899,19 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     agent.model_client = FakeModelClient()
     editor = FakeEditAgent()
     verifier = FakeVerifyAgent()
-    agent._make_edit_agent = lambda *, goal, scope: editor
+
+    def make_edit_agent(*, goal, scope):
+        real_editor = nanocode.EditAgent(
+            parent_session=session,
+            parent_blackboard=agent.blackboard,
+            goal=goal,
+            scope=scope,
+            handoff_context=agent._handoff_context_snapshot(),
+        )
+        handoff_prompts.append(real_editor.build_user_prompt())
+        return editor
+
+    agent._make_edit_agent = make_edit_agent
     agent._make_verify_agent = lambda *, goal, scope: verifier
 
     response = agent.run("change file", confirm=lambda call, tool: True)
@@ -1878,6 +1920,8 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     assert "<Agent_Reports>" in agent.model_client.user_prompts[2]
     assert "<Verify_History>" in agent.model_client.user_prompts[2]
     assert "assertion failed" in agent.model_client.user_prompts[2]
+    assert "<verified>" in handoff_prompts[1]
+    assert "failed | unit | assertion failed | issue: sample still wrong" in handoff_prompts[1]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
 
