@@ -1750,7 +1750,7 @@ class EditTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace the first exact literal text block; use only for small unambiguous edits, not regex."]
+        return ["Replace or delete the first exact literal text block; best for small unambiguous edits, not regex."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1839,7 +1839,9 @@ class ReplaceRangeTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Replace one 0-based [start,end) line range using a fingerprint from Read.",
-            "Use for one small semantic block; avoid broad ranges mixing imports, classes, and functions.",
+            "Use only for one complete semantic block already covered by Read; replacement is the full new content for that selected range only.",
+            "Do not include unchanged lines before start or after end in content; use Edit for single-line deletion or tiny literal edits.",
+            "Use ApplyPatch instead when editing/deleting multiple separated areas.",
             "Pass start and end as separate args; do not pass a comma range token here.",
             "If fingerprint mismatch, Read the exact target range again and retry once.",
         ]
@@ -2498,7 +2500,8 @@ Tool guidance:
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
 - Do not use Bash for code search, grep, find, ls, or broad target discovery; use explore for that.
 - Use Bash only for explicit shell requests, build/test commands, or narrow verification.
-- Use Edit for small exact replacements, ReplaceRange for one small Read-backed semantic block, ApplyPatch for multi-area diffs; avoid Bash for editing.
+- Use Edit for small exact replacements/deletions, ReplaceRange for one complete Read-backed semantic block, ApplyPatch for multi-area diffs; avoid Bash for editing.
+- ReplaceRange content must replace only the selected [start,end) range; never include unchanged neighboring lines outside that range.
 - If a tool or explore result is needed for the next decision, stop after that action.
 
 Explore capability:
