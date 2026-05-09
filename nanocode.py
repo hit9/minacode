@@ -34,7 +34,7 @@ from enum import StrEnum
 from typing import Any, Callable, ClassVar, final, Iterator, Protocol, Self, Type, TypeAlias
 from typing_extensions import override
 from prompt_toolkit import PromptSession, print_formatted_text
-from prompt_toolkit.completion import Completer, Completion, WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
@@ -685,12 +685,8 @@ class Session:
             shell_timeout=shell_timeout if shell_timeout is not None else 60,
             compact_at=compact_at if compact_at is not None else 50,
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
-            prompt_price_per_1m_tokens=(
-                main_model.prompt_price_per_1m_tokens if main_model.prompt_price_per_1m_tokens is not None else 0.0
-            ),
-            completion_price_per_1m_tokens=(
-                main_model.completion_price_per_1m_tokens if main_model.completion_price_per_1m_tokens is not None else 0.0
-            ),
+            prompt_price_per_1m_tokens=(main_model.prompt_price_per_1m_tokens if main_model.prompt_price_per_1m_tokens is not None else 0.0),
+            completion_price_per_1m_tokens=(main_model.completion_price_per_1m_tokens if main_model.completion_price_per_1m_tokens is not None else 0.0),
             worker_model_config=worker_model,
             explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 50),
             yolo=yolo,
@@ -2377,7 +2373,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "message", "text": "string"} __END_ACTION__
-{"type": "goal", "text": "string", "complete": true | false, "message_for_complete": "string"} __END_ACTION__
+{"type": "goal", "text": "string", "verified": true | false, "complete": true | false, "message_for_complete": "string"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
@@ -2598,6 +2594,7 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 {conversation}
 -------- Conversation_To_Compact End -----------
 """
+
 
 @final
 class PromptBuilder:
@@ -4561,27 +4558,14 @@ class CommandDispatcher:
 
     def _format_model_status(self, config: ModelConfig) -> str:
         reasoning = config.reasoning_effort if config.reasoning else "off"
-        return (
-            (config.model or "(empty)")
-            + " reasoning="
-            + (reasoning or "(empty)")
-            + " stream="
-            + self._format_bool(config.stream)
-        )
+        return (config.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(config.stream)
 
     def _format_model_usage(self) -> str:
         if not self.agent.session.model_usage:
             return "  (empty)"
         lines = []
         for model, usage in self.agent.session.model_usage.items():
-            lines.append(
-                "  "
-                + (model.rsplit("/", 1)[-1] or model)
-                + ": calls="
-                + str(usage.calls)
-                + " tokens="
-                + _format_count(usage.total_tokens)
-            )
+            lines.append("  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens))
         return "\n".join(lines)
 
     def _compact(self, args: str) -> str:
