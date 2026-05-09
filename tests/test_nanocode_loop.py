@@ -17,6 +17,21 @@ def test_session_reports_missing_required_config(tmp_path):
     assert session.missing_required_config() == []
 
 
+def test_session_loads_project_knowledge_from_project_file(tmp_path, monkeypatch):
+    knowledge_dir = tmp_path / ".nanocode"
+    knowledge_dir.mkdir()
+    (knowledge_dir / "project_knowledge.json").write_text(
+        '{"version": 1, "summary": "Project summary.", "structure": ["single file"], "architecture": [], "workflows": [], "conventions": []}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "main_model": {"model": "model"}})
+
+    assert session.project_knowledge.summary == "Project summary."
+    assert session.project_knowledge.structure == ["single file"]
+
+
 def test_init_config_file_writes_default_toml(tmp_path):
     config_path = tmp_path / "config.toml"
 

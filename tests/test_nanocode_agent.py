@@ -832,6 +832,127 @@ def test_agent_keeps_latest_50_known_items(tmp_path):
     assert agent.blackboard.known[-1] == "fact 50"
 
 
+def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "learn",
+                    "summary": "Single-file CLI coding assistant.",
+                    "structure": ["nanocode.py contains the CLI and agent loop."],
+                    "architecture": ["MainAgent delegates uncertain code discovery to ExploreAgent."],
+                    "workflows": ["Run pytest for verification."],
+                    "conventions": ["Use JSON action frames."],
+                }
+            ]
+        }
+    )
+
+    data = json.loads((tmp_path / ".nanocode" / "project_knowledge.json").read_text(encoding="utf-8"))
+    assert session.project_knowledge.summary == "Single-file CLI coding assistant."
+    assert data["summary"] == "Single-file CLI coding assistant."
+    assert data["structure"] == ["nanocode.py contains the CLI and agent loop."]
+    assert "  Project_Knowledge\n" in agent.state_updater.latest_report
+    assert "structure: 1 item(s)" in agent.state_updater.latest_report
+
+
+def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "learn",
+                    "structure": ["item " + str(index) for index in range(31)] + ["item 30"],
+                }
+            ]
+        }
+    )
+
+    assert len(session.project_knowledge.structure) == 30
+    assert session.project_knowledge.structure[0] == "item 1"
+    assert session.project_knowledge.structure[-1] == "item 30"
+
+
+def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "learn",
+                    "structure": ["old structure", "remove me"],
+                    "architecture": ["old architecture"],
+                }
+            ]
+        }
+    )
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "learn",
+                    "corrections": [
+                        {"field": "structure", "old": "old structure", "new": "new structure"},
+                        {"field": "structure", "old": "remove me", "new": None},
+                        {"field": "architecture", "old": "old architecture", "new": "new architecture"},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert session.project_knowledge.structure == ["new structure"]
+    assert session.project_knowledge.architecture == ["new architecture"]
+
+
+def test_explore_agent_does_not_apply_project_knowledge(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(session)
+    explorer = nanocode.ExploreAgent(parent_session=session, parent_blackboard=parent_agent.blackboard, goal="inspect", scope=[])
+
+    explorer.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "learn",
+                    "summary": "Should be ignored.",
+                    "structure": ["Should not be saved."],
+                }
+            ]
+        }
+    )
+
+    assert session.project_knowledge.is_empty()
+    assert not (tmp_path / ".nanocode" / "project_knowledge.json").exists()
+
+
+def test_prompt_includes_project_knowledge(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.project_knowledge.apply(
+        {
+            "summary": "Single-file app.",
+            "structure": ["nanocode.py is the main file."],
+            "architecture": ["BaseAgent owns the common agent loop."],
+        }
+    )
+    agent = MainAgent(session)
+
+    prompt = agent.build_user_prompt()
+
+    assert "<Project_Knowledge>" in prompt
+    assert "Summary:\nSingle-file app." in prompt
+    assert "nanocode.py is the main file." in prompt
+    assert '"corrections"' in agent.build_system_prompt()
+
+
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)

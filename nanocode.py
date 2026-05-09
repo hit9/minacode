@@ -220,6 +220,131 @@ class ToolResultItem(PromptItem):
 
 
 @dataclass
+class ProjectKnowledge:
+    LIST_LIMIT: ClassVar[int] = 30
+    LIST_FIELDS: ClassVar[tuple[str, ...]] = ("structure", "architecture", "workflows", "conventions")
+
+    summary: str = ""
+    structure: list[str] = field(default_factory=list)
+    architecture: list[str] = field(default_factory=list)
+    workflows: list[str] = field(default_factory=list)
+    conventions: list[str] = field(default_factory=list)
+
+    def apply(self, action: Json) -> bool:
+        changed = False
+        summary = (_json_str(action.get("summary")) or "").strip()
+        if summary and summary != self.summary:
+            self.summary = summary
+            changed = True
+        changed = self._apply_corrections(_json_list(action.get("corrections"))) or changed
+        for field_name in self.LIST_FIELDS:
+            items = getattr(self, field_name)
+            changed = self._append_items(items, _json_list(action.get(field_name))) or changed
+        return changed
+
+    def _append_items(self, target: list[str], values: list[JsonValue]) -> bool:
+        changed = False
+        for value in values:
+            item = (_json_str(value) or "").strip()
+            if not item or item in target:
+                continue
+            target.append(item)
+            changed = True
+        overflow = len(target) - self.LIST_LIMIT
+        if overflow > 0:
+            del target[:overflow]
+            changed = True
+        return changed
+
+    def _apply_corrections(self, values: list[JsonValue]) -> bool:
+        changed = False
+        for value in values:
+            correction = _json_dict(value)
+            field_name = _json_str(correction.get("field")) or ""
+            old = (_json_str(correction.get("old")) or "").strip()
+            new = (_json_str(correction.get("new")) or "").strip()
+            if field_name not in self.LIST_FIELDS or not old or old == new:
+                continue
+            target = getattr(self, field_name)
+            if old not in target:
+                continue
+            index = target.index(old)
+            del target[index]
+            changed = True
+            if new and new not in target:
+                target.insert(min(index, len(target)), new)
+        return changed
+
+    def is_empty(self) -> bool:
+        return not (self.summary or self.structure or self.architecture or self.workflows or self.conventions)
+
+    def format(self) -> str:
+        if self.is_empty():
+            return "(empty)"
+        lines = ["Summary:", self.summary or "(empty)", "", "Structure:"]
+        lines.extend(self._format_items(self.structure))
+        lines.extend(["", "Architecture:"])
+        lines.extend(self._format_items(self.architecture))
+        lines.extend(["", "Workflows:"])
+        lines.extend(self._format_items(self.workflows))
+        lines.extend(["", "Conventions:"])
+        lines.extend(self._format_items(self.conventions))
+        return "\n".join(lines)
+
+    def to_json(self) -> Json:
+        return {
+            "version": 1,
+            "summary": self.summary,
+            "structure": list(self.structure),
+            "architecture": list(self.architecture),
+            "workflows": list(self.workflows),
+            "conventions": list(self.conventions),
+        }
+
+    @classmethod
+    def from_json(cls, data: Json) -> "ProjectKnowledge":
+        return cls(
+            summary=_json_str(data.get("summary")) or "",
+            structure=cls._string_list(data.get("structure")),
+            architecture=cls._string_list(data.get("architecture")),
+            workflows=cls._string_list(data.get("workflows")),
+            conventions=cls._string_list(data.get("conventions")),
+        )
+
+    @classmethod
+    def load(cls, path: str) -> "ProjectKnowledge":
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except FileNotFoundError:
+            return cls()
+        except json.JSONDecodeError as error:
+            raise ConfigError(f"Invalid project knowledge file {path}: {error}") from error
+        return cls.from_json(_json_dict(data))
+
+    def save(self, path: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(self.to_json(), file, ensure_ascii=False, indent=2)
+            file.write("\n")
+
+    @staticmethod
+    def _format_items(items: list[str]) -> list[str]:
+        if not items:
+            return ["(empty)"]
+        return [str(index) + ". " + item for index, item in enumerate(items, start=1)]
+
+    @classmethod
+    def _string_list(cls, value: JsonValue) -> list[str]:
+        items = []
+        for raw in _json_list(value):
+            item = (_json_str(raw) or "").strip()
+            if item and item not in items:
+                items.append(item)
+        return items[-cls.LIST_LIMIT :]
+
+
+@dataclass
 class Blackboard:
     user_input: str = ""
     goal: str = ""
@@ -650,6 +775,7 @@ class Session:
 
     # ---- conversation ---
     conversation: list[ConversationItem] = field(default_factory=list)
+    project_knowledge: ProjectKnowledge = field(default_factory=ProjectKnowledge)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
@@ -672,7 +798,7 @@ class Session:
         compact_at = ConfigFile.int(runtime, "compact_at", 50)
         max_agent_steps = ConfigFile.int(runtime, "max_agent_steps", 50)
         explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 50)
-        return cls(
+        session = cls(
             api_url=ConfigFile.str(api, "url"),
             api_key=ConfigFile.str(api, "key"),
             model=main_model.model,
@@ -692,6 +818,8 @@ class Session:
             yolo=yolo,
             debug=debug,
         )
+        session.load_project_knowledge()
+        return session
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -715,6 +843,15 @@ class Session:
 
     def tool_results_dir(self) -> str:
         return self.resolve_path(os.path.join(self.nanocode_dir, "tool_results"))
+
+    def project_knowledge_path(self) -> str:
+        return self.resolve_path(os.path.join(self.nanocode_dir, "project_knowledge.json"))
+
+    def load_project_knowledge(self) -> None:
+        self.project_knowledge = ProjectKnowledge.load(self.project_knowledge_path())
+
+    def save_project_knowledge(self) -> None:
+        self.project_knowledge.save(self.project_knowledge_path())
 
     def missing_required_config(self) -> list[str]:
         missing = []
@@ -2338,6 +2475,7 @@ Hard rules:
 
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
+- Project_Knowledge = stable project-level knowledge shared across sessions; update only with learn action.
 - Known = concise durable facts for the current goal; add only new facts.
 - Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
@@ -2374,6 +2512,7 @@ Action types:
 - goal: current goal; complete=true only after success + verification.
 - verify: verification status for the current goal.
 - known: new durable facts.
+- learn: stable project-level knowledge to persist across sessions.
 - plan: work plan.
 - tool: call one available tool.
 - explore: investigate unknown code targets and return relevant targets/facts.
@@ -2388,6 +2527,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "goal", "text": "string", "verified": true | false, "complete": true | false, "message_for_complete": "string"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
+{"type": "learn", "summary": "optional full replacement", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "explore", "goal": "string", "scope": ["string"], "reason": "string"} __END_ACTION__
@@ -2401,6 +2541,10 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 <Conversation_History>
 {conversation_history}
 </Conversation_History>
+
+<Project_Knowledge>
+{project_knowledge}
+</Project_Knowledge>
 
 <Known>
 {known}
@@ -2457,6 +2601,7 @@ Hard rules:
 - State actions like known or verify are optional helpers; never output only state actions.
 
 Context:
+- Project_Knowledge = stable project-level knowledge shared across sessions; read-only.
 - Parent_Known = read-only facts from the caller.
 - Known = concise durable facts from your own exploration; add only new facts.
 - Tool_Result_Store = your stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
@@ -2522,6 +2667,10 @@ EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 <Environment>
 {environment}
 </Environment>
+
+<Project_Knowledge>
+{project_knowledge}
+</Project_Knowledge>
 
 <Parent_Known>
 {parent_known}
@@ -2636,6 +2785,7 @@ class PromptBuilder:
         return self.user_prompt_template.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
+            project_knowledge=self._format_project_knowledge(),
             parent_known=self._format_parent_known(),
             known=self._format_known(),
             tool_result_store=self._format_tool_result_store(),
@@ -2666,6 +2816,9 @@ class PromptBuilder:
         if not self.session.conversation:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.conversation)
+
+    def _format_project_knowledge(self) -> str:
+        return self.session.project_knowledge.format()
 
     def _format_known(self) -> str:
         if not self.context.blackboard.known:
@@ -3380,16 +3533,25 @@ class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 50
 
-    def __init__(self, session: Session, blackboard: Blackboard, *, clear_range_fingerprints_on_goal_change: bool = True):
+    def __init__(
+        self,
+        session: Session,
+        blackboard: Blackboard,
+        *,
+        clear_range_fingerprints_on_goal_change: bool = True,
+        allow_project_learning: bool = False,
+    ):
         self.session = session
         self.blackboard = blackboard
         self.clear_range_fingerprints_on_goal_change = clear_range_fingerprints_on_goal_change
+        self.allow_project_learning = allow_project_learning
         self.latest_report = ""
 
     def apply(self, response: Json) -> None:
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
+        before_project_knowledge = self.session.project_knowledge.format()
         before_verification = self.blackboard.verification.format()
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
@@ -3397,12 +3559,14 @@ class AgentStateUpdater:
         if goal_changed and self.clear_range_fingerprints_on_goal_change:
             self.session.range_fingerprints.clear()
         self._apply_known(response)
+        self._apply_project_knowledge(response)
         self._apply_verification(response)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
+            before_project_knowledge,
             before_verification,
         )
 
@@ -3414,6 +3578,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
+        before_project_knowledge: str,
         before_verification: str,
     ) -> str:
         current = self.blackboard
@@ -3433,6 +3598,12 @@ class AgentStateUpdater:
                 lines.append("State Updated | " + self._verification_badge())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
+        project_knowledge = self.session.project_knowledge.format()
+        if project_knowledge != before_project_knowledge:
+            if not lines:
+                lines.append("State Updated | " + self._verification_badge())
+            lines.append("  Project_Knowledge")
+            lines.extend(self._format_project_knowledge_rows())
         verification = current.verification.format()
         if verification != before_verification:
             if not lines:
@@ -3461,6 +3632,16 @@ class AgentStateUpdater:
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". " + self._compact(item))
         return rows
+
+    def _format_project_knowledge_rows(self) -> list[str]:
+        knowledge = self.session.project_knowledge
+        return [
+            "    summary: " + ("set" if knowledge.summary else "empty"),
+            "    structure: " + str(len(knowledge.structure)) + " item(s)",
+            "    architecture: " + str(len(knowledge.architecture)) + " item(s)",
+            "    workflows: " + str(len(knowledge.workflows)) + " item(s)",
+            "    conventions: " + str(len(knowledge.conventions)) + " item(s)",
+        ]
 
     def _format_verification(self) -> str:
         verification = self.blackboard.verification
@@ -3543,6 +3724,15 @@ class AgentStateUpdater:
                 fact = self._known_fact_from_json(raw)
                 if fact is not None:
                     self._add_known_item(fact)
+
+    def _apply_project_knowledge(self, response: Json) -> None:
+        if not self.allow_project_learning:
+            return
+        changed = False
+        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "learn"]:
+            changed = self.session.project_knowledge.apply(action) or changed
+        if changed:
+            self.session.save_project_knowledge()
 
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
         fact = (_json_str(value) or "").strip()
@@ -3684,6 +3874,7 @@ class BaseAgent:
         allowed_tools: set[str] | None = None,
         activity: str = "main",
         clear_range_fingerprints_on_goal_change: bool = True,
+        allow_project_learning: bool = False,
     ):
         self.session = session
         self.blackboard = blackboard or Blackboard()
@@ -3697,6 +3888,7 @@ class BaseAgent:
             session,
             self.blackboard,
             clear_range_fingerprints_on_goal_change=clear_range_fingerprints_on_goal_change,
+            allow_project_learning=allow_project_learning,
         )
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.latest_tool_batch = ""
@@ -4171,7 +4363,7 @@ class ExploreAgent(BaseAgent):
 @final
 class MainAgent(BaseAgent):
     def __init__(self, session: Session):
-        super().__init__(session, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS)
+        super().__init__(session, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS, allow_project_learning=True)
 
     def _format_stream_action_preview(self, action: Json) -> str:
         if _json_str(action.get("type")) == "explore":
@@ -4439,6 +4631,7 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
+    CommandSpec("/learn", "Learn stable project knowledge", "Info", "/learn [prompt]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
@@ -4492,6 +4685,7 @@ class CommandDispatcher:
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
+            "/learn": self._learn,
             "/compact": self._compact,
             "/config": self._config,
             "/set": self._set,
@@ -4545,6 +4739,24 @@ class CommandDispatcher:
                 question,
             ]
         )
+
+    def _learn(self, args: str) -> str:
+        task = self._format_learn_task(args)
+        if self.run_agent is not None:
+            self.run_agent(task)
+        else:
+            self.agent.run(task)
+        return ""
+
+    def _format_learn_task(self, args: str) -> str:
+        prompt = args.strip()
+        guidance = (
+            "Focus on structure, architecture, workflows, and conventions; use explore as needed; "
+            "update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; do not store temporary task details, line numbers, or large code."
+        )
+        if prompt:
+            return "Learn stable project knowledge about: " + prompt + ". " + guidance
+        return "Learn stable project knowledge for this codebase. " + guidance
 
     def _status(self, args: str) -> str:
         if args:
