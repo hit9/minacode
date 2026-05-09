@@ -1038,6 +1038,7 @@ def test_prompt_includes_project_knowledge(tmp_path):
     assert "Summary:\nSingle-file app." in prompt
     assert "nanocode.py is the main file." in prompt
     assert '"corrections"' in agent.build_system_prompt()
+    assert "not current evidence" in agent.build_system_prompt()
 
 
 def test_agent_ignores_known_items_without_fact(tmp_path):

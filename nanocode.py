@@ -2664,7 +2664,8 @@ Worker input contract:
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
 - Agent_Reports = worker results from this task; consume them before choosing the next action.
-- Project_Knowledge = stable project-level knowledge shared across sessions; update only with learn action.
+- Project_Knowledge = stable background shared across sessions, not current evidence; update only with learn action.
+- Never use Project_Knowledge alone for up-to-date claims about current file contents, implementation, config existence, or docs; inspect current evidence first.
 - Project_Knowledge.workflows stores durable test/lint/build/release/verification commands and project operation flows.
 - Known = concise durable facts for the current goal; add only new facts.
 - Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
@@ -2839,7 +2840,7 @@ Hard rules:
 - State actions like known or verify are optional helpers; never output only state actions.
 
 Context:
-- Project_Knowledge = stable project-level knowledge shared across sessions; read-only.
+- Project_Knowledge = stable background shared across sessions, not current evidence; read-only.
 - Parent_Known = read-only facts from the caller.
 - Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
 - Known = concise durable facts from your own exploration; add only new facts.
@@ -2973,6 +2974,7 @@ Hard rules:
 - State actions like known are optional helpers; never output only state actions.
 
 Context:
+- Project_Knowledge = stable background shared across sessions, not current evidence; read-only.
 - Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
 
 Workflow:
@@ -3089,6 +3091,7 @@ Hard rules:
 - State actions like known are optional helpers; never output only state actions.
 
 Context:
+- Project_Knowledge = stable background shared across sessions, not current evidence; read-only.
 - Handoff_Context = compact summaries of what earlier workers explored, edited, or verified.
 
 Workflow:
@@ -5709,8 +5712,8 @@ class CommandDispatcher:
     def _format_learn_task(self, args: str) -> str:
         prompt = args.strip()
         guidance = (
-            "Focus on structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed; "
-            "update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; do not store temporary task details, line numbers, or large code."
+            "Review existing Project_Knowledge plus Known/Conversation. Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
+            "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
         )
         context = self._format_learn_session_context()
         if prompt:
@@ -5729,7 +5732,7 @@ class CommandDispatcher:
             sections.append("<Conversation_To_Consider>\n" + "\n\n".join(item.format() for item in conversation) + "\n</Conversation_To_Consider>")
         if not sections:
             return ""
-        return "\n\nUse these current-session notes only if they reveal stable project knowledge:\n" + "\n\n".join(sections)
+        return "\n\nUse these current-session notes only to extract stable project knowledge or correct stale Project_Knowledge:\n" + "\n\n".join(sections)
 
     def _status(self, args: str) -> str:
         if args:

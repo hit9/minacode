@@ -124,10 +124,9 @@ def test_learn_command_dispatches_default_learning_task(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert result.message == ""
     assert calls == [
-        "Learn stable project knowledge for this codebase. Focus on structure, architecture, workflows, and conventions; "
-        "workflows include durable test/lint/build/release/verification commands; "
-        "use explore as needed; update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; "
-        "do not store temporary task details, line numbers, or large code."
+        "Learn stable project knowledge for this codebase. Review existing Project_Knowledge plus Known/Conversation. "
+        "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
+        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
     ]
 
 
@@ -157,10 +156,9 @@ def test_learn_command_dispatches_scoped_learning_task(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert result.message == ""
     assert calls == [
-        "Learn stable project knowledge about: test layout. Focus on structure, architecture, workflows, and conventions; "
-        "workflows include durable test/lint/build/release/verification commands; "
-        "use explore as needed; update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; "
-        "do not store temporary task details, line numbers, or large code."
+        "Learn stable project knowledge about: test layout. Review existing Project_Knowledge plus Known/Conversation. "
+        "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
+        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
     ]
 
 
@@ -180,7 +178,7 @@ def test_learn_command_includes_current_session_known_and_conversation(tmp_path)
     assert "Tests run with uv run pytest -q." in calls[0]
     assert "<Conversation_To_Consider>" in calls[0]
     assert "We decided config uses TOML." in calls[0]
-    assert "Use these current-session notes only if they reveal stable project knowledge" in calls[0]
+    assert "Use these current-session notes only to extract stable project knowledge or correct stale Project_Knowledge" in calls[0]
 
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
