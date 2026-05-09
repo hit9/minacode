@@ -479,11 +479,14 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
 
 def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("beta\n", encoding="utf-8")
     captured_payloads = []
     responses = [
         [
             '{"type":"tool","name":"Read",',
             '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
+            '{"type":"tool","name":"Read",',
+            '"intention":"read other","args":["other.txt","0","1"]}__END_ACTION__',
         ],
         [
             '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__',
@@ -520,7 +523,8 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
     assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
     assert len(captured_payloads) == 2
     assert [payload["stream"] for payload in captured_payloads] == [True, True]
-    assert messages[0] == "Queued: Read sample.txt:0-1 - read sample"
+    assert messages[0] == "Queued: Read Read"
+    assert sum(message.startswith("Queued:") for message in messages) == 1
     assert any(message.startswith("Tool Calls") for message in messages[1:])
     assert messages[-1] == "done"
 
@@ -551,8 +555,8 @@ def test_agent_stream_preview_summarizes_long_tool_arguments(tmp_path):
         }
     )
 
-    assert bash_preview == "Queued: Bash - Create a test file for fingerprint experiments."
-    assert replace_preview == "Queued: ReplaceRange test_fingerprint.txt:1-4 - Test a valid ReplaceRange to ensure baseline works."
+    assert bash_preview == "Bash"
+    assert replace_preview == "ReplaceRange"
 
 
 def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
@@ -1608,9 +1612,11 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
 
 def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+    verify_confirm_callbacks = []
 
     class FakeVerifyAgent:
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            verify_confirm_callbacks.append(confirm)
             if on_message is not None:
                 on_message('Tool Calls\n  1. [success] Git("diff", "--", "sample.txt")\n     why: inspect diff')
             return nanocode.VerifyReport(status="passed", method="git diff", summary="diff matches goal", evidence=["sample.txt changed"])
@@ -1646,6 +1652,8 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
+    assert len(verify_confirm_callbacks) == 1
+    assert verify_confirm_callbacks[0] is not None
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.verification.context == ""
     assert "Verifying: change file done" in messages
@@ -1704,35 +1712,53 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
 
-def test_agent_run_keeps_explicit_pending_verification_gate(tmp_path):
+def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
+    verifier_calls = []
+
+    class FakeVerifyAgent:
+        def __init__(self, *, goal, scope):
+            self.goal = goal
+            self.scope = scope
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            verifier_calls.append((self.goal, self.scope))
+            return nanocode.VerifyReport(status="passed", method="manual check", summary="checked")
+
     class FakeModelClient:
         def __init__(self):
+            self.user_prompts = []
             self.responses = [
                 {
                     "actions": [
                         {"type": "goal", "text": "answer", "complete": False},
-                        {"type": "verify", "method": "manual check", "status": "pending", "context": None},
+                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
                     ],
                 },
                 {
                     "actions": [
-                        {"type": "verify", "method": "manual check", "status": "passed", "context": "checked"},
                         {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
                     ],
                 },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
     messages = []
 
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: verification is required before completion." in messages
+    assert verifier_calls
+    assert verifier_calls[0][0] == "manual check"
+    assert "verification target: manual check" in verifier_calls[0][1]
+    assert "verification context: check answer" in verifier_calls[0][1]
+    assert "Verifying: manual check" in messages
+    assert "<Verify_Report>" in agent.model_client.user_prompts[1]
 
 
 def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):

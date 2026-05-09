@@ -2,7 +2,7 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar
+from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar, VERIFY_MESSAGE_PREFIX
 
 
 def test_session_reports_missing_required_config(tmp_path):
@@ -164,13 +164,11 @@ def test_agent_loop_styles_queued_tool_preview(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._queued_segments("Queued: ReplaceRange sample.txt:1-2 - update sample")
+    segments = loop._queued_segments("Queued: Read ReplaceRange")
 
     assert segments == [
         ("ansibrightblack", "Queued: "),
-        ("ansicyan", "ReplaceRange sample.txt:1-2"),
-        ("ansibrightblack", " - "),
-        ("ansimagenta", "update sample"),
+        ("ansicyan", "Read ReplaceRange"),
         ("", "\n"),
     ]
 
@@ -228,6 +226,31 @@ def test_agent_loop_styles_explore_tool_status_by_color(tmp_path):
     loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")\n[failure] Read("missing.py")')
 
     assert captured == ['[explore]\n  Search("producer")\n  Read("missing.py")']
+
+
+def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")')
+    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Read("producer.py")')
+    loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Git("diff")')
+    loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Read("sample.txt")')
+    loop._print_message("done")
+    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("again")')
+
+    assert captured == [
+        '[explore]\n  Search("producer")',
+        '  Read("producer.py")',
+        '[verify]\n  Git("diff")',
+        '  Read("sample.txt")',
+        "done",
+        '[explore]\n  Search("again")',
+    ]
     assert '"producer"' in captured[0]
 
 

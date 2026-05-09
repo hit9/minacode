@@ -2515,6 +2515,7 @@ Hard rules:
 - To finish, output goal complete=true with non-empty message_for_complete; do not use message as the final answer.
 - For greetings or non-actionable chat, output one chat action and stop.
 - If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
+- If verification is needed, use verify status=pending; Main gives the verification target, Verify decides how to check it.
 
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
@@ -2529,8 +2530,8 @@ Workflow:
 2. If files, code areas, symbols, or call paths are unknown, use explore.
 3. If the target is clear, do small direct checks, answer, or edit.
 4. Record new durable facts in known.
-5. If verification is needed, output verify passed/blocked with context.
-6. Finish with goal complete=true and message_for_complete.
+5. If verification is needed, output verify pending with method/context as the verification target, then wait for Verify_Report.
+6. Finish with goal complete=true and message_for_complete after verification passed or blocked.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
@@ -2543,7 +2544,8 @@ Tool guidance:
 - Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
 - Do not use Bash for code search, grep, find, ls, or broad target discovery; use explore for that.
-- Use Bash only for explicit shell requests, build/test commands, or narrow verification.
+- Do not use Bash/Git/Read just to verify completion; use verify pending and let Verify choose the checks.
+- Use Bash only for explicit shell requests or implementation commands.
 - Use Edit for small exact replacements/deletions, ReplaceRange for one complete Read-backed semantic block, ApplyPatch for multi-area diffs; avoid Bash for editing.
 - ReplaceRange content must replace only the selected [start,end) range; never include unchanged neighboring lines outside that range.
 - If a tool or explore result is needed for the next decision, stop after that action.
@@ -2557,7 +2559,7 @@ Action types:
 - chat: reply once to non-actionable chat and end the turn.
 - message: optional progress or blocker, not the final answer.
 - goal: current goal; complete=true only after success + verification, with message_for_complete.
-- verify: verification status for the current goal.
+- verify: request or record verification for the current goal; pending means Verify should check it.
 - known: new durable facts.
 - learn: stable project-level knowledge to persist across sessions.
 - plan: work plan.
@@ -2793,6 +2795,8 @@ Tool guidance:
 - Prefer Git status/diff first when edits were made.
 - Use Project_Knowledge.workflows for durable test/lint/build commands.
 - Use Read/Recall for narrow evidence checks.
+- Use Read for file content; do not use Bash for cat, ls, grep, or broad search.
+- If Verify_Goal is a concrete verification command, run that command directly.
 - Use Bash only for explicit verification commands.
 - If a tool result is needed for the verdict, stop after that action.
 
@@ -4100,7 +4104,8 @@ class BaseAgent:
         consecutive_format_errors = 0
         try:
             for _ in range(max_steps):
-                response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None, on_message=on_message)
+                queued_labels: list[str] = []
+                response = self.step(on_action=self._stream_action_preview_callback(queued_labels) if on_message is not None else None, on_message=on_message)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
@@ -4126,6 +4131,8 @@ class BaseAgent:
                     )
                     continue
                 consecutive_format_errors = 0
+                if on_message is not None and queued_labels:
+                    on_message("Queued: " + " ".join(queued_labels))
                 result = on_step(response)
                 if result.done:
                     return result.value
@@ -4243,13 +4250,12 @@ class BaseAgent:
     def apply_response(self, response: Json) -> None:
         self.state_updater.apply(response)
 
-    def _stream_action_preview_callback(self, on_message: MessageCallback | None) -> ActionCallback:
+    def _stream_action_preview_callback(self, queued_labels: list[str]) -> ActionCallback:
         def preview(action: Json) -> None:
-            if on_message is None:
+            label = self._format_stream_action_preview(action)
+            if not label:
                 return
-            report = self._format_stream_action_preview(action)
-            if report:
-                on_message(report)
+            queued_labels.append(label)
 
         return preview
 
@@ -4261,29 +4267,10 @@ class BaseAgent:
             call = self.tool_runner.parse_tool_call(action)
         except ToolCallError:
             return ""
-        label = "Queued: " + self._format_stream_tool_label(call)
-        if call.intention:
-            label += " - " + _shorten(call.intention, 80)
-        return label
+        return self._format_stream_tool_label(call)
 
     def _format_stream_tool_label(self, call: ParsedToolCall) -> str:
-        args = call.args
-        if call.name == "Bash":
-            return "Bash"
-        if call.name in {"Read", "ReplaceRange"} and args:
-            return self._format_stream_path_range_label(call.name, args)
-        if call.name == "Search":
-            path = args[1] if len(args) >= 2 and args[1] else ""
-            return "Search" + ((" " + _shorten(path, 48)) if path else "")
-        if args:
-            return call.name + " " + _shorten(args[0], 48)
         return call.name
-
-    def _format_stream_path_range_label(self, name: str, args: list[str]) -> str:
-        label = name + " " + _shorten(args[0], 48)
-        if len(args) >= 3:
-            label += ":" + args[1] + "-" + args[2]
-        return label
 
     def execute_tool_calls(
         self,
@@ -4634,8 +4621,7 @@ class MainAgent(BaseAgent):
 
     def _format_stream_action_preview(self, action: Json) -> str:
         if _json_str(action.get("type")) == "explore":
-            reason = _json_str(action.get("reason")) or _json_str(action.get("goal")) or ""
-            return "Queued: Explore" + ((" - " + _shorten(reason, 80)) if reason else "")
+            return "Explore"
         return super()._format_stream_action_preview(action)
 
     def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
@@ -4718,17 +4704,31 @@ class MainAgent(BaseAgent):
     def _make_explore_agent(self, *, goal: str, scope: list[str]) -> ExploreAgent:
         return ExploreAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
 
-    def execute_verify(self, *, completion_message: str, on_message: MessageCallback | None = None) -> VerifyReport:
-        goal = self.blackboard.goal or self.blackboard.user_input
+    def execute_verify(
+        self,
+        *,
+        completion_message: str,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> VerifyReport:
+        verification = self.blackboard.verification
+        goal = verification.method or self.blackboard.goal or self.blackboard.user_input
         scope = [
             "user goal: " + (self.blackboard.user_input or "(empty)"),
             "current goal: " + (self.blackboard.goal or "(empty)"),
             "completion message: " + (completion_message or "(empty)"),
-            "verification state: " + self.blackboard.verification.format(),
+            "verification target: " + (verification.method or "(empty)"),
+            "verification context: " + (verification.context or "(empty)"),
+            "verification state: " + verification.format(),
         ]
         if on_message is not None:
             on_message("Verifying: " + _shorten(goal, 120))
-        report = self._make_verify_agent(goal=goal, scope=scope).run(on_message=self._verify_message_callback(on_message))
+        report = self._make_verify_agent(goal=goal, scope=scope).run(
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_message=self._verify_message_callback(on_message),
+        )
         self.latest_verify_report = report.format()
         if on_message is not None:
             on_message(self._format_verify_done(report))
@@ -4864,12 +4864,27 @@ class MainAgent(BaseAgent):
                     on_message(report)
             self.maybe_auto_compact()
             return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            report = self.execute_verify(
+                completion_message=completion_message,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_message=on_message,
+            )
+            if not self._apply_verify_report(report):
+                self.blackboard.goal_reached = False
+                return AgentRunResult()
         if (
             self.blackboard.goal_reached
             and self.blackboard.verification_required
             and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
         ):
-            report = self.execute_verify(completion_message=completion_message, on_message=on_message)
+            report = self.execute_verify(
+                completion_message=completion_message,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_message=on_message,
+            )
             if not self._apply_verify_report(report):
                 self.blackboard.goal_reached = False
                 return AgentRunResult()
@@ -5513,6 +5528,7 @@ class AgentLoop:
         self.status_bar = StatusBar(agent.session)
         self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
         self.prompt_session = prompt_session
+        self._active_scope: str | None = None
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
 
@@ -5571,6 +5587,7 @@ class AgentLoop:
 
     def _run_agent(self, user_input: str) -> None:
         try:
+            self._active_scope = None
             self.status_bar.reset_timer()
             self.status_bar.resume()
             self.agent.run(
@@ -5603,6 +5620,7 @@ class AgentLoop:
         if was_running:
             self.status_bar.pause()
         try:
+            self._active_scope = None
             self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
             return self._wait_confirm("Proceed?", default=True)
         finally:
@@ -5614,6 +5632,7 @@ class AgentLoop:
         if was_running:
             self.status_bar.pause()
         try:
+            self._active_scope = None
             self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")
         finally:
             if was_running:
@@ -5697,6 +5716,7 @@ class AgentLoop:
         if message.startswith(VERIFY_MESSAGE_PREFIX):
             self._print_scoped_message("verify", message[len(VERIFY_MESSAGE_PREFIX) :])
             return
+        self._active_scope = None
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
@@ -5718,27 +5738,32 @@ class AgentLoop:
         self._emit_segments([("ansicyan", message + "\n")], message)
 
     def _print_scoped_message(self, scope: str, message: str) -> None:
-        prefix = "[" + scope + "]\n"
+        show_prefix = self._active_scope != scope
+        self._active_scope = scope
+        prefix = [("ansibrightblack", "[" + scope + "]\n")] if show_prefix else []
         if message.startswith("State Updated"):
-            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message))
+            self._emit_segments(prefix + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Tool Calls"):
-            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message))
+            self._emit_segments(prefix + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Queued:"):
-            self._emit_segments([("ansibrightblack", prefix)] + self._indent_segments(self._queued_segments(message), "  "), self._scoped_plain(scope, message))
+            self._emit_segments(prefix + self._indent_segments(self._queued_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Retrying:"):
-            self._emit_segments([("ansibrightblack", prefix), ("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message))
+            self._emit_segments(prefix + [("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Error:"):
-            self._emit_segments([("ansibrightblack", prefix), ("ansibrightblack", "  "), ("bold ansired", message + "\n")], self._scoped_plain(scope, message))
+            self._emit_segments(prefix + [("ansibrightblack", "  "), ("bold ansired", message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
-        self._emit_segments([("ansibrightblack", prefix)] + self._scoped_line_segments(message), self._scoped_plain(scope, message))
+        self._emit_segments(prefix + self._scoped_line_segments(message), self._scoped_plain(scope, message, show_prefix=show_prefix))
 
-    def _scoped_plain(self, scope: str, message: str) -> str:
+    def _scoped_plain(self, scope: str, message: str, *, show_prefix: bool) -> str:
         lines = self._display_plain(message).splitlines() or [""]
-        return "[" + scope + "]\n" + "\n".join("  " + line for line in lines)
+        body = "\n".join("  " + line for line in lines)
+        if show_prefix:
+            return "[" + scope + "]\n" + body
+        return body
 
     def _display_plain(self, message: str) -> str:
         lines = []
@@ -5872,10 +5897,7 @@ class AgentLoop:
 
     def _queued_segments(self, message: str, *, newline: bool = True) -> list[tuple[str, str]]:
         body = message[len("Queued:") :].strip()
-        target, separator, reason = body.partition(" - ")
-        segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", target)]
-        if separator:
-            segments.extend([("ansibrightblack", " - "), ("ansimagenta", reason)])
+        segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", body)]
         if newline:
             segments.append(("", "\n"))
         return segments
