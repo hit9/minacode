@@ -69,7 +69,7 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
-                {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": []}]},
+                {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": [], "issues": []}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -101,6 +101,21 @@ def test_agent_formats_explore_done_targets_on_separate_lines(tmp_path):
     )
 
     assert message == "Explore done: 2 target(s)\n  1. producer.py:440-460 pipeline integration\n  2. detector.py:186-206 page type detection"
+
+
+def test_explore_report_formats_and_briefs_issues():
+    report = nanocode.ExploreReport(
+        targets=[],
+        known=[],
+        verification=nanocode.Verification(status=VerificationStatus.BLOCKED, method="explore", context="blocked"),
+        issues=["handoff goal asks for analysis, not location"],
+    )
+
+    formatted = report.format()
+
+    assert "<issues>" in formatted
+    assert "handoff goal asks for analysis, not location" in formatted
+    assert report.brief() == ["issue: handoff goal asks for analysis, not location"]
 
 
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):

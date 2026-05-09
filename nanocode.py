@@ -624,6 +624,7 @@ class ExploreReport(PromptItem):
     targets: list[Json]
     known: list[str]
     verification: Verification
+    issues: list[str] = field(default_factory=list)
 
     @override
     def format(self, indent: str = "") -> str:
@@ -642,6 +643,9 @@ class ExploreReport(PromptItem):
         else:
             lines.append("    (empty)")
         lines.append("  </known>")
+        lines.append("  <issues>")
+        lines.extend(EditReport._format_items(self.issues))
+        lines.append("  </issues>")
         lines.append("  " + self.verification.format().replace("\n", "\n  "))
         lines.append("</ExploreReport>")
         return _format_lines(lines, indent)
@@ -661,6 +665,9 @@ class ExploreReport(PromptItem):
         for item in self.known[:3]:
             if item:
                 lines.append("known: " + item)
+        for item in self.issues[:3]:
+            if item:
+                lines.append("issue: " + item)
         if not lines and self.verification.context:
             lines.append((self.verification.status or VerificationStatus.BLOCKED) + " | " + self.verification.context)
         return lines
@@ -2841,6 +2848,7 @@ Deliver contract:
 - Each target should include path, area/symbol, line_range when known, context with nearby code/summary, and reason.
 - Prefer exact filepath + 0-based line range from Read results; omit line_range only when unknown.
 - known = stable facts discovered during exploration.
+- issues = handoff or exploration problems, such as too broad/unclear/out-of-role goals.
 - Do not deliver patches, edits, final answers, or large raw content.
 
 Available tools:
@@ -2863,7 +2871,7 @@ Good tool batches:
 
 Action types:
 - tool: call one available investigation tool.
-- deliver: finish exploration and return relevant targets plus known facts.
+- deliver: finish exploration and return relevant targets, known facts, and issues when any.
 - known: optional durable exploration facts; include only together with tool or deliver.
 - verify: optional exploration verification status; include only together with deliver.
 
@@ -2874,7 +2882,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
 
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"]} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"], "issues": ["string"]} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "passed|blocked", "context": null | "string"} __END_ACTION__
 """
@@ -2963,6 +2971,7 @@ Workflow:
 Review boundary:
 - Check only edit-level problems: syntax-looking breakage, duplicated lines, truncated blocks, wrong imports, stale ranges, extra neighboring content.
 - If the target file/symbol is unclear, do narrow Search/Read near the provided scope; deliver blocked rather than doing broad discovery.
+- If the handoff is too broad, unclear, or outside EditAgent's role, deliver blocked with issues.
 - Keep deliver concise: one-sentence summary, at most 3 checks, issues only for real problems.
 
 Available tools:
@@ -3076,6 +3085,7 @@ Workflow:
 Verdict boundary:
 - Tests are evidence, not the whole job.
 - Check the goal, changed files, relevant diffs, project workflows, and obvious omissions.
+- If the handoff is too broad, unclear, or outside VerifyAgent's role, deliver blocked with issues.
 - Deliver summary as the verdict, not a long process log.
 
 Available tools:
@@ -4771,7 +4781,7 @@ class ExploreAgent(BaseAgent):
                 fact = (_json_str(raw) or "").strip()
                 if fact and fact not in known:
                     known.append(fact)
-            return ExploreReport(targets=targets, known=known, verification=self._verification_snapshot())
+            return ExploreReport(targets=targets, known=known, verification=self._verification_snapshot(), issues=self._string_items(action.get("issues")))
         return None
 
     def _target_from_json(self, value: JsonValue) -> Json:
@@ -4796,7 +4806,7 @@ class ExploreAgent(BaseAgent):
         known = list(self.blackboard.known)
         if reason and reason not in known:
             known.append(reason)
-        return ExploreReport(targets=[], known=known, verification=verification)
+        return ExploreReport(targets=[], known=known, verification=verification, issues=[reason] if reason else [])
 
     def _verification_snapshot(self) -> Verification:
         current = self.blackboard.verification
@@ -4806,6 +4816,9 @@ class ExploreAgent(BaseAgent):
             method=current.method,
             context=current.context,
         )
+
+    def _string_items(self, value: JsonValue) -> list[str]:
+        return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(value)) if item]
 
 
 @final
