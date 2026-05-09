@@ -1157,6 +1157,34 @@ def test_explore_agent_rejects_edit_tools(tmp_path):
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
 
 
+def test_verify_agent_rejects_edit_tools(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    verifier = nanocode.VerifyAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="verify change",
+        scope=["sample.txt"],
+    )
+
+    latest = verifier.execute_tool_calls([{"name": "Edit", "intention": "try edit", "args": ["sample.txt", "old", "new"]}])
+
+    system_prompt = verifier.build_system_prompt()
+    assert "Read(" in system_prompt
+    assert "Search(" in system_prompt
+    assert "Bash(" in system_prompt
+    assert "Edit(" not in system_prompt
+    assert "ReplaceRange(" not in system_prompt
+    assert "ApplyPatch(" not in system_prompt
+    assert "tool not allowed for this agent: Edit" in latest
+    assert path.read_text(encoding="utf-8") == "old\n"
+    assert verifier.session is parent_session
+    assert parent_session.tool_result_store == {}
+    assert list(verifier.runtime.tool_result_store) == ["tr.1"]
+
+
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
@@ -1581,6 +1609,12 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
 def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
 
+    class FakeVerifyAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            if on_message is not None:
+                on_message('Tool Calls\n  1. [success] Git("diff", "--", "sample.txt")\n     why: inspect diff')
+            return nanocode.VerifyReport(status="passed", method="git diff", summary="diff matches goal", evidence=["sample.txt changed"])
+
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -1593,13 +1627,6 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                 },
                 {
                     "actions": [
-                        {"type": "goal", "text": "change file done", "complete": True},
-                        {"type": "message", "text": "progress too early"},
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
                         {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
                     ],
                 },
@@ -1612,16 +1639,68 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
 
     response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
+    assert len(agent.model_client.user_prompts) == 2
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.verification.context == ""
-    assert "Retrying: verification must pass before completion." in messages
-    assert "progress too early" not in messages
+    assert "Verifying: change file done" in messages
+    assert any(message.startswith("[verify] Tool Calls") for message in messages)
+    assert "Verify done: passed | git diff\n  diff matches goal" in messages
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
+    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+
+    class FakeVerifyAgent:
+        def __init__(self):
+            self.reports = [
+                nanocode.VerifyReport(status="failed", method="unit", summary="assertion failed", issues=["sample still wrong"]),
+                nanocode.VerifyReport(status="passed", method="unit", summary="tests passed", evidence=["sample fixed"]),
+            ]
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            return self.reports.pop(0)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "change file", "complete": False},
+                        {"type": "tool", "name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "bad"]},
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+                {
+                    "actions": [
+                        {"type": "tool", "name": "Edit", "intention": "fix sample", "args": ["sample.txt", "bad", "new"]},
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+    verifier = FakeVerifyAgent()
+    agent._make_verify_agent = lambda *, goal, scope: verifier
+
+    response = agent.run("change file", confirm=lambda call, tool: True)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "<Verify_Report>" in agent.model_client.user_prompts[2]
+    assert "assertion failed" in agent.model_client.user_prompts[2]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
 
