@@ -2679,6 +2679,7 @@ Explore capability:
 - goal = concrete investigation question, not the whole user task.
 - scope = known files, dirs, symbols, keywords, or errors; [] if none.
 - reason = what is unknown and why direct action is premature.
+- context = optional short hints from Main's own findings; program Handoff_Context is added separately.
 
 Action types:
 - chat: reply once to non-actionable chat and end the turn.
@@ -2705,8 +2706,8 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "learn", "summary": "optional full replacement", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "explore", "goal": "string", "scope": ["string"], "reason": "string"} __END_ACTION__
-{"type": "edit", "goal": "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
+{"type": "explore", "goal": "string", "scope": ["string"], "reason": "string", "context": null | "string"} __END_ACTION__
+{"type": "edit", "goal": "string", "context": null | "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -5055,6 +5056,9 @@ class MainAgent(BaseAgent):
         for action in actions:
             goal = _json_str(action.get("goal")) or self.blackboard.goal or self.blackboard.user_input
             scope = [item for item in (_json_str(raw) for raw in _json_list(action.get("scope"))) if item]
+            context = (_json_str(action.get("context")) or "").strip()
+            if context:
+                scope.append("main_context: " + context)
             if on_message is not None:
                 on_message("Exploring: " + _shorten(goal, 120))
             report = self._make_explore_agent(goal=goal, scope=scope).run(
@@ -5144,6 +5148,9 @@ class MainAgent(BaseAgent):
 
     def _edit_scope_from_action(self, action: Json) -> list[str]:
         scope = []
+        context = (_json_str(action.get("context")) or "").strip()
+        if context:
+            scope.append("main_context: " + context)
         for raw in _json_list(action.get("targets")):
             target = _json_dict(raw)
             if not target:

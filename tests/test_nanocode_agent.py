@@ -1453,7 +1453,7 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "relevant target", "complete": False},
-                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
+                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain", "context": "Main saw sample mentioned"},
                     ]
                 },
                 {"actions": _final_actions("relevant target")},
@@ -1464,7 +1464,12 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
             return self.responses.pop(0)
 
     class FakeExploreAgent:
+        def __init__(self, *, goal, scope):
+            self.goal = goal
+            self.scope = scope
+
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            assert self.scope == ["sample.txt", "main_context: Main saw sample mentioned"]
             if on_message is not None:
                 on_message("Tool Calls\n  1. [success] Read(\"sample.txt\", \"0\", \"1\")\n     tr.1 | why: inspect sample")
             return nanocode.ExploreReport(
@@ -1476,7 +1481,7 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
-    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
+    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent(goal=goal, scope=scope)
     messages = []
 
     response = agent.run("relevant target", on_message=messages.append)
@@ -1506,6 +1511,7 @@ def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
                         {
                             "type": "edit",
                             "goal": "change sample text",
+                            "context": "Main confirmed the target is line 1",
                             "targets": [{"path": "sample.txt", "area": "line 1", "line_range": "0,1", "context": "old", "reason": "line needs update"}],
                             "constraints": ["preserve newline"],
                             "self_check": ["read back line 1"],
@@ -1549,6 +1555,7 @@ def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
         (
             "change sample text",
             [
+                "main_context: Main confirmed the target is line 1",
                 "target: sample.txt line 1 line_range=0,1",
                 "target_context: old",
                 "target_reason: line needs update",
