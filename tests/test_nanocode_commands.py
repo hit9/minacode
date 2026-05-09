@@ -125,6 +125,7 @@ def test_learn_command_dispatches_default_learning_task(tmp_path):
     assert result.message == ""
     assert calls == [
         "Learn stable project knowledge for this codebase. Focus on structure, architecture, workflows, and conventions; "
+        "workflows include durable test/lint/build/release/verification commands; "
         "use explore as needed; update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; "
         "do not store temporary task details, line numbers, or large code."
     ]
@@ -140,6 +141,7 @@ def test_learn_command_dispatches_scoped_learning_task(tmp_path):
     assert result.message == ""
     assert calls == [
         "Learn stable project knowledge about: test layout. Focus on structure, architecture, workflows, and conventions; "
+        "workflows include durable test/lint/build/release/verification commands; "
         "use explore as needed; update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; "
         "do not store temporary task details, line numbers, or large code."
     ]

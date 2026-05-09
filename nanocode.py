@@ -2479,6 +2479,7 @@ Hard rules:
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
 - Project_Knowledge = stable project-level knowledge shared across sessions; update only with learn action.
+- Project_Knowledge.workflows stores durable test/lint/build/release/verification commands and project operation flows.
 - Known = concise durable facts for the current goal; add only new facts.
 - Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
 - Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
@@ -4756,7 +4757,7 @@ class CommandDispatcher:
     def _format_learn_task(self, args: str) -> str:
         prompt = args.strip()
         guidance = (
-            "Focus on structure, architecture, workflows, and conventions; use explore as needed; "
+            "Focus on structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed; "
             "update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; do not store temporary task details, line numbers, or large code."
         )
         if prompt:
