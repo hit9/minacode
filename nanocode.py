@@ -2651,6 +2651,7 @@ Worker input contract:
 - Give each worker a narrow handoff goal and only the context needed for that goal.
 - Do not pass the whole user task to a worker.
 - Explore goal: locate/map/find code targets only; no analyze, decide, fix, verify, or answer.
+- For bug, performance, or root-cause questions, Explore still locates implementation paths/evidence only; Main analyzes after Explore returns.
 - Explore scope: known names, paths, symbols, keywords, errors, or modules to start from.
 - Explore context: short facts, hypotheses, or user concern from Main.
 - Edit goal: concrete file change only; no broad investigation or verification.
@@ -2694,7 +2695,7 @@ Decision rules:
 - If a tool or explore result is needed for the next decision, stop after that action.
 
 Explore capability:
-- goal = locate/map/find target only, not analysis or the whole user task.
+- goal = locate/map/find target only, not analysis, diagnosis, or the whole user task.
 - scope = known files, dirs, symbols, keywords, or errors; [] if none.
 - reason = what is unknown and why direct action is premature.
 - context = optional short Main findings or hypotheses; program Handoff_Context is added separately.
@@ -2702,17 +2703,17 @@ Explore capability:
 Good worker handoffs:
 Bad explore:
 {"type":"explore",
- "goal":"Locate config loading and analyze startup behavior",
- "scope":["ConfigFile","startup"],
- "reason":"Relevant files are unknown",
- "context":"User asked about config-file behavior"} __END_ACTION__
+ "goal":"Analyze why streaming causes DB memory growth",
+ "scope":["stream","db","memory"],
+ "reason":"Need root cause",
+ "context":"User suspects a memory problem"} __END_ACTION__
 
 Explore example:
 {"type":"explore",
- "goal":"Locate config loading and CLI entry handling paths",
- "scope":["ConfigFile","--config","--init-config"],
- "reason":"Relevant files and call paths are unknown",
- "context":"Known facts: config is TOML; CLI options are parsed near program startup; analysis will happen after code targets are found"} __END_ACTION__
+ "goal":"Locate streaming handlers, DB session/query lifecycle, and buffering code paths",
+ "scope":["stream","db session","query","buffer"],
+ "reason":"Relevant implementation paths are unknown",
+ "context":"User suspects DB memory growth; return code targets/evidence only; Main will analyze cause after targets are found"} __END_ACTION__
 
 Edit example:
 {"type":"edit",
@@ -2737,7 +2738,7 @@ Action types:
 - learn: stable project-level knowledge to persist across sessions.
 - plan: work plan.
 - tool: call one available tool.
-- explore: investigate unknown code targets and return relevant targets/facts.
+- explore: locate unknown code targets/evidence points and return relevant targets/facts.
 - edit: perform focused code changes and return an edit report.
 
 Output format (Strict)
@@ -2823,6 +2824,7 @@ Hard rules:
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
 - Do not edit files, output patches, answer the user, install dependencies, or start long-running processes.
+- Reject out-of-role handoffs: if the goal asks you to analyze, diagnose, decide, verify, fix, confirm conclusions, or answer the user, deliver empty targets with issues and do not call tools.
 - Every response must include at least one tool or deliver action.
 - State actions like known or verify are optional helpers; never output only state actions.
 
@@ -2835,12 +2837,13 @@ Context:
 - Recent_Tool_Calls = your own recent tool results only, ordered old-to-new.
 
 Workflow:
+0. First check the handoff: continue only when Explore_Goal asks to locate/map/find code targets or evidence points.
 1. Search first to locate candidate files/symbols; do not Read files one by one before searching.
 2. Batch independent Search calls when multiple names, symbols, paths, or file types may matter.
 3. After Search finds likely files, batch small Read ranges around the matches.
 4. Record stable findings in known when useful.
 5. Deliver targets when uncertainty is removed.
-6. If targets cannot be found, deliver an empty targets list with a short reason.
+6. If targets cannot be found or the handoff is out of role, deliver an empty targets list with a short issue.
 
 Deliver contract:
 - Follow the caller's goal first; do not widen into a full project survey unless asked.
