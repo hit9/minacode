@@ -2640,12 +2640,16 @@ Role boundary:
 - Edit decides HOW to change files.
 - Verify decides HOW to validate completion.
 
-Worker handoff:
-- Give each worker a narrow goal and only the context needed for that goal.
-- Explore: ask for locations, symbols, call paths, evidence ranges, or candidate targets.
-- Edit: ask for focused file changes with target path/area, constraints, and self-checks.
-- Verify: ask for a concrete validation target; Verify chooses the checks.
-- Put Main's short findings in context; do not copy the whole user request.
+Worker input contract:
+- Give each worker a narrow handoff goal and only the context needed for that goal.
+- Do not pass the whole user task to a worker.
+- Explore goal: locate/map/find code targets only; no analyze, decide, fix, verify, or answer.
+- Explore scope: known names, paths, symbols, keywords, errors, or modules to start from.
+- Explore context: short facts, hypotheses, or user concern from Main.
+- Edit goal: concrete file change only; no broad investigation or verification.
+- Edit targets: path/area/line_range/context/reason; use Explore first if target is unknown.
+- Verify method: concrete validation target; Verify chooses exact checks.
+- Verify context: what changed, what should be true, relevant files/tests/workflows.
 
 Context:
 - Before answering codebase-answerable questions, use explore or tools to inspect current code.
@@ -2683,18 +2687,25 @@ Decision rules:
 - If a tool or explore result is needed for the next decision, stop after that action.
 
 Explore capability:
-- goal = narrow handoff goal, not the whole user task.
+- goal = locate/map/find target only, not analysis or the whole user task.
 - scope = known files, dirs, symbols, keywords, or errors; [] if none.
 - reason = what is unknown and why direct action is premature.
 - context = optional short Main findings or hypotheses; program Handoff_Context is added separately.
 
 Good worker handoffs:
+Bad explore:
+{"type":"explore",
+ "goal":"Locate config loading and analyze startup behavior",
+ "scope":["ConfigFile","startup"],
+ "reason":"Relevant files are unknown",
+ "context":"User asked about config-file behavior"} __END_ACTION__
+
 Explore example:
 {"type":"explore",
- "goal":"Locate config loading and CLI entry handling",
+ "goal":"Locate config loading and CLI entry handling paths",
  "scope":["ConfigFile","--config","--init-config"],
  "reason":"Relevant files and call paths are unknown",
- "context":"Known facts: config is TOML; CLI options are parsed near program startup; user asked about config-file behavior"} __END_ACTION__
+ "context":"Known facts: config is TOML; CLI options are parsed near program startup; analysis will happen after code targets are found"} __END_ACTION__
 
 Edit example:
 {"type":"edit",
@@ -5624,9 +5635,24 @@ class CommandDispatcher:
             "Focus on structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed; "
             "update Project_Knowledge with durable high-level facts only; correct stale facts by exact text; do not store temporary task details, line numbers, or large code."
         )
+        context = self._format_learn_session_context()
         if prompt:
-            return "Learn stable project knowledge about: " + prompt + ". " + guidance
-        return "Learn stable project knowledge for this codebase. " + guidance
+            task = "Learn stable project knowledge about: " + prompt + ". " + guidance
+        else:
+            task = "Learn stable project knowledge for this codebase. " + guidance
+        return task + context
+
+    def _format_learn_session_context(self) -> str:
+        sections = []
+        known = self.agent.blackboard.known
+        if known:
+            sections.append("<Known_To_Consider>\n" + "\n".join(known) + "\n</Known_To_Consider>")
+        conversation = self.agent.session.conversation
+        if conversation:
+            sections.append("<Conversation_To_Consider>\n" + "\n\n".join(item.format() for item in conversation) + "\n</Conversation_To_Consider>")
+        if not sections:
+            return ""
+        return "\n\nUse these current-session notes only if they reveal stable project knowledge:\n" + "\n\n".join(sections)
 
     def _status(self, args: str) -> str:
         if args:

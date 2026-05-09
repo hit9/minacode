@@ -147,6 +147,25 @@ def test_learn_command_dispatches_scoped_learning_task(tmp_path):
     ]
 
 
+def test_learn_command_includes_current_session_known_and_conversation(tmp_path):
+    calls = []
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.blackboard.known.append("Tests run with uv run pytest -q.")
+    session.conversation.append(UserMessage(content="We decided config uses TOML."))
+    dispatcher = CommandDispatcher(agent, run_agent=calls.append)
+
+    result = dispatcher.dispatch("/learn")
+
+    assert result.status == CommandStatus.HANDLED
+    assert len(calls) == 1
+    assert "<Known_To_Consider>" in calls[0]
+    assert "Tests run with uv run pytest -q." in calls[0]
+    assert "<Conversation_To_Consider>" in calls[0]
+    assert "We decided config uses TOML." in calls[0]
+    assert "Use these current-session notes only if they reveal stable project knowledge" in calls[0]
+
+
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
     session = Session(cwd=str(tmp_path), compact_at=2)
     agent = MainAgent(session)
