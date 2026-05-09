@@ -11,8 +11,7 @@ def _verify_passed_action():
 def _final_actions(goal="answer", message="done"):
     return [
         _verify_passed_action(),
-        {"type": "goal", "text": goal, "complete": True},
-        {"type": "message", "text": message},
+        {"type": "goal", "text": goal, "complete": True, "message_for_complete": message},
     ]
 
 
@@ -488,8 +487,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
         ],
         [
             '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__',
-            '{"type":"goal","text":"read sample","complete":true}__END_ACTION__',
-            '{"type":"message","text":"done"}__END_ACTION__',
+            '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__',
         ],
     ]
 
@@ -519,7 +517,7 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
 
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["actions"][-1] == {"type": "message", "text": "done"}
+    assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
     assert len(captured_payloads) == 2
     assert [payload["stream"] for payload in captured_payloads] == [True, True]
     assert messages[0] == "Queued: Read sample.txt:0-1 - read sample"
@@ -1280,8 +1278,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "items": ["Read sample.txt and found alpha."],
                         },
                         _verify_passed_action(),
-                        {"type": "goal", "text": "read sample", "complete": True},
-                        {"type": "message", "text": "done"},
+                        {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"},
                     ],
                 },
             ]
@@ -1298,7 +1295,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     messages = []
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert messages[0].startswith("Tool Calls\n")
     assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
     assert "     tr.1 | why: read sample" in messages[0]
@@ -1327,8 +1324,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
                     "actions": [
-                        {"type": "goal", "text": "answer sample", "complete": True},
-                        {"type": "message", "text": "sample contains alpha"},
+                        {"type": "goal", "text": "answer sample", "complete": True, "message_for_complete": "sample contains alpha"},
                     ],
                 },
             ]
@@ -1342,7 +1338,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
 
     response = agent.run("answer sample", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "sample contains alpha"
+    assert response["actions"][-1]["message_for_complete"] == "sample contains alpha"
     assert "Retrying: verification must pass before completion." not in messages
     assert messages[-1] == "sample contains alpha"
 
@@ -1383,7 +1379,7 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
 
     response = agent.run("relevant target", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "<Agent_Report>" in agent.model_client.user_prompts[1]
     assert "sample.txt line 1 is the relevant target." in agent.model_client.user_prompts[1]
@@ -1415,7 +1411,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     response = agent.run("read sample")
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert agent.latest_tool_batch == ""
     assert agent.recent_tool_calls == ""
@@ -1485,7 +1481,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
 
     response = agent.run("read sample", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done too early"
+    assert response["actions"][-1]["message_for_complete"] == "done too early"
     assert "Retrying: Known was not reviewed after tool results." not in messages
     assert "done too early" in messages
     assert len(agent.model_client.user_prompts) == 2
@@ -1511,7 +1507,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Continuing: goal is not complete yet." not in messages
     assert any(message.startswith("State Updated") for message in messages)
@@ -1556,7 +1552,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: goal is not complete yet." not in messages
 
 
@@ -1578,7 +1574,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: assistant must set current task's goal." in messages
 
 
@@ -1598,14 +1594,13 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "change file done", "complete": True},
-                        {"type": "message", "text": "done too early"},
+                        {"type": "message", "text": "progress too early"},
                     ],
                 },
                 {
                     "actions": [
                         {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
-                        {"type": "goal", "text": "change file done", "complete": True},
-                        {"type": "message", "text": "done"},
+                        {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
                     ],
                 },
             ]
@@ -1621,12 +1616,12 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.verification.context == ""
     assert "Retrying: verification must pass before completion." in messages
-    assert "done too early" not in messages
+    assert "progress too early" not in messages
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
 
@@ -1643,8 +1638,7 @@ def test_agent_run_keeps_explicit_pending_verification_gate(tmp_path):
                 {
                     "actions": [
                         {"type": "verify", "method": "manual check", "status": "passed", "context": "checked"},
-                        {"type": "goal", "text": "answer", "complete": True},
-                        {"type": "message", "text": "done"},
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
                     ],
                 },
             ]
@@ -1658,7 +1652,7 @@ def test_agent_run_keeps_explicit_pending_verification_gate(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Retrying: verification is required before completion." in messages
 
 
@@ -1687,11 +1681,11 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
 
     response = agent.run("change file", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Retrying: verification is done but goal is not complete." in messages
     assert "verification is done but goal.complete is not true" in agent.model_client.user_prompts[1]
-    assert "goal complete=true" in agent.model_client.user_prompts[1]
+    assert "goal complete=true with message_for_complete" in agent.model_client.user_prompts[1]
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
 
 
@@ -1701,7 +1695,6 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
-                {"actions": [{"type": "message", "text": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -1716,12 +1709,10 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: goal is complete but no message provided." in messages
-    assert "done without goal" in messages
-    assert "goal.complete=true without a message" in agent.model_client.user_prompts[1]
-    assert "message before goal.complete=true" in agent.model_client.user_prompts[2]
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "Retrying: goal is complete but message_for_complete is missing." in messages
+    assert "goal.complete=true without message_for_complete" in agent.model_client.user_prompts[1]
     assert agent.agent_feedback_errors == []
     assert agent.blackboard.goal_reached is False
 
@@ -1746,7 +1737,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert messages[0] == "Retrying: model returned invalid output: plain answer"
     assert messages[-1] == "done"
@@ -1772,7 +1763,7 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
 
     response = agent.run("answer")
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert "model returned invalid output" in agent.model_client.user_prompts[1]
     assert "Rule: return valid JSON action frames only." in agent.model_client.user_prompts[1]
@@ -1780,7 +1771,7 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
     assert agent.agent_feedback_errors == []
 
 
-def test_agent_feedback_records_message_before_goal_complete(tmp_path):
+def test_agent_allows_progress_message_before_goal_complete(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -1797,10 +1788,13 @@ def test_agent_feedback_records_message_before_goal_complete(tmp_path):
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
 
-    response = agent.run("answer")
+    messages = []
+    response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert "message before goal.complete=true" in agent.model_client.user_prompts[1]
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert messages[0] == "progress"
+    assert messages[-1] == "done"
+    assert "message before goal.complete=true" not in agent.model_client.user_prompts[1]
     assert agent.agent_feedback_errors == []
 
 
@@ -1864,7 +1858,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
 
     response = agent.run("answer")
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
 
 
@@ -1972,7 +1966,7 @@ def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path
     assert response["actions"][0]["message_for_complete"] == "Task completed successfully"
     assert len(agent.model_client.user_prompts) == 1
     assert "Task completed successfully" in messages
-    assert "Retrying: goal is complete but no message provided." not in " ".join(messages)
+    assert "Retrying: goal is complete but message_for_complete is missing." not in " ".join(messages)
 
 def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp_path):
     """Empty string message_for_complete is falsy, so retry should still happen."""
@@ -1981,7 +1975,6 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
-                {"actions": [{"type": "message", "text": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -1996,14 +1989,13 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: goal is complete but no message provided." in messages
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "Retrying: goal is complete but message_for_complete is missing." in messages
     assert agent.agent_feedback_errors == []
 
 
-def test_agent_run_ignores_message_for_complete_when_message_actions_exist(tmp_path):
-    """message_for_complete fallback only triggers when no message actions are present."""
+def test_agent_run_uses_message_for_complete_even_when_message_actions_exist(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -2028,7 +2020,9 @@ def test_agent_run_ignores_message_for_complete_when_message_actions_exist(tmp_p
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "explicit message"
+    assert response["actions"][0]["message_for_complete"] == "fallback message"
+    assert "explicit message" in messages
+    assert messages[-1] == "fallback message"
     assert len(agent.model_client.user_prompts) == 1
 
 
@@ -2054,7 +2048,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["text"] == "done"
+    assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert "should be ignored" not in messages
     assert agent.agent_feedback_errors == []

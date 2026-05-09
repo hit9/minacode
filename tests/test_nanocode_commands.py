@@ -1,3 +1,7 @@
+import os
+
+import shutil
+
 from nanocode import MainAgent, CommandDispatcher, CommandStatus, ModelUsage, Session, UserMessage
 
 
@@ -235,3 +239,100 @@ def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     assert "nanocode.py" in prompts[0]
     assert "pyproject.toml" in prompts[0]
     assert "how does compact work?" in prompts[0]
+
+
+def test_clean_logs_command_removes_log_files(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool_results_dir = session.tool_results_dir()
+    os.makedirs(tool_results_dir, exist_ok=True)
+
+    # Create some log files and a non-log file
+    log1 = os.path.join(tool_results_dir, "test1.log")
+    log2 = os.path.join(tool_results_dir, "test2.log")
+    other = os.path.join(tool_results_dir, "other.txt")
+    with open(log1, "w"):
+        pass
+    with open(log2, "w"):
+        pass
+    with open(other, "w"):
+        pass
+
+    dispatcher = CommandDispatcher(MainAgent(session))
+    result = dispatcher.dispatch("/clean-logs")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "Cleaned 2 log file(s)" in result.message
+    assert not os.path.exists(log1)
+    assert not os.path.exists(log2)
+    assert os.path.exists(other)
+
+
+def test_clean_logs_command_no_directory(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    # Ensure tool_results_dir does not exist
+    tool_results_dir = session.tool_results_dir()
+    if os.path.exists(tool_results_dir):
+        shutil.rmtree(tool_results_dir)
+
+    dispatcher = CommandDispatcher(MainAgent(session))
+    result = dispatcher.dispatch("/clean-logs")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "No tool_results directory found" in result.message
+
+
+def test_clean_logs_command_empty_directory(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool_results_dir = session.tool_results_dir()
+    os.makedirs(tool_results_dir, exist_ok=True)
+
+    dispatcher = CommandDispatcher(MainAgent(session))
+    result = dispatcher.dispatch("/clean-logs")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "Cleaned 0 log file(s)" in result.message
+
+
+def test_clean_logs_command_with_args_returns_usage(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool_results_dir = session.tool_results_dir()
+    os.makedirs(tool_results_dir, exist_ok=True)
+
+    dispatcher = CommandDispatcher(MainAgent(session))
+    result = dispatcher.dispatch("/clean-logs extra-arg")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "Usage: /clean-logs"
+
+
+def test_clean_logs_command_reports_failed_deletions(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool_results_dir = session.tool_results_dir()
+    os.makedirs(tool_results_dir, exist_ok=True)
+
+    # Create two log files
+    log1 = os.path.join(tool_results_dir, "good.log")
+    log2 = os.path.join(tool_results_dir, "fail.log")
+    with open(log1, "w"):
+        pass
+    with open(log2, "w"):
+        pass
+
+    # Mock os.remove to fail on the second file
+    original_remove = os.remove
+    call_count = [0]
+
+    def mock_remove(path):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise OSError("Permission denied")
+        original_remove(path)
+
+    import unittest.mock
+    with unittest.mock.patch("os.remove", side_effect=mock_remove):
+        dispatcher = CommandDispatcher(MainAgent(session))
+        result = dispatcher.dispatch("/clean-logs")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "Cleaned 1 log file(s)" in result.message
+    assert "1 failed" in result.message

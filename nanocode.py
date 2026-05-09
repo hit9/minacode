@@ -2472,6 +2472,7 @@ Hard rules:
 - Use the same language as the latest user input.
 - Write tool intention in that language too.
 - Do not mark the goal complete until the task is done and required verification has passed or is blocked.
+- To finish, output goal complete=true with non-empty message_for_complete; do not use message as the final answer.
 - For greetings or non-actionable chat, output one chat action and stop.
 - If the relevant file/code target is unknown, use the explore capability; do not discover it with Bash/ListDir/Read yourself.
 
@@ -2487,7 +2488,8 @@ Workflow:
 2. If files, code areas, symbols, or call paths are unknown, use explore.
 3. If the target is clear, do small direct checks, answer, or edit.
 4. Record new durable facts in known.
-5. Verify before completion when needed.
+5. If verification is needed, output verify passed/blocked with context.
+6. Finish with goal complete=true and message_for_complete.
 
 Available tools:
 Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
@@ -2511,8 +2513,8 @@ Explore capability:
 
 Action types:
 - chat: reply once to non-actionable chat and end the turn.
-- message: progress, final result, or blocker.
-- goal: current goal; complete=true only after success + verification.
+- message: optional progress or blocker, not the final answer.
+- goal: current goal; complete=true only after success + verification, with message_for_complete.
 - verify: verification status for the current goal.
 - known: new durable facts.
 - learn: stable project-level knowledge to persist across sessions.
@@ -2527,7 +2529,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "message", "text": "string"} __END_ACTION__
-{"type": "goal", "text": "string", "verified": true | false, "complete": true | false, "message_for_complete": "string"} __END_ACTION__
+{"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "learn", "summary": "optional full replacement", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
@@ -4385,6 +4387,12 @@ class MainAgent(BaseAgent):
     def _messages_from_actions(self, actions: list[Json]) -> list[str]:
         return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "message") if message]
 
+    def _completion_message_from_actions(self, actions: list[Json]) -> str:
+        for action in reversed(actions):
+            if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
+                return _json_str(action.get("message_for_complete")) or ""
+        return ""
+
     def execute_explore_actions(
         self,
         actions: list[Json],
@@ -4449,19 +4457,16 @@ class MainAgent(BaseAgent):
         return ExploreAgent(parent_session=self.session, parent_blackboard=self.blackboard, goal=goal, scope=scope)
 
     def _format_agent_feedback_verification_error(self) -> str:
-        return 'Error: goal is not complete until verification passes or is blocked. Rule: run a relevant tool, or return verify status="passed"|"blocked" with context.'
+        return 'Error: completion is blocked until verification passes or is blocked. Rule: return verify status="passed"|"blocked" with context, then goal complete=true with message_for_complete.'
 
     def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
-        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message; otherwise continue with tool/plan/verify."
+        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
-        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, or final message action."
-
-    def _format_agent_feedback_message_before_complete_error(self) -> str:
-        return "Error: returned message before goal.complete=true. Rule: only finish with message after the goal is achieved and verified."
+        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, progress message, or final goal action."
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
-        return "Error: returned goal.complete=true without a message. Rule: finish with both goal complete=true and a final message."
+        return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
 
     def run(
         self,
@@ -4511,13 +4516,7 @@ class MainAgent(BaseAgent):
         tool_calls = self._tool_calls_from_actions(actions)
         explore_actions = self._explore_actions_from_actions(actions)
         messages = self._messages_from_actions(actions)
-        if not messages:
-            for action in actions:
-                if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
-                    fallback = _json_str(action.get("message_for_complete"))
-                    if fallback:
-                        messages = [fallback]
-                        break
+        completion_message = self._completion_message_from_actions(actions)
         if self.session.debug and on_message is not None:
             frame_error_report = self._format_frame_error_report(response)
             if frame_error_report:
@@ -4550,15 +4549,6 @@ class MainAgent(BaseAgent):
                     on_message(report)
             self.maybe_auto_compact()
             return AgentRunResult()
-        if self.blackboard.goal_reached and not messages:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
-            self._report_gate(
-                on_message,
-                "Retrying: goal is complete but no message provided.",
-                "Completion_Gate: goal.complete=true requires a message action.",
-            )
-            return AgentRunResult()
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             self.blackboard.goal_reached = False
             self._remember_agent_error(self._format_agent_feedback_verification_error())
@@ -4581,11 +4571,23 @@ class MainAgent(BaseAgent):
                 "Verification_Gate: this goal used tools that require verification before completion.",
             )
             return AgentRunResult()
+        if self.blackboard.goal_reached and not completion_message:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+            self._report_gate(
+                on_message,
+                "Retrying: goal is complete but message_for_complete is missing.",
+                "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
+            )
+            return AgentRunResult()
         for message in messages:
             self.session.append_conversation(AssistantMessage(content=message))
             if on_message is not None:
                 on_message(message)
-        if messages and self.blackboard.goal_reached:
+        if self.blackboard.goal_reached:
+            self.session.append_conversation(AssistantMessage(content=completion_message))
+            if on_message is not None:
+                on_message(completion_message)
             self._finish_current_goal()
             return AgentRunResult(done=True, value=response)
         self.blackboard.goal_reached = False
@@ -4596,8 +4598,6 @@ class MainAgent(BaseAgent):
                 "Continuing: assistant must set current task's goal.",
                 "Continuation_Gate: goal not reached; retrying next useful action.",
             )
-        elif messages:
-            self._remember_agent_error(self._format_agent_feedback_message_before_complete_error())
         return AgentRunResult()
 
 
@@ -4638,6 +4638,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
+    CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
@@ -4692,6 +4693,7 @@ class CommandDispatcher:
             "/compact": self._compact,
             "/config": self._config,
             "/set": self._set,
+            "/clean-logs": self._clean_logs,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -4974,6 +4976,26 @@ class CommandDispatcher:
             self.agent.session.shell_timeout = value
         elif key == "runtime.max_agent_steps":
             self.agent.session.max_agent_steps = value
+
+    def _clean_logs(self, args: str) -> str:
+        if args:
+            return "Usage: /clean-logs"
+        tool_results_dir = self.agent.session.tool_results_dir()
+        if not os.path.isdir(tool_results_dir):
+            return f"No tool_results directory found at {tool_results_dir}"
+        count = 0
+        failed = 0
+        for name in os.listdir(tool_results_dir):
+            if name.endswith(".log"):
+                try:
+                    os.remove(os.path.join(tool_results_dir, name))
+                    count += 1
+                except OSError:
+                    failed += 1
+        msg = f"Cleaned {count} log file(s) from {tool_results_dir}"
+        if failed:
+            msg += f" ({failed} failed)"
+        return msg
 
     def _parse_on_off(self, value: str) -> bool | None:
         if value == "on":
@@ -5418,12 +5440,22 @@ class AgentLoop:
 
     def _preview_segments(self, preview: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = [("ansibrightblack", "  Preview\n")]
-        if self._looks_like_unified_diff(preview):
-            return segments + self._indent_segments(self._diff_segments(preview), "    ")
+        diff_start = self._unified_diff_start(preview)
+        if diff_start >= 0:
+            prefix = "\n".join(preview.splitlines()[:diff_start])
+            diff = "\n".join(preview.splitlines()[diff_start:])
+            if prefix:
+                segments += self._indented_text_segments(prefix, indent="    ", style="ansiyellow")
+            return segments + self._indent_segments(self._diff_segments(diff), "    ")
         return segments + self._indented_text_segments(preview, indent="    ", style="ansicyan")
 
-    def _looks_like_unified_diff(self, text: str) -> bool:
-        return text.startswith("--- ") and "\n+++ " in text and "\n@@ " in text
+    def _unified_diff_start(self, text: str) -> int:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            body = "\n".join(lines[index:])
+            if line.startswith("--- ") and "\n+++ " in body and "\n@@ " in body:
+                return index
+        return -1
 
     def _diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []

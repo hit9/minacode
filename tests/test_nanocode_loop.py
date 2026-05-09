@@ -141,7 +141,8 @@ def test_agent_loop_highlights_only_diff_previews(tmp_path):
 
     diff_segments = loop._preview_segments("--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n same\n")
     plain_segments = loop._preview_segments("-not a diff\n+still not a diff")
-    false_positive_segments = loop._preview_segments("note\n--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new")
+    prefixed_diff_segments = loop._preview_segments("note\n--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new")
+    false_positive_segments = loop._preview_segments("note\n--- a\n+still not a diff")
 
     assert ("ansibrightblack", "--- a\n") in diff_segments
     assert ("ansibrightblack", "+++ b\n") in diff_segments
@@ -150,8 +151,10 @@ def test_agent_loop_highlights_only_diff_previews(tmp_path):
     assert ("ansigreen", "+new\n") in diff_segments
     assert ("ansicyan", "-not a diff\n") in plain_segments
     assert ("ansicyan", "+still not a diff\n") in plain_segments
+    assert ("ansiyellow", "note\n") in prefixed_diff_segments
+    assert ("ansibrightblack", "--- a\n") in prefixed_diff_segments
+    assert ("ansired", "-old\n") in prefixed_diff_segments
     assert ("ansicyan", "--- a\n") in false_positive_segments
-    assert ("ansicyan", "-old\n") in false_positive_segments
 
 
 def test_agent_loop_styles_queued_tool_preview(tmp_path):
