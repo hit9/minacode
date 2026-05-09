@@ -2746,7 +2746,7 @@ Action types:
 - goal: current goal; complete=true only after success + verification, with message_for_complete.
 - verify: request or record verification for the current goal; pending means Verify should check it.
 - known: new durable facts.
-- learn: stable project-level knowledge to persist across sessions.
+- learn: stable project-level knowledge to persist across sessions; store final reusable facts only, not learning process notes.
 - plan: work plan.
 - tool: call one available tool.
 - explore: locate unknown code targets/evidence points and return relevant targets/facts.
@@ -2762,7 +2762,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
-{"type": "learn", "summary": "optional full replacement", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
+{"type": "learn", "summary": "optional one-sentence project summary, not a process log", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "explore", "goal": "string", "scope": ["string"], "reason": "string", "context": null | "string"} __END_ACTION__
@@ -5713,7 +5713,8 @@ class CommandDispatcher:
         prompt = args.strip()
         guidance = (
             "Review existing Project_Knowledge plus Known/Conversation. Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-            "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
+            "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
+            "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
         )
         context = self._format_learn_session_context()
         if prompt:

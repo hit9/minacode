@@ -126,7 +126,8 @@ def test_learn_command_dispatches_default_learning_task(tmp_path):
     assert calls == [
         "Learn stable project knowledge for this codebase. Review existing Project_Knowledge plus Known/Conversation. "
         "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
+        "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
+        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
     ]
 
 
@@ -158,7 +159,8 @@ def test_learn_command_dispatches_scoped_learning_task(tmp_path):
     assert calls == [
         "Learn stable project knowledge about: test layout. Review existing Project_Knowledge plus Known/Conversation. "
         "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, one-off findings, line numbers, or large code."
+        "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
+        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
     ]
 
 
