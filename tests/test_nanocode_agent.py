@@ -15,6 +15,16 @@ def _final_actions(goal="answer", message="done"):
     ]
 
 
+def _make_edit_agent(session: Session) -> nanocode.EditAgent:
+    parent_agent = MainAgent(session)
+    return nanocode.EditAgent(
+        parent_session=session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="edit",
+        scope=[],
+    )
+
+
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -117,7 +127,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = _make_edit_agent(session)
 
     agent.execute_tool_calls(
         [
@@ -129,7 +139,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 2
     assert [execution.outcome for execution in agent.tool_runner.latest_executions] == ["success", "failure"]
-    assert list(session.tool_result_store) == ["tr.1", "tr.2"]
+    assert list(agent.runtime.tool_result_store) == ["tr.1", "tr.2"]
     assert path.read_text(encoding="utf-8") == "new\n"
 
 
@@ -1037,7 +1047,7 @@ def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path)
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = _make_edit_agent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -1057,7 +1067,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = _make_edit_agent(session)
 
     latest = agent.execute_tool_calls(
         [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}],
@@ -1074,7 +1084,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = _make_edit_agent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -1189,6 +1199,37 @@ def test_verify_agent_rejects_edit_tools(tmp_path):
     assert list(verifier.runtime.tool_result_store) == ["tr.1"]
 
 
+def test_edit_agent_rejects_bash_and_allows_edit_tools(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    editor = nanocode.EditAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="edit sample",
+        scope=["target: sample.txt"],
+    )
+
+    latest = editor.execute_tool_calls([{"name": "Bash", "intention": "try shell", "args": ["printf nope"]}])
+
+    system_prompt = editor.build_system_prompt()
+    assert "Read(" in system_prompt
+    assert "Search(" in system_prompt
+    assert "Git(" in system_prompt
+    assert "Edit(" in system_prompt
+    assert "ReplaceRange(" in system_prompt
+    assert "ApplyPatch(" in system_prompt
+    assert "Bash(" not in system_prompt
+    assert "prefer small target ranges over whole files" in system_prompt
+    assert "one-sentence summary, at most 3 checks" in system_prompt
+    assert "tool not allowed for this agent: Bash" in latest
+    assert path.read_text(encoding="utf-8") == "old\n"
+    assert editor.session is parent_session
+    assert parent_session.tool_result_store == {}
+    assert list(editor.runtime.tool_result_store) == ["tr.1"]
+
+
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
@@ -1273,7 +1314,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path), yolo=True)
-    agent = MainAgent(session)
+    agent = _make_edit_agent(session)
     confirmations = []
     auto_approvals = []
 
@@ -1290,7 +1331,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert "+new" in auto_approvals[0][1]
     assert "<ToolCall ok" in latest
     assert path.read_text(encoding="utf-8") == "new\n"
-    assert agent.blackboard.verification_required is True
+    assert agent.blackboard.verification_required is False
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
@@ -1413,12 +1454,105 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert "<Agent_Report>" in agent.model_client.user_prompts[1]
+    assert "<Agent_Reports>" in agent.model_client.user_prompts[1]
+    assert "<Explore_History>" in agent.model_client.user_prompts[1]
     assert "sample.txt line 1 is the relevant target." in agent.model_client.user_prompts[1]
     assert session.tool_result_store == {}
     assert agent.recent_tool_calls == ""
     assert any(message.startswith("[explore] Tool Calls") for message in messages)
     assert messages[-1] == "done"
+
+
+def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
+    edit_calls = []
+    verify_calls = []
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "change sample", "complete": False},
+                        {
+                            "type": "edit",
+                            "goal": "change sample text",
+                            "targets": [{"path": "sample.txt", "area": "line 1", "line_range": "0,1", "context": "old", "reason": "line needs update"}],
+                            "constraints": ["preserve newline"],
+                            "self_check": ["read back line 1"],
+                        },
+                    ]
+                },
+                {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    class FakeEditAgent:
+        def __init__(self, *, goal, scope):
+            self.goal = goal
+            self.scope = scope
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            edit_calls.append((self.goal, self.scope))
+            if on_message is not None:
+                on_message('Tool Calls\n  1. [success] Edit("sample.txt", "old", "new")\n     why: update sample')
+            return nanocode.EditReport(status="changed", summary="sample changed", changed_files=["sample.txt"], checks=["read back line 1"])
+
+    class FakeVerifyAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            verify_calls.append(True)
+            return nanocode.VerifyReport(status="passed", method="review", summary="edit verified")
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+    agent._make_edit_agent = lambda *, goal, scope: FakeEditAgent(goal=goal, scope=scope)
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
+    messages = []
+
+    response = agent.run("change sample", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert edit_calls == [
+        (
+            "change sample text",
+            [
+                "target: sample.txt line 1 line_range=0,1",
+                "target_context: old",
+                "target_reason: line needs update",
+                "constraint: preserve newline",
+                "self_check: read back line 1",
+            ],
+        )
+    ]
+    assert verify_calls == [True]
+    assert "<EditReport>" in agent.model_client.user_prompts[1]
+    assert "sample changed" in agent.model_client.user_prompts[1]
+    assert "Editing: change sample text" in messages
+    assert any(message.startswith("[edit] Tool Calls") for message in messages)
+    assert "Edit done: changed\n  sample changed" in messages
+    assert "Verify done: passed | review\n  edit verified" in messages
+    assert messages[-1] == "done"
+
+
+def test_agent_report_history_keeps_explore_edit_and_verify_reports(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.agent_reports.explore.append(nanocode.ExploreReport(targets=[], known=["found target"], verification=nanocode.Verification()).format())
+    agent.agent_reports.edit.append(nanocode.EditReport(status="changed", summary="edited target").format())
+    agent.agent_reports.verify.append(nanocode.VerifyReport(status="passed", method="review", summary="verified target").format())
+
+    prompt = agent.build_user_prompt()
+
+    assert "<Explore_History>" in prompt
+    assert "found target" in prompt
+    assert "<Edit_History>" in prompt
+    assert "edited target" in prompt
+    assert "<Verify_History>" in prompt
+    assert "verified target" in prompt
 
 
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
@@ -1614,6 +1748,11 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
     verify_confirm_callbacks = []
 
+    class FakeEditAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            (tmp_path / "sample.txt").write_text("new\n", encoding="utf-8")
+            return nanocode.EditReport(status="changed", summary="sample changed", changed_files=["sample.txt"])
+
     class FakeVerifyAgent:
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
             verify_confirm_callbacks.append(confirm)
@@ -1628,7 +1767,13 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "change file", "complete": False},
-                        {"type": "tool", "name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]},
+                        {
+                            "type": "edit",
+                            "goal": "edit sample",
+                            "targets": [{"path": "sample.txt", "area": "line 1"}],
+                            "constraints": [],
+                            "self_check": [],
+                        },
                     ],
                 },
                 {
@@ -1645,6 +1790,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
+    agent._make_edit_agent = lambda *, goal, scope: FakeEditAgent()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
 
@@ -1665,6 +1811,14 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
 
+    class FakeEditAgent:
+        def __init__(self):
+            self.contents = ["bad\n", "new\n"]
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            (tmp_path / "sample.txt").write_text(self.contents.pop(0), encoding="utf-8")
+            return nanocode.EditReport(status="changed", summary="sample changed", changed_files=["sample.txt"])
+
     class FakeVerifyAgent:
         def __init__(self):
             self.reports = [
@@ -1682,13 +1836,25 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "change file", "complete": False},
-                        {"type": "tool", "name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "bad"]},
+                        {
+                            "type": "edit",
+                            "goal": "edit sample badly",
+                            "targets": [{"path": "sample.txt", "area": "line 1"}],
+                            "constraints": [],
+                            "self_check": [],
+                        },
                     ],
                 },
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
                 {
                     "actions": [
-                        {"type": "tool", "name": "Edit", "intention": "fix sample", "args": ["sample.txt", "bad", "new"]},
+                        {
+                            "type": "edit",
+                            "goal": "fix sample",
+                            "targets": [{"path": "sample.txt", "area": "line 1"}],
+                            "constraints": [],
+                            "self_check": [],
+                        },
                     ],
                 },
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
@@ -1701,13 +1867,16 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
+    editor = FakeEditAgent()
     verifier = FakeVerifyAgent()
+    agent._make_edit_agent = lambda *, goal, scope: editor
     agent._make_verify_agent = lambda *, goal, scope: verifier
 
     response = agent.run("change file", confirm=lambda call, tool: True)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "<Verify_Report>" in agent.model_client.user_prompts[2]
+    assert "<Agent_Reports>" in agent.model_client.user_prompts[2]
+    assert "<Verify_History>" in agent.model_client.user_prompts[2]
     assert "assertion failed" in agent.model_client.user_prompts[2]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
@@ -1758,7 +1927,8 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert "verification target: manual check" in verifier_calls[0][1]
     assert "verification context: check answer" in verifier_calls[0][1]
     assert "Verifying: manual check" in messages
-    assert "<Verify_Report>" in agent.model_client.user_prompts[1]
+    assert "<Agent_Reports>" in agent.model_client.user_prompts[1]
+    assert "<Verify_History>" in agent.model_client.user_prompts[1]
 
 
 def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
@@ -1881,7 +2051,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "message", "text": "progress"}]},
+                {"actions": [{"type": "progress", "text": "progress"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -1899,8 +2069,39 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert messages[0] == "progress"
     assert messages[-1] == "done"
-    assert "message before goal.complete=true" not in agent.model_client.user_prompts[1]
+    assert "progress" not in [item.content for item in session.conversation]
     assert agent.agent_feedback_errors == []
+
+
+def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "progress", "text": "reading sample"},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
+                    ]
+                },
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+
+    messages = []
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert messages[0] == "reading sample"
+    assert "reading sample" not in [item.content for item in session.conversation]
 
 
 def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
@@ -2100,7 +2301,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
     assert agent.agent_feedback_errors == []
 
 
-def test_agent_run_uses_message_for_complete_even_when_message_actions_exist(tmp_path):
+def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -2108,7 +2309,7 @@ def test_agent_run_uses_message_for_complete_even_when_message_actions_exist(tmp
                 {
                     "actions": [
                         {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "fallback message"},
-                        {"type": "message", "text": "explicit message"},
+                        {"type": "progress", "text": "explicit progress"},
                     ]
                 },
                 {"actions": _final_actions()},
@@ -2126,9 +2327,10 @@ def test_agent_run_uses_message_for_complete_even_when_message_actions_exist(tmp
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][0]["message_for_complete"] == "fallback message"
-    assert "explicit message" in messages
+    assert "explicit progress" in messages
     assert messages[-1] == "fallback message"
     assert len(agent.model_client.user_prompts) == 1
+    assert "explicit progress" not in [item.content for item in session.conversation]
 
 
 def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path):
@@ -2138,7 +2340,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": False, "message_for_complete": "should be ignored"}]},
-                {"actions": [{"type": "message", "text": "done without goal"}]},
+                {"actions": [{"type": "progress", "text": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 
