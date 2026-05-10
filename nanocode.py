@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.10"
+__version__ = "0.3.11"
 
 
 JsonValue: TypeAlias = Any
@@ -2901,28 +2901,24 @@ Rules:
 - Chat ONLY -> one chat action.
 - Task -> keep GOAL, PLAN, KNOWN facts, NEXT STEP clear.
 - Complete ONLY with goal.complete=true and non-empty message_for_complete after required verification.
+- Verification is REQUIRED after edits; otherwise use it ONLY when the user asks for verification or the next step truly needs a separate check.
 
-Main Workflow (Goal Driven):
+Main Workflow:
 
-In Short: A "PLAN -> ACTION -> KNOWN -> VERIFY -> PLAN" LOOP TOWARDS GOAL.
+In Short: PLAN -> CURRENT STEP -> KNOWN -> PLAN/VERIFY/COMPLETE.
 
-At EACH TURN, do EXACTLY the FIRST matching step, then STOP.
-Do NOT try to solve the WHOLE GOAL at once; ONLY decide and execute the CURRENT STEP.
-Finish work through SMALL ITERATIVE steps; NEVER take one LARGE step when SMALLER steps are possible.
-Optionally include brief PROGRESS with the current step; PROGRESS must NOT replace the workflow step.
-1. GOAL missing -> output START ONLY when the task is clear.
-2. PLAN missing -> output PLAN ONLY, based on GOAL, KNOWN, WORKER REPORTS, and RECENT TOOLS.
-3. NEW worker/tool results exist -> update KNOWN FIRST.
-4. Verification_State is DONE/BLOCKED/FAILED -> PATCH PLAN/GOAL from that result; do NOT repeat the same verify.
-5. KNOWN changed or PLAN is stale/wrong -> PATCH PLAN before ANY tool/worker.
-6. Recent work already completed the NEXT STEP -> MARK that plan step DONE; DO NOT REPEAT it.
-7. Current PLAN has a NEXT STEP -> use it to drive the CURRENT STEP; do NOT invent unrelated work.
-8. Next plan step has UNKNOWN file/symbol/range/project structure -> call EXPLORE ONLY.
-9. Next plan step has a KNOWN target -> do ONE SMALLEST tool/edit action.
-10. After EACH step -> PATCH PLAN status/context before continuing.
-11. After EDIT -> call VERIFY or inspect ONE NARROW target.
-12. VERIFICATION failed -> FIX the reported issue.
-13. DONE -> output goal complete=true with message_for_complete.
+At EACH TURN, do the FIRST matching step, then STOP.
+A CURRENT STEP may include MULTIPLE related actions/tool calls, but must NOT try to finish the WHOLE GOAL at once.
+1. GOAL missing -> output START ONLY.
+2. PLAN missing -> output PLAN ONLY; include VERIFY only for edits or explicit user verification requests.
+3. NEW worker/tool results exist -> update KNOWN and PATCH PLAN before more work.
+4. Verification_State is FAILED -> FIX the reported issue.
+5. Verification_State is DONE/BLOCKED -> PATCH PLAN/GOAL; do NOT repeat the same verify.
+6. Next step has UNKNOWN target -> EXPLORE.
+7. Next step has KNOWN target -> do the SMALLEST useful batch of tool/edit actions.
+8. After EDIT -> VERIFY or inspect ONE NARROW target.
+9. After successful user-requested build/test/check -> COMPLETE; do NOT verify again.
+10. DONE -> output goal complete=true with message_for_complete.
 
 Editing:
 - ALWAYS edit INCREMENTALLY.
@@ -2941,6 +2937,7 @@ Workers:
 - Verify worker is an EXPECT CHECKER: give it a NARROW target and EXPLICIT expected condition.
 - Verify method is a short target label, not a shell command.
 - Main must NOT run test/lint/build/syntax/change verification commands itself.
+- If Main already ran the requested build/test/check tool successfully, do NOT call Verify for that same check.
 - After verify status=pending, output NO tool/explore in the same response.
 - If Verification_State is DONE and no new edit happened, NEVER request pending verify again; PATCH PLAN or complete.
 - Do NOT ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
@@ -3946,6 +3943,7 @@ class ToolCallRunner:
             output = ""
             error_type: Type[Exception] | None = None
             requires_confirmation = False
+            requires_verification = False
             try:
                 if isinstance(item, PreparedToolCall):
                     call = item.call
@@ -3953,6 +3951,7 @@ class ToolCallRunner:
                 else:
                     call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
                     tool = self._make_tool(call)
+                requires_verification = tool.is_editing()
                 preview_error = self._preview_error(tool)
                 if preview_error:
                     raise ToolCallError("preview unavailable: " + preview_error)
@@ -3999,7 +3998,7 @@ class ToolCallRunner:
                 result_key=result_key,
                 result_excerpted=result_excerpted,
                 requires_confirmation=requires_confirmation,
-                requires_verification=outcome == "success" and requires_confirmation,
+                requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
 
@@ -4617,6 +4616,7 @@ class BaseAgent:
         self.worker_reports = WorkerReportHistory()
         self.prompt_context.worker_reports = self.worker_reports
         self.agent_feedback_errors: list[str] = []
+        self.gate_report_counts: dict[str, int] = {}
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
@@ -4715,6 +4715,7 @@ class BaseAgent:
 
     def _clear_agent_feedback(self) -> None:
         self.agent_feedback_errors = []
+        self.gate_report_counts = {}
 
     def _finish_current_goal(self) -> None:
         self.blackboard.goal_reached = False
@@ -4778,8 +4779,19 @@ class BaseAgent:
         return message + " Rule: return valid JSON action frames only."
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
-        if on_message is not None:
-            on_message(debug_message if self.session.debug else message)
+        if on_message is None:
+            return
+        if self.session.debug:
+            on_message(debug_message)
+            return
+        if not message.startswith(("Retrying:", "Continuing:")):
+            on_message(message)
+            return
+        key = debug_message.split(":", 1)[0] or message
+        count = self.gate_report_counts.get(key, 0) + 1
+        self.gate_report_counts[key] = count
+        if count == 2:
+            on_message(message)
 
     def _format_gate_user_message(self, prefix: str, format_error: str) -> str:
         detail = format_error

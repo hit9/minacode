@@ -390,6 +390,26 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
     ]
 
 
+def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    messages = []
+
+    agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: first")
+    agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: second")
+    agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: third")
+
+    assert messages == ["Retrying: sample gate."]
+
+
+def test_agent_gate_reports_immediately_in_debug(tmp_path):
+    agent = MainAgent(Session(cwd=str(tmp_path), debug=True))
+    messages = []
+
+    agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: debug")
+
+    assert messages == ["Sample_Gate: debug"]
+
+
 def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
     class FakeModelClient:
         def __init__(self):
@@ -1214,6 +1234,15 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     ]
 
 
+def test_agent_execute_bash_does_not_require_verification(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.execute_tool_calls([{"name": "Bash", "intention": "run command", "args": ["true"]}], confirm=lambda call, tool: True)
+
+    assert agent.blackboard.verification_required is False
+
+
 def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -1533,6 +1562,11 @@ def test_agent_run_retries_explore_without_kind_or_constraints(tmp_path):
                         {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
                     ]
                 },
+                {
+                    "actions": [
+                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
+                    ]
+                },
                 {"actions": _final_actions("relevant target")},
             ]
 
@@ -1720,6 +1754,11 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
                 },
                 {
                     "actions": [
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                    ]
+                },
+                {
+                    "actions": [
                         {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Read sample", "status": "doing"}]},
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
@@ -1820,6 +1859,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
+                {"actions": []},
                 {"actions": []},
                 {"actions": _final_actions()},
             ]
@@ -1988,6 +2028,7 @@ def test_agent_run_does_not_repeat_failed_verification_before_fix(tmp_path):
                 },
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
                 {
                     "actions": [
                         {
@@ -2123,6 +2164,18 @@ def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
                         }
                     ],
                 },
+                {
+                    "actions": [
+                        {
+                            "type": "verify",
+                            "kind": "build",
+                            "method": "cmake_build",
+                            "criteria": ["build exits 0"],
+                            "status": "pending",
+                            "context": "verify build once more",
+                        }
+                    ],
+                },
                 {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
             ]
 
@@ -2170,6 +2223,7 @@ def test_agent_run_treats_verify_scope_check_blocked_as_failed(tmp_path):
         },
         on_message=messages.append,
     )
+    agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]}, on_message=messages.append)
     agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]}, on_message=messages.append)
 
     assert "Verify blocked | scope_check\n  missing target" in messages
@@ -2245,6 +2299,11 @@ def test_agent_run_retries_pending_verify_without_kind_or_criteria(tmp_path):
                 },
                 {
                     "actions": [
+                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
+                    ],
+                },
+                {
+                    "actions": [
                         {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
                     ],
                 },
@@ -2276,6 +2335,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
                         {"type": "verify", "method": "run tests", "status": "passed", "context": "tests passed"},
                     ],
                 },
+                {"actions": [{"type": "goal", "text": "change file", "complete": False}]},
                 {"actions": _final_actions("change file")},
             ]
 
@@ -2292,7 +2352,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     response = agent.run("change file", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
+    assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: verification is done but goal is not complete." in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
@@ -2302,6 +2362,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
                 {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
                 {"actions": _final_actions()},
             ]
@@ -2319,7 +2380,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
+    assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: goal is complete but message_for_complete is missing." in messages
     assert agent.agent_feedback_errors
     assert agent.blackboard.goal_reached is False
@@ -2330,6 +2391,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
+                {"_format_error": "Invalid model output: plain answer", "actions": []},
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
                 {"actions": _final_actions()},
             ]
@@ -2346,8 +2408,8 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
-    assert messages[0] == "Retrying: model returned invalid output: plain answer"
+    assert len(agent.model_client.user_prompts) == 3
+    assert "Retrying: model returned invalid output: plain answer" in messages
     assert messages[-1] == "done"
 
 
@@ -2632,6 +2694,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
                 {"actions": _final_actions()},
             ]
 
@@ -2647,7 +2710,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
+    assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: goal is complete but message_for_complete is missing." in messages
     assert agent.agent_feedback_errors
 
