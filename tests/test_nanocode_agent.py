@@ -1611,7 +1611,6 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
-    agent.blackboard.verification.status = VerificationStatus.REQUIRED
     agent.latest_tool_batch = "old tool call"
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
@@ -1929,6 +1928,56 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert "verification context: check answer" in verifier_calls[0][1]
     assert "Verifying: manual check" in messages
     assert len(agent.model_client.user_prompts) == 2
+
+
+def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path):
+    verifier_calls = []
+    bash_confirmed = []
+
+    class FakeVerifyAgent:
+        def __init__(self, *, goal, scope):
+            self.goal = goal
+            self.scope = scope
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            verifier_calls.append((self.goal, self.scope))
+            return nanocode.VerifyReport(status="passed", method="unit", summary="tests passed")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "answer", "complete": False},
+                        {
+                            "type": "verify",
+                            "kind": "test",
+                            "method": "run unit tests",
+                            "criteria": ["tests pass"],
+                            "status": "pending",
+                            "context": "verify answer",
+                        },
+                        {"type": "tool", "name": "Bash", "intention": "run tests", "args": ["python -m pytest -q"]},
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
+
+    response = agent.run("answer", confirm=lambda call, tool: bash_confirmed.append(call.executed) or True)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][0] == "run unit tests"
+    assert "verification kind: test" in verifier_calls[0][1]
+    assert bash_confirmed == []
+    assert agent.latest_tool_batch == ""
 
 
 def test_agent_run_retries_pending_verify_without_kind_or_criteria(tmp_path):

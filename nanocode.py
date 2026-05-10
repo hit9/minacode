@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 
 JsonValue: TypeAlias = Any
@@ -5535,6 +5535,19 @@ class MainAgent(BaseAgent):
                 "Completion_Gate: verification is done but goal.complete is not true.",
             )
             return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            report = self.execute_verify(
+                completion_message=completion_message,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            )
+            if not self._apply_verify_report(report):
+                self.blackboard.goal_reached = False
+                return AgentRunResult()
+            return AgentRunResult()
         if explore_actions:
             self.execute_explore_actions(
                 explore_actions,
@@ -5560,18 +5573,6 @@ class MainAgent(BaseAgent):
                     on_message(report)
             self.maybe_auto_compact()
             return AgentRunResult()
-        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            report = self.execute_verify(
-                completion_message=completion_message,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            )
-            if not self._apply_verify_report(report):
-                self.blackboard.goal_reached = False
-                return AgentRunResult()
         if (
             self.blackboard.goal_reached
             and self.blackboard.verification_required
