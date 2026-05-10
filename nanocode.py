@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 
 
 JsonValue: TypeAlias = Any
@@ -2902,7 +2902,10 @@ Rules:
 - Task -> keep GOAL, PLAN, KNOWN facts, NEXT STEP clear.
 - Complete ONLY with goal.complete=true and non-empty message_for_complete after required verification.
 
-Main Workflow:
+Main Workflow (Goal Drive):
+
+In Short: A "PLAN -> ACTION -> KNOWN -> VERIFY -> PLAN" LOOP TOWARDS GOAL.
+
 At EACH TURN, do EXACTLY the FIRST matching step, then STOP.
 Do NOT try to solve the WHOLE GOAL at once; ONLY decide and execute the CURRENT STEP.
 Finish work through SMALL ITERATIVE steps; NEVER take one LARGE step when SMALLER steps are possible.
@@ -5531,9 +5534,7 @@ class MainAgent(BaseAgent):
         pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
         progress_messages = self._progress_messages_from_actions(actions)
         completion_message = self._completion_message_from_actions(actions)
-        state_or_work_requested = bool(
-            tool_calls or explore_actions or pending_verify_requested or progress_messages or self._has_plan_action(actions)
-        )
+        state_or_work_requested = bool(tool_calls or explore_actions or pending_verify_requested or progress_messages or self._has_plan_action(actions))
         if goal_was_empty and not self._has_goal_action(actions) and state_or_work_requested:
             self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
             self._report_gate(
@@ -5721,6 +5722,7 @@ class CommandSpec:
 
     def display_name(self) -> str:
         return self.usage or self.name
+
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
