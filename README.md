@@ -15,7 +15,7 @@ nanocode is used to help building itself, including features such as `@file` pat
 - **Constrained Output**: Force model replies into auditable action frames.
 - **Verified Edits**: Reject stale range edits before they touch files.
 - **Autonomous Loop**: Chain reading, editing, running, and verification.
-- **Live Telemetry**: Stream tool intent, token use, cost, and status.
+- **Live Telemetry**: Stream tool intent, token use, and status.
 
 ## Install
 
@@ -97,5 +97,5 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
 ## Status
 
-- Status bar: active model, reasoning, context, tool calls, tokens/cost, elapsed time, and active model-call time.
-- `/status`: main/worker model state, per-model calls/tokens, total cost, runtime state, goal, and verification.
+- Status bar: active model, reasoning, context, tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: main/worker model state, per-model calls/tokens, runtime state, goal, and verification.

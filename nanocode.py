@@ -394,8 +394,6 @@ class ModelConfig:
     stream: bool | None = None
     timeout: int | None = None
     first_token_timeout: int | None = None
-    prompt_price_per_1m_tokens: float | None = None
-    completion_price_per_1m_tokens: float | None = None
 
     def resolved(self, fallback: "ModelConfig") -> "ModelConfig":
         return ModelConfig(
@@ -406,12 +404,6 @@ class ModelConfig:
             stream=self.stream if self.stream is not None else fallback.stream,
             timeout=self.timeout if self.timeout is not None else fallback.timeout,
             first_token_timeout=self.first_token_timeout if self.first_token_timeout is not None else fallback.first_token_timeout,
-            prompt_price_per_1m_tokens=(
-                self.prompt_price_per_1m_tokens if self.prompt_price_per_1m_tokens is not None else fallback.prompt_price_per_1m_tokens
-            ),
-            completion_price_per_1m_tokens=(
-                self.completion_price_per_1m_tokens if self.completion_price_per_1m_tokens is not None else fallback.completion_price_per_1m_tokens
-            ),
         )
 
 
@@ -421,14 +413,12 @@ class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    cost: float = 0.0
 
-    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int, cost: float) -> None:
+    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
         self.calls += 1
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
-        self.cost += cost
 
 
 ############################
@@ -443,8 +433,6 @@ DEFAULT_MODEL_CONFIG = ModelConfig(
     stream=True,
     timeout=90,
     first_token_timeout=30,
-    prompt_price_per_1m_tokens=0.0,
-    completion_price_per_1m_tokens=0.0,
 )
 
 
@@ -469,9 +457,6 @@ stream = true
 timeout = 90
 # Stream mode only: retry if no first content token arrives within this many seconds.
 first_token_timeout = 30
-# Optional usage pricing per 1M tokens. Leave 0.0 if unknown.
-prompt_price_per_1m_tokens = 0.0
-completion_price_per_1m_tokens = 0.0
 
 [worker_model]
 # Default model config for worker agents. Empty model falls back to main_model.model.
@@ -482,8 +467,6 @@ reasoning_effort = "medium"
 stream = true
 timeout = 90
 first_token_timeout = 30
-prompt_price_per_1m_tokens = 0.0
-completion_price_per_1m_tokens = 0.0
 
 [explore_agent]
 # ExploreAgent removes uncertainty about unknown file/code targets before editing.
@@ -576,12 +559,6 @@ max_agent_steps = 50
             stream=cls.bool(config, "stream", defaults.stream),
             timeout=cls.int(config, "timeout", defaults.timeout),
             first_token_timeout=cls.int(config, "first_token_timeout", defaults.first_token_timeout),
-            prompt_price_per_1m_tokens=cls.float(config, "prompt_price_per_1m_tokens", defaults.prompt_price_per_1m_tokens),
-            completion_price_per_1m_tokens=cls.float(
-                config,
-                "completion_price_per_1m_tokens",
-                defaults.completion_price_per_1m_tokens,
-            ),
         )
 
 
@@ -898,8 +875,6 @@ class Session:
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 50
-    prompt_price_per_1m_tokens: float = 0.0
-    completion_price_per_1m_tokens: float = 0.0
     worker_model_config: ModelConfig = field(default_factory=ModelConfig)
     explore_agent_max_turns: int = 50
 
@@ -913,11 +888,9 @@ class Session:
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
-    last_cost: float = 0.0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
-    session_cost: float = 0.0
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     current_model_call_started_at: float = 0.0
     current_model_call_label: str = ""
@@ -962,8 +935,6 @@ class Session:
             shell_timeout=shell_timeout if shell_timeout is not None else 60,
             compact_at=compact_at if compact_at is not None else 50,
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
-            prompt_price_per_1m_tokens=(main_model.prompt_price_per_1m_tokens if main_model.prompt_price_per_1m_tokens is not None else 0.0),
-            completion_price_per_1m_tokens=(main_model.completion_price_per_1m_tokens if main_model.completion_price_per_1m_tokens is not None else 0.0),
             worker_model_config=worker_model,
             explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 50),
             yolo=yolo,
@@ -1024,8 +995,6 @@ class Session:
             stream=self.stream,
             timeout=self.model_timeout,
             first_token_timeout=self.first_token_timeout,
-            prompt_price_per_1m_tokens=self.prompt_price_per_1m_tokens,
-            completion_price_per_1m_tokens=self.completion_price_per_1m_tokens,
         )
 
     def model_config_for(self, activity: str, override: ModelConfig | None = None) -> ModelConfig:
@@ -3834,24 +3803,16 @@ class ModelClient:
         prompt_tokens = self._json_int(usage.get("prompt_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
-        prompt_price = config.prompt_price_per_1m_tokens if config.prompt_price_per_1m_tokens is not None else 0.0
-        completion_price = config.completion_price_per_1m_tokens if config.completion_price_per_1m_tokens is not None else 0.0
-        prompt_cost = prompt_tokens * prompt_price / 1_000_000
-        completion_cost = completion_tokens * completion_price / 1_000_000
-        total_cost = prompt_cost + completion_cost
         self.session.last_prompt_tokens = prompt_tokens
         self.session.last_completion_tokens = completion_tokens
         self.session.last_total_tokens = total_tokens
-        self.session.last_cost = total_cost
         self.session.session_prompt_tokens += prompt_tokens
         self.session.session_completion_tokens += completion_tokens
         self.session.session_total_tokens += total_tokens
-        self.session.session_cost += total_cost
         self.session.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
-            cost=total_cost,
         )
 
     @staticmethod
@@ -5855,7 +5816,6 @@ class CommandDispatcher:
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tool_calls: " + str(session.turn_tool_calls),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
-                "cost: last=" + _format_cost(session.last_cost) + " session=" + _format_cost(session.session_cost),
                 "models:",
                 self._format_model_usage(),
                 "goal: " + (blackboard.goal or "(empty)"),
@@ -6139,12 +6099,6 @@ def _format_count(value: int) -> str:
     return str(value)
 
 
-def _format_cost(value: float) -> str:
-    if value <= 0:
-        return "-"
-    return "$" + f"{value:.6f}"
-
-
 ############################
 # Interactive Loop
 ############################
@@ -6242,13 +6196,7 @@ class StatusBar:
         yolo = " | yolo" if session.yolo else ""
         context = str(len(session.conversation)) + "/" + str(session.compact_at)
         last_tokens = self._format_count(session.last_total_tokens)
-        last_cost = _format_cost(session.last_cost)
-        if last_cost != "-":
-            last_tokens += "/" + last_cost
         session_tokens = self._format_count(session.session_total_tokens)
-        session_cost = _format_cost(session.session_cost)
-        if session_cost != "-":
-            session_tokens += "/" + session_cost
         tokens = "last:" + last_tokens + " session:" + session_tokens
         parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.turn_tool_calls), "tok(all):" + tokens]
         if show_elapsed:

@@ -98,9 +98,7 @@ nanocode_dir = ".custom-nanocode"
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     session = Session(cwd=str(tmp_path), model="provider/model", compact_at=9)
     session.last_total_tokens = 42
-    session.last_cost = 0.000008
     session.session_total_tokens = 1200
-    session.session_cost = 12.345678
     session.turn_tool_calls = 3
     bar = StatusBar(session)
 
@@ -111,12 +109,11 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "model (medium)" in text
     assert "ctx:0/9" in text
     assert "tools:3" in text
-    assert "tok(all):last:42/$0.000008 session:1k/$12.345678" in text
-    assert "$12.345678" in text
+    assert "tok(all):last:42 session:1k" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok(all):last:42/$0.000008 session:1k/$12.345678"
+    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok(all):last:42 session:1k"
     assert ">" not in snapshot
 
 

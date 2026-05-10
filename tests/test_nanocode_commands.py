@@ -58,16 +58,13 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     session = Session(cwd=str(tmp_path), model="model")
     session.last_total_tokens = 1200
     session.session_total_tokens = 2_345_678
-    session.last_cost = 0.000008
-    session.session_cost = 12.345678
-    session.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678, cost=12.345678)
+    session.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678)
     dispatcher = CommandDispatcher(MainAgent(session))
 
     result = dispatcher.dispatch("/status")
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
-    assert "cost: last=$0.000008 session=$12.345678" in result.message
     assert "main: model reasoning=medium stream=on" in result.message
     assert "explore: turns=50" in result.message
     assert "runtime: yolo=off compact_at=50" in result.message

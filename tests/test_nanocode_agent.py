@@ -254,8 +254,6 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12, stream=False)
-    session.prompt_price_per_1m_tokens = 1.0
-    session.completion_price_per_1m_tokens = 2.0
 
     response = MainAgent(session).request("system", "user")
 
@@ -271,8 +269,6 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
-    assert abs(session.last_cost - 0.000008) < 1e-12
-    assert abs(session.session_cost - 0.000008) < 1e-12
 
 
 def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, monkeypatch):
@@ -307,8 +303,6 @@ def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, m
         reasoning_effort="low",
         stream=False,
         timeout=7,
-        prompt_price_per_1m_tokens=3.0,
-        completion_price_per_1m_tokens=4.0,
     )
 
     response = MainAgent(session).model_client.request("system", "user", activity="explore")
@@ -318,7 +312,6 @@ def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, m
     assert captured["payload"]["temperature"] == 0.2
     assert captured["payload"]["reasoning"] == {"effort": "low"}
     assert captured["timeout"] == 7
-    assert abs(session.last_cost - 0.000018) < 1e-12
 
 
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
