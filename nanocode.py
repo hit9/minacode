@@ -6223,7 +6223,10 @@ class AgentLoop:
     def _finish_live_tool_output(self, call: ParsedToolCall | None = None) -> None:
         if not self._live_preview_active:
             return
-        self._clear_live_tool_output()
+        self._render_live_tool_output(throttled=False)
+        # Keep the final live preview in terminal history instead of treating it
+        # as an active redraw region.
+        self._live_preview_rendered_lines = 0
         self._live_preview_active = False
         self._live_preview_text = ""
         if self._live_preview_resume_status:
