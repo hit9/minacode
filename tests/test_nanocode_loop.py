@@ -326,6 +326,40 @@ def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):
     assert outputs == ["Answer: no - do not edit generated files"]
 
 
+def test_agent_loop_confirmation_discards_pending_tty_input(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    calls = []
+
+    class FakeStdin:
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 42
+
+    class FakeTermios:
+        TCIFLUSH = 0
+        error = OSError
+
+        @staticmethod
+        def tcflush(fd, queue):
+            calls.append((fd, queue))
+
+    outputs = []
+    monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
+    monkeypatch.setitem(nanocode.sys.modules, "termios", FakeTermios)
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=outputs.append)
+    result = loop._wait_confirm("Proceed?", default=True)
+
+    assert result is True
+    assert calls == [(42, FakeTermios.TCIFLUSH)]
+    assert outputs == ["Answer: yes"]
+
+
 def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):

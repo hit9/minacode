@@ -6316,6 +6316,18 @@ class AgentLoop:
                 refresh_interval=StatusBar.INTERVAL,
             )
 
+    def _discard_pending_tty_input(self) -> None:
+        if not sys.stdin.isatty():
+            return
+        try:
+            import termios
+        except ImportError:
+            return
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except (AttributeError, OSError, termios.error):
+            pass
+
     def _make_prompt_session(self):
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
@@ -6510,6 +6522,7 @@ class AgentLoop:
         )
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
+        self._discard_pending_tty_input()
         suffix = "[Y/n/reason]" if default else "[y/N/reason]"
         while True:
             raw_answer = self._read_input(prompt + " " + suffix + " ").strip()
