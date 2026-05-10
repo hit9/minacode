@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.11"
+__version__ = "0.3.12"
 
 
 JsonValue: TypeAlias = Any
@@ -2959,7 +2959,7 @@ One JSON object may omit __END_ACTION__.
 
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
-{"type": "start", "goal": "string", "plan": [{"id": "string", "text": "string", "status": "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
+{"type": "start", "goal": "string", "response_language": null | "BCP47", "plan": [{"id": "string", "text": "string", "status": "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null | "short target label, not command", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
@@ -3425,10 +3425,8 @@ class PromptBuilder:
         if not self.allow_response_language_bootstrap or self.session.response_language_tag:
             return ""
         return (
-            "If Response_Language is empty, infer the preferred response language as a BCP 47 tag and emit this action once. "
-            "Include it with your normal actions; never output only response_language. "
+            "If Response_Language is empty, include response_language in the start action once. "
             "Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n"
-            '{"type": "response_language", "tag": "BCP47"} __END_ACTION__\n'
         )
 
     def _format_known(self) -> str:
@@ -4238,8 +4236,14 @@ class AgentStateUpdater:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
     def apply_response_language(self, response: Json) -> None:
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "response_language"]:
-            tag = self._normalize_response_language_tag(_json_str(action.get("tag")) or "")
+        for action in self._actions(response):
+            action_type = _json_str(action.get("type"))
+            if action_type == "response_language":
+                tag = self._normalize_response_language_tag(_json_str(action.get("tag")) or "")
+            elif action_type == "start":
+                tag = self._normalize_response_language_tag(_json_str(action.get("response_language")) or "")
+            else:
+                continue
             if tag:
                 self.session.response_language_tag = tag
 
