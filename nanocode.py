@@ -2663,11 +2663,17 @@ Explore capability:
 Edit capability:
 - Purpose: make focused file changes.
 - Use when the change target is clear; use Explore first if target is unknown.
+- Edit handoff is one tiny patch slice, never a feature, full page, whole product, or complete deliverable.
 - Input goal: concrete file change only; no broad investigation or verification.
+- Input slice: required tiny current patch slice; never all/full/complete/whole/entire/everything.
 - Input targets: path/area/line_range/context/reason.
 - Input sources: source-of-truth files/ranges needed to avoid inventing facts.
+- Edit may modify exactly one existing target file per handoff; split multi-file changes into separate edit actions.
+- For a new file, first create the empty file explicitly, then hand the existing file to Edit.
 - Keep each edit handoff small: one file and one semantic change when possible; split unrelated or distant changes.
 - For large creations or broad features, send multiple edit handoffs; do not ask Edit to build a whole app/page/product in one handoff.
+- When a plan is split into slices, each edit handoff must target only the current doing slice, not the full user goal.
+- Constraints and self_check are required for every edit handoff.
 - A new-file edit may create the initial skeleton only when path, first-slice scope, constraints, and self_check are explicit.
 
 Verify capability:
@@ -2710,12 +2716,17 @@ Decision rules:
 - Use explore whenever the relevant file/code target is unknown; do not discover broad targets with Bash/ListDir/Read yourself.
 - Use Git for current repository state, history, status, diff, and changed files; use explore for unknown code locations.
 - Use edit for code changes; Main gives the edit goal, targets, constraints, and self_check items.
+- Each edit action must include slice, and slice must be a tiny patch name, not all/full/complete/whole/entire/everything.
+- Each edit action must name exactly one existing target file in targets[].path.
+- For new files, create the empty file before calling edit; never pass a nonexistent path to edit.
+- Each edit action must include at least one constraint and one self_check.
 - Keep edit goals precise and small; split large feature or new-file work into skeleton, one feature slice, and follow-up slices.
+- If a plan has slices, the edit goal must match the active doing slice.
 - For docs/config/API updates, pass source facts as sources, not only prose context.
 - Do not repeat a worker handoff that already returned changed, no_change, passed, blocked, targets, or issues unless new facts require it.
 - Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
 - Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
-- Use Bash only for explicit shell requests or implementation commands.
+- Use Bash only for explicit shell requests, implementation commands, or creating an empty file before edit.
 - Do not use Bash for code search, grep, find, ls, broad discovery, file edits, or verification.
 - Do not use Bash/Git/Read just to verify completion; use verify pending and let Verify choose the checks.
 - If a tool or explore result is needed for the next decision, stop after that action.
@@ -2737,6 +2748,7 @@ Explore example:
 
 Edit example:
 {"type":"edit",
+ "slice":"cli-config-arg",
  "goal":"Add --config path support to the CLI startup path",
  "context":"Known facts: config loading is in ConfigFile; CLI args are parsed in main(); keep env-free config behavior intact",
  "targets":[{"path":"nanocode.py","area":"main() argument parsing and Session construction","line_range":"5600,5660","context":"--init-config already accepts an optional config path","reason":"new --config flag should route into Session loading"}],
@@ -2764,7 +2776,7 @@ Action types:
 - plan: work plan.
 - tool: call one available tool.
 - explore: locate unknown code targets/evidence points and return relevant targets/facts.
-- edit: perform focused code changes and return an edit report.
+- edit: perform one tiny focused code change and return an edit report.
 
 Output format (Strict)
 
@@ -2780,7 +2792,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "explore", "goal": "string", "scope": ["string"], "reason": "string", "context": null | "string"} __END_ACTION__
-{"type": "edit", "goal": "string", "context": null | "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "sources": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
+{"type": "edit", "slice": "required tiny patch slice", "goal": "string", "context": null | "string", "targets": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "sources": [{"path": "string", "area": "string", "line_range": null | "string", "context": null | "string", "reason": null | "string"}], "constraints": ["string"], "self_check": ["string"]} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -5112,6 +5124,8 @@ class VerifyAgent(BaseAgent):
 
 @final
 class MainAgent(BaseAgent):
+    FORBIDDEN_EDIT_SLICES: ClassVar[set[str]] = {"all", "full", "complete", "whole", "entire", "everything", "全部", "完整", "整体", "整个", "全量"}
+
     def __init__(self, session: Session):
         super().__init__(session, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS, allow_project_learning=True)
 
@@ -5235,6 +5249,15 @@ class MainAgent(BaseAgent):
     ) -> list[EditReport]:
         reports = []
         for action in actions:
+            gate_error = self._edit_action_scope_error(action)
+            if gate_error:
+                self._remember_agent_error(gate_error)
+                self._report_gate(
+                    on_message,
+                    "Retrying: edit handoff must be one tiny slice for one existing file.",
+                    "Edit_Gate: " + gate_error,
+                )
+                continue
             goal = _json_str(action.get("goal")) or self.blackboard.goal or self.blackboard.user_input
             scope = self._edit_scope_from_action(action)
             if on_message is not None:
@@ -5253,6 +5276,44 @@ class MainAgent(BaseAgent):
             if on_message is not None:
                 on_message(self._format_edit_done(report))
         return reports
+
+    def _edit_action_scope_error(self, action: Json) -> str:
+        target_files = self._edit_action_target_files(action)
+        if not target_files:
+            return "Error: edit handoff rejected: exactly one target file is required; provide targets with one path."
+        if len(target_files) > 1:
+            return "Error: edit handoff rejected: Edit may modify exactly one target file; split multi-file changes into separate edit actions. Target files: " + ", ".join(target_files)
+        target_path = self._resolve_edit_target_path(target_files[0])
+        if not os.path.isfile(target_path):
+            return "Error: edit handoff rejected: target file must already exist before edit: " + target_files[0]
+        slice_name = (_json_str(action.get("slice")) or "").strip()
+        if not slice_name:
+            return "Error: edit handoff rejected: slice is required; edit must be one tiny patch slice, not the whole task."
+        if slice_name.lower() in self.FORBIDDEN_EDIT_SLICES:
+            return "Error: edit handoff rejected: slice is too broad: " + slice_name
+        if not self._edit_action_string_items(action, "constraints"):
+            return "Error: edit handoff rejected: at least one constraint is required to keep the edit slice narrow."
+        if not self._edit_action_string_items(action, "self_check"):
+            return "Error: edit handoff rejected: at least one self_check is required for the tiny edit slice."
+        return ""
+
+    def _edit_action_target_files(self, action: Json) -> list[str]:
+        files = []
+        for raw in _json_list(action.get("targets")):
+            target = _json_dict(raw)
+            path = (_json_str(target.get("path")) or "").strip()
+            if path and path not in files:
+                files.append(path)
+        return files
+
+    def _edit_action_string_items(self, action: Json, key: str) -> list[str]:
+        return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get(key))) if item]
+
+    def _resolve_edit_target_path(self, path: str) -> str:
+        expanded = os.path.expanduser(path)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(self.session.cwd, expanded)
+        return os.path.realpath(expanded)
 
     def _edit_scope_from_action(self, action: Json) -> list[str]:
         scope = []

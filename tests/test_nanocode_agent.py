@@ -1221,7 +1221,103 @@ def test_main_agent_rejects_search_tool(tmp_path):
     assert "Edit capability:" in system_prompt
     assert "Verify capability:" in system_prompt
     assert "do not ask Edit to build a whole app/page/product in one handoff" in system_prompt
+    assert "each edit handoff must target only the current doing slice" in system_prompt
+    assert "exactly one existing target file" in system_prompt
+    assert "slice must be a tiny patch name" in system_prompt
     assert "tool not allowed for this agent: Search" in latest
+
+
+def test_main_agent_gates_edit_actions_without_exactly_one_target_file(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    messages = []
+
+    def make_edit_agent(*, goal, scope):
+        raise AssertionError("EditAgent should not start for invalid edit handoff")
+
+    agent._make_edit_agent = make_edit_agent
+
+    missing_reports = agent.execute_edit_actions(
+        [{"type": "edit", "goal": "edit without target", "targets": [], "constraints": [], "self_check": []}],
+        on_message=messages.append,
+    )
+    multi_reports = agent.execute_edit_actions(
+        [
+            {
+                "type": "edit",
+                "goal": "edit two files",
+                "targets": [{"path": "a.py"}, {"path": "b.py"}],
+                "constraints": [],
+                "self_check": [],
+            }
+        ],
+        on_message=messages.append,
+    )
+
+    assert missing_reports == []
+    assert multi_reports == []
+    assert messages == [
+        "Retrying: edit handoff must be one tiny slice for one existing file.",
+        "Retrying: edit handoff must be one tiny slice for one existing file.",
+    ]
+    assert any("exactly one target file is required" in error for error in agent.agent_feedback_errors)
+    assert any("split multi-file changes" in error for error in agent.agent_feedback_errors)
+
+
+def test_main_agent_gates_edit_actions_for_nonexistent_target_file(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    messages = []
+
+    def make_edit_agent(*, goal, scope):
+        raise AssertionError("EditAgent should not start for nonexistent target path")
+
+    agent._make_edit_agent = make_edit_agent
+
+    reports = agent.execute_edit_actions(
+        [
+            {
+                "type": "edit",
+                "goal": "create missing file content",
+                "targets": [{"path": "missing.html"}],
+                "constraints": [],
+                "self_check": [],
+            }
+        ],
+        on_message=messages.append,
+    )
+
+    assert reports == []
+    assert messages == ["Retrying: edit handoff must be one tiny slice for one existing file."]
+    assert any("target file must already exist before edit: missing.html" in error for error in agent.agent_feedback_errors)
+
+
+def test_main_agent_gates_edit_actions_without_tiny_slice_contract(tmp_path):
+    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    messages = []
+
+    def make_edit_agent(*, goal, scope):
+        raise AssertionError("EditAgent should not start for broad edit handoff")
+
+    agent._make_edit_agent = make_edit_agent
+
+    actions = [
+        {"type": "edit", "goal": "edit sample", "targets": [{"path": "sample.txt"}], "constraints": ["one line"], "self_check": ["read back"]},
+        {"type": "edit", "slice": "complete", "goal": "edit sample", "targets": [{"path": "sample.txt"}], "constraints": ["one line"], "self_check": ["read back"]},
+        {"type": "edit", "slice": "line-1", "goal": "edit sample", "targets": [{"path": "sample.txt"}], "constraints": [], "self_check": ["read back"]},
+        {"type": "edit", "slice": "line-1", "goal": "edit sample", "targets": [{"path": "sample.txt"}], "constraints": ["one line"], "self_check": []},
+    ]
+
+    reports = agent.execute_edit_actions(actions, on_message=messages.append)
+
+    assert reports == []
+    assert messages == ["Retrying: edit handoff must be one tiny slice for one existing file."] * 4
+    assert any("slice is required" in error for error in agent.agent_feedback_errors)
+    assert any("slice is too broad: complete" in error for error in agent.agent_feedback_errors)
+    assert any("at least one constraint is required" in error for error in agent.agent_feedback_errors)
+    assert any("at least one self_check is required" in error for error in agent.agent_feedback_errors)
 
 
 def test_explore_agent_rejects_edit_tools(tmp_path):
@@ -1579,6 +1675,7 @@ def test_agent_run_feeds_explore_report_into_next_prompt(tmp_path):
 
 
 def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
+    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
     edit_calls = []
     verify_calls = []
 
@@ -1591,6 +1688,7 @@ def test_agent_run_hands_edit_to_edit_agent_and_requires_verification(tmp_path):
                         {"type": "goal", "text": "change sample", "complete": False},
                         {
                             "type": "edit",
+                            "slice": "sample-line",
                             "goal": "change sample text",
                             "context": "Main confirmed the target is line 1",
                             "targets": [{"path": "sample.txt", "area": "line 1", "line_range": "0,1", "context": "old", "reason": "line needs update"}],
@@ -1890,10 +1988,11 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                         {"type": "goal", "text": "change file", "complete": False},
                         {
                             "type": "edit",
+                            "slice": "sample-line",
                             "goal": "edit sample",
                             "targets": [{"path": "sample.txt", "area": "line 1"}],
-                            "constraints": [],
-                            "self_check": [],
+                            "constraints": ["change only line 1"],
+                            "self_check": ["read sample after edit"],
                         },
                     ],
                 },
@@ -1960,10 +2059,11 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
                         {"type": "goal", "text": "change file", "complete": False},
                         {
                             "type": "edit",
+                            "slice": "bad-sample-line",
                             "goal": "edit sample badly",
                             "targets": [{"path": "sample.txt", "area": "line 1"}],
-                            "constraints": [],
-                            "self_check": [],
+                            "constraints": ["change only line 1"],
+                            "self_check": ["read sample after edit"],
                         },
                     ],
                 },
@@ -1972,10 +2072,11 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
                     "actions": [
                         {
                             "type": "edit",
+                            "slice": "fix-sample-line",
                             "goal": "fix sample",
                             "targets": [{"path": "sample.txt", "area": "line 1"}],
-                            "constraints": [],
-                            "self_check": [],
+                            "constraints": ["change only line 1"],
+                            "self_check": ["read sample after edit"],
                         },
                     ],
                 },
