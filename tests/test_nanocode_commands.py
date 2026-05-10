@@ -28,6 +28,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     effort_result = dispatcher.dispatch("/set main.effort high")
     reason_result = dispatcher.dispatch("/set main.reasoning off")
     stream_result = dispatcher.dispatch("/set main.stream off")
+    first_token_result = dispatcher.dispatch("/set main.first_token_timeout 6")
     yolo_result = dispatcher.dispatch("/set runtime.yolo on")
     compact_result = dispatcher.dispatch("/set runtime.compact_at 2")
     exit_result = dispatcher.dispatch("/exit")
@@ -42,6 +43,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert session.reasoning is False
     assert stream_result.message == "Set main.stream = off"
     assert session.stream is False
+    assert first_token_result.message == "Set main.first_token_timeout = 6"
+    assert session.first_token_timeout == 6
     assert yolo_result.message == "Set runtime.yolo = on"
     assert session.yolo is True
     assert compact_result.message == "Set runtime.compact_at = 2"
@@ -102,7 +105,9 @@ def test_config_command_reports_resolved_model_config(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
     assert "main.model: main-model" in result.message
+    assert "main.first_token_timeout: 30" in result.message
     assert "worker.model: worker-model" in result.message
+    assert "worker.first_token_timeout: 30" in result.message
     assert "explore.max_turns: 50" in result.message
 
 

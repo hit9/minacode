@@ -462,6 +462,40 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     assert session.session_total_tokens == 5
 
 
+def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, monkeypatch):
+    timers = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            yield ("data: " + json.dumps({"choices": [{"delta": {"role": "assistant"}}]}) + "\n").encode("utf-8")
+            yield ("data: " + json.dumps({"choices": [{"delta": {"content": '{"type":"message","text":"ok"}__END_ACTION__'}}]}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
+    session = Session(
+        cwd=str(tmp_path),
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        model_timeout=90,
+        first_token_timeout=4,
+    )
+
+    response = MainAgent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert timers[0] == 90
+    assert 4 in timers
+    assert timers[-1] == 0
+
+
 def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monkeypatch):
     class FakeResponse:
         def __enter__(self):

@@ -366,6 +366,7 @@ class ModelConfig:
     reasoning_effort: str = ""
     stream: bool | None = None
     timeout: int | None = None
+    first_token_timeout: int | None = None
     prompt_price_per_1m_tokens: float | None = None
     completion_price_per_1m_tokens: float | None = None
 
@@ -377,6 +378,7 @@ class ModelConfig:
             reasoning_effort=self.reasoning_effort or fallback.reasoning_effort,
             stream=self.stream if self.stream is not None else fallback.stream,
             timeout=self.timeout if self.timeout is not None else fallback.timeout,
+            first_token_timeout=self.first_token_timeout if self.first_token_timeout is not None else fallback.first_token_timeout,
             prompt_price_per_1m_tokens=(
                 self.prompt_price_per_1m_tokens if self.prompt_price_per_1m_tokens is not None else fallback.prompt_price_per_1m_tokens
             ),
@@ -412,7 +414,8 @@ DEFAULT_MODEL_CONFIG = ModelConfig(
     reasoning=True,
     reasoning_effort="medium",
     stream=True,
-    timeout=60,
+    timeout=90,
+    first_token_timeout=30,
     prompt_price_per_1m_tokens=0.0,
     completion_price_per_1m_tokens=0.0,
 )
@@ -436,7 +439,9 @@ temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
 stream = true
-timeout = 60
+timeout = 90
+# Stream mode only: retry if no first content token arrives within this many seconds.
+first_token_timeout = 30
 # Optional usage pricing per 1M tokens. Leave 0.0 if unknown.
 prompt_price_per_1m_tokens = 0.0
 completion_price_per_1m_tokens = 0.0
@@ -448,7 +453,8 @@ temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
 stream = true
-timeout = 60
+timeout = 90
+first_token_timeout = 30
 prompt_price_per_1m_tokens = 0.0
 completion_price_per_1m_tokens = 0.0
 
@@ -542,6 +548,7 @@ max_agent_steps = 50
             reasoning_effort=cls.str(config, "reasoning_effort", defaults.reasoning_effort),
             stream=cls.bool(config, "stream", defaults.stream),
             timeout=cls.int(config, "timeout", defaults.timeout),
+            first_token_timeout=cls.int(config, "first_token_timeout", defaults.first_token_timeout),
             prompt_price_per_1m_tokens=cls.float(config, "prompt_price_per_1m_tokens", defaults.prompt_price_per_1m_tokens),
             completion_price_per_1m_tokens=cls.float(
                 config,
@@ -858,7 +865,8 @@ class Session:
     reasoning: bool = True
     reasoning_effort: str = "medium"
     stream: bool = True
-    model_timeout: int = 60
+    model_timeout: int = 90
+    first_token_timeout: int = 30
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 50
@@ -921,7 +929,8 @@ class Session:
             reasoning=main_model.reasoning if main_model.reasoning is not None else True,
             reasoning_effort=main_model.reasoning_effort or "medium",
             stream=main_model.stream if main_model.stream is not None else True,
-            model_timeout=main_model.timeout if main_model.timeout is not None else 60,
+            model_timeout=main_model.timeout if main_model.timeout is not None else 90,
+            first_token_timeout=main_model.first_token_timeout if main_model.first_token_timeout is not None else 30,
             shell_timeout=shell_timeout if shell_timeout is not None else 60,
             compact_at=compact_at if compact_at is not None else 50,
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
@@ -986,6 +995,7 @@ class Session:
             reasoning_effort=self.reasoning_effort,
             stream=self.stream,
             timeout=self.model_timeout,
+            first_token_timeout=self.first_token_timeout,
             prompt_price_per_1m_tokens=self.prompt_price_per_1m_tokens,
             completion_price_per_1m_tokens=self.completion_price_per_1m_tokens,
         )
@@ -3444,7 +3454,8 @@ class ModelClient:
         if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
-        timeout = config.timeout if config.timeout is not None else 60
+        timeout = config.timeout if config.timeout is not None else 90
+        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
         extra_params = self._reasoning_params(config)
         payload.update(extra_params)
         self._write_debug_prompt(activity=activity, messages=messages)
@@ -3461,13 +3472,18 @@ class ModelClient:
             self.session.current_model_call_started_at = time.monotonic()
             self.session.current_model_call_label = model
             self.session.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+            request_deadline = self.session.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
             signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     if stream:
-                        content, usage = self._read_streaming_content(response)
+                        content, usage = self._read_streaming_content(
+                            response,
+                            request_deadline=request_deadline,
+                            first_token_timeout=first_token_timeout,
+                        )
                         result: Json = {"usage": usage}
                     else:
                         body = response.read().decode("utf-8")
@@ -3506,9 +3522,11 @@ class ModelClient:
             return self._parse_json_content(content)
         return self._parse_model_content(content)
 
-    def _read_streaming_content(self, response: Any) -> tuple[str, Json]:
+    def _read_streaming_content(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
+        first_content_seen = False
+        self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=False, first_token_timeout=first_token_timeout)
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -3529,10 +3547,21 @@ class ModelClient:
                 continue
             delta = _json_dict(_json_dict(choices[0]).get("delta"))
             content = delta.get("content")
-            if not isinstance(content, str):
+            if not isinstance(content, str) or not content:
                 continue
+            if not first_content_seen:
+                first_content_seen = True
+                self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
             parts.append(content)
         return "".join(parts), usage
+
+    def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModelRequestTimeout()
+        if not first_content_seen and first_token_timeout is not None and first_token_timeout > 0:
+            remaining = min(remaining, first_token_timeout)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
         if not self.session.debug:
@@ -5532,12 +5561,14 @@ CONFIG_SET_KEYS: tuple[str, ...] = (
     "main.stream",
     "main.temperature",
     "main.timeout",
+    "main.first_token_timeout",
     "worker.model",
     "worker.reasoning",
     "worker.effort",
     "worker.stream",
     "worker.temperature",
     "worker.timeout",
+    "worker.first_token_timeout",
     "explore.max_turns",
     "runtime.compact_at",
     "runtime.shell_timeout",
@@ -5723,12 +5754,14 @@ class CommandDispatcher:
                 "main.stream: " + self._format_bool(main.stream),
                 "main.temperature: " + self._format_optional(main.temperature),
                 "main.timeout: " + self._format_optional(main.timeout),
+                "main.first_token_timeout: " + self._format_optional(main.first_token_timeout),
                 "worker.model: " + (worker.model or "(empty)"),
                 "worker.reasoning: " + self._format_bool(worker.reasoning),
                 "worker.effort: " + (worker.reasoning_effort or "(empty)"),
                 "worker.stream: " + self._format_bool(worker.stream),
                 "worker.temperature: " + self._format_optional(worker.temperature),
                 "worker.timeout: " + self._format_optional(worker.timeout),
+                "worker.first_token_timeout: " + self._format_optional(worker.first_token_timeout),
                 "explore.max_turns: " + str(session.explore_agent_max_turns),
                 "runtime.compact_at: " + str(session.compact_at),
                 "runtime.shell_timeout: " + str(session.shell_timeout),
@@ -5779,6 +5812,8 @@ class CommandDispatcher:
             return str(session.temperature)
         if key == "main.timeout":
             return str(session.model_timeout)
+        if key == "main.first_token_timeout":
+            return str(session.first_token_timeout)
         if key == "worker.model":
             return session.worker_model_config.model or "(main fallback)"
         if key == "worker.reasoning":
@@ -5791,6 +5826,8 @@ class CommandDispatcher:
             return self._format_optional(session.worker_model_config.temperature)
         if key == "worker.timeout":
             return self._format_optional(session.worker_model_config.timeout)
+        if key == "worker.first_token_timeout":
+            return self._format_optional(session.worker_model_config.first_token_timeout)
         if key == "explore.max_turns":
             return str(session.explore_agent_max_turns)
         if key == "runtime.compact_at":
@@ -5821,7 +5858,12 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " <number>"
             self._set_temperature_value(key, parsed_float)
             return ""
-        if key.endswith(".timeout") or key in {"explore.max_turns", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}:
+        if key.endswith(".timeout") or key.endswith(".first_token_timeout") or key in {
+            "explore.max_turns",
+            "runtime.compact_at",
+            "runtime.shell_timeout",
+            "runtime.max_agent_steps",
+        }:
             parsed_int = self._parse_positive_int(value)
             if parsed_int is None:
                 return "Usage: /set " + key + " <positive-number>"
@@ -5865,8 +5907,12 @@ class CommandDispatcher:
     def _set_int_value(self, key: str, value: int) -> None:
         if key == "main.timeout":
             self.agent.session.model_timeout = value
+        elif key == "main.first_token_timeout":
+            self.agent.session.first_token_timeout = value
         elif key == "worker.timeout":
             self.agent.session.worker_model_config.timeout = value
+        elif key == "worker.first_token_timeout":
+            self.agent.session.worker_model_config.first_token_timeout = value
         elif key == "explore.max_turns":
             self.agent.session.explore_agent_max_turns = value
         elif key == "runtime.compact_at":
