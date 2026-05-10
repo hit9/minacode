@@ -175,6 +175,7 @@ class VerificationKind(StrEnum):
     LINT = "lint"
     TEST = "test"
     BUILD = "build"
+    CHANGE_REVIEW = "change_review"
     CHANGE_CHECK = "change_check"
     OTHER = "other"
 
@@ -2918,7 +2919,7 @@ Workers:
 - Do not give workers the whole task.
 
 Explore kinds: symbol, file, range, changed, reference, other.
-Verify kinds: syntax_check, lint, test, build, change_check, other.
+Verify kinds: syntax_check, lint, test, build, change_review, change_check, other.
 
 Tools:
 { __tools__ }
@@ -2933,7 +2934,7 @@ One JSON object may omit __END_ACTION__.
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
-{"type": "verify", "kind": "syntax_check|lint|test|build|change_check|other", "method": null | "string", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null | "string", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "learn", "summary": "optional one-sentence project summary, not a process log", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
@@ -3190,6 +3191,7 @@ Kinds:
 - lint: lint, format, or static style check.
 - test: unit, integration, e2e, or targeted test.
 - build: build, typecheck, package, or release check.
+- change_review: inspect changed files/diff for obvious edit mistakes: syntax/import/name errors, broken control flow, missed branch, or criteria mismatch. Not architecture/style review.
 - change_check: inspect a concrete completed change against criteria.
 - other: only when criteria are explicit and no other kind fits.
 
@@ -5393,7 +5395,7 @@ class MainAgent(BaseAgent):
         return (
             "Error: pending verify is invalid: "
             + reason
-            + ". Rule: pending verify must include kind=syntax_check|lint|test|build|change_check|other and non-empty criteria."
+            + ". Rule: pending verify must include kind=syntax_check|lint|test|build|change_review|change_check|other and non-empty criteria."
         )
 
     def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
