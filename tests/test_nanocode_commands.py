@@ -102,9 +102,9 @@ def test_config_command_reports_resolved_model_config(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
     assert "main.model: main-model" in result.message
-    assert "main.first_token_timeout: 30" in result.message
+    assert "main.first_token_timeout: 60" in result.message
     assert "worker.model: worker-model" in result.message
-    assert "worker.first_token_timeout: 30" in result.message
+    assert "worker.first_token_timeout: 60" in result.message
     assert "explore.max_turns: 50" in result.message
 
 

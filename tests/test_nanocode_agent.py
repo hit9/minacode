@@ -1992,7 +1992,7 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert "target: manual check" in verifier_calls[0][1]
     assert "expect: answer is correct" in verifier_calls[0][1]
     assert "context: check answer" in verifier_calls[0][1]
-    assert "Verifying: manual check" in messages
+    assert "Verifying: change_check manual check" in messages
     assert len(agent.model_client.user_prompts) == 2
 
 

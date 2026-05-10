@@ -434,7 +434,7 @@ DEFAULT_MODEL_CONFIG = ModelConfig(
     reasoning_effort="medium",
     stream=True,
     timeout=90,
-    first_token_timeout=30,
+    first_token_timeout=60,
 )
 
 
@@ -458,7 +458,7 @@ reasoning_effort = "medium"
 stream = true
 timeout = 90
 # Stream mode only: retry if no first content token arrives within this many seconds.
-first_token_timeout = 30
+first_token_timeout = 60
 
 [worker_model]
 # Default model config for worker agents. Empty model falls back to main_model.model.
@@ -468,7 +468,7 @@ reasoning = true
 reasoning_effort = "medium"
 stream = true
 timeout = 90
-first_token_timeout = 30
+first_token_timeout = 60
 
 [explore_agent]
 # ExploreAgent removes uncertainty about unknown file/code targets before editing.
@@ -882,7 +882,7 @@ class Session:
     reasoning_effort: str = "medium"
     stream: bool = True
     model_timeout: int = 90
-    first_token_timeout: int = 30
+    first_token_timeout: int = 60
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 50
@@ -942,7 +942,7 @@ class Session:
             reasoning_effort=main_model.reasoning_effort or "medium",
             stream=main_model.stream if main_model.stream is not None else True,
             model_timeout=main_model.timeout if main_model.timeout is not None else 90,
-            first_token_timeout=main_model.first_token_timeout if main_model.first_token_timeout is not None else 30,
+            first_token_timeout=main_model.first_token_timeout if main_model.first_token_timeout is not None else 60,
             shell_timeout=shell_timeout if shell_timeout is not None else 60,
             compact_at=compact_at if compact_at is not None else 50,
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
@@ -2922,6 +2922,7 @@ Workers:
 - Explore input must include kind, scope, and constraints.
 - Use verify action with status=pending to call Verify worker.
 - Verify worker is an expect checker: give it a narrow target and explicit expected condition.
+- Verify method is a short target label, not a shell command.
 - Main must not run test/lint/build/syntax/change verification commands itself.
 - After verify status=pending, output no tool/explore in the same response.
 - Do not ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
@@ -2944,7 +2945,7 @@ One JSON object may omit __END_ACTION__.
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
-{"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null | "string", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null | "short target label, not command", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "learn", "summary": "optional one-sentence project summary, not a process log", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
@@ -5329,7 +5330,7 @@ class MainAgent(BaseAgent):
             "context: " + (verification.context or "(empty)"),
         ]
         if on_message is not None:
-            on_message("Verifying: " + _shorten(goal, 120))
+            on_message("Verifying: " + _shorten(self._verification_title(verification), 120))
         kwargs = {
             "confirm": confirm,
             "on_auto_approve": on_auto_approve,
@@ -5345,6 +5346,10 @@ class MainAgent(BaseAgent):
         if on_message is not None:
             on_message(self._format_verify_done(report))
         return report
+
+    def _verification_title(self, verification: Verification) -> str:
+        parts = [item for item in (verification.kind, verification.method) if item]
+        return " ".join(parts) or self.blackboard.goal or self.blackboard.user_input
 
     def _make_verify_agent(self, *, goal: str, scope: list[str]) -> VerifyAgent:
         return VerifyAgent(
