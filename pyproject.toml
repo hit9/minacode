@@ -44,6 +44,7 @@ nanocode = "nanocode:main"
 dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",
+    "isort>=5.12",
 ]
 
 [tool.setuptools]

@@ -7,11 +7,11 @@ Install: uv tool install nanocode-cli
 """
 
 import argparse
+import difflib
 import fnmatch
 import hashlib
 import itertools
 import json
-import json_repair
 import os
 import platform
 import re
@@ -20,26 +20,27 @@ import shutil
 import signal
 import socket
 import subprocess
-import threading
-import difflib
 import sys
+import threading
 import time
 import tomllib
 import urllib.error
 import urllib.request
+from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from abc import abstractmethod
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, final, Iterator, Protocol, Self, Type, TypeAlias
-from typing_extensions import override
+from typing import (Any, Callable, ClassVar, Iterator, Protocol, Self, Type,
+                    TypeAlias, final)
+
+import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
-
+from typing_extensions import override
 
 ############################
 # Core
