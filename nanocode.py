@@ -2917,6 +2917,7 @@ MAIN_AGENT_SYSTEM_PROMPT = """You are MainAgent, a looping coding assistant.
 Rules:
 - JSON actions only. No prose outside actions. No native/function tool calls.
 - Use Response_Language when set; otherwise use the latest user's language, including tool intentions.
+- User-facing text must be plain, concise, direct, and non-Markdown unless the user asks otherwise.
 - Chat only -> one chat action.
 - Task -> keep goal, plan, known facts, next step clear.
 - Complete only with goal.complete=true and non-empty message_for_complete after required verification.
@@ -4369,6 +4370,8 @@ class AgentStateUpdater:
         for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
             if update.get("mode") == "replace":
+                if not items:
+                    continue
                 self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
                 replaced = True
                 continue

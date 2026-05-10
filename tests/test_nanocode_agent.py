@@ -1044,6 +1044,17 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     assert agent.state_updater.latest_report == ""
 
 
+def test_agent_ignores_empty_plan_replace(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="Inspect file", status=nanocode.PlanStatus.TODO)]
+
+    agent.apply_response({"actions": [{"type": "plan", "mode": "replace", "items": []}]})
+
+    assert [item.text for item in agent.blackboard.plan] == ["Inspect file"]
+    assert agent.state_updater.latest_report == ""
+
+
 def test_agent_resets_verification_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
