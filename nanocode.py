@@ -41,12 +41,14 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 
 
+############################
+# Core
+############################
+
+
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-MAX_TOOL_OUTPUT_CHARS = 12_000
-EXPLORE_MESSAGE_PREFIX = "[explore] "
-VERIFY_MESSAGE_PREFIX = "[verify] "
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 
 class Error(Exception): ...
@@ -1006,6 +1008,9 @@ class ToolEffect(StrEnum):
     READONLY = "readonly"
     EDIT = "edit"
     OTHER = "other"
+
+
+MAX_TOOL_OUTPUT_CHARS = 12_000
 
 
 def _cli_content_summary(value: str) -> str:
@@ -4758,6 +4763,11 @@ class BaseAgent:
         return [action for action in actions if _json_str(action.get("type")) == "tool"]
 
 
+############################
+# Agent Tool Policies
+############################
+
+
 EXPLORE_AGENT_ALLOWED_TOOLS: set[str] = {
     ReadTool.name(),
     LineCountTool.name(),
@@ -4790,6 +4800,10 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
     GitTool.name(),
     ToolResultTool.name(),
 }
+
+
+EXPLORE_MESSAGE_PREFIX = "[explore] "
+VERIFY_MESSAGE_PREFIX = "[verify] "
 
 
 @final
@@ -5503,6 +5517,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
+
+
+############################
+# Runtime Config Keys
+############################
 
 
 CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
