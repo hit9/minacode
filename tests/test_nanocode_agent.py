@@ -108,6 +108,16 @@ def test_explore_report_formats_and_briefs_issues():
     assert report.brief() == ["issue: handoff goal asks for analysis, not location"]
 
 
+def test_worker_report_history_uses_worker_reports_tag():
+    history = nanocode.WorkerReportHistory(verify=["<VerifyReport>passed</VerifyReport>"], verified=["verify: passed"])
+
+    formatted = history.format()
+
+    assert "<Worker_Reports>" in formatted
+    assert "</Worker_Reports>" in formatted
+    assert "<Agent_Reports>" not in formatted
+
+
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -1783,6 +1793,9 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 4
+    assert "<Worker_Reports>" in agent.model_client.user_prompts[2]
+    assert "<Agent_Reports>" not in agent.model_client.user_prompts[2]
+    assert "assertion failed" in agent.model_client.user_prompts[2]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
 

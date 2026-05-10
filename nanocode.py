@@ -30,8 +30,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import (Any, Callable, ClassVar, Iterator, Protocol, Self, Type,
-                    TypeAlias, final)
+from typing import Any, Callable, ClassVar, Iterator, Protocol, Self, Type, TypeAlias, final
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -42,46 +41,47 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-############################
-# Core
-############################
+__version__ = "0.3.3"
 
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.3.3"
+
+############################
+# Errors
+############################
 
 
 class Error(Exception): ...
 
 
-class ToolCallError(Exception): ...
+class ToolCallError(Error): ...
 
 
 class ToolCallArgError(ToolCallError): ...
 
 
-class LLMError(Exception): ...
+class LLMError(Error): ...
 
 
-class ConfigError(Exception): ...
+class ConfigError(Error): ...
 
 
-class ModelRequestTimeout(Exception): ...
+class ModelRequestTimeout(Error): ...
 
 
-class Cancellation(Exception): ...
+class Cancellation(Error): ...
+
+
+############################
+# Conversation (dataclasses)
+############################
 
 
 class PromptItem:
     @abstractmethod
     def format(self, indent: str = "") -> str:
         raise NotImplementedError
-
-
-############################
-# Conversation (dataclasses)
-############################
 
 
 class Role(StrEnum):
@@ -561,7 +561,7 @@ max_agent_steps = 50
 
 @final
 @dataclass
-class AgentReportHistory(PromptItem):
+class WorkerReportHistory(PromptItem):
     explore: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
     explored: list[str] = field(default_factory=list)
@@ -575,10 +575,10 @@ class AgentReportHistory(PromptItem):
 
     @override
     def format(self, indent: str = "") -> str:
-        lines = ["<Agent_Reports>"]
+        lines = ["<Worker_Reports>"]
         self._append_section(lines, "Explore_History", self.explore)
         self._append_section(lines, "Verify_History", self.verify)
-        lines.append("</Agent_Reports>")
+        lines.append("</Worker_Reports>")
         return _format_lines(lines, indent)
 
     def format_handoff_context(self, indent: str = "") -> str:
@@ -611,8 +611,8 @@ class PromptContext:
     runtime: AgentRuntime
     parent_known: list[str] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
-    agent_reports: AgentReportHistory = field(default_factory=AgentReportHistory)
-    handoff_context: AgentReportHistory = field(default_factory=AgentReportHistory)
+    worker_reports: WorkerReportHistory = field(default_factory=WorkerReportHistory)
+    handoff_context: WorkerReportHistory = field(default_factory=WorkerReportHistory)
 
 
 @dataclass
@@ -717,6 +717,7 @@ class VerifyReport(PromptItem):
         if self.issues:
             parts.append("issue: " + self.issues[0])
         return " | ".join(parts)
+
 
 @final
 class RangeFingerprintStore:
@@ -2970,7 +2971,7 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 </Verification_State>
 
 --- Recent Work ---
-{agent_reports}
+{worker_reports}
 
 <Errors>
 {errors}
@@ -3325,7 +3326,7 @@ class PromptBuilder:
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
-            agent_reports=self.context.agent_reports.format(),
+            worker_reports=self.context.worker_reports.format(),
             handoff_context=self.context.handoff_context.format_handoff_context(),
             user_request=current.user_input or "(empty)",
         ).strip()
@@ -3358,9 +3359,9 @@ class PromptBuilder:
         if not self.allow_response_language_bootstrap or self.session.response_language_tag:
             return ""
         return (
-            'If Response_Language is empty, infer the preferred response language as a BCP 47 tag and emit this action once. '
-            'Include it with your normal actions; never output only response_language. '
-            'Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n'
+            "If Response_Language is empty, infer the preferred response language as a BCP 47 tag and emit this action once. "
+            "Include it with your normal actions; never output only response_language. "
+            "Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n"
             '{"type": "response_language", "tag": "BCP47"} __END_ACTION__\n'
         )
 
@@ -4524,8 +4525,8 @@ class BaseAgent:
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_calls = ""
         self.recent_tool_call_blocks: list[str] = []
-        self.agent_reports = AgentReportHistory()
-        self.prompt_context.agent_reports = self.agent_reports
+        self.worker_reports = WorkerReportHistory()
+        self.prompt_context.worker_reports = self.worker_reports
         self.agent_feedback_errors: list[str] = []
 
     def build_system_prompt(self) -> str:
@@ -4629,7 +4630,7 @@ class BaseAgent:
     def _finish_current_goal(self) -> None:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
-        self.agent_reports.clear()
+        self.worker_reports.clear()
         # Finish/cancel is a hard task boundary; edit fingerprints must not leak into the next task.
         if self.activity == "main":
             self.session.range_fingerprints.clear()
@@ -4840,7 +4841,9 @@ VERIFY_MESSAGE_PREFIX = "[verify] "
 class ExploreAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
 
-    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
+    def __init__(
+        self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
+    ):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
@@ -4853,7 +4856,7 @@ class ExploreAgent(BaseAgent):
             runtime=runtime,
             parent_known=self.parent_known,
             scope=scope,
-            handoff_context=handoff_context or AgentReportHistory(),
+            handoff_context=handoff_context or WorkerReportHistory(),
         )
         prompt_builder = PromptBuilder(
             parent_session,
@@ -4994,7 +4997,9 @@ class ExploreAgent(BaseAgent):
 class VerifyAgent(BaseAgent):
     DEFAULT_MAX_STEPS: ClassVar[int] = 50
 
-    def __init__(self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: AgentReportHistory | None = None):
+    def __init__(
+        self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
+    ):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
@@ -5007,7 +5012,7 @@ class VerifyAgent(BaseAgent):
             runtime=runtime,
             parent_known=self.parent_known,
             scope=scope,
-            handoff_context=handoff_context or AgentReportHistory(),
+            handoff_context=handoff_context or WorkerReportHistory(),
         )
         prompt_builder = PromptBuilder(
             parent_session,
@@ -5152,10 +5157,10 @@ class MainAgent(BaseAgent):
     def _has_learn_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) == "learn" for action in actions)
 
-    def _handoff_context_snapshot(self) -> AgentReportHistory:
-        return AgentReportHistory(
-            explored=list(self.agent_reports.explored),
-            verified=list(self.agent_reports.verified),
+    def _handoff_context_snapshot(self) -> WorkerReportHistory:
+        return WorkerReportHistory(
+            explored=list(self.worker_reports.explored),
+            verified=list(self.worker_reports.verified),
         )
 
     def execute_explore_actions(
@@ -5188,8 +5193,8 @@ class MainAgent(BaseAgent):
                 kwargs["on_live_done"] = on_live_done
             report = self._make_explore_agent(goal=goal, scope=scope).run(**kwargs)
             reports.append(report)
-            self.agent_reports.explore.append(report.format())
-            self.agent_reports.explored.extend(report.brief())
+            self.worker_reports.explore.append(report.format())
+            self.worker_reports.explored.extend(report.brief())
             if on_message is not None:
                 on_message(self._format_explore_done(report))
         return reports
@@ -5270,8 +5275,8 @@ class MainAgent(BaseAgent):
         if on_live_done is not None:
             kwargs["on_live_done"] = on_live_done
         report = self._make_verify_agent(goal=goal, scope=scope).run(**kwargs)
-        self.agent_reports.verify.append(report.format())
-        self.agent_reports.verified.append(report.brief())
+        self.worker_reports.verify.append(report.format())
+        self.worker_reports.verified.append(report.brief())
         if on_message is not None:
             on_message(self._format_verify_done(report))
         return report
@@ -5325,7 +5330,9 @@ class MainAgent(BaseAgent):
         return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
-        return "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, progress action, or final goal action."
+        return (
+            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, progress action, or final goal action."
+        )
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
         return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
@@ -5343,7 +5350,7 @@ class MainAgent(BaseAgent):
     ) -> Json:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
-        self.agent_reports.clear()
+        self.worker_reports.clear()
         # Range fingerprints belong to one top-level user task; goal rewording inside the task keeps them valid.
         self.session.range_fingerprints.clear()
         self.session.turn_tool_calls = 0
@@ -5859,12 +5866,17 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " <number>"
             self._set_temperature_value(key, parsed_float)
             return ""
-        if key.endswith(".timeout") or key.endswith(".first_token_timeout") or key in {
-            "explore.max_turns",
-            "runtime.compact_at",
-            "runtime.shell_timeout",
-            "runtime.max_agent_steps",
-        }:
+        if (
+            key.endswith(".timeout")
+            or key.endswith(".first_token_timeout")
+            or key
+            in {
+                "explore.max_turns",
+                "runtime.compact_at",
+                "runtime.shell_timeout",
+                "runtime.max_agent_steps",
+            }
+        ):
             parsed_int = self._parse_positive_int(value)
             if parsed_int is None:
                 return "Usage: /set " + key + " <positive-number>"
@@ -6443,7 +6455,9 @@ class AgentLoop:
         self._active_scope = scope
         prefix = [("ansibrightblack", "[" + scope + "]\n")] if show_prefix else []
         if message.startswith("State Updated"):
-            self._emit_segments(prefix + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
+            self._emit_segments(
+                prefix + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix)
+            )
             return
         if self._is_tool_report(message):
             self._emit_segments(prefix + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
@@ -6452,7 +6466,9 @@ class AgentLoop:
             self._emit_segments(prefix + [("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Error:"):
-            self._emit_segments(prefix + [("ansibrightblack", "  "), ("bold ansired", message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
+            self._emit_segments(
+                prefix + [("ansibrightblack", "  "), ("bold ansired", message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix)
+            )
             return
         self._emit_segments(prefix + self._scoped_line_segments(message), self._scoped_plain(scope, message, show_prefix=show_prefix))
 
