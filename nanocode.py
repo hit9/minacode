@@ -3858,12 +3858,10 @@ class AgentStateUpdater:
         session: Session,
         blackboard: Blackboard,
         *,
-        clear_range_fingerprints_on_goal_change: bool = True,
         allow_project_learning: bool = False,
     ):
         self.session = session
         self.blackboard = blackboard
-        self.clear_range_fingerprints_on_goal_change = clear_range_fingerprints_on_goal_change
         self.allow_project_learning = allow_project_learning
         self.latest_report = ""
 
@@ -3876,8 +3874,6 @@ class AgentStateUpdater:
         goal_changed = self._apply_goal(response)
         plan_replaced = self._apply_plan(response)
         self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        if goal_changed and self.clear_range_fingerprints_on_goal_change:
-            self.session.range_fingerprints.clear()
         self._apply_known(response)
         self._apply_project_knowledge(response)
         self._apply_verification(response)
@@ -4193,7 +4189,6 @@ class BaseAgent:
         prompt_builder: PromptBuilder | None = None,
         allowed_tools: set[str] | None = None,
         activity: str = "main",
-        clear_range_fingerprints_on_goal_change: bool = True,
         allow_project_learning: bool = False,
     ):
         self.session = session
@@ -4207,7 +4202,6 @@ class BaseAgent:
         self.state_updater = AgentStateUpdater(
             session,
             self.blackboard,
-            clear_range_fingerprints_on_goal_change=clear_range_fingerprints_on_goal_change,
             allow_project_learning=allow_project_learning,
         )
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
@@ -4325,6 +4319,9 @@ class BaseAgent:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
         self.agent_reports.clear()
+        # Finish/cancel is a hard task boundary; edit fingerprints must not leak into the next task.
+        if self.activity == "main":
+            self.session.range_fingerprints.clear()
         self.blackboard.goal = ""
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -4566,7 +4563,6 @@ class ExploreAgent(BaseAgent):
             prompt_builder=prompt_builder,
             allowed_tools=EXPLORE_AGENT_ALLOWED_TOOLS,
             activity="explore",
-            clear_range_fingerprints_on_goal_change=False,
         )
 
     def run(
@@ -4712,7 +4708,6 @@ class VerifyAgent(BaseAgent):
             prompt_builder=prompt_builder,
             allowed_tools=VERIFY_AGENT_ALLOWED_TOOLS,
             activity="verify",
-            clear_range_fingerprints_on_goal_change=False,
         )
 
     def run(
@@ -5004,6 +4999,8 @@ class MainAgent(BaseAgent):
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
         self.agent_reports.clear()
+        # Range fingerprints belong to one top-level user task; goal rewording inside the task keeps them valid.
+        self.session.range_fingerprints.clear()
         self.session.turn_tool_calls = 0
         self.session.turn_model_calls = 0
         self.blackboard.user_input = user_input

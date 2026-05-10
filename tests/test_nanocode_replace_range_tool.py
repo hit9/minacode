@@ -207,13 +207,44 @@ def test_replace_range_cache_is_bounded(tmp_path):
     assert len(store) == RangeFingerprintStore.MAX_ENTRIES
 
 
-def test_replace_range_cache_clears_when_goal_changes(tmp_path):
+def test_replace_range_cache_survives_goal_rewording(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+
+    MainAgent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
+
+    ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"]).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
+def test_replace_range_cache_clears_when_main_goal_finishes(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    agent = MainAgent(session)
 
-    MainAgent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
+    agent.cancel_current_goal()
+
+    assert len(session.range_fingerprints) == 0
+
+
+def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
+    class FakeModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return {"actions": [{"type": "chat", "text": "done"}]}
+
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+
+    agent.run("new task")
 
     assert len(session.range_fingerprints) == 0
 
