@@ -1,3 +1,9 @@
+import os
+import signal
+import time
+
+import pytest
+
 from nanocode import BashTool, Session
 
 
@@ -37,3 +43,33 @@ def test_bash_tool_times_out_and_reports_timeout(tmp_path):
 
     assert "* exit_code: -1" in result
     assert "timeout" in result
+
+
+def test_bash_tool_kills_process_group_on_interrupt(tmp_path):
+    session = Session(cwd=str(tmp_path), shell_timeout=30)
+    pid_file = tmp_path / "pid"
+    tool = BashTool.make(session, [f"echo $$ > {pid_file}; printf started; sleep 30"])
+
+    def interrupt_on_output(chunk: str) -> None:
+        if "started" in chunk:
+            raise KeyboardInterrupt()
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            tool.call_live(interrupt_on_output)
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        for _ in range(20):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("bash process was not killed")
+    finally:
+        if pid_file.exists():
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass

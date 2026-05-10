@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.12"
+__version__ = "0.3.13"
 
 
 JsonValue: TypeAlias = Any
@@ -2664,6 +2664,11 @@ class BashTool(Tool):
                         self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink)
                 if proc.returncode is None:
                     proc.wait()
+            except BaseException:
+                if proc.returncode is None:
+                    self._kill_process_group(proc)
+                    proc.wait()
+                raise
             finally:
                 selector.close()
 
