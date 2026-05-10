@@ -1403,7 +1403,14 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "relevant target", "complete": False},
-                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain", "context": "Main saw sample mentioned"},
+                        {
+                            "type": "explore",
+                            "goal": "find target",
+                            "scope": ["sample.txt"],
+                            "constraints": ["return exact path and line range"],
+                            "reason": "target uncertain",
+                            "context": "Main saw sample mentioned",
+                        },
                     ]
                 },
                 {"actions": _final_actions("relevant target")},
@@ -1419,7 +1426,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
             self.scope = scope
 
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            assert self.scope == ["sample.txt", "main_context: Main saw sample mentioned"]
+            assert self.scope == ["sample.txt", "constraint: return exact path and line range", "main_context: Main saw sample mentioned"]
             if on_message is not None:
                 on_message("[success] Read(\"sample.txt\", \"0\", \"1\")")
             return nanocode.ExploreReport(

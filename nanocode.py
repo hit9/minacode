@@ -2897,7 +2897,7 @@ Rules:
 
 Loop:
 1. Check goal, facts, plan, verification, worker reports, errors, recent tools.
-2. Unknown target -> explore and stop.
+2. Unknown file/symbol/range target -> explore with constraints and stop.
 3. Clear target -> do the next smallest step.
 4. After edits -> inspect, update plan, or request verify.
 5. Finish only when done.
@@ -2910,7 +2910,9 @@ Editing:
 - Existing file -> inspect target first, then Edit/ReplaceRange/ApplyPatch.
 
 Workers:
-- Explore locates targets/evidence only.
+- Explore only locates concrete file/symbol/range targets.
+- Do not ask Explore to review, analyze, diagnose, decide, fix, verify, or answer.
+- Explore input must include scope/constraints: known paths, symbols, keywords, changed files, or search hints.
 - Verify validates results only.
 - Do not give workers the whole task.
 
@@ -2932,7 +2934,7 @@ One JSON object may omit __END_ACTION__.
 {"type": "learn", "summary": "optional one-sentence project summary, not a process log", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "explore", "goal": "string", "scope": ["string"], "reason": "string", "context": null | "string"} __END_ACTION__
+{"type": "explore", "goal": "locate concrete code targets only", "scope": ["known path/symbol/keyword"], "constraints": ["required output or search boundary"], "reason": "why target location is unknown", "context": null | "string"} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -3000,7 +3002,7 @@ YOUR OUTPUT:
 
 
 EXPLORE_AGENT_SYSTEM_PROMPT = """You are ExploreAgent.
-Your only job: find concrete code targets and evidence points for the caller.
+Your only job: locate concrete code targets for the caller.
 
 Must:
 - Return JSON action frames only. Native/function tool calls are forbidden.
@@ -3009,19 +3011,21 @@ Must:
 - Search before Read. Batch independent Search/Read calls.
 - Read only small ranges after Search finds likely files.
 - Deliver as soon as the target is found or cannot be found.
+- Deliverable is path/symbol/0-based line_range/context/reason evidence.
 
 Must not:
 - Do not edit, patch, fix, verify, install, run long processes, or answer the user.
-- Do not analyze root cause or make final decisions.
-- Do not do broad project surveys unless Explore_Goal explicitly asks.
+- Do not review, analyze, diagnose, decide, or make final judgments.
+- Do not do broad project surveys.
 - Do not output only known/verify/state actions.
 - Do not deliver large raw content.
 
 Reject:
-- If Explore_Goal asks you to analyze, diagnose, decide, verify, fix, confirm, or answer, deliver empty targets with issues. Do not call tools.
+- If Explore_Goal asks for review, analysis, diagnosis, decision, verification, fix, confirmation, or final answer, deliver empty targets with issues. Do not call tools.
+- If Explore_Scope has no path, symbol, keyword, changed-file, or search-hint constraint, deliver empty targets with issues. Do not call tools.
 
 Workflow:
-1. Check Explore_Goal and Explore_Scope.
+1. Check Explore_Goal and Explore_Scope constraints.
 2. Search for symbols, paths, config names, keywords, or changed files.
 3. Batch small Read ranges around likely matches.
 4. Add only stable facts to known.
@@ -3090,9 +3094,9 @@ EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 {goal}
 </Explore_Goal>
 
-<Explore_Scope>
+<Explore_Scope_And_Constraints>
 {scope}
-</Explore_Scope>
+</Explore_Scope_And_Constraints>
 
 <Known>
 {known}
@@ -5177,6 +5181,8 @@ class MainAgent(BaseAgent):
         for action in actions:
             goal = _json_str(action.get("goal")) or self.blackboard.goal or self.blackboard.user_input
             scope = [item for item in (_json_str(raw) for raw in _json_list(action.get("scope"))) if item]
+            constraints = [item for item in (_json_str(raw) for raw in _json_list(action.get("constraints"))) if item]
+            scope.extend("constraint: " + item for item in constraints)
             context = (_json_str(action.get("context")) or "").strip()
             if context:
                 scope.append("main_context: " + context)
