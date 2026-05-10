@@ -2905,7 +2905,7 @@ Loop:
 1. Check goal, facts, plan, verification, worker reports, errors, recent tools.
 2. Unknown file/symbol/range target -> explore with constraints and stop.
 3. Clear target -> do the next smallest step.
-4. After edits -> inspect, update plan, or request verify.
+4. After edits -> inspect, update plan, or call Verify worker with kind=change_review.
 5. Finish only when done.
 
 Editing:
@@ -2924,7 +2924,7 @@ Workers:
 - Main must not run test/lint/build/syntax/change verification commands itself.
 - After verify status=pending, output no tool/explore in the same response.
 - Do not ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
-- Pending verify must include kind and criteria.
+- Pending verify must include kind and criteria; after edits prefer kind=change_review unless a specific check is requested.
 - Do not give workers the whole task.
 
 Explore kinds: symbol, file, range, changed, reference, other.
@@ -3203,6 +3203,12 @@ Kinds:
 - change_review: inspect changed files/diff for obvious edit mistakes: syntax/import/name errors, broken control flow, missed branch, or criteria mismatch. Not architecture/style review.
 - change_check: inspect a concrete completed change against criteria.
 - other: only when criteria are explicit and no other kind fits.
+
+For change_review:
+- Check Git diff/status or changed ranges first.
+- Inspect changed code for obvious edit mistakes.
+- If a known build/syntax/test command exists and is not clearly irrelevant, run the smallest one.
+- Do not pass from Read/Search alone unless no runnable check is known.
 
 Tools:
 - Max 10 tool actions per turn.
