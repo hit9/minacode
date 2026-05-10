@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 
 JsonValue: TypeAlias = Any
@@ -576,6 +576,15 @@ class WorkerReportHistory(PromptItem):
         self.verify.clear()
         self.explored.clear()
         self.verified.clear()
+
+    def prune(self, max_items: int) -> None:
+        if max_items <= 0:
+            self.clear()
+            return
+        del self.explore[: max(0, len(self.explore) - max_items)]
+        del self.verify[: max(0, len(self.verify) - max_items)]
+        del self.explored[: max(0, len(self.explored) - max_items)]
+        del self.verified[: max(0, len(self.verified) - max_items)]
 
     @override
     def format(self, indent: str = "") -> str:
@@ -4526,6 +4535,7 @@ class BaseAgent:
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
+    RECENT_WORKER_REPORTS: ClassVar[int] = 8
 
     def __init__(
         self,
@@ -4665,18 +4675,8 @@ class BaseAgent:
         self.agent_feedback_errors = []
 
     def _finish_current_goal(self) -> None:
-        self._clear_recent_tool_calls()
-        self._clear_agent_feedback()
-        self.worker_reports.clear()
-        # Finish/cancel is a hard task boundary; edit fingerprints must not leak into the next task.
-        if self.activity == "main":
-            self.session.range_fingerprints.clear()
-        self.blackboard.goal = ""
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
-        self.blackboard.plan = []
-        self.blackboard.verification.reset()
-        self._trim_tool_result_store_after_goal_complete()
 
     def _clear_recent_tool_calls(self) -> None:
         self.latest_tool_batch = ""
@@ -4698,6 +4698,9 @@ class BaseAgent:
         if not blocks:
             return
         self.recent_tool_call_blocks.extend(blocks)
+        self._prune_recent_tool_calls()
+
+    def _prune_recent_tool_calls(self) -> None:
         overflow = len(self.recent_tool_call_blocks) - self.RECENT_TOOL_CALLS
         if overflow > 0:
             del self.recent_tool_call_blocks[:overflow]
@@ -4705,7 +4708,7 @@ class BaseAgent:
             self.recent_tool_call_blocks.pop(0)
         self.recent_tool_calls = _join_tool_call_blocks(self.recent_tool_call_blocks)
 
-    def _trim_tool_result_store_after_goal_complete(self) -> None:
+    def _prune_tool_result_store(self) -> None:
         overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
         if overflow <= 0:
             return
@@ -5434,15 +5437,17 @@ class MainAgent(BaseAgent):
         on_message: MessageCallback | None = None,
         stop_after_learn: bool = False,
     ) -> Json:
-        self._clear_recent_tool_calls()
         self._clear_agent_feedback()
-        self.worker_reports.clear()
-        # Range fingerprints belong to one top-level user task; goal rewording inside the task keeps them valid.
+        self._prune_recent_tool_calls()
+        self.worker_reports.prune(self.RECENT_WORKER_REPORTS)
+        self._prune_tool_result_store()
+        # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
         self.session.range_fingerprints.clear()
         self.session.turn_tool_calls = 0
         self.session.turn_model_calls = 0
         self.blackboard.user_input = user_input
         self.blackboard.goal_reached = False
+        self.blackboard.verification_required = False
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
@@ -6569,7 +6574,11 @@ class AgentLoop:
             self._emit_segments([("bold ansired", message + "\n")], message)
             return
         if message.startswith("Cancelled"):
-            self._emit_segments([("ansiyellow", message + "\n")], message)
+            tip = "Context is kept; send a follow-up to continue."
+            self._emit_segments(
+                [("ansiyellow", message + "\n"), ("ansibrightblack", "  " + tip + "\n")],
+                message + "\n  " + tip,
+            )
             return
         self._emit_segments([("ansicyan", message + "\n")], message)
 

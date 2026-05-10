@@ -220,7 +220,7 @@ def test_replace_range_cache_survives_goal_rewording(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
-def test_replace_range_cache_clears_when_main_goal_finishes(tmp_path):
+def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -228,6 +228,15 @@ def test_replace_range_cache_clears_when_main_goal_finishes(tmp_path):
     agent = MainAgent(session)
 
     agent.cancel_current_goal()
+
+    assert len(session.range_fingerprints) == 1
+
+    class FakeModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return {"actions": [{"type": "chat", "text": "done"}]}
+
+    agent.model_client = FakeModelClient()
+    agent.run("next task")
 
     assert len(session.range_fingerprints) == 0
 

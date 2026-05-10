@@ -182,6 +182,19 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
+def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message("Cancelled")
+
+    assert captured == ["Cancelled\n  Context is kept; send a follow-up to continue."]
+
+
 def test_agent_loop_styles_tool_arg_error_report(tmp_path):
     class FakeAgent:
         def __init__(self):

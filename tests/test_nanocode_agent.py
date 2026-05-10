@@ -118,6 +118,22 @@ def test_worker_report_history_uses_worker_reports_tag():
     assert "<Agent_Reports>" not in formatted
 
 
+def test_worker_report_history_prunes_old_items():
+    history = nanocode.WorkerReportHistory(
+        explore=[f"explore {index}" for index in range(4)],
+        verify=[f"verify {index}" for index in range(4)],
+        explored=[f"explored {index}" for index in range(4)],
+        verified=[f"verified {index}" for index in range(4)],
+    )
+
+    history.prune(2)
+
+    assert history.explore == ["explore 2", "explore 3"]
+    assert history.verify == ["verify 2", "verify 3"]
+    assert history.explored == ["explored 2", "explored 3"]
+    assert history.verified == ["verified 2", "verified 3"]
+
+
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -1368,13 +1384,13 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
-    assert agent.latest_tool_batch == ""
+    assert 'Read("sample.txt", "0", "1")' in agent.latest_tool_batch
     assert agent.recent_tool_calls == ""
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
-    assert agent.blackboard.goal == ""
+    assert agent.blackboard.goal == "read sample"
     assert agent.blackboard.plan == []
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.goal_reached is False
     assert agent.blackboard.verification_required is False
 
@@ -1567,11 +1583,11 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert agent.latest_tool_batch == ""
+    assert 'Read("sample.txt", "0", "1")' in agent.latest_tool_batch
     assert agent.recent_tool_calls == ""
 
 
-def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
+def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     for index in range(51):
         (tmp_path / f"sample-{index}.txt").write_text(f"line {index}\n", encoding="utf-8")
 
@@ -1602,14 +1618,20 @@ def test_agent_run_trims_tool_result_store_when_goal_completes(tmp_path):
 
     agent.run("read samples")
 
+    assert len(session.tool_result_store) == 51
+    assert list(session.tool_result_store)[0] == "tr.1"
+
+    agent.model_client.responses = [{"actions": [{"type": "chat", "text": "ok"}]}]
+    agent.run("next task")
+
     assert len(session.tool_result_store) == 50
     assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
     assert list(session.tool_result_store)[-1] == "tr.51"
     assert session.tool_result_counter == 51
-    assert agent.blackboard.goal == ""
-    assert agent.blackboard.plan == []
+    assert agent.blackboard.goal == "read samples"
+    assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.goal_reached is False
 
 
@@ -1781,8 +1803,8 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert len(agent.model_client.user_prompts) == 2
     assert len(verify_confirm_callbacks) == 1
     assert verify_confirm_callbacks[0] is not None
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
-    assert agent.blackboard.verification.context == ""
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.verification.context == "diff matches goal"
     assert "Verifying: change file done" in messages
     assert '[verify] [success] Git("diff", "--", "sample.txt")' in messages
     assert "Verify done: passed | git diff\n  diff matches goal" in messages
@@ -1973,7 +1995,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Retrying: verification is done but goal is not complete." in messages
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
 def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
@@ -1999,7 +2021,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Retrying: goal is complete but message_for_complete is missing." in messages
-    assert agent.agent_feedback_errors == []
+    assert agent.agent_feedback_errors
     assert agent.blackboard.goal_reached is False
 
 
@@ -2029,7 +2051,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
     assert messages[-1] == "done"
 
 
-def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
+def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -2051,6 +2073,15 @@ def test_agent_feedback_accumulates_errors_until_goal_complete(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
+    assert agent.agent_feedback_errors
+
+    class ChatModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return {"actions": [{"type": "chat", "text": "ok"}]}
+
+    agent.model_client = ChatModelClient()
+    agent.run("next task")
+
     assert agent.agent_feedback_errors == []
 
 
@@ -2112,7 +2143,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
     assert "reading sample" not in [item.content for item in session.conversation]
 
 
-def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
+def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
@@ -2143,14 +2174,23 @@ def test_agent_feedback_clears_on_keyboard_interrupt(tmp_path):
     else:
         raise AssertionError("expected KeyboardInterrupt")
 
-    assert agent.agent_feedback_errors == []
-    assert agent.latest_tool_batch == ""
+    assert agent.agent_feedback_errors
+    assert agent.latest_tool_batch == "old tool call"
     assert agent.recent_tool_calls == ""
-    assert agent.blackboard.goal == ""
-    assert agent.blackboard.plan == []
+    assert agent.blackboard.goal == "answer"
+    assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.status == VerificationStatus.REQUIRED
     assert agent.blackboard.goal_reached is False
+
+    class ChatModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return {"actions": [{"type": "chat", "text": "ok"}]}
+
+    agent.model_client = ChatModelClient()
+    agent.run("next task")
+
+    assert agent.agent_feedback_errors == []
 
 
 def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
@@ -2306,7 +2346,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Retrying: goal is complete but message_for_complete is missing." in messages
-    assert agent.agent_feedback_errors == []
+    assert agent.agent_feedback_errors
 
 
 def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tmp_path):
