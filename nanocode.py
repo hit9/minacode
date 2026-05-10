@@ -5642,7 +5642,6 @@ class CommandSpec:
     def display_name(self) -> str:
         return self.usage or self.name
 
-
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
@@ -5650,6 +5649,9 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
+    CommandSpec("/model", "Show or set main model", "Config", "/model [model_name]"),
+    CommandSpec("/worker_model", "Show or set worker model", "Config", "/worker_model [model_name]"),
+    CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
     CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
@@ -5715,6 +5717,9 @@ class CommandDispatcher:
             "/config": self._config,
             "/set": self._set,
             "/clean-logs": self._clean_logs,
+            "/model": self._model,
+            "/worker_model": self._worker_model,
+            "/yolo": self._yolo,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -5775,6 +5780,15 @@ class CommandDispatcher:
         else:
             self.agent.run(task, stop_after_learn=True)
         return ""
+
+    def _model(self, args: str) -> str:
+        return self._set("main.model " + args)
+
+    def _worker_model(self, args: str) -> str:
+        return self._set("worker.model " + args)
+
+    def _yolo(self, args: str) -> str:
+        return self._set("runtime.yolo " + args)
 
     def _format_learn_task(self, args: str) -> str:
         prompt = args.strip()
