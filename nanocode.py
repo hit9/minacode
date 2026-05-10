@@ -3644,7 +3644,6 @@ class ToolCallRunner:
         filtered = []
         for index, item in enumerate(parsed_calls):
             if isinstance(item, ParsedToolCall):
-                key = (item.name, tuple(item.args))
                 tool_class = TOOL_REGISTRY.get(item.name)
                 if tool_class is not None and self._is_tool_allowed(item.name) and tool_class.is_readonly() and index not in keep_indexes:
                     continue
@@ -5442,7 +5441,6 @@ class CommandDispatcher:
         return "(unknown)"
 
     def _apply_config_value(self, key: str, value: str) -> str:
-        session = self.agent.session
         if key.endswith(".reasoning") or key.endswith(".stream") or key == "runtime.yolo":
             parsed = self._parse_on_off(value)
             if parsed is None:
