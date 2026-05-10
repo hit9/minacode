@@ -1217,6 +1217,10 @@ def test_main_agent_rejects_search_tool(tmp_path):
     system_prompt = agent.build_system_prompt()
     assert "Search(" not in system_prompt
     assert "Read(" in system_prompt
+    assert "Explore capability:" in system_prompt
+    assert "Edit capability:" in system_prompt
+    assert "Verify capability:" in system_prompt
+    assert "do not ask Edit to build a whole app/page/product in one handoff" in system_prompt
     assert "tool not allowed for this agent: Search" in latest
 
 
