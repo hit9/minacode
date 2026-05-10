@@ -56,6 +56,14 @@ Ask a source-aware question about nanocode itself:
 /help how does compact work?
 ```
 
+CLI arguments:
+
+- `--yolo`: Skip tool execution confirmations.
+- `--debug`: Write request prompts to `.nanocode/debug`.
+- `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
+- `--init-config`: Create a default config file.
+- `-v`, `--version`: Show program version.
+
 ## Safety
 
 nanocode does NOT provide sandbox protection. It can run shell commands and edit files in the environment where you start it.
@@ -73,20 +81,21 @@ USE AT YOUR OWN RISK.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`.
-- Session: `/compact`.
+- Info: `/help [question]`, `/status`, `/learn [prompt]`, `/compact`.
 - Config: `/config`, `/set <key> <value>`.
+- Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.
 
 ## Configuration
 
-- Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
-- Use `nanocode --config path/to/config.toml` to load another config file.
+Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
+
+- API config: `[api]` url and key.
 - Model layers: `[main_model]` and `[worker_model]`.
-- Explore config: `[explore_agent] max_turns`.
+- Explore config: `[explore_agent]` max_turns.
 - Runtime config: `[paths]` and `[runtime]`.
 
 ## Status
 
-- Status bar: model, reasoning, context, tokens/cost, elapsed time, and active model-call time.
+- Status bar: active model, reasoning, context, tool calls, tokens/cost, elapsed time, and active model-call time.
 - `/status`: main/worker model state, per-model calls/tokens, total cost, runtime state, goal, and verification.
