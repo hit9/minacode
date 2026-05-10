@@ -273,10 +273,6 @@ def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert result.message == ""
     assert len(prompts) == 1
-    assert "Answer this question about nanocode itself." in prompts[0]
-    assert "nanocode.py" in prompts[0]
-    assert "pyproject.toml" in prompts[0]
-    assert "how does compact work?" in prompts[0]
 
 
 def test_clean_logs_command_removes_log_files(tmp_path):

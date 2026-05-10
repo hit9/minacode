@@ -1200,10 +1200,10 @@ class ReadTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Read UTF-8 file lines and cache fingerprints for range edits.",
-            "Range tokens are 0-based start,end; end=0 means EOF; for batches pass each range as its own token.",
-            "Use LineCount/Search before broad reads; each range returns at most 600 lines.",
-            "Before ReplaceRange, Read the exact target range and reuse that fingerprint.",
+            "Read UTF-8 file line ranges and cache fingerprints for ReplaceRange.",
+            "Pass multiple 0-based start,end range tokens in one call when you need several ranges from the same file.",
+            "Each range returns at most 600 lines; use Search or LineCount before broad reads.",
+            "Before ReplaceRange, Read the exact target range and reuse its fingerprint.",
         ]
 
     @classmethod
@@ -1214,7 +1214,7 @@ class ReadTool(Tool):
     def example(cls) -> list[str]:
         return [
             'Example args: ["code.py", "0,120"]',
-            'Example args: ["code.py", "0,40", "200,260"]',
+            'Batch ranges: ["code.py", "0,40", "200,260"]',
             'Example args: ["code.py"]',
         ]
 
@@ -1353,7 +1353,7 @@ class LineCountTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Count lines in one file before choosing Read range tokens."]
+        return ["Count one file's lines before choosing Read ranges; batch multiple LineCount actions in one turn when needed."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1398,7 +1398,8 @@ class ListDirTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "List one directory, non-recursive; optional glob filters immediate entry names.",
+            "List one directory non-recursively; optional glob filters immediate entry names.",
+            "Batch multiple ListDir actions in one turn when checking several known directories.",
         ]
 
     @classmethod
@@ -1407,7 +1408,7 @@ class ListDirTool(Tool):
 
     @classmethod
     def example(cls) -> list[str]:
-        return ["Example args: []", 'Example args: ["src"]', 'Example args: ["src", "*.py"]']
+        return ['Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []"]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1496,10 +1497,10 @@ class SearchTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Regex search before Read; first arg is one pattern, so use A|B|C for alternatives.",
-            "Scope explicitly with path=FILE_OR_DIR; filter with glob=*.py; set context=N for 0..30 surrounding lines.",
-            "Only supported options are path=, glob=, and context=; ignore_case is not supported.",
-            "For literal text containing regex symbols, escape them.",
+            "Regex search before Read; use A|B|C for alternatives.",
+            "Scope with path=FILE_OR_DIR, filter with glob=*.py, set context=N for 0..30 lines.",
+            "Batch multiple Search actions in one turn when checking independent patterns.",
+            "Only options are path=, glob=, context=; escape regex symbols for literal text.",
         ]
 
     @classmethod
@@ -1509,11 +1510,9 @@ class SearchTool(Tool):
     @classmethod
     def example(cls) -> list[str]:
         return [
-            'Example args: ["TODO"]',
-            'Example args: ["class Foo", "path=code.py"]',
             'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
             'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
-            'Example args: ["def __init__\\(", "path=.", "glob=*.py"]',
+            'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
         ]
 
     @classmethod
@@ -1861,7 +1860,7 @@ class EditTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace or delete the first exact literal text block; best for small unambiguous edits, not regex."]
+        return ["Replace/delete the first exact literal text block in an existing file; use only for tiny unambiguous edits, not regex."]
 
     @classmethod
     def signature(cls) -> str:
@@ -1880,8 +1879,6 @@ class EditTool(Tool):
                 + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().'
             )
         find = str(args[1])
-        if not find:
-            raise ToolCallArgError("find text cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -1892,27 +1889,104 @@ class EditTool(Tool):
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 content = f.read()
-        except OSError:
-            return label
+        except FileNotFoundError:
+            if self.find == "":
+                return _make_unified_diff("", self.replace, self.filepath) or label
+            return label + "\n# preview unavailable: file does not exist; use empty find to create"
+        except OSError as error:
+            return label + "\n# preview unavailable: " + str(error)
+        if self.find == "":
+            return label + "\n# preview unavailable: empty find creates missing files only"
         if self.find not in content:
             return label
         return _make_unified_diff(content, content.replace(self.find, self.replace, 1), self.filepath) or label
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            content = f.read()
+        created = False
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            if self.find != "":
+                raise ToolCallError("file does not exist; use empty find to create")
+            content = ""
+            created = True
+        if self.find == "" and not created:
+            raise ToolCallError("empty find creates missing files only")
         if self.find not in content:
             raise ToolCallError("target `find` text not found")
 
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(content.replace(self.find, self.replace, 1))
 
+        lines = [
+            "<EditToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+        ]
+        if created:
+            lines.append("* created: true")
+        else:
+            lines.append("* replacements: 1")
+        lines.append("</EditToolResult>")
+        return "\n".join(lines)
+
+
+@final
+@dataclass
+class CreateFileTool(Tool):
+    filepath: str = ""
+    content: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def name(cls) -> str:
+        return "CreateFile"
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return ToolEffect.EDIT
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return ["Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist."]
+
+    @classmethod
+    def signature(cls) -> str:
+        return "CreateFile(filepath, content) -> CreateFileToolResult<path>"
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return ['Example args: ["new.py", "minimal content\\n"]']
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 2:
+            raise ToolCallArgError('requires exactly 2 args: filepath, content. Example: CreateFile("new.py", "content\\n")')
+        return cls(filepath=session.resolve_path(args[0]), content=str(args[1]), cwd=session.cwd)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return True
+
+    def display(self) -> str:
+        label = f"CreateFile({self.filepath})"
+        if os.path.exists(self.filepath):
+            return label + "\n# preview unavailable: file already exists"
+        return _make_unified_diff("", self.content, self.filepath) or label
+
+    def call(self) -> str:
+        try:
+            with open(self.filepath, "x", encoding="utf-8") as f:
+                f.write(self.content)
+        except FileExistsError:
+            raise ToolCallError("file already exists")
+        except OSError as error:
+            raise ToolCallError(str(error))
         return "\n".join(
             [
-                "<EditToolResult>",
+                "<CreateFileToolResult>",
                 f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                "* replacements: 1",
-                "</EditToolResult>",
+                "* created: true",
+                "</CreateFileToolResult>",
             ]
         )
 
@@ -1949,10 +2023,10 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Replace one 0-based [start,end) line range using a fingerprint from Read.",
-            "Use only for one complete semantic block already covered by Read; replacement is the full new content for that selected range only.",
-            "Do not include unchanged lines before start or after end in content; use Edit for single-line deletion or tiny literal edits.",
-            "Use ApplyPatch instead when editing/deleting multiple separated areas.",
+            "Replace one Read-backed 0-based [start,end) line range in an existing file.",
+            "Replacement content is the full new content for that selected range only.",
+            "Keep the range small; edit one semantic block per turn.",
+            "Do not include unchanged lines before start or after end.",
             "Pass start and end as separate args; do not pass a comma range token here.",
             "If fingerprint mismatch, Read the exact target range again and retry once.",
         ]
@@ -1971,7 +2045,7 @@ class ReplaceRangeTool(Tool):
             raise ToolCallArgError("requires exactly 5 args: filepath, start, end, fingerprint, content")
         start, end = _parse_line_range(args[1], args[2])
         fingerprint = str(args[3])
-        if not fingerprint:
+        if not fingerprint and (start != 0 or end != 0):
             raise ToolCallArgError("fingerprint cannot be empty")
         return cls._from_edits(
             session,
@@ -2009,6 +2083,8 @@ class ReplaceRangeTool(Tool):
     def _preview_warning(self) -> str:
         if len(self.edits) != 1:
             return ""
+        if self.start == 0 and self.end == 0 and not os.path.exists(self.filepath):
+            return ""
         if self.end == 0:
             return "# warning: broad range replacement; prefer smaller semantic ranges"
         if self.end - self.start > 20:
@@ -2023,6 +2099,7 @@ class ReplaceRangeTool(Tool):
         return ""
 
     def call(self) -> str:
+        created = not os.path.exists(self.filepath)
         original, new_content, replacements = self._preview()
         if new_content == original:
             raise ToolCallError("range replacement produced no changes")
@@ -2038,6 +2115,8 @@ class ReplaceRangeTool(Tool):
                 f"* range: {resolved.start}:{resolved.end}",
                 f"* fingerprint: {resolved.fingerprint}",
             ]
+            if created:
+                lines.append("* created: true")
             if resolved.relocated_from:
                 old_start, old_end = resolved.relocated_from
                 lines.append(f"* relocated_from: {old_start}:{old_end}")
@@ -2059,18 +2138,28 @@ class ReplaceRangeTool(Tool):
         return "\n".join(lines)
 
     def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
+        file_missing = False
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                original = f.read()
+        except FileNotFoundError:
+            file_missing = True
+            original = ""
         lines = original.splitlines(keepends=True)
         replacements = []
         for edit in self.edits:
-            resolved = self.range_fingerprints.resolve(
-                lines,
-                filepath=self.filepath,
-                start=edit.start,
-                end=edit.end,
-                fingerprint=edit.fingerprint,
-            )
+            if file_missing:
+                if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint:
+                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, "0", "0", "", content) to create')
+                resolved = RangeFingerprintStore.Resolved(start=0, end=0, fingerprint=_range_fingerprint(""))
+            else:
+                resolved = self.range_fingerprints.resolve(
+                    lines,
+                    filepath=self.filepath,
+                    start=edit.start,
+                    end=edit.end,
+                    fingerprint=edit.fingerprint,
+                )
             replacement = self._replacement_lines(edit.content, has_following_line=resolved.end < len(lines))
             replacements.append((resolved, replacement))
         self._reject_overlapping_ranges(replacements)
@@ -2117,7 +2206,7 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Apply one unified diff to one file; use when exact-text or range edits are awkward."]
+        return ["Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file."]
 
     @classmethod
     def signature(cls) -> str:
@@ -2142,8 +2231,7 @@ class ApplyPatchTool(Tool):
     def display(self) -> str:
         label = f"ApplyPatch({self.filepath}, unified_diff=...)"
         try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                original = f.read()
+            original = self._read_existing_or_empty()
             unified_diff, allow_compatible = self._normalized_unified_diff()
             new_content, _ = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         except (OSError, ToolCallError) as error:
@@ -2151,8 +2239,8 @@ class ApplyPatchTool(Tool):
         return _make_unified_diff(original, new_content, self.filepath) or label
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
+        created = not os.path.exists(self.filepath)
+        original = self._read_existing_or_empty()
         unified_diff, allow_compatible = self._normalized_unified_diff()
         new_content, hunks = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         if new_content == original:
@@ -2160,14 +2248,22 @@ class ApplyPatchTool(Tool):
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        return "\n".join(
-            [
-                "<ApplyPatchToolResult>",
-                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                f"* hunks: {hunks}",
-                "</ApplyPatchToolResult>",
-            ]
-        )
+        lines = [
+            "<ApplyPatchToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+            f"* hunks: {hunks}",
+        ]
+        if created:
+            lines.append("* created: true")
+        lines.append("</ApplyPatchToolResult>")
+        return "\n".join(lines)
+
+    def _read_existing_or_empty(self) -> str:
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
 
     def _normalized_unified_diff(self) -> tuple[str, bool]:
         lines = self.unified_diff.splitlines(keepends=True)
@@ -2187,12 +2283,21 @@ class ApplyPatchTool(Tool):
                 break
             if stripped.startswith("*** Update File: "):
                 if update_seen:
-                    raise ToolCallError("ApplyPatch supports one Update File per call")
+                    raise ToolCallError("ApplyPatch supports one file per call")
                 self._validate_codex_patch_path(stripped[len("*** Update File: ") :].strip())
                 update_seen = True
                 continue
+            if stripped.startswith("*** Add File: "):
+                if update_seen:
+                    raise ToolCallError("ApplyPatch supports one file per call")
+                if os.path.exists(self.filepath):
+                    raise ToolCallError("Add File patch target already exists")
+                self._validate_codex_patch_path(stripped[len("*** Add File: ") :].strip())
+                update_seen = True
+                hunk_lines.append("@@ -0,0 +1,1 @@\n")
+                continue
             if stripped.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
-                raise ToolCallError("ApplyPatch supports only Update File patches")
+                raise ToolCallError("ApplyPatch supports only Update File or Add File patches")
             if stripped == "*** End of File":
                 continue
             if not update_seen:
@@ -2363,7 +2468,7 @@ class BashTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Run one shell command string via bash -lc in the workspace cwd."]
+        return ["Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist."]
 
     @classmethod
     def signature(cls) -> str:
@@ -2371,7 +2476,7 @@ class BashTool(Tool):
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["python3 -m py_compile nanocode.py"]']
+        return ['Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2438,8 +2543,8 @@ class GitTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Run git without a shell; use for current repository state, history, status, diff, and changed files.",
-            "Pass each git argument separately, with optional cwd=path first.",
+            "Run git without a shell for repository state, history, status, diff, and changed files.",
+            "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
         ]
 
     @classmethod
@@ -2511,7 +2616,7 @@ class ToolResultTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Recall stored tool results by tr.* key; use Read(log_path, range) for full log details."]
+        return ["Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details."]
 
     @classmethod
     def signature(cls) -> str:
@@ -2521,7 +2626,7 @@ class ToolResultTool(Tool):
     def example(cls) -> list[str]:
         return [
             'Example args: ["tr.1"]',
-            'Example args: ["tr.1", "tr.2"]',
+            'Batch keys: ["tr.1", "tr.2"]',
         ]
 
     @classmethod
@@ -2565,6 +2670,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     LineCountTool.name(): LineCountTool,
     ListDirTool.name(): ListDirTool,
     SearchTool.name(): SearchTool,
+    CreateFileTool.name(): CreateFileTool,
     EditTool.name(): EditTool,
     ReplaceRangeTool.name(): ReplaceRangeTool,
     ApplyPatchTool.name(): ApplyPatchTool,
@@ -2579,126 +2685,43 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 #######################
 
-MAIN_AGENT_SYSTEM_PROMPT = """You are MainAgent, the coordinator for a looping coding assistant.
+MAIN_AGENT_SYSTEM_PROMPT = """You are MainAgent, a looping coding assistant.
 
-Hard rules:
-- Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
-- Use the same language as the latest user input.
-- Write tool intention in that language too.
-- Output JSON actions only; never output free-form text outside actions.
-- For greetings or non-actionable chat, output one chat action and stop.
-- Progress updates use progress actions; they are user-visible status, not final answers or hidden reasoning.
-- Finish only with goal complete=true and non-empty message_for_complete.
-- Do not mark the goal complete until the task is done and required verification has passed or is blocked.
+Rules:
+- JSON actions only. No prose outside actions. No native/function tool calls.
+- Use the latest user's language, including tool intentions.
+- Chat only -> one chat action.
+- Task -> keep goal, plan, known facts, next step clear.
+- Complete only with goal.complete=true and non-empty message_for_complete after required verification.
 
-Role boundary:
-- Main owns the user goal, planning, analysis, final answer, and file edits.
-- Explore finds WHERE relevant code is.
-- Verify decides HOW to validate completion.
-
-Worker contract:
-- Give each worker a narrow handoff goal and only the context needed for that goal.
-- Do not pass the whole user task to a worker.
-- Do not repeat a worker handoff that already returned targets, passed, blocked, or issues unless new facts require it.
-
-Explore capability:
-- Purpose: locate/map/find code targets or evidence points only.
-- Use when file/code area/symbol/call path/edit target is unknown.
-- Input goal: location task only; no analysis, diagnosis, fix, verification, or final answer.
-- Input scope: known names, paths, symbols, keywords, errors, or modules to start from.
-- Input context: short facts, hypotheses, or user concern from Main.
-- For bug, performance, or root-cause questions, Explore still locates implementation paths/evidence only; Main analyzes after Explore returns.
-
-Verify capability:
-- Purpose: validate that the current goal or change is correct.
-- Use after edits or when the user asks to check behavior.
-- Input method/context: concrete validation target; Verify chooses exact checks.
-- Input context: what changed, what should be true, relevant files/tests/workflows.
+Loop:
+1. Check goal, facts, plan, verification, worker reports, errors, recent tools.
+2. Unknown target -> explore and stop.
+3. Clear target -> do the next smallest step.
+4. After edits -> inspect, update plan, or request verify.
+5. Finish only when done.
 
 Editing:
-- Main edits files directly with Edit, ReplaceRange, or ApplyPatch.
-- Before editing, inspect the relevant current file/range or use Explore when the target is unknown.
-- Keep each edit tool call surgical; for large work, update the plan and edit one small slice at a time.
-- Prefer Edit for tiny exact literal replacements/deletions, ReplaceRange for one complete Read-backed block, and ApplyPatch for separated edits or new files.
+- Always edit incrementally.
+- One edit = one small coherent change.
+- New file -> CreateFile minimal skeleton first.
+- Never create/rewrite a complete large file in one tool call.
+- Existing file -> inspect target first, then Edit/ReplaceRange/ApplyPatch.
 
-Context:
-- Before answering codebase-answerable questions, use explore or tools to inspect current code.
-- Agent_Reports = worker results from this task; consume them before choosing the next action.
-- Project_Knowledge = stable background shared across sessions, not current evidence; update only with learn action.
-- Never use Project_Knowledge alone for up-to-date claims about current file contents, implementation, config existence, or docs; inspect current evidence first.
-- Project_Knowledge.workflows stores durable test/lint/build/release/verification commands and project operation flows.
-- Known = concise durable facts for the current goal; add only new facts.
-- Tool_Result_Store = stored tool result excerpts; use Recall(key...) for excerpts or Read(log_path, range) for full log details.
-- Recent_Tool_Calls = recent tool results ordered old-to-new; the latest batch is complete at the bottom.
+Workers:
+- Explore locates targets/evidence only.
+- Verify validates results only.
+- Do not give workers the whole task.
 
-Workflow:
-1. Classify the request: chat -> chat action; task -> set/update goal.
-2. Review Agent_Reports and current facts before acting:
-   - Explore_History gives targets/facts; use it to answer, edit, or verify instead of exploring the same target again.
-   - Verify_History status=passed/blocked means verification is finished; complete or explain the blocker instead of verifying the same target again.
-3. Choose the next capability:
-   - Unknown file, code area, symbol, call path, or edit target -> explore.
-   - Code change with clear target -> direct edit tool.
-   - Verification needed -> verify pending with method/context as the target.
-   - Small check with a clear path -> direct tool.
-4. Optionally emit progress with the external status only.
-5. Update known/plan/learn only when useful.
-6. Finish with goal complete=true and message_for_complete after success and required verification.
-
-Available tools:
-Max 10 tool actions per turn; prefer batching multiple independent tool actions in one response.
-
+Tools:
 { __tools__ }
 
-Decision rules:
-- Use explore whenever the relevant file/code target is unknown; do not discover broad targets with Bash/ListDir/Read yourself.
-- Use Git for current repository state, history, status, diff, and changed files; use explore for unknown code locations.
-- Use Edit/ReplaceRange/ApplyPatch directly for file edits.
-- For docs/config/API updates, inspect source facts before editing; do not edit from memory or prose only.
-- Do not repeat a worker handoff that already returned targets, passed, blocked, or issues unless new facts require it.
-- Batch independent Read/ListDir/LineCount/Recall calls instead of spending one turn per call.
-- Use Read/ListDir/LineCount directly only for small checks with a clear file or path.
-- Use Bash only for explicit shell requests or implementation commands.
-- Do not use Bash for code search, grep, find, ls, broad discovery, file edits, or verification.
-- Do not use Bash/Git/Read just to verify completion; use verify pending and let Verify choose the checks.
-- If a tool or explore result is needed for the next decision, stop after that action.
+Actions:
+chat, progress, goal, verify, known, learn, plan, tool, explore.
 
-Good worker handoffs:
-Bad explore:
-{"type":"explore",
- "goal":"Analyze why streaming causes DB memory growth",
- "scope":["stream","db","memory"],
- "reason":"Need root cause",
- "context":"User suspects a memory problem"} __END_ACTION__
-
-Explore example:
-{"type":"explore",
- "goal":"Locate streaming handlers, DB session/query lifecycle, and buffering code paths",
- "scope":["stream","db session","query","buffer"],
- "reason":"Relevant implementation paths are unknown",
- "context":"User suspects DB memory growth; return code targets/evidence only; Main will analyze cause after targets are found"} __END_ACTION__
-
-Verify example:
-{"type":"verify",
- "method":"Verify --config CLI support",
- "status":"pending",
- "context":"Known facts: changed files are nanocode.py and command tests; check argument parsing, config path propagation, and relevant pytest tests"} __END_ACTION__
-
-Action types:
-- chat: reply once to non-actionable chat and end the turn.
-- progress: optional user-visible status; never the final answer and never internal reasoning.
-- goal: current goal; complete=true only after success + verification, with message_for_complete.
-- verify: request or record verification for the current goal; pending means Verify should check it.
-- known: new durable facts.
-- learn: stable project-level knowledge to persist across sessions; store final reusable facts only, not learning process notes.
-- plan: work plan.
-- tool: call one available tool.
-- explore: locate unknown code targets/evidence points and return relevant targets/facts.
-
-Output format (Strict)
-
-Output multiple JSON objects separated by __END_ACTION__:
-If the entire output is one JSON action object, __END_ACTION__ may be omitted.
+Format:
+JSON objects separated by __END_ACTION__.
+One JSON object may omit __END_ACTION__.
 
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
@@ -4500,6 +4523,7 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
     ReadTool.name(),
     LineCountTool.name(),
     ListDirTool.name(),
+    CreateFileTool.name(),
     EditTool.name(),
     ReplaceRangeTool.name(),
     ApplyPatchTool.name(),

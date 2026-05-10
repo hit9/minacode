@@ -37,6 +37,26 @@ def test_edit_tool_raises_when_find_text_is_missing(tmp_path):
         tool.call()
 
 
+def test_edit_tool_creates_missing_file_with_empty_find(tmp_path):
+    path = tmp_path / "created.txt"
+    session = Session(cwd=str(tmp_path))
+
+    tool = EditTool.make(session, ["created.txt", "", "alpha\n"])
+    display = tool.display()
+    result = tool.call()
+
+    assert "+alpha\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\n"
+    assert result == "\n".join(
+        [
+            "<EditToolResult>",
+            "* path: created.txt",
+            "* created: true",
+            "</EditToolResult>",
+        ]
+    )
+
+
 def test_edit_tool_rejects_wrong_arg_count_with_actionable_error(tmp_path):
     session = Session(cwd=str(tmp_path))
 
@@ -44,13 +64,17 @@ def test_edit_tool_rejects_wrong_arg_count_with_actionable_error(tmp_path):
         EditTool.make(session, [])
 
 
-def test_edit_tool_rejects_empty_find_text(tmp_path):
+def test_edit_tool_rejects_empty_find_text_for_existing_file(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="find text cannot be empty"):
-        EditTool.make(session, ["sample.txt", "", "replacement"])
+    tool = EditTool.make(session, ["sample.txt", "", "replacement"])
+
+    assert "empty find creates missing files only" in tool.display()
+    with pytest.raises(ToolCallError, match="empty find creates missing files only"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "alpha\n"
 
 
 def test_edit_tool_display_falls_back_when_find_text_is_missing(tmp_path):

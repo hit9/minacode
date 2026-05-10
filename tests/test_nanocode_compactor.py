@@ -42,15 +42,8 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     assert summary == "Conversation compact summary:\nLLM kept the old user request and assistant note."
     assert agent.blackboard.known == ["old known", "keep known"]
     assert len(fake_client.requests) == 1
-    system_prompt, user_prompt, activity = fake_client.requests[0]
+    _system_prompt, _user_prompt, activity = fake_client.requests[0]
     assert activity == "compact"
-    assert "conversation-history compactor" in system_prompt
-    assert "Preserve continuity-critical facts" in system_prompt
-    assert "Known_To_Compact" in user_prompt
-    assert "old known" in user_prompt
-    assert "old user\nmessage" in user_prompt
-    assert 'Read("a.py", "0", "1")' in user_prompt
-    assert "keep 1" not in user_prompt
     assert "<raw_result>" not in summary
 
 

@@ -34,6 +34,28 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     )
 
 
+def test_replace_range_tool_creates_missing_file_with_empty_zero_range(tmp_path):
+    path = tmp_path / "created.txt"
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReplaceRangeTool.make(session, ["created.txt", "0", "0", "", "alpha\n"])
+    display = tool.display()
+    result = tool.call()
+
+    assert "+alpha\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\n"
+    assert result == "\n".join(
+        [
+            "<ReplaceRangeToolResult>",
+            "* path: created.txt",
+            "* range: 0:0",
+            f"* fingerprint: {RangeFingerprintStore().remember(filepath=str(path), start=0, end=0, content='')}",
+            "* created: true",
+            "</ReplaceRangeToolResult>",
+        ]
+    )
+
+
 def test_replace_range_tool_warns_for_broad_preview_ranges(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("".join("line " + str(index) + "\n" for index in range(25)), encoding="utf-8")

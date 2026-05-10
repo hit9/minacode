@@ -27,6 +27,65 @@ def test_apply_patch_tool_applies_single_file_unified_diff(tmp_path):
     )
 
 
+def test_apply_patch_tool_creates_missing_file_from_empty_unified_diff(tmp_path):
+    path = tmp_path / "created.txt"
+    session = Session(cwd=str(tmp_path))
+    patch = "--- /dev/null\n+++ b/created.txt\n@@ -0,0 +1,2 @@\n+alpha\n+beta\n"
+
+    tool = ApplyPatchTool.make(session, ["created.txt", patch])
+    display = tool.display()
+    result = tool.call()
+
+    assert "+alpha\n" in display
+    assert "+beta\n" in display
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert result == "\n".join(
+        [
+            "<ApplyPatchToolResult>",
+            "* path: created.txt",
+            "* hunks: 1",
+            "* created: true",
+            "</ApplyPatchToolResult>",
+        ]
+    )
+
+
+def test_apply_patch_tool_creates_missing_file_from_codex_add_file_patch(tmp_path):
+    path = tmp_path / "created.txt"
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: created.txt\n"
+        "+alpha\n"
+        "+beta\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["created.txt", patch])
+    result = tool.call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert "* created: true" in result
+
+
+def test_apply_patch_tool_rejects_codex_add_file_when_target_exists(tmp_path):
+    path = tmp_path / "created.txt"
+    path.write_text("existing\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: created.txt\n"
+        "+alpha\n"
+        "*** End Patch\n"
+    )
+
+    tool = ApplyPatchTool.make(session, ["created.txt", patch])
+
+    with pytest.raises(ToolCallError, match="Add File patch target already exists"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "existing\n"
+
+
 def test_apply_patch_tool_rejects_mismatched_context(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
