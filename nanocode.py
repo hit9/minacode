@@ -170,12 +170,32 @@ class VerificationStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class VerificationKind(StrEnum):
+    SYNTAX_CHECK = "syntax_check"
+    LINT = "lint"
+    TEST = "test"
+    BUILD = "build"
+    CHANGE_CHECK = "change_check"
+    OTHER = "other"
+
+
+class ExploreKind(StrEnum):
+    SYMBOL = "symbol"
+    FILE = "file"
+    RANGE = "range"
+    CHANGED = "changed"
+    REFERENCE = "reference"
+    OTHER = "other"
+
+
 @final
 @dataclass
 class Verification(PromptItem):
     goal: str = ""
     status: VerificationStatus = VerificationStatus.IDLE
+    kind: str = ""
     method: str = ""
+    criteria: list[str] = field(default_factory=list)
     context: str = ""
 
     @override
@@ -184,7 +204,11 @@ class Verification(PromptItem):
             "<Verification>",
             "  <goal>" + self.goal + "</goal>",
             "  <status>" + self.status + "</status>",
+            "  <kind>" + self.kind + "</kind>",
             "  <method>" + self.method + "</method>",
+            "  <criteria>",
+            *("    " + item for item in self.criteria),
+            "  </criteria>",
             "  <context>" + self.context + "</context>",
             "</Verification>",
         ]
@@ -193,11 +217,13 @@ class Verification(PromptItem):
     def reset(self) -> None:
         self.goal = ""
         self.status = VerificationStatus.IDLE
+        self.kind = ""
         self.method = ""
+        self.criteria = []
         self.context = ""
 
     def has_context(self) -> bool:
-        return bool(self.goal or self.method or self.context or self.status != VerificationStatus.IDLE)
+        return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.status != VerificationStatus.IDLE)
 
 
 @final
@@ -2912,9 +2938,14 @@ Editing:
 Workers:
 - Explore only locates concrete file/symbol/range targets.
 - Do not ask Explore to review, analyze, diagnose, decide, fix, verify, or answer.
-- Explore input must include scope/constraints: known paths, symbols, keywords, changed files, or search hints.
-- Verify validates results only.
+- Explore input must include kind, scope, and constraints.
+- Verify only validates a concrete completed result against explicit criteria.
+- Do not ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
+- Pending verify must include kind and criteria.
 - Do not give workers the whole task.
+
+Explore kinds: symbol, file, range, changed, reference, other.
+Verify kinds: syntax_check, lint, test, build, change_check, other.
 
 Tools:
 { __tools__ }
@@ -2929,12 +2960,12 @@ One JSON object may omit __END_ACTION__.
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|lint|test|build|change_check|other", "method": null | "string", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "learn", "summary": "optional one-sentence project summary, not a process log", "structure": ["stable structure fact"], "architecture": ["stable architecture fact"], "workflows": ["stable workflow fact"], "conventions": ["stable convention fact"], "corrections": [{"field": "structure|architecture|workflows|conventions", "old": "exact old item", "new": null | "replacement item"}]} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "explore", "goal": "locate concrete code targets only", "scope": ["known path/symbol/keyword"], "constraints": ["required output or search boundary"], "reason": "why target location is unknown", "context": null | "string"} __END_ACTION__
+{"type": "explore", "kind": "symbol|file|range|changed|reference|other", "goal": "locate concrete code targets only", "scope": ["known path/symbol/keyword"], "constraints": ["required output or search boundary"], "reason": "why target location is unknown", "context": null | "string"} __END_ACTION__
 """
 
 MAIN_AGENT_USER_PROMPT_TEMPLATE = """
@@ -3008,6 +3039,7 @@ Must:
 - Return JSON action frames only. Native/function tool calls are forbidden.
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - Every response must include tool or deliver.
+- Explore_Goal includes kind and constraints from MainAgent.
 - Search before Read. Batch independent Search/Read calls.
 - Read only small ranges after Search finds likely files.
 - Deliver as soon as the target is found or cannot be found.
@@ -3036,6 +3068,14 @@ Deliver:
 - Prefer exact path + 0-based line_range from Read.
 - known contains stable facts only.
 - issues contains blockers, out-of-role handoffs, or not-found notes.
+
+Kinds:
+- symbol: locate classes, functions, variables, config keys, commands, or named code concepts.
+- file: locate files or directories.
+- range: locate exact ranges in known files.
+- changed: locate relevant dirty diff or changed files.
+- reference: locate references, call sites, imports, or usages.
+- other: only when constraints are explicit and no other kind fits.
 
 Tools:
 - Max 10 tool actions per turn.
@@ -3135,22 +3175,28 @@ YOUR OUTPUT:
 
 
 VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent.
-Your only job: decide whether the caller's goal is actually satisfied.
+Your only job: validate a concrete completed result against explicit criteria.
 
 Must:
 - Return JSON action frames only. Native/function tool calls are forbidden.
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - Every response must include tool or deliver.
-- Verify the goal, not just whether tests ran.
+- Verify the claimed result, not just whether tests ran.
+- Verify_Goal includes kind and criteria from MainAgent.
 - Prefer existing evidence, worker reports, recent tool calls, and Git diff/status.
 - Deliver as soon as you have passed, failed, or blocked.
 
 Must not:
 - Do not edit, patch, fix, install, or start long-running processes.
 - Do not continue implementation for the caller.
+- Do not review, analyze, diagnose, find issues, judge design, or make architectural assessments.
 - Do not use Bash for cat, ls, grep, broad search, or file reading.
 - Do not output only known/state actions.
 - Do not paste long logs.
+
+Reject:
+- If Verify_Goal asks for review, analysis, diagnosis, issue discovery, design judgment, implementation, or open-ended investigation, deliver blocked with issues. Do not call tools.
+- If Verification_Scope lacks a concrete result or explicit pass/block criteria, deliver blocked with issues. Do not call tools.
 
 Workflow:
 1. Check Verify_Goal and Verification_Scope.
@@ -3165,6 +3211,14 @@ Verdict:
 - failed = a real bug, mismatch, missing requirement, or failing relevant check was found.
 - blocked = cannot verify because scope is unclear, dependency/tooling is missing, or evidence is insufficient.
 - Tests are evidence only; passing tests alone do not guarantee passed.
+
+Kinds:
+- syntax_check: syntax, compile, parse, or importability check.
+- lint: lint, format, or static style check.
+- test: unit, integration, e2e, or targeted test.
+- build: build, typecheck, package, or release check.
+- change_check: inspect a concrete completed change against criteria.
+- other: only when criteria are explicit and no other kind fits.
 
 Tools:
 - Max 10 tool actions per turn.
@@ -4276,8 +4330,12 @@ class AgentStateUpdater:
     def _format_verification(self) -> str:
         verification = self.blackboard.verification
         parts = [verification.status]
+        if verification.kind:
+            parts.append(verification.kind)
         if verification.method:
             parts.append(self._compact(verification.method))
+        if verification.criteria:
+            parts.append("criteria: " + self._compact("; ".join(verification.criteria)))
         if verification.context:
             parts.append("context: " + self._compact(verification.context))
         return " | ".join(parts)
@@ -4380,6 +4438,12 @@ class AgentStateUpdater:
 
     def _apply_verification(self, response: Json) -> None:
         for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
+            kind = _json_str(data.get("kind"))
+            if kind is not None:
+                self.blackboard.verification.kind = kind if kind in {item.value for item in VerificationKind} else ""
+            criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
+            if "criteria" in data:
+                self.blackboard.verification.criteria = criteria
             method = _json_str(data.get("method"))
             if method is not None:
                 if method != self.blackboard.verification.method:
@@ -5149,6 +5213,20 @@ class MainAgent(BaseAgent):
     def _explore_actions_from_actions(self, actions: list[Json]) -> list[Json]:
         return [action for action in actions if _json_str(action.get("type")) == "explore"]
 
+    def _explore_actions_error(self, actions: list[Json]) -> str:
+        explore_actions = self._explore_actions_from_actions(actions)
+        if not explore_actions:
+            return ""
+        valid_kinds = {item.value for item in ExploreKind}
+        for action in explore_actions:
+            kind = _json_str(action.get("kind")) or ""
+            constraints = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get("constraints"))) if item]
+            if kind not in valid_kinds:
+                return "missing or invalid kind"
+            if not constraints:
+                return "missing constraints"
+        return ""
+
     def _progress_messages_from_actions(self, actions: list[Json]) -> list[str]:
         return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "progress") if message]
 
@@ -5179,8 +5257,11 @@ class MainAgent(BaseAgent):
     ) -> list[ExploreReport]:
         reports = []
         for action in actions:
+            kind = _json_str(action.get("kind")) or ""
             goal = _json_str(action.get("goal")) or self.blackboard.goal or self.blackboard.user_input
             scope = [item for item in (_json_str(raw) for raw in _json_list(action.get("scope"))) if item]
+            if kind:
+                scope.insert(0, "kind: " + kind)
             constraints = [item for item in (_json_str(raw) for raw in _json_list(action.get("constraints"))) if item]
             scope.extend("constraint: " + item for item in constraints)
             context = (_json_str(action.get("context")) or "").strip()
@@ -5265,7 +5346,9 @@ class MainAgent(BaseAgent):
             "user goal: " + (self.blackboard.user_input or "(empty)"),
             "current goal: " + (self.blackboard.goal or "(empty)"),
             "completion message: " + (completion_message or "(empty)"),
+            "verification kind: " + (verification.kind or "(empty)"),
             "verification target: " + (verification.method or "(empty)"),
+            "verification criteria: " + ("; ".join(verification.criteria) if verification.criteria else "(empty)"),
             "verification context: " + (verification.context or "(empty)"),
             "verification state: " + verification.format(),
         ]
@@ -5332,6 +5415,20 @@ class MainAgent(BaseAgent):
     def _format_agent_feedback_verification_error(self) -> str:
         return 'Error: completion is blocked until verification passes or is blocked. Rule: return verify status="passed"|"blocked" with context, then goal complete=true with message_for_complete.'
 
+    def _format_agent_feedback_explore_error(self, reason: str) -> str:
+        return (
+            "Error: explore handoff is invalid: "
+            + reason
+            + ". Rule: explore must include kind=symbol|file|range|changed|reference|other and non-empty constraints."
+        )
+
+    def _format_agent_feedback_pending_verification_error(self, reason: str) -> str:
+        return (
+            "Error: pending verify is invalid: "
+            + reason
+            + ". Rule: pending verify must include kind=syntax_check|lint|test|build|change_check|other and non-empty criteria."
+        )
+
     def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
         return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
 
@@ -5342,6 +5439,20 @@ class MainAgent(BaseAgent):
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
         return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
+
+    def _pending_verification_error(self, actions: list[Json]) -> str:
+        pending = [action for action in actions if _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"]
+        if not pending:
+            return ""
+        valid_kinds = {item.value for item in VerificationKind}
+        for action in pending:
+            kind = _json_str(action.get("kind")) or ""
+            criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get("criteria"))) if item]
+            if kind not in valid_kinds:
+                return "missing or invalid kind"
+            if not criteria:
+                return "missing criteria"
+        return ""
 
     def run(
         self,
@@ -5414,6 +5525,25 @@ class MainAgent(BaseAgent):
         if on_message is not None:
             for message in progress_messages:
                 on_message(message)
+        explore_error = self._explore_actions_error(actions)
+        if explore_error:
+            self._remember_agent_error(self._format_agent_feedback_explore_error(explore_error))
+            self._report_gate(
+                on_message,
+                "Retrying: explore handoff needs kind and constraints.",
+                "Explore_Gate: explore handoff is invalid: " + explore_error + ".",
+            )
+            return AgentRunResult()
+        pending_verification_error = self._pending_verification_error(actions)
+        if pending_verification_error:
+            self.blackboard.verification.reset()
+            self._remember_agent_error(self._format_agent_feedback_pending_verification_error(pending_verification_error))
+            self._report_gate(
+                on_message,
+                "Retrying: pending verification needs kind and criteria.",
+                "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
+            )
+            return AgentRunResult()
         if stop_after_learn and self._has_learn_action(actions) and not tool_calls and not explore_actions:
             self.session.append_conversation(AssistantMessage(content="Project knowledge updated."))
             self._finish_current_goal()

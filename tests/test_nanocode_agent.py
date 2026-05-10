@@ -1050,7 +1050,9 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     agent.blackboard.goal = "old goal"
     agent.blackboard.verification.goal = "old goal"
     agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.kind = "test"
     agent.blackboard.verification.method = "old check"
+    agent.blackboard.verification.criteria = ["old criterion"]
     agent.blackboard.verification.context = "old context"
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": False}]})
@@ -1058,14 +1060,20 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert agent.blackboard.goal_reached is False
     assert agent.blackboard.verification.goal == ""
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.kind == ""
     assert agent.blackboard.verification.method == ""
+    assert agent.blackboard.verification.criteria == []
     assert agent.blackboard.verification.context == ""
 
-    agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "pending", "context": None}]})
+    agent.apply_response(
+        {"actions": [{"type": "verify", "kind": "test", "method": "run tests", "criteria": ["tests pass"], "status": "pending", "context": None}]}
+    )
 
     assert agent.blackboard.verification.goal == "new goal"
     assert agent.blackboard.verification.status == VerificationStatus.REQUIRED
+    assert agent.blackboard.verification.kind == "test"
     assert agent.blackboard.verification.method == "run tests"
+    assert agent.blackboard.verification.criteria == ["tests pass"]
     assert agent.blackboard.verification.context == ""
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
@@ -1405,6 +1413,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
                         {"type": "goal", "text": "relevant target", "complete": False},
                         {
                             "type": "explore",
+                            "kind": "file",
                             "goal": "find target",
                             "scope": ["sample.txt"],
                             "constraints": ["return exact path and line range"],
@@ -1426,7 +1435,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
             self.scope = scope
 
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            assert self.scope == ["sample.txt", "constraint: return exact path and line range", "main_context: Main saw sample mentioned"]
+            assert self.scope == ["kind: file", "sample.txt", "constraint: return exact path and line range", "main_context: Main saw sample mentioned"]
             if on_message is not None:
                 on_message("[success] Read(\"sample.txt\", \"0\", \"1\")")
             return nanocode.ExploreReport(
@@ -1449,6 +1458,38 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
     assert agent.recent_tool_calls == ""
     assert '[explore] [success] Read("sample.txt", "0", "1")' in messages
     assert messages[-1] == "done"
+
+
+def test_agent_run_retries_explore_without_kind_or_constraints(tmp_path):
+    class FakeExploreAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            raise AssertionError("invalid explore handoff should not start ExploreAgent")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "relevant target", "complete": False},
+                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
+                    ]
+                },
+                {"actions": _final_actions("relevant target")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
+    messages = []
+
+    response = agent.run("relevant target", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "Retrying: explore handoff needs kind and constraints." in messages
 
 
 def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
@@ -1825,7 +1866,14 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "answer", "complete": False},
-                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
+                        {
+                            "type": "verify",
+                            "kind": "change_check",
+                            "method": "manual check",
+                            "criteria": ["answer is correct"],
+                            "status": "pending",
+                            "context": "check answer",
+                        },
                     ],
                 },
                 {
@@ -1849,10 +1897,48 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert verifier_calls
     assert verifier_calls[0][0] == "manual check"
+    assert "verification kind: change_check" in verifier_calls[0][1]
     assert "verification target: manual check" in verifier_calls[0][1]
+    assert "verification criteria: answer is correct" in verifier_calls[0][1]
     assert "verification context: check answer" in verifier_calls[0][1]
     assert "Verifying: manual check" in messages
     assert len(agent.model_client.user_prompts) == 2
+
+
+def test_agent_run_retries_pending_verify_without_kind_or_criteria(tmp_path):
+    class FakeVerifyAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            raise AssertionError("invalid pending verify should not start VerifyAgent")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "answer", "complete": False},
+                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
+                    ],
+                },
+                {
+                    "actions": [
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
+                    ],
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "Retrying: pending verification needs kind and criteria." in messages
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
 
 
 def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
