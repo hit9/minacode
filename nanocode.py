@@ -2909,7 +2909,10 @@ Workers:
 - Explore only locates concrete file/symbol/range targets.
 - Do not ask Explore to review, analyze, diagnose, decide, fix, verify, or answer.
 - Explore input must include kind, scope, and constraints.
-- Verify only validates a concrete completed result against explicit criteria.
+- Use verify action with status=pending to call Verify worker.
+- Verify worker validates a concrete completed result against explicit criteria.
+- Main must not run test/lint/build/syntax/change verification commands itself.
+- After verify status=pending, output no tool/explore in the same response.
 - Do not ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
 - Pending verify must include kind and criteria.
 - Do not give workers the whole task.
