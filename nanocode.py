@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 
 JsonValue: TypeAlias = Any
@@ -2903,11 +2903,15 @@ Rules:
 - Complete only with goal.complete=true and non-empty message_for_complete after required verification.
 
 Loop:
-1. Check goal, facts, plan, verification, worker reports, errors, recent tools.
-2. Unknown file/symbol/range target -> explore with constraints and stop.
-3. Clear target -> do the next smallest step.
-4. After edits -> inspect, update plan, or call Verify worker with kind=change_review.
-5. Finish only when done.
+1. If Goal is empty, set goal complete=false.
+2. If Plan is empty, create a short plan.
+3. Check goal, facts, plan, verification, worker reports, errors, recent tools.
+4. Use Known and worker/tool results to correct the plan before acting.
+5. If recent tools/workers already completed the next step, update plan/known and move on; do not repeat it.
+6. Only after Goal and Plan exist, do the next smallest step.
+7. Unknown file/symbol/range target -> explore with constraints and stop.
+8. After edits -> inspect, update plan, or call Verify worker with kind=change_review.
+9. Finish only when done.
 
 Editing:
 - Always edit incrementally.
@@ -2918,6 +2922,8 @@ Editing:
 
 Workers:
 - Explore only locates concrete file/symbol/range targets.
+- Use Explore to find files, symbols, ranges, config locations, or project structure.
+- Main must not use Read to discover unknown targets; Read only when the exact path is already known.
 - Do not ask Explore to review, analyze, diagnose, decide, fix, verify, or answer.
 - Explore input must include kind, scope, and constraints.
 - Use verify action with status=pending to call Verify worker.
@@ -4870,8 +4876,6 @@ VERIFY_AGENT_ALLOWED_TOOLS: set[str] = {
 
 MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
     ReadTool.name(),
-    LineCountTool.name(),
-    ListDirTool.name(),
     CreateFileTool.name(),
     EditTool.name(),
     ReplaceRangeTool.name(),
@@ -5217,6 +5221,12 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message_for_complete")) or ""
         return ""
 
+    def _has_goal_action(self, actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "goal" for action in actions)
+
+    def _has_plan_action(self, actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "plan" for action in actions)
+
     def _has_learn_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) == "learn" for action in actions)
 
@@ -5427,6 +5437,12 @@ class MainAgent(BaseAgent):
     def _format_agent_feedback_completion_without_message_error(self) -> str:
         return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
 
+    def _format_agent_feedback_missing_goal_error(self) -> str:
+        return "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools/workers."
+
+    def _format_agent_feedback_missing_plan_error(self) -> str:
+        return "Error: attempted tool/explore/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step."
+
     def _pending_verification_error(self, actions: list[Json]) -> str:
         pending = [action for action in actions if _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"]
         if not pending:
@@ -5494,6 +5510,8 @@ class MainAgent(BaseAgent):
         stop_after_learn: bool = False,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
+        goal_was_empty = not self.blackboard.goal
+        plan_was_empty = not self.blackboard.plan
         self.state_updater.apply_response_language(response)
         chat_message = self._chat_message_from_actions(actions)
         if chat_message is not None:
@@ -5503,8 +5521,20 @@ class MainAgent(BaseAgent):
             return AgentRunResult(done=True, value=response)
         tool_calls = self._tool_calls_from_actions(actions)
         explore_actions = self._explore_actions_from_actions(actions)
+        pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
         progress_messages = self._progress_messages_from_actions(actions)
         completion_message = self._completion_message_from_actions(actions)
+        state_or_work_requested = bool(
+            tool_calls or explore_actions or pending_verify_requested or progress_messages or self._has_plan_action(actions)
+        )
+        if goal_was_empty and not self._has_goal_action(actions) and state_or_work_requested:
+            self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
+            self._report_gate(
+                on_message,
+                "Retrying: set goal and plan before tools/workers.",
+                "Goal_Gate: Goal is empty before task state/work.",
+            )
+            return AgentRunResult()
         if self.session.debug and on_message is not None:
             frame_error_report = self._format_frame_error_report(response)
             if frame_error_report:
@@ -5532,6 +5562,14 @@ class MainAgent(BaseAgent):
                 on_message,
                 "Retrying: pending verification needs kind and criteria.",
                 "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
+            )
+            return AgentRunResult()
+        if plan_was_empty and not self.blackboard.plan and (tool_calls or explore_actions or pending_verify_requested):
+            self._remember_agent_error(self._format_agent_feedback_missing_plan_error())
+            self._report_gate(
+                on_message,
+                "Retrying: create a short plan before tools/workers.",
+                "Plan_Gate: Plan is empty before tool/explore/verify.",
             )
             return AgentRunResult()
         if stop_after_learn and self._has_learn_action(actions) and not tool_calls and not explore_actions:
