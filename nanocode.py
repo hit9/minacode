@@ -996,9 +996,9 @@ class Session:
         return config
 
 
-###########
+############################
 # Tools
-###########
+############################
 
 
 class ToolEffect(StrEnum):
@@ -1012,12 +1012,6 @@ def _cli_content_summary(value: str) -> str:
     if line_count > 1:
         return "<" + str(line_count) + " lines>"
     return "<" + str(len(value)) + " chars>"
-
-
-def _cli_command_arg(value: str) -> str:
-    if "\n" in value:
-        return _cli_content_summary(value)
-    return _shorten(" ".join(value.split()), 120)
 
 
 def _cli_token(value: str) -> str:
@@ -1158,11 +1152,6 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
-def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
-    blocks = _format_recent_tool_call_blocks(executions)
-    return _join_tool_call_blocks(blocks) or "(empty)"
-
-
 def _format_recent_tool_call_blocks(executions: list[ToolCallExecution]) -> list[str]:
     return [_format_recent_tool_call(execution) for execution in executions]
 
@@ -1194,9 +1183,9 @@ StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
 
-####################
-# Tools Helpers
-####################
+############################
+# Tool Helpers
+############################
 
 
 def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
@@ -1213,20 +1202,13 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     return start, end
 
 
-def _parse_line_range_token(value: str) -> tuple[int, int]:
-    match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
-    if match is None:
-        raise ToolCallArgError("invalid range: use a comma token like 0,120")
-    return _parse_line_range(match.group(1), match.group(2))
-
-
 def _range_fingerprint(content: str) -> str:
     return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
 
 
-####################
-# Tools Impl
-####################
+############################
+# Tool Implementations
+############################
 
 
 @final
@@ -1279,6 +1261,13 @@ class ReadTool(Tool):
             return tokens + [args[1] + ":" + args[2]]
         return tokens + [str(arg) for arg in args[1:]]
 
+    @staticmethod
+    def _parse_line_range_token(value: str) -> tuple[int, int]:
+        match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
+        if match is None:
+            raise ToolCallArgError("invalid range: use a comma token like 0,120")
+        return _parse_line_range(match.group(1), match.group(2))
+
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
@@ -1289,7 +1278,7 @@ class ReadTool(Tool):
         if len(args) == 1:
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
-            ranges = [_parse_line_range_token(arg) for arg in args[1:]]
+            ranges = [cls._parse_line_range_token(arg) for arg in args[1:]]
         elif len(args) == 3:
             ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
@@ -2591,7 +2580,13 @@ class BashTool(Tool):
     def cli_args(cls, args: list[str]) -> list[str]:
         if not args:
             return []
-        return [_cli_command_arg(args[0])]
+        return [cls._cli_command_arg(args[0])]
+
+    @staticmethod
+    def _cli_command_arg(value: str) -> str:
+        if "\n" in value:
+            return _cli_content_summary(value)
+        return _shorten(" ".join(value.split()), 120)
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2869,10 +2864,9 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 }
 
 
-#######################
+############################
 # Prompt
-
-#######################
+############################
 
 MAIN_AGENT_SYSTEM_PROMPT = """You are MainAgent, a looping coding assistant.
 
@@ -3109,45 +3103,46 @@ YOUR OUTPUT:
 """
 
 
-VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent. Your job is to decide whether the goal is actually satisfied.
+VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent.
+Your only job: decide whether the caller's goal is actually satisfied.
 
-Hard rules:
-- Emit at least one JSON action frame every turn; native/function tool calls are forbidden.
-- Use the same language as the latest user input.
-- Write tool intention in that language too.
-- Do not edit files, output patches, install dependencies, or start long-running processes.
-- Every response must include at least one tool or deliver action.
-- State actions like known are optional helpers; never output only state actions.
+Must:
+- Return JSON action frames only. Native/function tool calls are forbidden.
+- Use the same language as the latest user input, including tool intention.
+- Every response must include tool or deliver.
+- Verify the goal, not just whether tests ran.
+- Prefer existing evidence, worker reports, recent tool calls, and Git diff/status.
+- Deliver as soon as you have passed, failed, or blocked.
 
-Context:
-- Project_Knowledge = stable background shared across sessions, not current evidence; read-only.
-- Handoff_Context = compact summaries of what earlier workers explored or verified.
+Must not:
+- Do not edit, patch, fix, install, or start long-running processes.
+- Do not continue implementation for the caller.
+- Do not use Bash for cat, ls, grep, broad search, or file reading.
+- Do not output only known/state actions.
+- Do not paste long logs.
 
 Workflow:
-1. Start from Verify_Goal and Verification_Scope.
-2. Check changed files/diffs when edits were made.
-3. Use project workflows for test/lint/build commands when relevant.
-4. Deliver passed, failed, or blocked with a concise verdict.
+1. Check Verify_Goal and Verification_Scope.
+2. Review existing evidence first.
+3. If edits exist, check Git status/diff.
+4. Read only small critical ranges if needed.
+5. Run the smallest relevant test/lint/build command only when useful.
+6. Deliver verdict.
 
-Verdict boundary:
-- Tests are evidence, not the whole job.
-- Check the goal, changed files, relevant diffs, project workflows, and obvious omissions.
-- If the handoff is too broad, unclear, or outside VerifyAgent's role, deliver blocked with issues.
-- Deliver summary as the verdict, not a long process log.
+Verdict:
+- passed = enough evidence shows the goal is satisfied.
+- failed = a real bug, mismatch, missing requirement, or failing relevant check was found.
+- blocked = cannot verify because scope is unclear, dependency/tooling is missing, or evidence is insufficient.
+- Tests are evidence only; passing tests alone do not guarantee passed.
 
-Available tools:
-Max 10 tool actions per turn; prefer batching independent verification tools in one response.
+Tools:
+- Max 10 tool actions per turn.
+- Use Git for status, diff, history, and changed files.
+- Use Read/Recall for narrow evidence checks.
+- Use Bash only for explicit verification commands.
+- Use Project_Knowledge.workflows for durable test/lint/build commands.
 
 { __tools__ }
-
-Tool guidance:
-- Prefer Git status/diff first when edits were made.
-- Use Project_Knowledge.workflows for durable test/lint/build commands.
-- Use Read/Recall for narrow evidence checks.
-- Use Read for file content; do not use Bash for cat, ls, grep, or broad search.
-- If Verify_Goal is a concrete verification command, run that command directly.
-- Use Bash only for explicit verification commands.
-- If a tool result is needed for the verdict, stop after that action.
 
 Action types:
 - tool: call one available verification tool.
@@ -3710,9 +3705,9 @@ class ModelClient:
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
     def _record_usage(self, usage: Json, config: ModelConfig) -> None:
-        prompt_tokens = _json_int(usage.get("prompt_tokens"))
-        completion_tokens = _json_int(usage.get("completion_tokens"))
-        total_tokens = _json_int(usage.get("total_tokens"))
+        prompt_tokens = self._json_int(usage.get("prompt_tokens"))
+        completion_tokens = self._json_int(usage.get("completion_tokens"))
+        total_tokens = self._json_int(usage.get("total_tokens"))
         prompt_price = config.prompt_price_per_1m_tokens if config.prompt_price_per_1m_tokens is not None else 0.0
         completion_price = config.completion_price_per_1m_tokens if config.completion_price_per_1m_tokens is not None else 0.0
         prompt_cost = prompt_tokens * prompt_price / 1_000_000
@@ -3732,6 +3727,10 @@ class ModelClient:
             total_tokens=total_tokens,
             cost=total_cost,
         )
+
+    @staticmethod
+    def _json_int(value: JsonValue) -> int:
+        return value if isinstance(value, int) else 0
 
 
 ############################
@@ -3877,7 +3876,12 @@ class ToolCallRunner:
             executions.append(execution)
 
         self.latest_executions = executions
-        return _format_recent_tool_calls(executions)
+        return self._format_recent_tool_calls(executions)
+
+    @staticmethod
+    def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
+        blocks = _format_recent_tool_call_blocks(executions)
+        return _join_tool_call_blocks(blocks) or "(empty)"
 
     def _call_tool(
         self,
@@ -6469,9 +6473,9 @@ class AgentLoop:
         return "ansibrightblack"
 
 
-###################
+############################
 # Helpers
-###################
+############################
 
 
 def _format_lines(lines: list[str], indent: str) -> str:
@@ -6513,10 +6517,6 @@ def _json_str(value: JsonValue) -> str | None:
     if value is None:
         return None
     return str(value)
-
-
-def _json_int(value: JsonValue) -> int:
-    return value if isinstance(value, int) else 0
 
 
 def _shorten(text: str, limit: int = 500) -> str:
@@ -6581,9 +6581,9 @@ class ReferenceFileCompleter(Completer):
             yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
 
 
-##############
+############################
 # Entrypoint
-##############
+############################
 
 
 def main(argv: list[str] | None = None) -> int:
