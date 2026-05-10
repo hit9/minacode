@@ -15,11 +15,11 @@ import json_repair
 import os
 import platform
 import re
+import selectors
 import shutil
 import signal
 import socket
 import subprocess
-import tempfile
 import threading
 import difflib
 import sys
@@ -1080,6 +1080,9 @@ class Tool(Protocol):
     def preview(self) -> str: ...
     def call(self) -> str: ...
 
+    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
+        return self.call()
+
 
 ToolClass: TypeAlias = Type[Tool]
 
@@ -1184,6 +1187,8 @@ def _format_recent_tool_call(execution: ToolCallExecution) -> str:
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
+ToolLiveOutputCallback: TypeAlias = Callable[[ParsedToolCall, str], None]
+ToolLiveDoneCallback: TypeAlias = Callable[[ParsedToolCall], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
@@ -2603,39 +2608,105 @@ class BashTool(Tool):
         return f'Bash("{self.command}")'
 
     def call(self) -> str:
-        stdout = tempfile.TemporaryFile("w+", encoding="utf-8")
-        stderr = tempfile.TemporaryFile("w+", encoding="utf-8")
+        return self.call_live()
+
+    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        selector = selectors.DefaultSelector()
         try:
             proc = subprocess.Popen(
                 [self.bash_path, "-lc", self.command],
                 cwd=self.cwd,
-                text=True,
                 stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 start_new_session=True,
             )
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+            timed_out = False
+            deadline = time.monotonic() + self.timeout
             try:
-                proc.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except OSError:
-                    proc.kill()
-                proc.wait()
-                stderr_text = self._read_temp_file(stderr)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        self._kill_process_group(proc)
+                        proc.wait()
+                        self._drain_selector(selector, stdout_parts, stderr_parts, sink)
+                        break
+                    events = selector.select(min(0.2, remaining))
+                    if not events:
+                        continue
+                    for key, _ in events:
+                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink)
+                if proc.returncode is None:
+                    proc.wait()
+            finally:
+                selector.close()
+
+            stdout_text = "".join(stdout_parts)
+            stderr_text = "".join(stderr_parts)
+            if timed_out:
                 if stderr_text:
                     stderr_text += "\n"
-                return _format_process_result("BashToolResult", -1, self._read_temp_file(stdout), stderr_text + "timeout")
-            return _format_process_result("BashToolResult", proc.returncode, self._read_temp_file(stdout), self._read_temp_file(stderr))
-        finally:
-            stdout.close()
-            stderr.close()
+                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + "timeout")
+            return _format_process_result("BashToolResult", proc.returncode, stdout_text, stderr_text)
+        except OSError as error:
+            raise ToolCallError(str(error))
 
     @staticmethod
-    def _read_temp_file(file) -> str:
-        file.seek(0)
-        return file.read()
+    def _kill_process_group(proc: subprocess.Popen) -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+
+    @classmethod
+    def _drain_selector(
+        cls,
+        selector: selectors.BaseSelector,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+        sink: Callable[[str], None] | None,
+    ) -> None:
+        for key in list(selector.get_map().values()):
+            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink):
+                pass
+
+    @staticmethod
+    def _read_stream_chunk(
+        selector: selectors.BaseSelector,
+        key: selectors.SelectorKey,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+        sink: Callable[[str], None] | None,
+    ) -> bool:
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        if not data:
+            try:
+                selector.unregister(key.fileobj)
+            except Exception:
+                pass
+            try:
+                key.fileobj.close()
+            except Exception:
+                pass
+            return False
+        text = data.decode("utf-8", errors="replace")
+        if key.data == "stdout":
+            stdout_parts.append(text)
+        else:
+            stderr_parts.append(text)
+        if sink is not None:
+            sink(text)
+        return True
 
 
 @final
@@ -3746,6 +3817,8 @@ class ToolCallRunner:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
     ) -> str:
         executions = []
         for item in self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls)):
@@ -3778,7 +3851,7 @@ class ToolCallRunner:
                             if reason:
                                 raise Cancellation("user refused: " + reason)
                             raise Cancellation("user refused")
-                output = tool.call()
+                output = self._call_tool(tool, call, on_live_output=on_live_output, on_live_done=on_live_done)
             except Cancellation as error:
                 outcome = "failure"
                 output = "Cancelled: " + str(error)
@@ -3813,6 +3886,30 @@ class ToolCallRunner:
 
         self.latest_executions = executions
         return _format_recent_tool_calls(executions)
+
+    def _call_tool(
+        self,
+        tool: Tool,
+        call: ParsedToolCall,
+        *,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+    ) -> str:
+        live_started = False
+
+        def sink(chunk: str) -> None:
+            nonlocal live_started
+            if not chunk:
+                return
+            live_started = True
+            if on_live_output is not None:
+                on_live_output(call, chunk)
+
+        try:
+            return tool.call_live(sink if on_live_output is not None else None)
+        finally:
+            if live_started and on_live_done is not None:
+                on_live_done(call)
 
     def _dedupe_readonly_tool_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue | ParsedToolCall]:
         parsed_calls: list[JsonValue | ParsedToolCall] = []
@@ -4552,8 +4649,16 @@ class BaseAgent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
     ) -> str:
-        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self.tool_runner.execute(
+            tool_calls,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+        )
         self._append_latest_tool_batch(self.tool_runner.latest_executions)
         self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
@@ -4671,6 +4776,8 @@ class ExploreAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> ExploreReport:
         self._clear_recent_tool_calls()
@@ -4683,6 +4790,8 @@ class ExploreAgent(BaseAgent):
                 response,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
                 on_message=on_message,
             ),
             on_step_limit=lambda: self._blocked_report("explore step limit reached"),
@@ -4695,6 +4804,8 @@ class ExploreAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
@@ -4708,7 +4819,13 @@ class ExploreAgent(BaseAgent):
             return AgentRunResult(done=True, value=report)
         tool_calls = self._tool_calls_from_actions(actions)
         if tool_calls:
-            self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            self.execute_tool_calls(
+                tool_calls,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+            )
             if on_message is not None:
                 latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
                 if latest_report:
@@ -4813,6 +4930,8 @@ class VerifyAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> VerifyReport:
         self._clear_recent_tool_calls()
@@ -4825,6 +4944,8 @@ class VerifyAgent(BaseAgent):
                 response,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
                 on_message=on_message,
             ),
             on_step_limit=lambda: self._blocked_report("verify step limit reached"),
@@ -4837,6 +4958,8 @@ class VerifyAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
@@ -4850,7 +4973,13 @@ class VerifyAgent(BaseAgent):
             return AgentRunResult(done=True, value=report)
         tool_calls = self._tool_calls_from_actions(actions)
         if tool_calls:
-            self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            self.execute_tool_calls(
+                tool_calls,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+            )
             if on_message is not None:
                 latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
                 if latest_report:
@@ -4925,6 +5054,8 @@ class MainAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> list[ExploreReport]:
         reports = []
@@ -4936,11 +5067,16 @@ class MainAgent(BaseAgent):
                 scope.append("main_context: " + context)
             if on_message is not None:
                 on_message("Exploring: " + _shorten(goal, 120))
-            report = self._make_explore_agent(goal=goal, scope=scope).run(
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_message=self._explore_message_callback(on_message),
-            )
+            kwargs = {
+                "confirm": confirm,
+                "on_auto_approve": on_auto_approve,
+                "on_message": self._explore_message_callback(on_message),
+            }
+            if on_live_output is not None:
+                kwargs["on_live_output"] = on_live_output
+            if on_live_done is not None:
+                kwargs["on_live_done"] = on_live_done
+            report = self._make_explore_agent(goal=goal, scope=scope).run(**kwargs)
             reports.append(report)
             self.agent_reports.explore.append(report.format())
             self.agent_reports.explored.extend(report.brief())
@@ -4998,6 +5134,8 @@ class MainAgent(BaseAgent):
         completion_message: str,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> VerifyReport:
         verification = self.blackboard.verification
@@ -5012,11 +5150,16 @@ class MainAgent(BaseAgent):
         ]
         if on_message is not None:
             on_message("Verifying: " + _shorten(goal, 120))
-        report = self._make_verify_agent(goal=goal, scope=scope).run(
-            confirm=confirm,
-            on_auto_approve=on_auto_approve,
-            on_message=self._verify_message_callback(on_message),
-        )
+        kwargs = {
+            "confirm": confirm,
+            "on_auto_approve": on_auto_approve,
+            "on_message": self._verify_message_callback(on_message),
+        }
+        if on_live_output is not None:
+            kwargs["on_live_output"] = on_live_output
+        if on_live_done is not None:
+            kwargs["on_live_done"] = on_live_done
+        report = self._make_verify_agent(goal=goal, scope=scope).run(**kwargs)
         self.agent_reports.verify.append(report.format())
         self.agent_reports.verified.append(report.brief())
         if on_message is not None:
@@ -5083,6 +5226,8 @@ class MainAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
         stop_after_learn: bool = False,
     ) -> Json:
@@ -5105,6 +5250,8 @@ class MainAgent(BaseAgent):
                 response,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
                 on_message=on_message,
                 stop_after_learn=stop_after_learn,
             ),
@@ -5117,6 +5264,8 @@ class MainAgent(BaseAgent):
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
         stop_after_learn: bool = False,
     ) -> AgentRunResult:
@@ -5159,11 +5308,24 @@ class MainAgent(BaseAgent):
             )
             return AgentRunResult()
         if explore_actions:
-            self.execute_explore_actions(explore_actions, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message)
+            self.execute_explore_actions(
+                explore_actions,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            )
             self.maybe_auto_compact()
             return AgentRunResult()
         if tool_calls:
-            self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+            self.execute_tool_calls(
+                tool_calls,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+            )
             if on_message is not None:
                 report = self.tool_runner.format_latest_report()
                 if report:
@@ -5175,6 +5337,8 @@ class MainAgent(BaseAgent):
                 completion_message=completion_message,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
                 on_message=on_message,
             )
             if not self._apply_verify_report(report):
@@ -5189,6 +5353,8 @@ class MainAgent(BaseAgent):
                 completion_message=completion_message,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
                 on_message=on_message,
             )
             if not self._apply_verify_report(report):
@@ -5835,6 +6001,10 @@ class StatusBar:
 
 @final
 class AgentLoop:
+    LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
+    LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
+    LIVE_PREVIEW_REFRESH_INTERVAL: ClassVar[float] = 0.12
+
     def __init__(
         self,
         agent: MainAgent,
@@ -5850,6 +6020,11 @@ class AgentLoop:
         self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
         self.prompt_session = prompt_session
         self._active_scope: str | None = None
+        self._live_preview_active = False
+        self._live_preview_resume_status = False
+        self._live_preview_text = ""
+        self._live_preview_rendered_lines = 0
+        self._live_preview_last_render = 0.0
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
 
@@ -5918,6 +6093,7 @@ class AgentLoop:
                 user_input,
                 confirm=self._confirm_tool_call,
                 on_auto_approve=self._show_auto_tool_call,
+                **self._live_preview_callbacks(),
                 on_message=self._emit,
                 stop_after_learn=stop_after_learn,
             )
@@ -5930,7 +6106,74 @@ class AgentLoop:
         except Exception as error:
             self._emit("Error: " + str(error))
         finally:
+            self._finish_live_tool_output()
             self.status_bar.pause()
+
+    def _live_preview_callbacks(self) -> dict[str, ToolLiveOutputCallback | ToolLiveDoneCallback]:
+        if not self._live_preview_enabled():
+            return {}
+        return {"on_live_output": self._show_live_tool_output, "on_live_done": self._finish_live_tool_output}
+
+    def _live_preview_enabled(self) -> bool:
+        return self.output_fn is print and sys.stderr.isatty()
+
+    def _show_live_tool_output(self, call: ParsedToolCall, chunk: str) -> None:
+        if not self._live_preview_enabled() or not chunk:
+            return
+        if not self._live_preview_active:
+            self._start_live_tool_output()
+        self._live_preview_text = (self._live_preview_text + chunk)[-self.LIVE_PREVIEW_MAX_CHARS :]
+        self._render_live_tool_output(throttled=True)
+
+    def _start_live_tool_output(self) -> None:
+        self._live_preview_active = True
+        self._live_preview_text = ""
+        self._live_preview_rendered_lines = 0
+        self._live_preview_last_render = 0.0
+        self._live_preview_resume_status = self.status_bar.is_running()
+        if self._live_preview_resume_status:
+            self.status_bar.pause()
+
+    def _finish_live_tool_output(self, call: ParsedToolCall | None = None) -> None:
+        if not self._live_preview_active:
+            return
+        self._clear_live_tool_output()
+        self._live_preview_active = False
+        self._live_preview_text = ""
+        if self._live_preview_resume_status:
+            self._live_preview_resume_status = False
+            self.status_bar.resume()
+
+    def _render_live_tool_output(self, *, throttled: bool) -> None:
+        lines = self._live_preview_lines()
+        if not any(line.strip() for line in lines):
+            return
+        now = time.monotonic()
+        if throttled and now - self._live_preview_last_render < self.LIVE_PREVIEW_REFRESH_INTERVAL:
+            return
+        self._live_preview_last_render = now
+        self._clear_live_tool_output()
+        segments: list[tuple[str, str]] = []
+        for line in lines:
+            segments.extend([("ansibrightblack", "  "), ("ansibrightblack", line + "\n")])
+        print_formatted_text(FormattedText(segments), output=self.status_bar.output, end="", flush=True)
+        self._live_preview_rendered_lines = len(lines)
+
+    def _clear_live_tool_output(self) -> None:
+        if self._live_preview_rendered_lines <= 0:
+            return
+        self.status_bar.output.cursor_up(self._live_preview_rendered_lines)
+        self.status_bar.output.erase_down()
+        self.status_bar.output.flush()
+        self._live_preview_rendered_lines = 0
+
+    def _live_preview_lines(self) -> list[str]:
+        text = self._live_preview_text.replace("\r", "\n")
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+        lines = [line for line in text.splitlines() if line.strip()][-self.LIVE_PREVIEW_MAX_LINES :]
+        width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
+        return [_shorten(line, width) for line in lines]
 
     def _run_with_status(self, action: StatusAction) -> str:
         self.status_bar.reset_timer()
