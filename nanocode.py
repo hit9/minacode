@@ -5788,6 +5788,9 @@ class CommandDispatcher:
         return self._set("worker.model " + args)
 
     def _yolo(self, args: str) -> str:
+        if not args.strip():
+            current = self.agent.session.yolo
+            return self._set("runtime.yolo " + ("off" if current else "on"))
         return self._set("runtime.yolo " + args)
 
     def _format_learn_task(self, args: str) -> str:
@@ -5898,7 +5901,7 @@ class CommandDispatcher:
         if key not in CONFIG_SET_KEYS:
             return "Unknown config key: " + key
         if value is None:
-            return key + " = " + self._config_value(key)
+            return "Current " + key + " is " + self._config_value(key)
         error = self._apply_config_value(key, value)
         if error:
             return error
@@ -5914,7 +5917,8 @@ class CommandDispatcher:
         key, separator, value = args.partition(" ")
         if not separator:
             return key.strip(), None
-        return key.strip(), value.strip()
+        stripped = value.strip()
+        return key.strip(), stripped if stripped else None
 
     def _set_usage(self) -> str:
         return "Usage: /set <key> <value>"

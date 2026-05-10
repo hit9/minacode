@@ -84,9 +84,9 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     on_result = dispatcher.dispatch("/set main.stream on")
     invalid_result = dispatcher.dispatch("/set main.stream maybe")
 
-    assert status_result.message == "main.stream = on"
+    assert status_result.message == "Current main.stream is on"
     assert off_result.message == "Set main.stream = off"
-    assert off_status_result.message == "main.stream = off"
+    assert off_status_result.message == "Current main.stream is off"
     assert on_result.message == "Set main.stream = on"
     assert invalid_result.message == "Usage: /set main.stream [on|off]"
     assert session.stream is True
