@@ -1988,10 +1988,10 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert verifier_calls
     assert verifier_calls[0][0] == "manual check"
-    assert "verification kind: change_check" in verifier_calls[0][1]
-    assert "verification target: manual check" in verifier_calls[0][1]
-    assert "verification criteria: answer is correct" in verifier_calls[0][1]
-    assert "verification context: check answer" in verifier_calls[0][1]
+    assert "kind: change_check" in verifier_calls[0][1]
+    assert "target: manual check" in verifier_calls[0][1]
+    assert "expect: answer is correct" in verifier_calls[0][1]
+    assert "context: check answer" in verifier_calls[0][1]
     assert "Verifying: manual check" in messages
     assert len(agent.model_client.user_prompts) == 2
 
@@ -2041,7 +2041,7 @@ def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path)
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(verifier_calls) == 1
     assert verifier_calls[0][0] == "run unit tests"
-    assert "verification kind: test" in verifier_calls[0][1]
+    assert "kind: test" in verifier_calls[0][1]
     assert bash_confirmed == []
     assert agent.latest_tool_batch == ""
 

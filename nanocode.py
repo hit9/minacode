@@ -2921,7 +2921,7 @@ Workers:
 - Do not ask Explore to review, analyze, diagnose, decide, fix, verify, or answer.
 - Explore input must include kind, scope, and constraints.
 - Use verify action with status=pending to call Verify worker.
-- Verify worker validates a concrete completed result against explicit criteria.
+- Verify worker is an expect checker: give it a narrow target and explicit expected condition.
 - Main must not run test/lint/build/syntax/change verification commands itself.
 - After verify status=pending, output no tool/explore in the same response.
 - Do not ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
@@ -3159,14 +3159,14 @@ YOUR OUTPUT:
 
 
 VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent.
-Your only job: validate a concrete completed result against explicit criteria.
+Your only job: check whether a narrow expected condition is true.
 
 Must:
 - Return JSON action frames only. Native/function tool calls are forbidden.
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - Every response must include tool or deliver.
-- Verify the claimed result, not just whether tests ran.
-- Verify_Goal includes kind and criteria from MainAgent.
+- Verify the expected condition, not the whole user task.
+- Verify_Goal includes kind, target, and expect from MainAgent.
 - Prefer existing evidence, worker reports, recent tool calls, and Git diff/status.
 - Deliver as soon as you have passed, failed, or blocked.
 
@@ -3180,7 +3180,7 @@ Must not:
 
 Reject:
 - If Verify_Goal asks for review, analysis, diagnosis, issue discovery, design judgment, implementation, or open-ended investigation, deliver blocked with issues. Do not call tools.
-- If Verification_Scope lacks a concrete result or explicit pass/block criteria, deliver blocked with issues. Do not call tools.
+- If Verification_Scope lacks a concrete target or explicit expected condition, deliver blocked with issues. Do not call tools.
 
 Workflow:
 1. Check Verify_Goal and Verification_Scope.
@@ -5323,14 +5323,10 @@ class MainAgent(BaseAgent):
         verification = self.blackboard.verification
         goal = verification.method or self.blackboard.goal or self.blackboard.user_input
         scope = [
-            "user goal: " + (self.blackboard.user_input or "(empty)"),
-            "current goal: " + (self.blackboard.goal or "(empty)"),
-            "completion message: " + (completion_message or "(empty)"),
-            "verification kind: " + (verification.kind or "(empty)"),
-            "verification target: " + (verification.method or "(empty)"),
-            "verification criteria: " + ("; ".join(verification.criteria) if verification.criteria else "(empty)"),
-            "verification context: " + (verification.context or "(empty)"),
-            "verification state: " + verification.format(),
+            "kind: " + (verification.kind or "(empty)"),
+            "target: " + (verification.method or "(empty)"),
+            "expect: " + ("; ".join(verification.criteria) if verification.criteria else "(empty)"),
+            "context: " + (verification.context or "(empty)"),
         ]
         if on_message is not None:
             on_message("Verifying: " + _shorten(goal, 120))
