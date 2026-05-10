@@ -2,7 +2,7 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Blackboard, ConfigFile, EDIT_MESSAGE_PREFIX, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar, VERIFY_MESSAGE_PREFIX
+from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar, VERIFY_MESSAGE_PREFIX
 
 
 def test_session_reports_missing_required_config(tmp_path):
@@ -238,8 +238,6 @@ def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
 
     loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")')
     loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Read("producer.py")')
-    loop._print_message(EDIT_MESSAGE_PREFIX + '[success] Edit("producer.py")')
-    loop._print_message(EDIT_MESSAGE_PREFIX + '[success] Read("producer.py")')
     loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Git("diff")')
     loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Read("sample.txt")')
     loop._print_message("done")
@@ -247,8 +245,6 @@ def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
 
     assert captured == [
         '[explore]\n  Search("producer")',
-        '  Read("producer.py")',
-        '[edit]\n  Edit("producer.py")',
         '  Read("producer.py")',
         '[verify]\n  Git("diff")',
         '  Read("sample.txt")',
@@ -344,7 +340,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.blackboard = Blackboard()
             self.runs = []
 
-        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
+        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None, stop_after_learn=False):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
