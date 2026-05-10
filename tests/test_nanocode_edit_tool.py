@@ -9,7 +9,7 @@ def test_edit_tool_replaces_first_exact_match(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     tool = EditTool.make(session, ["sample.txt", "beta", "BETA"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert tool.requires_confirmation(session) is True
@@ -42,7 +42,7 @@ def test_edit_tool_creates_missing_file_with_empty_find(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     tool = EditTool.make(session, ["created.txt", "", "alpha\n"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "+alpha\n" in display
@@ -71,7 +71,7 @@ def test_edit_tool_rejects_empty_find_text_for_existing_file(tmp_path):
 
     tool = EditTool.make(session, ["sample.txt", "", "replacement"])
 
-    assert "empty find creates missing files only" in tool.display()
+    assert "empty find creates missing files only" in tool.preview()
     with pytest.raises(ToolCallError, match="empty find creates missing files only"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\n"
@@ -84,4 +84,4 @@ def test_edit_tool_display_falls_back_when_find_text_is_missing(tmp_path):
 
     tool = EditTool.make(session, ["sample.txt", "missing", "replacement"])
 
-    assert tool.display() == f'Edit({path}, find="missing")'
+    assert tool.preview() == f'Edit({path}, find="missing")'

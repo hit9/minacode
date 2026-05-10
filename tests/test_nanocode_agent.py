@@ -73,7 +73,7 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
 
     explorer.run(on_message=messages.append)
 
-    assert messages == ['[success] Read("sample.txt", "0,1")']
+    assert messages == ["[success] Read sample.txt 0,1"]
 
 
 def test_agent_formats_explore_done_targets_on_separate_lines(tmp_path):
@@ -447,9 +447,8 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
-    actions = []
 
-    response = MainAgent(session).request("system", "user", on_action=actions.append)
+    response = MainAgent(session).request("system", "user")
 
     assert captured["payload"]["stream"] is True
     assert captured["payload"]["stream_options"] == {"include_usage": True}
@@ -457,7 +456,6 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
         {"type": "message", "text": "done"},
     ]
-    assert actions == response["actions"]
     assert session.last_prompt_tokens == 2
     assert session.last_completion_tokens == 3
     assert session.last_total_tokens == 5
@@ -492,7 +490,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
-def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_path, monkeypatch):
+def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     (tmp_path / "other.txt").write_text("beta\n", encoding="utf-8")
     captured_payloads = []
@@ -538,40 +536,9 @@ def test_agent_run_previews_streamed_tool_action_before_execution_report(tmp_pat
     assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
     assert len(captured_payloads) == 2
     assert [payload["stream"] for payload in captured_payloads] == [True, True]
-    assert messages[0] == "Queued: Read Read"
-    assert sum(message.startswith("Queued:") for message in messages) == 1
-    assert any(message.startswith("Tool Calls") for message in messages[1:])
+    assert messages[0].startswith("[success] Read sample.txt 0:1")
+    assert "why:" not in messages[0]
     assert messages[-1] == "done"
-
-
-def test_agent_stream_preview_summarizes_long_tool_arguments(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-
-    bash_preview = agent._format_stream_action_preview(
-        {
-            "type": "tool",
-            "name": "Bash",
-            "intention": "Create a test file for fingerprint experiments.",
-            "args": ["cat <<EOF > test_fingerprint.txt\nLine 1: Alpha\nLine 2: Beta\nEOF"],
-        }
-    )
-    replace_preview = agent._format_stream_action_preview(
-        {
-            "type": "tool",
-            "name": "ReplaceRange",
-            "intention": "Test a valid ReplaceRange to ensure baseline works.",
-            "args": [
-                "test_fingerprint.txt",
-                "1",
-                "4",
-                "5743477810356510368",
-                "Line 2: Beta Updated\nLine 3: Gamma Updated\nLine 4: Delta Updated",
-            ],
-        }
-    )
-
-    assert bash_preview == "Bash"
-    assert replace_preview == "ReplaceRange"
 
 
 def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
@@ -823,9 +790,9 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
                 {
                     "type": "known",
                     "items": [
-                        "Preview logic exists in _format_stream_action_preview.",
-                        "Preview logic exists in _format_stream_action_preview.",
-                        "Preview logic exists in _format_stream_action_preview!",
+                        "Preview logic exists in _preview_segments.",
+                        "Preview logic exists in _preview_segments.",
+                        "Preview logic exists in _preview_segments!",
                     ],
                 }
             ]
@@ -833,8 +800,8 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
     )
 
     assert agent.blackboard.known == [
-        "Preview logic exists in _format_stream_action_preview.",
-        "Preview logic exists in _format_stream_action_preview!",
+        "Preview logic exists in _preview_segments.",
+        "Preview logic exists in _preview_segments!",
     ]
 
 
@@ -1071,7 +1038,7 @@ def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path)
 
     latest = agent.execute_tool_calls(
         [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}],
-        confirm=lambda call, tool: confirmations.append((call.executed, tool.display())) or False,
+        confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or False,
     )
 
     assert confirmations
@@ -1108,7 +1075,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
 
     latest = agent.execute_tool_calls(
         [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", "0", "1", "bad", "new"]}],
-        confirm=lambda call, tool: confirmations.append((call.executed, tool.display())) or True,
+        confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or True,
     )
 
     assert confirmations == []
@@ -1291,7 +1258,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     latest = agent.execute_tool_calls(
         [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}],
         confirm=lambda call, tool: confirmations.append(call.executed) or False,
-        on_auto_approve=lambda call, tool: auto_approvals.append((call.executed, tool.display())),
+        on_auto_approve=lambda call, tool: auto_approvals.append((call.executed, tool.preview())),
     )
 
     assert confirmations == []
@@ -1339,9 +1306,9 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert messages[0].startswith("Tool Calls\n")
-    assert '1. [success] Read("sample.txt", "0", "1")' in messages[0]
-    assert "     tr.1 | why: read sample" in messages[0]
+    assert messages[0].startswith("[success] Read sample.txt 0:1")
+    assert "tr.1" not in messages[0]
+    assert "why:" not in messages[0]
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
@@ -1410,7 +1377,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
             assert self.scope == ["sample.txt", "main_context: Main saw sample mentioned"]
             if on_message is not None:
-                on_message("Tool Calls\n  1. [success] Read(\"sample.txt\", \"0\", \"1\")\n     tr.1 | why: inspect sample")
+                on_message("[success] Read(\"sample.txt\", \"0\", \"1\")")
             return nanocode.ExploreReport(
                 targets=[{"path": "sample.txt", "area": "line 1", "reason": "target found"}],
                 known=["sample.txt line 1 is the relevant target."],
@@ -1429,7 +1396,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
     assert len(agent.model_client.user_prompts) == 2
     assert session.tool_result_store == {}
     assert agent.recent_tool_calls == ""
-    assert any(message.startswith("[explore] Tool Calls") for message in messages)
+    assert '[explore] [success] Read("sample.txt", "0", "1")' in messages
     assert messages[-1] == "done"
 
 
@@ -1474,7 +1441,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert verify_calls == [True]
-    assert any(message.startswith("Tool Calls") for message in messages)
+    assert any(message.startswith("[success] Edit sample.txt") for message in messages)
     assert "Verify done: passed | review\n  edit verified" in messages
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
     assert messages[-1] == "done"
@@ -1677,7 +1644,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
         def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
             verify_confirm_callbacks.append(confirm)
             if on_message is not None:
-                on_message('Tool Calls\n  1. [success] Git("diff", "--", "sample.txt")\n     why: inspect diff')
+                on_message('[success] Git("diff", "--", "sample.txt")')
             return nanocode.VerifyReport(status="passed", method="git diff", summary="diff matches goal", evidence=["sample.txt changed"])
 
     class FakeModelClient:
@@ -1721,7 +1688,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.verification.context == ""
     assert "Verifying: change file done" in messages
-    assert any(message.startswith("[verify] Tool Calls") for message in messages)
+    assert '[verify] [success] Git("diff", "--", "sample.txt")' in messages
     assert "Verify done: passed | git diff\n  diff matches goal" in messages
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 

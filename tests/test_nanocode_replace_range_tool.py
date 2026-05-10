@@ -14,7 +14,7 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert ReplaceRangeTool.name() == "ReplaceRange"
@@ -39,7 +39,7 @@ def test_replace_range_tool_creates_missing_file_with_empty_zero_range(tmp_path)
     session = Session(cwd=str(tmp_path))
 
     tool = ReplaceRangeTool.make(session, ["created.txt", "0", "0", "", "alpha\n"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "+alpha\n" in display
@@ -62,7 +62,7 @@ def test_replace_range_tool_warns_for_broad_preview_ranges(tmp_path):
     session = Session(cwd=str(tmp_path))
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0,25"]).call())
 
-    display = ReplaceRangeTool.make(session, ["sample.txt", "0", "25", fingerprint, "replacement\n"]).display()
+    display = ReplaceRangeTool.make(session, ["sample.txt", "0", "25", fingerprint, "replacement\n"]).preview()
 
     assert display.startswith("# warning: broad range replacement; prefer smaller semantic ranges\n--- ")
 
@@ -153,7 +153,7 @@ def test_replace_range_tool_accepts_full_file_fingerprint_for_partial_range(tmp_
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert display.startswith("--- ")
@@ -173,7 +173,7 @@ def test_replace_range_tool_reports_fingerprint_cached_range(tmp_path):
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", fingerprint, "BETA\n"])
 
-    display = tool.display()
+    display = tool.preview()
     assert "this fingerprint was cached for range(s): 0:3" in display
     with pytest.raises(ToolCallError, match=r"cached for range\(s\): 0:3"):
         tool.call()
@@ -186,7 +186,7 @@ def test_replace_range_tool_rejects_fingerprint_mismatch(tmp_path):
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "2", "bad", "BETA\n"])
 
-    display = tool.display()
+    display = tool.preview()
 
     assert display.startswith("ReplaceRange(")
     assert "# preview unavailable: fingerprint mismatch" in display
@@ -282,7 +282,7 @@ def test_replace_range_tool_rejects_wide_fingerprint_for_empty_insert_range(tmp_
 
     tool = ReplaceRangeTool.make(session, ["sample.txt", "1", "1", fingerprint, "INSERT\n"])
 
-    assert "# preview unavailable: fingerprint mismatch" in tool.display()
+    assert "# preview unavailable: fingerprint mismatch" in tool.preview()
     with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 1\)"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "zero\nalpha\nbeta\ngamma\n"

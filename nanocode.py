@@ -1007,6 +1007,31 @@ class ToolEffect(StrEnum):
     OTHER = "other"
 
 
+def _cli_content_summary(value: str) -> str:
+    line_count = _tool_output_line_count(value)
+    if line_count > 1:
+        return "<" + str(line_count) + " lines>"
+    return "<" + str(len(value)) + " chars>"
+
+
+def _cli_command_arg(value: str) -> str:
+    if "\n" in value:
+        return _cli_content_summary(value)
+    return _shorten(" ".join(value.split()), 120)
+
+
+def _cli_token(value: str) -> str:
+    text = str(value)
+    if "\n" in text:
+        return _cli_content_summary(text)
+    text = _shorten(text, 100)
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9_./:@=,+%~*{}-]+", text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
 class Tool(Protocol):
     @classmethod
     def name(cls) -> str: ...
@@ -1029,9 +1054,13 @@ class Tool(Protocol):
         return cls.effect() == ToolEffect.EDIT
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(arg) for arg in args]
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
     def requires_confirmation(self, session: Session) -> bool: ...
-    def display(self) -> str: ...
+    def preview(self) -> str: ...
     def call(self) -> str: ...
 
 
@@ -1058,6 +1087,8 @@ class ToolCallExecution:
     output: str
     error_type: Type[Exception] | None = None
     result_key: str = ""
+    result_excerpted: bool = False
+    requires_confirmation: bool = False
     requires_verification: bool = False
 
 
@@ -1137,7 +1168,6 @@ ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
 MessageCallback: TypeAlias = Callable[[str], None]
-ActionCallback: TypeAlias = Callable[[Json], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
@@ -1219,6 +1249,15 @@ class ReadTool(Tool):
         ]
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if not args:
+            return []
+        tokens = [_cli_token(args[0])]
+        if len(args) == 3 and args[1].isdigit() and args[2].isdigit():
+            return tokens + [args[1] + ":" + args[2]]
+        return tokens + [str(arg) for arg in args[1:]]
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
             raise ToolCallArgError(
@@ -1241,7 +1280,7 @@ class ReadTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         if len(self.ranges) > 1:
             ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
             return f"Read({self.filepath}, {ranges})"
@@ -1372,7 +1411,7 @@ class LineCountTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         return f"LineCount({self.filepath})"
 
     def call(self) -> str:
@@ -1418,7 +1457,7 @@ class ListDirTool(Tool):
         glob_pattern = str(args[1]) if len(args) == 2 else ""
         return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         if self.glob_pattern:
             return f'ListDir({self.dirpath}, "{self.glob_pattern}")'
         return f"ListDir({self.dirpath})"
@@ -1643,7 +1682,7 @@ class SearchTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.target_path)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         if self.glob_pattern:
             return f'Search("{self.pattern}", {self.target_path}, "{self.glob_pattern}")'
         return f'Search("{self.pattern}", {self.target_path})'
@@ -1871,6 +1910,10 @@ class EditTool(Tool):
         return ['Example args: ["code.py", "old text", "new text"]']
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(args[0])] if args else []
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 3:
             raise ToolCallArgError(
@@ -1884,7 +1927,7 @@ class EditTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return True
 
-    def display(self) -> str:
+    def preview(self) -> str:
         label = f'Edit({self.filepath}, find="{self.find}")'
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
@@ -1959,6 +2002,12 @@ class CreateFileTool(Tool):
         return ['Example args: ["new.py", "minimal content\\n"]']
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) < 2:
+            return [_cli_token(arg) for arg in args]
+        return [_cli_token(args[0]), _cli_content_summary(args[1])]
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
             raise ToolCallArgError('requires exactly 2 args: filepath, content. Example: CreateFile("new.py", "content\\n")')
@@ -1967,7 +2016,7 @@ class CreateFileTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return True
 
-    def display(self) -> str:
+    def preview(self) -> str:
         label = f"CreateFile({self.filepath})"
         if os.path.exists(self.filepath):
             return label + "\n# preview unavailable: file already exists"
@@ -2040,6 +2089,12 @@ class ReplaceRangeTool(Tool):
         return ['Example args: ["code.py", "10", "12", "a1b2c3", "replacement lines\\n"]']
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) < 3:
+            return [_cli_token(arg) for arg in args]
+        return [_cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 5:
             raise ToolCallArgError("requires exactly 5 args: filepath, start, end, fingerprint, content")
@@ -2070,7 +2125,7 @@ class ReplaceRangeTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return True
 
-    def display(self) -> str:
+    def preview(self) -> str:
         label = self._label()
         try:
             original, new_content, _ = self._preview()
@@ -2217,6 +2272,10 @@ class ApplyPatchTool(Tool):
         return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]']
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(args[0])] if args else []
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
             raise ToolCallArgError("requires exactly 2 args: filepath, unified_diff")
@@ -2228,7 +2287,7 @@ class ApplyPatchTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return True
 
-    def display(self) -> str:
+    def preview(self) -> str:
         label = f"ApplyPatch({self.filepath}, unified_diff=...)"
         try:
             original = self._read_existing_or_empty()
@@ -2479,6 +2538,12 @@ class BashTool(Tool):
         return ['Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]']
 
     @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if not args:
+            return []
+        return [_cli_command_arg(args[0])]
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 1:
             raise ToolCallArgError("requires exactly one arg: command")
@@ -2489,7 +2554,7 @@ class BashTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return True
 
-    def display(self) -> str:
+    def preview(self) -> str:
         return f'Bash("{self.command}")'
 
     def call(self) -> str:
@@ -2582,7 +2647,7 @@ class GitTool(Tool):
         readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
         return not self.args or self.args[0] not in readonly
 
-    def display(self) -> str:
+    def preview(self) -> str:
         return "Git(" + " ".join(self.args) + ")"
 
     def call(self) -> str:
@@ -2636,7 +2701,7 @@ class ToolResultTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return False
 
-    def display(self) -> str:
+    def preview(self) -> str:
         return "Recall " + ", ".join(self.keys)
 
     def call(self) -> str:
@@ -3208,7 +3273,6 @@ class ModelClient:
         user_prompt: str,
         *,
         activity: str = "main",
-        on_action: ActionCallback | None = None,
         parse_actions: bool = True,
     ) -> Json:
         if not self.session.api_url:
@@ -3256,7 +3320,7 @@ class ModelClient:
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     if stream:
-                        content, usage = self._read_streaming_content(response, on_action=on_action)
+                        content, usage = self._read_streaming_content(response)
                         result: Json = {"usage": usage}
                     else:
                         body = response.read().decode("utf-8")
@@ -3295,11 +3359,9 @@ class ModelClient:
             return self._parse_json_content(content)
         return self._parse_model_content(content)
 
-    def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> tuple[str, Json]:
+    def _read_streaming_content(self, response: Any) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
-        buffer = ""
-        frame_number = 0
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -3323,14 +3385,6 @@ class ModelClient:
             if not isinstance(content, str):
                 continue
             parts.append(content)
-            if on_action is not None:
-                buffer += content
-                frames, buffer = self._completed_action_frames(buffer)
-                for frame in frames:
-                    frame_number += 1
-                    action, _error = self._parse_action_frame(frame, frame_number)
-                    if action is not None:
-                        on_action(action)
         return "".join(parts), usage
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
@@ -3570,8 +3624,61 @@ class ModelClient:
 
 
 @final
-class ToolCallRunner:
+class ToolCallDisplayFormatter:
     DISPLAY_LIMIT: ClassVar[int] = 5
+
+    @classmethod
+    def latest_report(cls, executions: list[ToolCallExecution]) -> str:
+        if not executions:
+            return ""
+        offset = max(0, len(executions) - cls.DISPLAY_LIMIT)
+        visible = executions[offset:]
+        lines = []
+        if offset:
+            lines.append("  ... " + str(offset) + " older")
+        for execution in visible:
+            lines.append(cls._format_execution(execution, include_excerpt=True))
+        return "\n".join(lines)
+
+    @classmethod
+    def compact_report(cls, executions: list[ToolCallExecution], *, include_excerpt: bool = True) -> str:
+        return "\n".join(cls._format_execution(execution, include_excerpt=include_excerpt) for execution in executions)
+
+    @classmethod
+    def _format_execution(cls, execution: ToolCallExecution, *, include_excerpt: bool) -> str:
+        marker = "[success]" if execution.outcome == "success" else "[failure]"
+        text = marker + " " + cls._format_call(execution.call)
+        details = cls._details(execution, include_excerpt=include_excerpt)
+        if details:
+            text += " | " + " | ".join(details)
+        return text
+
+    @classmethod
+    def _details(cls, execution: ToolCallExecution, *, include_excerpt: bool) -> list[str]:
+        if execution.outcome != "success":
+            error = cls._compact_tool_error(execution.output)
+            return [error] if error else []
+        if include_excerpt and execution.result_excerpted:
+            return ["excerpt"]
+        return []
+
+    @classmethod
+    def _format_call(cls, call: ParsedToolCall) -> str:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        tokens = tool_class.cli_args(call.args) if tool_class is not None else [_cli_token(arg) for arg in call.args]
+        return " ".join([call.name] + tokens)
+
+    @staticmethod
+    def _compact_tool_error(output: str) -> str:
+        text = " ".join(output.split())
+        prefix = "ToolCallError: "
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+        return _shorten(text, 180)
+
+
+@final
+class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
     def __init__(self, session: Session, runtime: AgentRuntime, allowed_tools: set[str] | None = None):
@@ -3593,7 +3700,7 @@ class ToolCallRunner:
             outcome = "success"
             output = ""
             error_type: Type[Exception] | None = None
-            requires_verification = False
+            requires_confirmation = False
             try:
                 if isinstance(item, PreparedToolCall):
                     call = item.call
@@ -3604,8 +3711,8 @@ class ToolCallRunner:
                 preview_error = self._preview_error(tool)
                 if preview_error:
                     raise ToolCallError("preview unavailable: " + preview_error)
-                requires_verification = tool.requires_confirmation(self.session)
-                if requires_verification:
+                requires_confirmation = tool.requires_confirmation(self.session)
+                if requires_confirmation:
                     if self.session.yolo:
                         if on_auto_approve is not None:
                             on_auto_approve(call, tool)
@@ -3630,9 +3737,12 @@ class ToolCallRunner:
             if call is None:
                 call = self._invalid_tool_call(item)
             result_key = ""
+            result_excerpted = False
             if call.name != ToolResultTool.name():
                 result_key = self._store_tool_result(call, outcome, output)
-                output = self.runtime.tool_result_store[result_key].value
+                item = self.runtime.tool_result_store[result_key]
+                output = item.value
+                result_excerpted = item.excerpted
             else:
                 output = _bound_tool_output(output).value
 
@@ -3642,7 +3752,9 @@ class ToolCallRunner:
                 output=output,
                 error_type=error_type,
                 result_key=result_key,
-                requires_verification=outcome == "success" and requires_verification,
+                result_excerpted=result_excerpted,
+                requires_confirmation=requires_confirmation,
+                requires_verification=outcome == "success" and requires_confirmation,
             )
             executions.append(execution)
 
@@ -3727,48 +3839,11 @@ class ToolCallRunner:
         call = ParsedToolCall(name=ReplaceRangeTool.name(), intention="; ".join(intentions), args=list(group[0].args))
         return PreparedToolCall(call=call, tool=tool)
 
-    def format_latest_report(self, *, include_intention: bool = True) -> str:
-        if not self.latest_executions:
-            return ""
-        offset = max(0, len(self.latest_executions) - self.DISPLAY_LIMIT)
-        visible = self.latest_executions[offset:]
-        lines = ["Tool Calls"]
-        if offset:
-            lines.append("  ... " + str(offset) + " older")
-        for index, execution in enumerate(visible, start=offset + 1):
-            marker = "[success]" if execution.outcome == "success" else "[failure]"
-            lines.append("  " + str(index) + ". " + marker + " " + execution.call.executed)
-            details = []
-            if execution.result_key:
-                details.append(execution.result_key)
-            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
-                details.append("error: " + self._compact_tool_error(execution.output))
-            if include_intention and execution.call.intention:
-                details.append("why: " + execution.call.intention)
-            if details:
-                lines.append("     " + " | ".join(details))
-        return "\n".join(lines)
+    def format_latest_report(self) -> str:
+        return ToolCallDisplayFormatter.latest_report(self.latest_executions)
 
-    def format_latest_compact_report(self, *, include_result_key: bool = True) -> str:
-        if not self.latest_executions:
-            return ""
-        lines = []
-        for execution in self.latest_executions:
-            marker = "[success]" if execution.outcome == "success" else "[failure]"
-            text = marker + " " + execution.call.executed
-            if include_result_key and execution.result_key:
-                text += " | " + execution.result_key
-            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
-                text += " | error: " + self._compact_tool_error(execution.output)
-            lines.append(text)
-        return "\n".join(lines)
-
-    def _compact_tool_error(self, output: str) -> str:
-        text = " ".join(output.split())
-        prefix = "ToolCallError: "
-        if text.startswith(prefix):
-            text = text[len(prefix) :]
-        return _shorten(text, 180)
+    def format_latest_compact_report(self, *, include_excerpt: bool = True) -> str:
+        return ToolCallDisplayFormatter.compact_report(self.latest_executions, include_excerpt=include_excerpt)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.runtime.tool_result_counter += 1
@@ -4228,14 +4303,13 @@ class BaseAgent:
         user_prompt: str,
         *,
         activity: str = "main",
-        on_action: ActionCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> Json:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
             try:
                 self.session.turn_model_calls += 1
                 if isinstance(self.model_client, ModelClient):
-                    return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
+                    return self.model_client.request(system_prompt, user_prompt, activity=activity)
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except LLMError as error:
                 if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
@@ -4275,8 +4349,7 @@ class BaseAgent:
         consecutive_format_errors = 0
         try:
             for _ in range(max_steps):
-                queued_labels: list[str] = []
-                response = self.step(on_action=self._stream_action_preview_callback(queued_labels) if on_message is not None else None, on_message=on_message)
+                response = self.step(on_message=on_message)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
@@ -4302,8 +4375,6 @@ class BaseAgent:
                     )
                     continue
                 consecutive_format_errors = 0
-                if on_message is not None and queued_labels:
-                    on_message("Queued: " + " ".join(queued_labels))
                 result = on_step(response)
                 if result.done:
                     return result.value
@@ -4411,8 +4482,8 @@ class BaseAgent:
             return headline + ": " + _shorten("; ".join(details[:3]), 220)
         return headline
 
-    def step(self, *, on_action: ActionCallback | None = None, on_message: MessageCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity=self.activity, on_action=on_action, on_message=on_message)
+    def step(self, *, on_message: MessageCallback | None = None) -> Json:
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity=self.activity, on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -4422,28 +4493,6 @@ class BaseAgent:
 
     def apply_response(self, response: Json) -> None:
         self.state_updater.apply(response)
-
-    def _stream_action_preview_callback(self, queued_labels: list[str]) -> ActionCallback:
-        def preview(action: Json) -> None:
-            label = self._format_stream_action_preview(action)
-            if not label:
-                return
-            queued_labels.append(label)
-
-        return preview
-
-    def _format_stream_action_preview(self, action: Json) -> str:
-        action_type = _json_str(action.get("type"))
-        if action_type != "tool":
-            return ""
-        try:
-            call = self.tool_runner.parse_tool_call(action)
-        except ToolCallError:
-            return ""
-        return self._format_stream_tool_label(call)
-
-    def _format_stream_tool_label(self, call: ParsedToolCall) -> str:
-        return call.name
 
     def execute_tool_calls(
         self,
@@ -4588,9 +4637,6 @@ class ExploreAgent(BaseAgent):
             on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
         )
 
-    def _format_stream_action_preview(self, action: Json) -> str:
-        return ""
-
     def handle_response(
         self,
         response: Json,
@@ -4612,7 +4658,7 @@ class ExploreAgent(BaseAgent):
         if tool_calls:
             self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
             if on_message is not None:
-                latest_report = self.tool_runner.format_latest_compact_report(include_result_key=False)
+                latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
                 if latest_report:
                     on_message(latest_report)
             return AgentRunResult()
@@ -4733,9 +4779,6 @@ class VerifyAgent(BaseAgent):
             on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
         )
 
-    def _format_stream_action_preview(self, action: Json) -> str:
-        return ""
-
     def handle_response(
         self,
         response: Json,
@@ -4757,7 +4800,7 @@ class VerifyAgent(BaseAgent):
         if tool_calls:
             self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
             if on_message is not None:
-                latest_report = self.tool_runner.format_latest_compact_report(include_result_key=False)
+                latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
                 if latest_report:
                     on_message(latest_report)
             return AgentRunResult()
@@ -4797,11 +4840,6 @@ class VerifyAgent(BaseAgent):
 class MainAgent(BaseAgent):
     def __init__(self, session: Session):
         super().__init__(session, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS, allow_project_learning=True)
-
-    def _format_stream_action_preview(self, action: Json) -> str:
-        if _json_str(action.get("type")) == "explore":
-            return "Explore"
-        return super()._format_stream_action_preview(action)
 
     def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
         if not actions or _json_str(actions[0].get("type")) != "chat":
@@ -5898,7 +5936,7 @@ class AgentLoop:
                 "  Why     " + call.intention,
             )
         if tool.is_editing():
-            preview = tool.display()
+            preview = tool.preview()
             if preview:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
@@ -5955,11 +5993,8 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
-        if message.startswith("Tool Calls"):
-            self._emit_segments(self._tool_segments(message), self._display_plain(message))
-            return
-        if message.startswith("Queued:"):
-            self._emit_segments(self._queued_segments(message), message)
+        if self._is_tool_report(message):
+            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "))
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
@@ -5979,11 +6014,8 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(prefix + self._indent_segments(self._state_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
-        if message.startswith("Tool Calls"):
+        if self._is_tool_report(message):
             self._emit_segments(prefix + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
-            return
-        if message.startswith("Queued:"):
-            self._emit_segments(prefix + self._indent_segments(self._queued_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
             return
         if message.startswith("Retrying:"):
             self._emit_segments(prefix + [("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
@@ -6005,6 +6037,19 @@ class AgentLoop:
         for line in message.splitlines():
             lines.append(line.replace("[success] ", "").replace("[failure] ", ""))
         return "\n".join(lines)
+
+    def _tool_plain(self, message: str, *, indent: str) -> str:
+        return "\n".join(indent + line for line in self._display_plain(message).splitlines())
+
+    def _is_tool_report(self, message: str) -> bool:
+        lines = message.splitlines()
+        if not lines:
+            return False
+        first = lines[0]
+        return first.startswith("  ...") or self._is_tool_call_line(first)
+
+    def _is_tool_call_line(self, line: str) -> bool:
+        return line.startswith("[success] ") or line.startswith("[failure] ")
 
     def _emit_segments(self, segments: list[tuple[str, str]], plain: str) -> None:
         if self.output_fn is print:
@@ -6096,15 +6141,12 @@ class AgentLoop:
 
     def _tool_segments(self, message: str) -> list[tuple[str, str]]:
         lines = message.splitlines()
-        segments: list[tuple[str, str]] = [("ansibrightblack", "-" * 48 + "\n")]
-        for index, line in enumerate(lines):
-            if index == 0:
-                segments.extend([("bold ansiblue", line), ("", "\n")])
-            elif line.startswith("  ") and (". [success] " in line or ". [failure] " in line):
-                prefix, _, rest = line.partition(". ")
-                marker, _, tail = rest.partition(" ")
+        segments: list[tuple[str, str]] = []
+        for line in lines:
+            if self._is_tool_call_line(line):
+                marker, _, tail = line.partition(" ")
                 status_style = "ansigreen" if marker == "[success]" else "ansired"
-                segments.extend([("ansibrightblack", prefix + ". "), (status_style, tail + "\n")])
+                segments.append((status_style, tail + "\n"))
             elif line.startswith("  ") and ". [" in line:
                 style = "ansigreen" if "[success]" in line else "ansired"
                 segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
@@ -6128,13 +6170,6 @@ class AgentLoop:
                 style = "ansired"
                 text = line[len("[failure] ") :]
             segments.extend([("ansibrightblack", "  "), (style, text + "\n")])
-        return segments
-
-    def _queued_segments(self, message: str, *, newline: bool = True) -> list[tuple[str, str]]:
-        body = message[len("Queued:") :].strip()
-        segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", body)]
-        if newline:
-            segments.append(("", "\n"))
         return segments
 
     def _verify_style(self, badge: str) -> str:

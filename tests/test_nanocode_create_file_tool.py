@@ -8,7 +8,7 @@ def test_create_file_tool_creates_missing_file(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     tool = CreateFileTool.make(session, ["created.txt", "alpha\n"])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert tool.requires_confirmation(session) is True
@@ -31,7 +31,7 @@ def test_create_file_tool_rejects_existing_file(tmp_path):
 
     tool = CreateFileTool.make(session, ["created.txt", "alpha\n"])
 
-    assert "file already exists" in tool.display()
+    assert "file already exists" in tool.preview()
     with pytest.raises(ToolCallError, match="file already exists"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "existing\n"

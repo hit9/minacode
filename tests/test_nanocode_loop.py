@@ -157,22 +157,6 @@ def test_agent_loop_highlights_only_diff_previews(tmp_path):
     assert ("ansicyan", "--- a\n") in false_positive_segments
 
 
-def test_agent_loop_styles_queued_tool_preview(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
-
-    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
-
-    segments = loop._queued_segments("Queued: Read ReplaceRange")
-
-    assert segments == [
-        ("ansibrightblack", "Queued: "),
-        ("ansicyan", "Read ReplaceRange"),
-        ("", "\n"),
-    ]
-
-
 def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -180,12 +164,23 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._tool_segments('Tool Calls\n  1. [success] Read("sample.txt", "0", "1")\n     tr.1 | why: read sample')
+    segments = loop._tool_segments("[success] Read sample.txt 0:1")
 
-    assert ("bold ansiblue", "Tool Calls") in segments
-    assert ("ansigreen", 'Read("sample.txt", "0", "1")\n') in segments
+    assert ("ansigreen", "Read sample.txt 0:1\n") in segments
     assert all("ok " not in text for _, text in segments)
-    assert ("ansibrightblack", "     tr.1 | why: read sample\n") in segments
+
+
+def test_agent_loop_indents_top_level_tool_report(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = Session(cwd=str(tmp_path), model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message("[success] Read sample.txt 0:1")
+
+    assert captured == ["  Read sample.txt 0:1"]
 
 
 def test_agent_loop_styles_tool_arg_error_report(tmp_path):
@@ -195,11 +190,10 @@ def test_agent_loop_styles_tool_arg_error_report(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._tool_segments("Tool Calls\n  1. [failure] Read()\n     tr.1 | error: Read args error: got 0 args | why: read sample")
+    segments = loop._tool_segments("[failure] Read | tr.1 | error: Read args error: got 0 args")
 
-    assert ("ansired", "Read()\n") in segments
+    assert ("ansired", "Read | tr.1 | error: Read args error: got 0 args\n") in segments
     assert all("fail " not in text for _, text in segments)
-    assert ("ansibrightblack", "     tr.1 | error: Read args error: got 0 args | why: read sample\n") in segments
 
 
 def test_agent_loop_styles_explore_tool_report_with_scope_prefix(tmp_path):
@@ -260,7 +254,7 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
             self.session = Session(cwd=str(tmp_path), model="model", yolo=True)
 
     class FakeTool:
-        def display(self):
+        def preview(self):
             return "preview"
 
         def is_editing(self):

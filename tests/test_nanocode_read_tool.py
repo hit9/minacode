@@ -45,7 +45,7 @@ def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
     result = tool.call()
 
     assert tool.ranges == [(1, 2), (3, 5)]
-    assert "1:2, 3:5" in tool.display()
+    assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
     assert "one\n" in result
@@ -63,7 +63,7 @@ def test_read_tool_reads_colon_and_comma_range_tokens(tmp_path):
     result = tool.call()
 
     assert tool.ranges == [(1, 2), (3, 5)]
-    assert "1:2, 3:5" in tool.display()
+    assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
     assert "one\n" in result

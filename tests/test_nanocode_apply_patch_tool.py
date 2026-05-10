@@ -10,7 +10,7 @@ def test_apply_patch_tool_applies_single_file_unified_diff(tmp_path):
     patch = "@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n"
 
     tool = ApplyPatchTool.make(session, ["sample.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert tool.requires_confirmation(session) is True
@@ -33,7 +33,7 @@ def test_apply_patch_tool_creates_missing_file_from_empty_unified_diff(tmp_path)
     patch = "--- /dev/null\n+++ b/created.txt\n@@ -0,0 +1,2 @@\n+alpha\n+beta\n"
 
     tool = ApplyPatchTool.make(session, ["created.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "+alpha\n" in display
@@ -106,7 +106,7 @@ def test_apply_patch_tool_finds_unique_context_when_hunk_line_number_is_stale(tm
     patch = "@@ -99,3 +99,3 @@\n alpha\n-beta\n+BETA\n gamma\n"
 
     tool = ApplyPatchTool.make(session, ["sample.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "# preview unavailable" not in display
@@ -123,7 +123,7 @@ def test_apply_patch_tool_applies_bare_fuzzy_hunk_and_previews_diff(tmp_path):
     patch = "@@\n-beta\n+BETA\n"
 
     tool = ApplyPatchTool.make(session, ["sample.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "# preview unavailable" not in display
@@ -149,7 +149,7 @@ def test_apply_patch_tool_accepts_codex_style_update_file_patch(tmp_path):
     )
 
     tool = ApplyPatchTool.make(session, ["sample.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "# preview unavailable" not in display
@@ -178,7 +178,7 @@ def test_apply_patch_tool_treats_unique_applied_codex_hunk_as_noop(tmp_path):
     )
 
     tool = ApplyPatchTool.make(session, ["sample.txt", patch])
-    display = tool.display()
+    display = tool.preview()
     result = tool.call()
 
     assert "# preview unavailable" not in display
@@ -208,7 +208,7 @@ def test_apply_patch_tool_reports_hunk_number_and_context_for_mismatch(tmp_path)
     assert "hunk 1: hunk context did not match" in message
     assert "expected:\n-missing" in message
     assert "replacement:\n+MISSING" in message
-    assert "hunk 1: hunk context did not match" in tool.display()
+    assert "hunk 1: hunk context did not match" in tool.preview()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
@@ -229,7 +229,7 @@ def test_apply_patch_tool_rejects_codex_style_patch_for_different_file(tmp_path)
 
     with pytest.raises(ToolCallError, match="patch target does not match filepath: other.txt"):
         tool.call()
-    assert "patch target does not match filepath: other.txt" in tool.display()
+    assert "patch target does not match filepath: other.txt" in tool.preview()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
@@ -284,7 +284,7 @@ def test_apply_patch_tool_display_reports_unavailable_preview_for_invalid_patch(
 
     tool = ApplyPatchTool.make(session, ["sample.txt", "@@bad\n-alpha\n+beta\n"])
 
-    display = tool.display()
+    display = tool.preview()
 
     assert display.startswith("ApplyPatch(")
     assert "unified_diff=..." in display
