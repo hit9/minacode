@@ -1072,6 +1072,33 @@ def test_agent_ignores_empty_plan_replace(tmp_path):
     assert agent.state_updater.latest_report == ""
 
 
+def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "change map",
+                    "plan": [
+                        {"id": "p1", "text": "Find map code", "status": "doing", "context": "need location"},
+                        {"id": "p2", "text": "Edit map size", "status": "todo"},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert agent.blackboard.goal == "change map"
+    assert agent.blackboard.goal_reached is False
+    assert [item.text for item in agent.blackboard.plan] == ["Find map code", "Edit map size"]
+    assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
+    assert "  Goal    change map" in agent.state_updater.latest_report
+    assert "  Plan\n" in agent.state_updater.latest_report
+
+
 def test_agent_resets_verification_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -2038,6 +2065,7 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
     _seed_plan(agent)
+    agent.blackboard.goal = "answer"
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
     messages = []
@@ -2053,6 +2081,101 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
     assert "context: check answer" in verifier_calls[0][1]
     assert "Verifying: change_check manual check" in messages
     assert len(agent.model_client.user_prompts) == 2
+
+
+def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
+    verifier_calls = []
+
+    class FakeVerifyAgent:
+        def __init__(self, *, goal, scope):
+            self.goal = goal
+            self.scope = scope
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            verifier_calls.append((self.goal, self.scope))
+            return nanocode.VerifyReport(status="passed", method="cmake_build", summary="build passed")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {
+                            "type": "verify",
+                            "kind": "build",
+                            "method": "cmake_build",
+                            "criteria": ["build exits 0"],
+                            "status": "pending",
+                            "context": "verify build",
+                        }
+                    ],
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "verify",
+                            "kind": "build",
+                            "method": "cmake_build",
+                            "criteria": ["build exits 0"],
+                            "status": "pending",
+                            "context": "verify build again",
+                        }
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent)
+    agent.blackboard.goal = "answer"
+    agent.model_client = FakeModelClient()
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(verifier_calls) == 1
+    assert "Retrying: verification already passed; update plan or complete." in messages
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
+
+
+def test_agent_run_treats_verify_scope_check_blocked_as_failed(tmp_path):
+    class FakeVerifyAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            return nanocode.VerifyReport(status="blocked", method="scope_check", summary="missing target")
+
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent)
+    agent.blackboard.goal = "answer"
+    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
+    messages = []
+
+    agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "verify",
+                    "kind": "change_check",
+                    "method": "manual check",
+                    "criteria": ["answer is correct"],
+                    "status": "pending",
+                }
+            ]
+        },
+        on_message=messages.append,
+    )
+    agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]}, on_message=messages.append)
+
+    assert "Verify blocked | scope_check\n  missing target" in messages
+    assert "Retrying: verification failed; fix the reported issue first." in messages
+    assert "done" not in messages
+    assert agent.blackboard.verification.status == VerificationStatus.FAILED
 
 
 def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path):

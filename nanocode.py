@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.9"
+__version__ = "0.3.10"
 
 
 JsonValue: TypeAlias = Any
@@ -2902,7 +2902,7 @@ Rules:
 - Task -> keep GOAL, PLAN, KNOWN facts, NEXT STEP clear.
 - Complete ONLY with goal.complete=true and non-empty message_for_complete after required verification.
 
-Main Workflow (Goal Drive):
+Main Workflow (Goal Driven):
 
 In Short: A "PLAN -> ACTION -> KNOWN -> VERIFY -> PLAN" LOOP TOWARDS GOAL.
 
@@ -2910,18 +2910,19 @@ At EACH TURN, do EXACTLY the FIRST matching step, then STOP.
 Do NOT try to solve the WHOLE GOAL at once; ONLY decide and execute the CURRENT STEP.
 Finish work through SMALL ITERATIVE steps; NEVER take one LARGE step when SMALLER steps are possible.
 Optionally include brief PROGRESS with the current step; PROGRESS must NOT replace the workflow step.
-1. GOAL missing -> output GOAL ONLY.
+1. GOAL missing -> output START ONLY when the task is clear.
 2. PLAN missing -> output PLAN ONLY, based on GOAL, KNOWN, WORKER REPORTS, and RECENT TOOLS.
 3. NEW worker/tool results exist -> update KNOWN FIRST.
-4. KNOWN changed or PLAN is stale/wrong -> PATCH PLAN before ANY tool/worker.
-5. Recent work already completed the NEXT STEP -> MARK that plan step DONE; DO NOT REPEAT it.
-6. Current PLAN has a NEXT STEP -> use it to drive the CURRENT STEP; do NOT invent unrelated work.
-7. Next plan step has UNKNOWN file/symbol/range/project structure -> call EXPLORE ONLY.
-8. Next plan step has a KNOWN target -> do ONE SMALLEST tool/edit action.
-9. After EACH step -> PATCH PLAN status/context before continuing.
-10. After EDIT -> call VERIFY or inspect ONE NARROW target.
-11. VERIFICATION failed -> FIX the reported issue.
-12. DONE -> output goal complete=true with message_for_complete.
+4. Verification_State is DONE/BLOCKED/FAILED -> PATCH PLAN/GOAL from that result; do NOT repeat the same verify.
+5. KNOWN changed or PLAN is stale/wrong -> PATCH PLAN before ANY tool/worker.
+6. Recent work already completed the NEXT STEP -> MARK that plan step DONE; DO NOT REPEAT it.
+7. Current PLAN has a NEXT STEP -> use it to drive the CURRENT STEP; do NOT invent unrelated work.
+8. Next plan step has UNKNOWN file/symbol/range/project structure -> call EXPLORE ONLY.
+9. Next plan step has a KNOWN target -> do ONE SMALLEST tool/edit action.
+10. After EACH step -> PATCH PLAN status/context before continuing.
+11. After EDIT -> call VERIFY or inspect ONE NARROW target.
+12. VERIFICATION failed -> FIX the reported issue.
+13. DONE -> output goal complete=true with message_for_complete.
 
 Editing:
 - ALWAYS edit INCREMENTALLY.
@@ -2941,6 +2942,7 @@ Workers:
 - Verify method is a short target label, not a shell command.
 - Main must NOT run test/lint/build/syntax/change verification commands itself.
 - After verify status=pending, output NO tool/explore in the same response.
+- If Verification_State is DONE and no new edit happened, NEVER request pending verify again; PATCH PLAN or complete.
 - Do NOT ask Verify to review, analyze, diagnose, find issues, judge design, fix, or continue implementation.
 - Pending verify must include kind and criteria; after edits prefer kind=change_review unless a specific check is requested.
 - Do NOT give workers the WHOLE task.
@@ -2952,7 +2954,7 @@ Tools:
 { __tools__ }
 
 Actions:
-chat, progress, goal, verify, known, learn, plan, tool, explore.
+chat, progress, start, goal, verify, known, learn, plan, tool, explore.
 
 Format:
 JSON objects separated by __END_ACTION__.
@@ -2960,6 +2962,7 @@ One JSON object may omit __END_ACTION__.
 
 {"type": "chat", "text": "string"} __END_ACTION__
 {"type": "progress", "text": "string"} __END_ACTION__
+{"type": "start", "goal": "string", "plan": [{"id": "string", "text": "string", "status": "todo|doing|done|blocked", "context": null | "string"}]} __END_ACTION__
 {"type": "goal", "text": "string", "complete": true | false, "message_for_complete": null | "required final message when complete=true"} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null | "short target label, not command", "criteria": ["explicit pass/block criterion"], "status": "pending|passed|blocked", "context": null | "string"} __END_ACTION__
 {"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
@@ -4351,6 +4354,15 @@ class AgentStateUpdater:
         changed = False
         for action in self._actions(response):
             action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                update = _json_str(action.get("goal"))
+                if update:
+                    goal_changed = update != self.blackboard.goal
+                    changed = changed or goal_changed
+                    self.blackboard.goal = update
+                    self.blackboard.goal_reached = False
+                    if goal_changed:
+                        self.blackboard.verification_required = False
             if action_type == "goal":
                 update = _json_str(action.get("text"))
                 complete = action.get("complete")
@@ -4366,6 +4378,11 @@ class AgentStateUpdater:
 
     def _apply_plan(self, response: Json) -> bool:
         replaced = False
+        for start in [action for action in self._actions(response) if _json_str(action.get("type")) == "start"]:
+            items = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(start.get("plan"))) if item]
+            if items:
+                self.blackboard.plan = items
+                replaced = True
         for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
             if update.get("mode") == "replace":
@@ -5232,10 +5249,10 @@ class MainAgent(BaseAgent):
         return ""
 
     def _has_goal_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "goal" for action in actions)
+        return any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
 
     def _has_plan_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "plan" for action in actions)
+        return any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
 
     def _has_learn_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) == "learn" for action in actions)
@@ -5390,7 +5407,9 @@ class MainAgent(BaseAgent):
         return emit
 
     def _format_verify_done(self, report: VerifyReport) -> str:
-        headline = "Verify done: " + (report.status or VerificationStatus.BLOCKED)
+        status = report.status or VerificationStatus.BLOCKED
+        label = "Verify blocked" if status == VerificationStatus.BLOCKED else "Verify done: " + status
+        headline = label
         if report.method:
             headline += " | " + _shorten(report.method, 80)
         if report.summary:
@@ -5413,7 +5432,7 @@ class MainAgent(BaseAgent):
             verification.context = report.summary
             self.blackboard.verification_required = False
         if report.status == "blocked":
-            verification.status = VerificationStatus.BLOCKED
+            verification.status = VerificationStatus.FAILED if report.method == "scope_check" else VerificationStatus.BLOCKED
             verification.method = report.method or "verify"
             verification.context = report.summary
             self.blackboard.verification_required = False
@@ -5435,6 +5454,9 @@ class MainAgent(BaseAgent):
             + reason
             + ". Rule: pending verify must include kind=syntax_check|lint|test|build|change_review|change_check|other and non-empty criteria."
         )
+
+    def _format_agent_feedback_repeated_verification_error(self) -> str:
+        return "Error: verification already passed. Rule: update plan/known or complete the goal instead of requesting pending verify again."
 
     def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
         return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
@@ -5541,6 +5563,14 @@ class MainAgent(BaseAgent):
                 on_message,
                 "Retrying: set goal and plan before tools/workers.",
                 "Goal_Gate: Goal is empty before task state/work.",
+            )
+            return AgentRunResult()
+        if pending_verify_requested and self.blackboard.verification.status == VerificationStatus.DONE and not self.blackboard.verification_required:
+            self._remember_agent_error(self._format_agent_feedback_repeated_verification_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification already passed; update plan or complete.",
+                "Verification_Gate: verification already passed; do not repeat pending verify.",
             )
             return AgentRunResult()
         if self.session.debug and on_message is not None:
