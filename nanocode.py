@@ -1058,7 +1058,24 @@ class Tool(Protocol):
         return [_cli_token(arg) for arg in args]
 
     @classmethod
+    def stores_result(cls) -> bool:
+        return True
+
+    @classmethod
+    def merge_key(cls, call: "ParsedToolCall") -> tuple[str, ...] | None:
+        return None
+
+    @classmethod
+    def merge_calls(cls, session: Session, calls: list["ParsedToolCall"]) -> "PreparedToolCall | None":
+        return None
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
+
+    @classmethod
+    def make_for_runtime(cls, session: Session, runtime: AgentRuntime, args: list[str]) -> Self:
+        return cls.make(session, args)
+
     def requires_confirmation(self, session: Session) -> bool: ...
     def preview(self) -> str: ...
     def call(self) -> str: ...
@@ -2095,6 +2112,34 @@ class ReplaceRangeTool(Tool):
         return [_cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
 
     @classmethod
+    def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
+        if len(call.args) != 5:
+            return None
+        return (call.args[0],)
+
+    @classmethod
+    def merge_calls(cls, session: Session, calls: list[ParsedToolCall]) -> PreparedToolCall | None:
+        if len(calls) < 2:
+            return None
+        filepath = calls[0].args[0]
+        edits = []
+        intentions = []
+        for call in calls:
+            try:
+                start, end = _parse_line_range(call.args[1], call.args[2])
+            except ToolCallArgError:
+                return None
+            fingerprint = call.args[3]
+            if not fingerprint:
+                return None
+            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=call.args[4]))
+            if call.intention:
+                intentions.append(call.intention)
+        tool = cls._from_edits(session, filepath=filepath, edits=edits)
+        call = ParsedToolCall(name=cls.name(), intention="; ".join(intentions), args=list(calls[0].args))
+        return PreparedToolCall(call=call, tool=tool)
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 5:
             raise ToolCallArgError("requires exactly 5 args: filepath, start, end, fingerprint, content")
@@ -2695,8 +2740,16 @@ class ToolResultTool(Tool):
         ]
 
     @classmethod
+    def stores_result(cls) -> bool:
+        return False
+
+    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         return cls(keys=args, results=session.tool_result_store)
+
+    @classmethod
+    def make_for_runtime(cls, session: Session, runtime: AgentRuntime, args: list[str]) -> Self:
+        return cls(keys=args, results=runtime.tool_result_store)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
@@ -3695,7 +3748,7 @@ class ToolCallRunner:
         on_auto_approve: ToolDisplayCallback | None = None,
     ) -> str:
         executions = []
-        for item in self._merge_adjacent_replace_range_calls(self._dedupe_readonly_tool_calls(tool_calls)):
+        for item in self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls)):
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
@@ -3738,7 +3791,7 @@ class ToolCallRunner:
                 call = self._invalid_tool_call(item)
             result_key = ""
             result_excerpted = False
-            if call.name != ToolResultTool.name():
+            if self._stores_tool_result(call):
                 result_key = self._store_tool_result(call, outcome, output)
                 item = self.runtime.tool_result_store[result_key]
                 output = item.value
@@ -3785,22 +3838,22 @@ class ToolCallRunner:
             filtered.append(item)
         return filtered
 
-    def _merge_adjacent_replace_range_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
+    def _merge_adjacent_tool_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
         merged: list[JsonValue | ParsedToolCall | PreparedToolCall] = []
         index = 0
         while index < len(tool_calls):
             item = tool_calls[index]
-            if not self._is_single_replace_range_call(item):
+            merge_key = self._merge_key(item)
+            if merge_key is None:
                 merged.append(item)
                 index += 1
                 continue
 
             group = [item]
-            filepath = item.args[0]
             index += 1
             while index < len(tool_calls):
                 next_item = tool_calls[index]
-                if not self._is_single_replace_range_call(next_item) or next_item.args[0] != filepath:
+                if self._merge_key(next_item) != merge_key:
                     break
                 group.append(next_item)
                 index += 1
@@ -3809,35 +3862,32 @@ class ToolCallRunner:
                 merged.append(item)
                 continue
 
-            prepared = self._make_merged_replace_range_call(group)
+            prepared = self._merge_calls(group)
             if prepared is None:
                 merged.extend(group)
             else:
                 merged.append(prepared)
         return merged
 
-    @staticmethod
-    def _is_single_replace_range_call(call: JsonValue | ParsedToolCall) -> bool:
-        return isinstance(call, ParsedToolCall) and call.name == ReplaceRangeTool.name() and len(call.args) == 5
+    def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
+        if not isinstance(item, ParsedToolCall):
+            return None
+        tool_class = TOOL_REGISTRY.get(item.name)
+        if tool_class is None or not self._is_tool_allowed(item.name):
+            return None
+        key = tool_class.merge_key(item)
+        if key is None:
+            return None
+        return (item.name, key)
 
-    def _make_merged_replace_range_call(self, group: list[ParsedToolCall]) -> PreparedToolCall | None:
-        filepath = group[0].args[0]
-        edits = []
-        intentions = []
-        for call in group:
-            try:
-                start, end = _parse_line_range(call.args[1], call.args[2])
-            except ToolCallArgError:
-                return None
-            fingerprint = call.args[3]
-            if not fingerprint:
-                return None
-            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=call.args[4]))
-            if call.intention:
-                intentions.append(call.intention)
-        tool = ReplaceRangeTool._from_edits(self.session, filepath=filepath, edits=edits)
-        call = ParsedToolCall(name=ReplaceRangeTool.name(), intention="; ".join(intentions), args=list(group[0].args))
-        return PreparedToolCall(call=call, tool=tool)
+    def _merge_calls(self, group: list[JsonValue | ParsedToolCall]) -> PreparedToolCall | None:
+        parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
+        if len(parsed_group) != len(group):
+            return None
+        tool_class = TOOL_REGISTRY.get(parsed_group[0].name)
+        if tool_class is None or not self._is_tool_allowed(parsed_group[0].name):
+            return None
+        return tool_class.merge_calls(self.session, parsed_group)
 
     def format_latest_report(self) -> str:
         return ToolCallDisplayFormatter.latest_report(self.latest_executions)
@@ -3898,15 +3948,17 @@ class ToolCallRunner:
             raw = repr(value)
         return ParsedToolCall(name="InvalidToolCall", intention="parse malformed tool call", args=[_shorten(raw, 300)])
 
+    def _stores_tool_result(self, call: ParsedToolCall) -> bool:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        return tool_class is None or tool_class.stores_result()
+
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
         if not self._is_tool_allowed(call.name):
             raise ToolCallArgError("tool not allowed for this agent: " + call.name)
-        if call.name == ToolResultTool.name():
-            return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
-        return tool_class.make(self.session, call.args)
+        return tool_class.make_for_runtime(self.session, self.runtime, call.args)
 
     def _is_tool_allowed(self, name: str) -> bool:
         return self.allowed_tools is None or name in self.allowed_tools
