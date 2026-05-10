@@ -41,7 +41,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 
 JsonValue: TypeAlias = Any
@@ -167,6 +167,7 @@ class VerificationStatus(StrEnum):
     PLANNED = "planned"
     REQUIRED = "required"
     DONE = "done"
+    FAILED = "failed"
     BLOCKED = "blocked"
 
 
@@ -4461,6 +4462,7 @@ class AgentStateUpdater:
             in {
                 VerificationStatus.REQUIRED,
                 VerificationStatus.DONE,
+                VerificationStatus.FAILED,
                 VerificationStatus.BLOCKED,
             }
         ):
@@ -5384,10 +5386,16 @@ class MainAgent(BaseAgent):
             verification.context = report.summary
             self.blackboard.verification_required = False
             return True
+        if report.status == "failed":
+            verification.status = VerificationStatus.FAILED
+            verification.method = report.method or "verify"
+            verification.context = report.summary
+            self.blackboard.verification_required = False
         if report.status == "blocked":
             verification.status = VerificationStatus.BLOCKED
             verification.method = report.method or "verify"
             verification.context = report.summary
+            self.blackboard.verification_required = False
         return False
 
     def _format_agent_feedback_verification_error(self) -> str:
@@ -5454,6 +5462,7 @@ class MainAgent(BaseAgent):
         self.blackboard.user_input = user_input
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
+        self.blackboard.verification.reset()
         self.maybe_auto_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
@@ -5602,6 +5611,14 @@ class MainAgent(BaseAgent):
                 on_message,
                 "Retrying: verification is required before completion.",
                 "Verification_Gate: retrying until verification is passed or blocked.",
+            )
+            return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
+            self.blackboard.goal_reached = False
+            self._report_gate(
+                on_message,
+                "Retrying: verification failed; fix the reported issue first.",
+                "Verification_Gate: verification failed; fix before completion.",
             )
             return AgentRunResult()
         if self.blackboard.goal_reached and not completion_message:
@@ -6763,6 +6780,8 @@ class AgentLoop:
             return "bold ansimagenta"
         if "done" in badge:
             return "bold ansigreen"
+        if "failed" in badge:
+            return "bold ansired"
         if "blocked" in badge:
             return "bold ansired"
         return "ansibrightblack"

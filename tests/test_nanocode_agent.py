@@ -52,6 +52,7 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
 
     class FakeModelClient:
         def __init__(self):
+            self.user_prompts = []
             self.responses = [
                 {
                     "actions": [
@@ -63,6 +64,7 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     parent_session = Session(cwd=str(tmp_path))
@@ -1400,6 +1402,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
 
     class FakeModelClient:
         def __init__(self):
+            self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
@@ -1410,6 +1413,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
@@ -1630,7 +1634,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.goal_reached is False
 
 
@@ -1868,6 +1872,68 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     assert len(agent.model_client.user_prompts) == 4
     assert "<Worker_Reports>" in agent.model_client.user_prompts[2]
     assert "<Agent_Reports>" not in agent.model_client.user_prompts[2]
+    assert "assertion failed" in agent.model_client.user_prompts[2]
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_agent_run_does_not_repeat_failed_verification_before_fix(tmp_path):
+    class FakeVerifyAgent:
+        def __init__(self):
+            self.reports = [
+                nanocode.VerifyReport(status="failed", method="unit", summary="assertion failed", issues=["sample still wrong"]),
+                nanocode.VerifyReport(status="passed", method="unit", summary="tests passed", evidence=["sample fixed"]),
+            ]
+
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            return self.reports.pop(0)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "change file", "complete": False},
+                        {
+                            "type": "tool",
+                            "name": "Edit",
+                            "intention": "edit sample badly",
+                            "args": ["sample.txt", "old", "bad"],
+                        },
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+                {
+                    "actions": [
+                        {
+                            "type": "tool",
+                            "name": "Edit",
+                            "intention": "fix sample",
+                            "args": ["sample.txt", "bad", "new"],
+                        },
+                    ],
+                },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.model_client = FakeModelClient()
+    verifier = FakeVerifyAgent()
+    agent._make_verify_agent = lambda *, goal, scope: verifier
+    messages = []
+
+    response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert verifier.reports == []
+    assert "Retrying: verification failed; fix the reported issue first." in messages
     assert "assertion failed" in agent.model_client.user_prompts[2]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
 
@@ -2132,6 +2198,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
     agent.run("next task")
 
     assert agent.agent_feedback_errors == []
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
 
 
 def test_agent_allows_progress_message_before_goal_complete(tmp_path):
@@ -2229,7 +2296,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     assert agent.blackboard.goal == "answer"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.REQUIRED
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.goal_reached is False
 
     class ChatModelClient:
