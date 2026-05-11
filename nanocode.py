@@ -3278,6 +3278,8 @@ Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
 
+If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
+
 Sidecar field on tool or deliver:
 - "known": ["non-empty self-contained fact"]
 
@@ -4135,6 +4137,8 @@ class ToolCallRunner:
                                 raise Cancellation("user refused: " + reason)
                             raise Cancellation("user refused")
                 output = self._call_tool(tool, call, on_live_output=on_live_output, on_live_done=on_live_done)
+                if self._process_exit_failed(output):
+                    outcome = "failure"
             except Cancellation as error:
                 outcome = "failure"
                 output = "Cancelled: " + str(error)
@@ -4170,6 +4174,10 @@ class ToolCallRunner:
 
         self.latest_executions = executions
         return self._format_recent_tool_calls(executions)
+
+    def _process_exit_failed(self, output: str) -> bool:
+        match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
+        return bool(match and int(match.group(1)) != 0)
 
     def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
         if not self.reuse_readonly_results:
@@ -4328,10 +4336,17 @@ class ToolCallRunner:
         directory = self.session.tool_results_dir()
         os.makedirs(directory, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        filepath = os.path.join(directory, timestamp + "-" + key + ".log")
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(output)
-        return os.path.relpath(filepath, self.session.cwd)
+        pid = os.getpid()
+        for attempt in range(100):
+            suffix = "" if attempt == 0 else f"-{attempt}"
+            filepath = os.path.join(directory, f"{timestamp}-{pid}-{key}{suffix}.log")
+            try:
+                with open(filepath, "x", encoding="utf-8") as fp:
+                    fp.write(output)
+                return os.path.relpath(filepath, self.session.cwd)
+            except FileExistsError:
+                continue
+        return ""
 
     def _trim_tool_result_store(self) -> None:
         overflow = len(self.runtime.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
@@ -5219,6 +5234,9 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         if report is not None:
             return AgentRunResult(done=True, value=report)
         tool_calls = self._tool_calls_from_actions(actions)
+        gate_result = self._gate_tool_calls(tool_calls, on_message)
+        if gate_result is not None:
+            return gate_result
         if tool_calls:
             self.execute_tool_calls(
                 tool_calls,
@@ -5239,6 +5257,9 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
             self.gate_name + ": expected tool or deliver action.",
         )
         return AgentRunResult()
+
+    def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
+        return None
 
     def _deliver_from_actions(self, actions: list[Json]) -> ReportT | None:
         raise NotImplementedError
@@ -5319,6 +5340,37 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     retry_message: ClassVar[str] = "Retrying: verify returned only state actions; return tool or deliver."
     feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every VerifyAgent response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "verify step limit reached"
+
+    def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
+        repeated = self._repeated_failed_process_call(tool_calls)
+        if repeated is None:
+            return None
+        self._remember_agent_error("Error: previous verification command already failed. Rule: deliver failed; do not rerun the same command.")
+        self._report_gate(
+            on_message,
+            "Retrying: use existing failed result and deliver failed.",
+            "Verify_Gate: repeated failed verification command: " + ToolCallDisplayFormatter._format_call(repeated) + ".",
+        )
+        return AgentRunResult()
+
+    def _repeated_failed_process_call(self, tool_calls: list[JsonValue]) -> ParsedToolCall | None:
+        failed = self._latest_failed_process_call()
+        if failed is None:
+            return None
+        for item in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(item)
+            except ToolCallArgError:
+                continue
+            if call.name == failed.name and call.args == failed.args:
+                return call
+        return None
+
+    def _latest_failed_process_call(self) -> ParsedToolCall | None:
+        for execution in reversed(self.latest_tool_call_executions):
+            if execution.outcome == "failure" and execution.call.name in {"Bash", "Git"} and re.search(r"^\* exit_code: (-?\d+)$", execution.output, re.MULTILINE):
+                return execution.call
+        return None
 
     def _deliver_from_actions(self, actions: list[Json]) -> VerifyReport | None:
         for action in reversed(actions):

@@ -1357,6 +1357,17 @@ def test_agent_execute_bash_does_not_require_verification(tmp_path):
     assert agent.blackboard.verification_required is False
 
 
+def test_agent_marks_nonzero_bash_exit_as_failed_tool_call(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Bash", "intention": "run failing command", "args": ["exit 7"]}], confirm=lambda call, tool: True)
+
+    assert agent.tool_runner.latest_executions[0].outcome == "failure"
+    assert "fail | Bash exit 7" in latest
+    assert "* exit_code: 7" in agent.tool_runner.latest_executions[0].output
+
+
 def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -1416,6 +1427,50 @@ def test_verify_agent_rejects_edit_tools(tmp_path):
     assert verifier.session is parent_session
     assert parent_session.tool_result_store == {}
     assert list(verifier.runtime.tool_result_store) == ["tr.1"]
+
+
+def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    verifier = nanocode.VerifyAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="run tests",
+        scope=["kind: test", "target: make test", "expect: exit code 0"],
+    )
+    messages = []
+
+    verifier.execute_tool_calls([{"name": "Bash", "intention": "run tests", "args": ["exit 7"]}], confirm=lambda call, tool: True)
+    result = verifier.handle_response(
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "run tests again", "args": ["exit 7"]}]},
+        confirm=lambda call, tool: True,
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert list(verifier.runtime.tool_result_store) == ["tr.1"]
+    assert any("previous verification command already failed" in error for error in verifier.agent_feedback_errors)
+
+    delivered = verifier.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "deliver",
+                    "status": "failed",
+                    "method": "Bash exit 7",
+                    "summary": "command failed",
+                    "evidence": ["exit_code: 7"],
+                    "issues": ["tests failed"],
+                    "next_steps": [],
+                }
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert delivered.done is True
+    assert isinstance(delivered.value, nanocode.VerifyReport)
+    assert delivered.value.status == "failed"
 
 
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
