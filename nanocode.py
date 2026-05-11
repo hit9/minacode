@@ -30,7 +30,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Iterator, Protocol, Self, Type, TypeAlias, final
+from typing import Any, Callable, ClassVar, Generic, Iterator, Protocol, Self, Type, TypeAlias, TypeVar, final
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -46,6 +46,7 @@ __version__ = "0.3.13"
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
+ReportT = TypeVar("ReportT")
 
 ############################
 # Errors
@@ -4961,9 +4962,15 @@ EXPLORE_MESSAGE_PREFIX = "[explore] "
 VERIFY_MESSAGE_PREFIX = "[verify] "
 
 
-@final
-class ExploreAgent(BaseAgent):
-    DEFAULT_MAX_STEPS: ClassVar[int] = 50
+class WorkerAgent(BaseAgent, Generic[ReportT]):
+    system_prompt_template: ClassVar[str]
+    user_prompt_template: ClassVar[str]
+    allowed_tools: ClassVar[set[str]]
+    activity_name: ClassVar[str]
+    gate_name: ClassVar[str]
+    retry_message: ClassVar[str]
+    feedback_message: ClassVar[str]
+    step_limit_reason: ClassVar[str]
 
     def __init__(
         self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
@@ -4984,9 +4991,9 @@ class ExploreAgent(BaseAgent):
         )
         prompt_builder = PromptBuilder(
             parent_session,
-            system_prompt_template=EXPLORE_AGENT_SYSTEM_PROMPT,
-            user_prompt_template=EXPLORE_AGENT_USER_PROMPT_TEMPLATE,
-            allowed_tools=EXPLORE_AGENT_ALLOWED_TOOLS,
+            system_prompt_template=self.system_prompt_template,
+            user_prompt_template=self.user_prompt_template,
+            allowed_tools=self.allowed_tools,
             context=prompt_context,
         )
         super().__init__(
@@ -4994,8 +5001,8 @@ class ExploreAgent(BaseAgent):
             blackboard=blackboard,
             runtime=runtime,
             prompt_builder=prompt_builder,
-            allowed_tools=EXPLORE_AGENT_ALLOWED_TOOLS,
-            activity="explore",
+            allowed_tools=self.allowed_tools,
+            activity=self.activity_name,
         )
 
     def run(
@@ -5006,7 +5013,7 @@ class ExploreAgent(BaseAgent):
         on_live_output: ToolLiveOutputCallback | None = None,
         on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
-    ) -> ExploreReport:
+    ) -> ReportT:
         self._clear_recent_tool_calls()
         self._clear_agent_feedback()
 
@@ -5021,7 +5028,7 @@ class ExploreAgent(BaseAgent):
                 on_live_done=on_live_done,
                 on_message=on_message,
             ),
-            on_step_limit=lambda: self._blocked_report("explore step limit reached"),
+            on_step_limit=lambda: self._blocked_report(self.step_limit_reason),
             on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
         )
 
@@ -5058,13 +5065,34 @@ class ExploreAgent(BaseAgent):
                 if latest_report:
                     on_message(latest_report)
             return AgentRunResult()
-        self._remember_agent_error("Error: previous output had only state actions. Rule: every ExploreAgent response must include tool or deliver.")
+        self._remember_agent_error(self.feedback_message)
         self._report_gate(
             on_message,
-            "Retrying: explore returned only state actions; return tool or deliver.",
-            "Explore_Gate: expected tool or deliver action.",
+            self.retry_message,
+            self.gate_name + ": expected tool or deliver action.",
         )
         return AgentRunResult()
+
+    def _deliver_from_actions(self, actions: list[Json]) -> ReportT | None:
+        raise NotImplementedError
+
+    def _blocked_report(self, reason: str) -> ReportT:
+        raise NotImplementedError
+
+    def _string_items(self, value: JsonValue) -> list[str]:
+        return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(value)) if item]
+
+
+@final
+class ExploreAgent(WorkerAgent[ExploreReport]):
+    system_prompt_template: ClassVar[str] = EXPLORE_AGENT_SYSTEM_PROMPT
+    user_prompt_template: ClassVar[str] = EXPLORE_AGENT_USER_PROMPT_TEMPLATE
+    allowed_tools: ClassVar[set[str]] = EXPLORE_AGENT_ALLOWED_TOOLS
+    activity_name: ClassVar[str] = "explore"
+    gate_name: ClassVar[str] = "Explore_Gate"
+    retry_message: ClassVar[str] = "Retrying: explore returned only state actions; return tool or deliver."
+    feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every ExploreAgent response must include tool or deliver."
+    step_limit_reason: ClassVar[str] = "explore step limit reached"
 
     def _deliver_from_actions(self, actions: list[Json]) -> ExploreReport | None:
         for action in reversed(actions):
@@ -5113,114 +5141,17 @@ class ExploreAgent(BaseAgent):
             context=current.context,
         )
 
-    def _string_items(self, value: JsonValue) -> list[str]:
-        return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(value)) if item]
-
 
 @final
-class VerifyAgent(BaseAgent):
-    DEFAULT_MAX_STEPS: ClassVar[int] = 50
-
-    def __init__(
-        self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
-    ):
-        self.parent_session = parent_session
-        self.parent_blackboard = parent_blackboard
-        self.parent_known = list(self.parent_blackboard.known)
-        self.max_steps = parent_session.explore_agent_max_turns
-        # Each worker handoff gets isolated blackboard/runtime/tool history; only its report is copied back.
-        blackboard = Blackboard(user_input=goal, goal=goal)
-        runtime = AgentRuntime()
-        prompt_context = PromptContext(
-            blackboard=blackboard,
-            runtime=runtime,
-            parent_known=self.parent_known,
-            scope=scope,
-            handoff_context=handoff_context or WorkerReportHistory(),
-        )
-        prompt_builder = PromptBuilder(
-            parent_session,
-            system_prompt_template=VERIFY_AGENT_SYSTEM_PROMPT,
-            user_prompt_template=VERIFY_AGENT_USER_PROMPT_TEMPLATE,
-            allowed_tools=VERIFY_AGENT_ALLOWED_TOOLS,
-            context=prompt_context,
-        )
-        super().__init__(
-            parent_session,
-            blackboard=blackboard,
-            runtime=runtime,
-            prompt_builder=prompt_builder,
-            allowed_tools=VERIFY_AGENT_ALLOWED_TOOLS,
-            activity="verify",
-        )
-
-    def run(
-        self,
-        *,
-        confirm: ConfirmCallback | None = None,
-        on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
-        on_message: MessageCallback | None = None,
-    ) -> VerifyReport:
-        self._clear_recent_tool_calls()
-        self._clear_agent_feedback()
-
-        return self.run_loop(
-            max_steps=self.max_steps,
-            on_message=on_message,
-            on_step=lambda response: self.handle_response(
-                response,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            ),
-            on_step_limit=lambda: self._blocked_report("verify step limit reached"),
-            on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
-        )
-
-    def handle_response(
-        self,
-        response: Json,
-        *,
-        confirm: ConfirmCallback | None = None,
-        on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
-        on_message: MessageCallback | None = None,
-    ) -> AgentRunResult:
-        actions = self._response_actions(response)
-        if self.session.debug and on_message is not None:
-            frame_error_report = self._format_frame_error_report(response)
-            if frame_error_report:
-                on_message(frame_error_report)
-        self.apply_response(response)
-        report = self._deliver_from_actions(actions)
-        if report is not None:
-            return AgentRunResult(done=True, value=report)
-        tool_calls = self._tool_calls_from_actions(actions)
-        if tool_calls:
-            self.execute_tool_calls(
-                tool_calls,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-            )
-            if on_message is not None:
-                latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
-                if latest_report:
-                    on_message(latest_report)
-            return AgentRunResult()
-        self._remember_agent_error("Error: previous output had only state actions. Rule: every VerifyAgent response must include tool or deliver.")
-        self._report_gate(
-            on_message,
-            "Retrying: verify returned only state actions; return tool or deliver.",
-            "Verify_Gate: expected tool or deliver action.",
-        )
-        return AgentRunResult()
+class VerifyAgent(WorkerAgent[VerifyReport]):
+    system_prompt_template: ClassVar[str] = VERIFY_AGENT_SYSTEM_PROMPT
+    user_prompt_template: ClassVar[str] = VERIFY_AGENT_USER_PROMPT_TEMPLATE
+    allowed_tools: ClassVar[set[str]] = VERIFY_AGENT_ALLOWED_TOOLS
+    activity_name: ClassVar[str] = "verify"
+    gate_name: ClassVar[str] = "Verify_Gate"
+    retry_message: ClassVar[str] = "Retrying: verify returned only state actions; return tool or deliver."
+    feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every VerifyAgent response must include tool or deliver."
+    step_limit_reason: ClassVar[str] = "verify step limit reached"
 
     def _deliver_from_actions(self, actions: list[Json]) -> VerifyReport | None:
         for action in reversed(actions):
@@ -5241,9 +5172,6 @@ class VerifyAgent(BaseAgent):
 
     def _blocked_report(self, reason: str) -> VerifyReport:
         return VerifyReport(status=VerificationStatus.BLOCKED, method="verify", summary=reason, issues=[reason] if reason else [])
-
-    def _string_items(self, value: JsonValue) -> list[str]:
-        return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(value)) if item]
 
 
 @final
