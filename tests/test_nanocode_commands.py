@@ -70,7 +70,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "runtime: yolo=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
-    assert "tool_calls: 0" in result.message
+    assert "tool_calls: turn=0 session=0" in result.message
     assert "blackboard" not in result.message
 
 

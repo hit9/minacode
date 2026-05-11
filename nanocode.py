@@ -914,6 +914,7 @@ class Session:
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
+    session_tool_calls: int = 0
     turn_model_calls: int = 0
 
     @classmethod
@@ -4859,6 +4860,7 @@ class BaseAgent:
         )
         self._append_latest_tool_batch(self.tool_runner.latest_executions)
         self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
+        self.session.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             if self.activity == "main" and execution.requires_verification:
                 self.blackboard.verification_required = True
@@ -5967,7 +5969,7 @@ class CommandDispatcher:
                 "explore: turns=" + str(session.explore_agent_max_turns),
                 "runtime: yolo=" + self._format_bool(session.yolo) + " compact_at=" + str(session.compact_at),
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "tool_calls: " + str(session.turn_tool_calls),
+                "tool_calls: turn=" + str(session.turn_tool_calls) + " session=" + str(session.session_tool_calls),
                 "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
                 "models:",
                 self._format_model_usage(),
