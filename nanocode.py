@@ -1293,7 +1293,6 @@ class ReadTool(Tool):
         return [
             "Read known UTF-8 file paths; pass multiple 0-based start,end ranges for the same file.",
             "Each range returns at most 600 lines.",
-            "Before ReplaceRange, Read the exact target range and reuse its fingerprint.",
         ]
 
     @classmethod
@@ -3108,8 +3107,9 @@ Must:
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - EVERY response must include tool or deliver.
 - Explore_Goal includes kind and constraints from MainAgent.
-- SEARCH BEFORE READ. Batch independent Search/Read calls.
-- Read ONLY SMALL ranges after Search finds likely files.
+- SEARCH BEFORE READ only when the target path/range is unknown.
+- If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
+- Read ONLY SMALL ranges around likely matches or caller-provided exact targets.
 - Deliver as soon as the target is FOUND or CANNOT BE FOUND.
 - Deliverable is path/symbol/0-based line_range/context/reason evidence.
 
@@ -3121,21 +3121,26 @@ Must not:
 - Do NOT deliver large raw content.
 
 Reject:
-- If Explore_Goal asks for review, analysis, diagnosis, decision, verification, fix, confirmation, or final answer, deliver EMPTY targets with issues. Do NOT call tools.
+- Reject only if Explore_Goal asks ExploreAgent itself to review, analyze, diagnose, decide, verify, fix, confirm, or answer.
+- Do NOT reject merely because the broader task mentions a bug, fix, diagnosis, or verification, as long as the requested Explore_Goal is only to locate concrete targets.
 - If Explore_Scope has NO path, symbol, keyword, changed-file, or search-hint constraint, deliver EMPTY targets with issues. Do NOT call tools.
 
 Workflow:
 1. Check Explore_Goal and Explore_Scope constraints.
-2. SEARCH for symbols, paths, config names, keywords, or changed files.
-3. BATCH SMALL Read ranges around likely matches.
-4. Add ONLY STABLE facts to known.
-5. Deliver CONCRETE targets.
+2. If the exact target is already known, Read the smallest useful range.
+3. Otherwise Search for symbols, paths, config names, keywords, or changed files.
+4. Batch small Read ranges around likely matches when line evidence is needed.
+5. Deliver concrete targets, known stable facts, and issues.
 
 Deliver:
 - targets are file/symbol/range/context/reason items the caller can use next.
 - Prefer EXACT path + 0-based line_range from Read.
 - known contains STABLE facts ONLY.
 - issues contains blockers, out-of-role handoffs, or not-found notes.
+- If targets are empty, issues MUST explain what was searched, within what scope, and why no concrete target was found.
+- If a target is approximate, mark line_range as null and explain what extra Read/Search is needed.
+- Do not omit relevant targets found within scope just because one best target exists.
+- Deliver at most 10 targets, ordered by usefulness to the caller.
 
 Kinds:
 - symbol: locate classes, functions, variables, config keys, commands, or named code concepts.
