@@ -18,13 +18,15 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
     assert ToolResultTool.name() == "Recall"
     result = ToolResultTool.make(session, ["tr.1", "missing"]).call()
 
-    assert result.startswith("<RecallToolResult>")
-    assert '<Result key="tr.1">' in result
-    assert "<log_path>.nanocode/tool_results/sample.log</log_path>" in result
-    assert "<original_lines>2</original_lines>" in result
-    assert "<original_chars>13</original_chars>" in result
+    assert result.startswith("RecallToolResult:")
+    assert "- result_key: tr.1" in result
+    assert "description: Read sample." in result
+    assert "log: .nanocode/tool_results/sample.log" in result
+    assert "size: 2 lines, 13 chars" in result
+    assert "<content>" in result
     assert "line 1\nline 2" in result
-    assert '<Missing key="missing"/>' in result
+    assert "- result_key: missing" in result
+    assert "status: missing" in result
 
 
 def test_known_action_accepts_string_items(tmp_path):

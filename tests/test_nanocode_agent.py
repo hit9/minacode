@@ -41,10 +41,10 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     )
 
     assert "alpha" in latest
-    assert '<ToolCall ok key="tr.1">' in latest
-    assert 'call: Read("sample.txt", "0", "1")' in latest
+    assert "- ok | Read sample.txt 0:1" in latest
     assert "why: read sample" in latest
-    assert "result:\n<ReadToolResult>" in latest
+    assert "result_key: tr.1" in latest
+    assert "output:\n<ReadToolResult>" in latest
     assert session.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.tool_result_store["tr.1"].value
     assert session.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
@@ -114,18 +114,18 @@ def test_explore_report_formats_and_briefs_issues():
 
     formatted = report.format()
 
-    assert "<issues>" in formatted
+    assert "issues:" in formatted
     assert "handoff goal asks for analysis, not location" in formatted
     assert report.brief() == ["issue: handoff goal asks for analysis, not location"]
 
 
-def test_worker_report_history_uses_worker_reports_tag():
-    history = nanocode.WorkerReportHistory(verify=["<VerifyReport>passed</VerifyReport>"], verified=["verify: passed"])
+def test_worker_report_history_uses_worker_reports_heading():
+    history = nanocode.WorkerReportHistory(verify=["Verify Report: passed"], verified=["verify: passed"])
 
     formatted = history.format()
 
-    assert "<Worker_Reports>" in formatted
-    assert "</Worker_Reports>" in formatted
+    assert "Worker Reports:" in formatted
+    assert "Verify Report: passed" in formatted
     assert "<Agent_Reports>" not in formatted
 
 
@@ -224,6 +224,10 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert "one.txt" not in recent
     assert "two.txt" in recent
     assert "three.txt" in recent
+    assert "<ReadToolResult>" in latest
+    assert "<ReadToolResult>" not in recent
+    assert "output_summary:" in recent
+    assert "Recall(" not in recent
     assert len(agent.recent_tool_call_blocks) == 2
     context = agent._format_recent_tool_call_context()
     assert "one.txt" not in context
@@ -1244,7 +1248,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
     assert "ToolCallError: tool call missing name" in latest
-    assert "InvalidToolCall(" in latest
+    assert "InvalidToolCall" in latest
     assert session.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
@@ -1429,7 +1433,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert auto_approvals[0][0] == 'Edit("sample.txt", "old", "new")'
     assert "-old" in auto_approvals[0][1]
     assert "+new" in auto_approvals[0][1]
-    assert "<ToolCall ok" in latest
+    assert latest.startswith("- ok")
     assert path.read_text(encoding="utf-8") == "new\n"
     assert agent.blackboard.verification_required is True
 
@@ -1476,7 +1480,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
-    assert 'Read("sample.txt", "0", "1")' in _blocks_text(agent.latest_tool_call_blocks)
+    assert "Read sample.txt 0:1" in _blocks_text(agent.latest_tool_call_blocks)
     assert agent.recent_tool_call_blocks == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
@@ -1686,7 +1690,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert 'Read("sample.txt", "0", "1")' in _blocks_text(agent.latest_tool_call_blocks)
+    assert "Read sample.txt 0:1" in _blocks_text(agent.latest_tool_call_blocks)
     assert agent.recent_tool_call_blocks == []
 
 
@@ -2020,7 +2024,7 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 4
-    assert "<Worker_Reports>" in agent.model_client.user_prompts[2]
+    assert "Worker Reports:" in agent.model_client.user_prompts[2]
     assert "<Agent_Reports>" not in agent.model_client.user_prompts[2]
     assert "assertion failed" in agent.model_client.user_prompts[2]
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
