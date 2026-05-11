@@ -2927,6 +2927,7 @@ Rules:
 - Task -> keep GOAL, PLAN, KNOWN facts, NEXT STEP clear.
 - Complete ONLY with goal.complete=true and non-empty message_for_complete after required verification.
 - Verification is REQUIRED after edits; otherwise use it ONLY when the user asks for verification or the next step truly needs a separate check.
+- Tool results and worker reports are VOLATILE; record every needed durable fact in KNOWN immediately.
 
 Main Workflow:
 
@@ -2936,7 +2937,7 @@ At EACH TURN, do the FIRST matching step, then STOP.
 A CURRENT STEP may include MULTIPLE related actions/tool calls, but must NOT try to finish the WHOLE GOAL at once.
 1. GOAL missing -> output START ONLY.
 2. PLAN missing -> output PLAN ONLY; include VERIFY only for edits or explicit user verification requests.
-3. NEW worker/tool results exist -> update KNOWN and PATCH PLAN before more work.
+3. NEW worker/tool results exist -> update KNOWN with every needed durable fact and PATCH PLAN before more work.
 4. Verification_State is FAILED -> FIX the reported issue.
 5. Verification_State is DONE/BLOCKED -> PATCH PLAN/GOAL; do NOT repeat the same verify.
 6. Next step has UNKNOWN target -> EXPLORE.
@@ -3798,7 +3799,7 @@ class ModelClient:
         if self._looks_like_native_tool_call(content):
             guidance = (
                 " Native tool_call syntax is not supported; return an action frame like "
-                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0","100"]}\n__END_ACTION__.'
+                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0,100"]}\n__END_ACTION__.'
             )
         return {
             "actions": [],

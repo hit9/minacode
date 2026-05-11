@@ -777,7 +777,7 @@ def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
     assert response["actions"] == []
     assert "Native tool_call syntax is not supported" in response["_format_error"]
     assert '"name":"Read"' in response["_format_error"]
-    assert '"args":["nanocode.py","0","100"]' in response["_format_error"]
+    assert '"args":["nanocode.py","0,100"]' in response["_format_error"]
 
 
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
