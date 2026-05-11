@@ -4641,9 +4641,7 @@ class BaseAgent:
             allow_project_learning=allow_project_learning,
         )
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
-        self.latest_tool_batch = ""
         self.latest_tool_call_blocks: list[str] = []
-        self.recent_tool_calls = ""
         self.recent_tool_call_blocks: list[str] = []
         self.worker_reports = WorkerReportHistory()
         self.prompt_context.worker_reports = self.worker_reports
@@ -4754,20 +4752,17 @@ class BaseAgent:
         self.blackboard.verification_required = False
 
     def _clear_recent_tool_calls(self) -> None:
-        self.latest_tool_batch = ""
         self.latest_tool_call_blocks = []
-        self.recent_tool_calls = ""
         self.recent_tool_call_blocks = []
 
     def _format_recent_tool_call_context(self) -> str:
         return _join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
 
-    def _append_latest_tool_batch(self, executions: list[ToolCallExecution]) -> None:
+    def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
             return
         self._append_recent_tool_call_blocks(self.latest_tool_call_blocks)
         self.latest_tool_call_blocks = _format_recent_tool_call_blocks(executions)
-        self.latest_tool_batch = _join_tool_call_blocks(self.latest_tool_call_blocks)
 
     def _append_recent_tool_call_blocks(self, blocks: list[str]) -> None:
         if not blocks:
@@ -4781,7 +4776,6 @@ class BaseAgent:
             del self.recent_tool_call_blocks[:overflow]
         while len(_join_tool_call_blocks(self.recent_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS and self.recent_tool_call_blocks:
             self.recent_tool_call_blocks.pop(0)
-        self.recent_tool_calls = _join_tool_call_blocks(self.recent_tool_call_blocks)
 
     def _prune_tool_result_store(self) -> None:
         overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
@@ -4877,7 +4871,7 @@ class BaseAgent:
             on_live_output=on_live_output,
             on_live_done=on_live_done,
         )
-        self._append_latest_tool_batch(self.tool_runner.latest_executions)
+        self._append_latest_tool_call_blocks(self.tool_runner.latest_executions)
         self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
@@ -4885,7 +4879,7 @@ class BaseAgent:
                 self.blackboard.verification_required = True
             if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
                 self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
-        return self.latest_tool_batch
+        return _join_tool_call_blocks(self.latest_tool_call_blocks)
 
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."

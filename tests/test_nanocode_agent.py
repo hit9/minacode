@@ -20,6 +20,10 @@ def _seed_plan(agent):
     agent.blackboard.plan = [nanocode.PlanItem(text="test plan")]
 
 
+def _blocks_text(blocks):
+    return "\n".join(blocks)
+
+
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -213,11 +217,13 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
 
-    assert "four.txt" in agent.latest_tool_batch
-    assert "four.txt" not in agent.recent_tool_calls
-    assert "one.txt" not in agent.recent_tool_calls
-    assert "two.txt" in agent.recent_tool_calls
-    assert "three.txt" in agent.recent_tool_calls
+    latest = _blocks_text(agent.latest_tool_call_blocks)
+    recent = _blocks_text(agent.recent_tool_call_blocks)
+    assert "four.txt" in latest
+    assert "four.txt" not in recent
+    assert "one.txt" not in recent
+    assert "two.txt" in recent
+    assert "three.txt" in recent
     assert len(agent.recent_tool_call_blocks) == 2
     context = agent._format_recent_tool_call_context()
     assert "one.txt" not in context
@@ -232,8 +238,9 @@ def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     agent._append_recent_tool_call_blocks(["old call " + "x" * 40])
     agent._append_recent_tool_call_blocks(["new call " + "y" * 40])
 
-    assert "old call" not in agent.recent_tool_calls
-    assert "new call" in agent.recent_tool_calls
+    recent = _blocks_text(agent.recent_tool_call_blocks)
+    assert "old call" not in recent
+    assert "new call" in recent
     assert len(agent.recent_tool_call_blocks) == 1
 
 
@@ -1469,8 +1476,8 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
-    assert 'Read("sample.txt", "0", "1")' in agent.latest_tool_batch
-    assert agent.recent_tool_calls == ""
+    assert 'Read("sample.txt", "0", "1")' in _blocks_text(agent.latest_tool_call_blocks)
+    assert agent.recent_tool_call_blocks == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
     assert agent.blackboard.goal == "read sample"
@@ -1563,7 +1570,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert session.tool_result_store == {}
-    assert agent.recent_tool_calls == ""
+    assert agent.recent_tool_call_blocks == []
     assert '[explore] [success] Read("sample.txt", "0", "1")' in messages
     assert messages[-1] == "done"
 
@@ -1679,8 +1686,8 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert 'Read("sample.txt", "0", "1")' in agent.latest_tool_batch
-    assert agent.recent_tool_calls == ""
+    assert 'Read("sample.txt", "0", "1")' in _blocks_text(agent.latest_tool_call_blocks)
+    assert agent.recent_tool_call_blocks == []
 
 
 def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
@@ -1707,7 +1714,6 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
-    agent.latest_tool_batch = "old tool call"
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -2300,7 +2306,7 @@ def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path)
     assert verifier_calls[0][0] == "run unit tests"
     assert "kind: test" in verifier_calls[0][1]
     assert bash_confirmed == []
-    assert agent.latest_tool_batch == ""
+    assert agent.latest_tool_call_blocks == []
 
 
 def test_agent_run_retries_pending_verify_without_kind_or_criteria(tmp_path):
@@ -2548,7 +2554,6 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
     agent.blackboard.verification.status = VerificationStatus.REQUIRED
-    agent.latest_tool_batch = "old tool call"
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -2560,8 +2565,8 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
         raise AssertionError("expected KeyboardInterrupt")
 
     assert agent.agent_feedback_errors
-    assert agent.latest_tool_batch == "old tool call"
-    assert agent.recent_tool_calls == ""
+    assert agent.latest_tool_call_blocks == ["old tool call"]
+    assert agent.recent_tool_call_blocks == []
     assert agent.blackboard.goal == "answer"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
