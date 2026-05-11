@@ -28,6 +28,7 @@ import urllib.error
 import urllib.request
 from abc import abstractmethod
 from dataclasses import dataclass, field
+
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Generic, Iterator, Protocol, Self, Type, TypeAlias, TypeVar, final
@@ -7240,14 +7241,15 @@ class AgentLoop:
 
     def _preview_segments(self, preview: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = [("ansibrightblack", "  Preview\n")]
+        content_indent = "  "
         diff_start = self._unified_diff_start(preview)
         if diff_start >= 0:
             prefix = "\n".join(preview.splitlines()[:diff_start])
             diff = "\n".join(preview.splitlines()[diff_start:])
             if prefix:
-                segments += self._indented_text_segments(prefix, indent="    ", style="ansiyellow")
-            return segments + self._indent_segments(self._diff_segments(diff), "    ")
-        return segments + self._indented_text_segments(preview, indent="    ", style="ansicyan")
+                segments += self._indented_text_segments(prefix, indent=content_indent, style="ansiyellow")
+            return segments + self._indent_segments(self._diff_segments(diff), content_indent)
+        return segments + self._indented_text_segments(preview, indent=content_indent, style="ansicyan")
 
     def _unified_diff_start(self, text: str) -> int:
         lines = text.splitlines()
@@ -7260,20 +7262,55 @@ class AgentLoop:
     def _diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         lines = text.splitlines()
+        old_line: int | None = None
+        new_line: int | None = None
+
+        def parse_hunk_start(part: str, prefix: str) -> int | None:
+            if not part.startswith(prefix):
+                return None
+            value = part[1:].split(",", 1)[0]
+            try:
+                return int(value)
+            except ValueError:
+                return None
+
+        def add_line_number(old_number: int | None, new_number: int | None) -> None:
+            old_text = "" if old_number is None else str(old_number)
+            new_text = "" if new_number is None else str(new_number)
+            segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} │ "))
+
         for index, line in enumerate(lines):
+            suffix = "\n" if index < len(lines) - 1 else ""
             if line.startswith("@@"):
-                style = "ansicyan"
+                parts = line.split()
+                if len(parts) >= 3:
+                    old_line = parse_hunk_start(parts[1], "-")
+                    new_line = parse_hunk_start(parts[2], "+")
+                add_line_number(None, None)
+                segments.append(("ansicyan", line + suffix))
             elif line.startswith(("---", "+++")):
-                style = "ansibrightblack"
+                add_line_number(None, None)
+                segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
-                style = "ansigreen"
+                add_line_number(None, new_line)
+                segments.append(("ansigreen", line + suffix))
+                if new_line is not None:
+                    new_line += 1
             elif line.startswith("-"):
-                style = "ansired"
+                add_line_number(old_line, None)
+                segments.append(("ansired", line + suffix))
+                if old_line is not None:
+                    old_line += 1
+            elif line.startswith(" "):
+                add_line_number(old_line, new_line)
+                segments.append(("ansiwhite", line + suffix))
+                if old_line is not None:
+                    old_line += 1
+                if new_line is not None:
+                    new_line += 1
             else:
-                style = "ansiwhite"
-            if index < len(lines) - 1:
-                line += "\n"
-            segments.append((style, line))
+                add_line_number(None, None)
+                segments.append(("ansiwhite", line + suffix))
         return segments
 
     def _indented_text_segments(self, text: str, *, indent: str, style: str) -> list[tuple[str, str]]:
