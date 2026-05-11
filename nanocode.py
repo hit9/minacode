@@ -2953,6 +2953,7 @@ Explore kinds: symbol, file, range, changed, reference, other.
 Verify kinds: syntax_check, lint, test, build, change_review, change_check, other.
 
 Tools:
+- When using tools, batch independent related tool calls in the same response.
 { __tools__ }
 
 Actions:
@@ -3085,6 +3086,7 @@ Kinds:
 
 Tools:
 - Max 10 tool actions per turn.
+- Prefer batched Search/Read calls over one-tool turns.
 - Use Search for code locations and symbols.
 - Use Git for status, diff, history, and changed files.
 - Use ListDir ONLY when directory structure is unknown.
@@ -3235,6 +3237,7 @@ For change_review:
 
 Tools:
 - Max 10 tool actions per turn.
+- Batch independent evidence checks when they share the same verification goal.
 - Use Git for status, diff, history, and changed files.
 - Use Read/Recall for NARROW evidence checks.
 - Use Bash ONLY for EXPLICIT verification commands.
