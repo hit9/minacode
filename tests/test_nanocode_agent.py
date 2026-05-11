@@ -1473,6 +1473,41 @@ def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
     assert delivered.value.status == "failed"
 
 
+def test_verify_agent_final_turn_removes_bash_tool(tmp_path):
+    parent_session = Session(cwd=str(tmp_path), explore_agent_max_turns=9, verify_agent_max_turns=2)
+    parent_agent = MainAgent(parent_session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.system_prompts = []
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["true"]}]},
+                {"actions": [{"type": "deliver", "status": "passed", "method": "Bash true", "summary": "check passed"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    verifier = nanocode.VerifyAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="verify command",
+        scope=["kind: test", "target: true", "expect: exit code 0"],
+    )
+    verifier.model_client = FakeModelClient()
+
+    report = verifier.run(confirm=lambda call, tool: True)
+
+    assert verifier.max_steps == 2
+    assert report.status == "passed"
+    assert "Bash(command)" in verifier.model_client.system_prompts[0]
+    assert "Bash(command)" not in verifier.model_client.system_prompts[-1]
+    assert "FINAL TURN" in verifier.model_client.user_prompts[-1]
+
+
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
@@ -1538,6 +1573,106 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     assert explorer.session is parent_session
     assert parent_session.tool_result_store == {}
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
+    assert len(explorer.model_client.user_prompts) == 2
+
+
+def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"]}]},
+                {
+                    "actions": [
+                        {
+                            "type": "deliver",
+                            "targets": [
+                                {
+                                    "path": "sample.txt",
+                                    "area": "line 1",
+                                    "line_range": "0,1",
+                                    "context": "alpha",
+                                    "reason": "already read",
+                                }
+                            ],
+                            "known": ["sample.txt contains alpha."],
+                        }
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    explorer = nanocode.ExploreAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="find sample",
+        scope=["sample.txt"],
+    )
+    explorer.model_client = FakeModelClient()
+
+    report = explorer.run()
+
+    assert report.targets[0]["path"] == "sample.txt"
+    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
+    assert any("repeated explore tool call" in error for error in explorer.agent_feedback_errors)
+
+
+def test_explore_agent_injects_final_deliver_only_turn(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path), explore_agent_max_turns=2)
+    parent_agent = MainAgent(parent_session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.system_prompts = []
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {
+                    "actions": [
+                        {
+                            "type": "deliver",
+                            "targets": [
+                                {
+                                    "path": "sample.txt",
+                                    "area": "line 1",
+                                    "line_range": "0,1",
+                                    "context": "alpha",
+                                    "reason": "found before step limit",
+                                }
+                            ],
+                            "known": ["sample.txt contains alpha."],
+                        }
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            self.system_prompts.append(system_prompt)
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    explorer = nanocode.ExploreAgent(
+        parent_session=parent_session,
+        parent_blackboard=parent_agent.blackboard,
+        goal="find sample",
+        scope=["sample.txt"],
+    )
+    explorer.model_client = FakeModelClient()
+
+    report = explorer.run()
+
+    assert report.targets[0]["path"] == "sample.txt"
+    assert report.known == ["sample.txt contains alpha."]
+    assert "FINAL TURN" in explorer.model_client.user_prompts[-1]
+    assert "Read(filepath" in explorer.model_client.system_prompts[0]
+    assert "Read(filepath" not in explorer.model_client.system_prompts[-1]
     assert len(explorer.model_client.user_prompts) == 2
 
 

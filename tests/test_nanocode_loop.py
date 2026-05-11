@@ -48,6 +48,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["main_model"]["timeout"] == 90
     assert config["main_model"]["first_token_timeout"] == 60
     assert config["explore_agent"]["max_turns"] == 12
+    assert config["verify_agent"]["max_turns"] == 12
     assert config["runtime"]["compact_at"] == 50
 
 

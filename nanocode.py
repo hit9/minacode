@@ -475,6 +475,10 @@ first_token_timeout = 60
 # ExploreAgent removes uncertainty about unknown file/code targets before editing.
 max_turns = 12
 
+[verify_agent]
+# VerifyAgent checks concrete expected conditions and reports pass/fail/blocked.
+max_turns = 12
+
 [paths]
 # Relative paths are resolved from the current project directory.
 nanocode_dir = ".nanocode"
@@ -904,6 +908,7 @@ class Session:
     max_agent_steps: int = 50
     worker_model_config: ModelConfig = field(default_factory=ModelConfig)
     explore_agent_max_turns: int = 12
+    verify_agent_max_turns: int = 12
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -945,10 +950,12 @@ class Session:
         main_model = ConfigFile.model_config(ConfigFile.table(config, "main_model"), DEFAULT_MODEL_CONFIG)
         worker_model = ConfigFile.model_config(ConfigFile.table(config, "worker_model"), ModelConfig())
         explore_agent = ConfigFile.table(config, "explore_agent")
+        verify_agent = ConfigFile.table(config, "verify_agent")
         shell_timeout = ConfigFile.int(runtime, "shell_timeout", 60)
         compact_at = ConfigFile.int(runtime, "compact_at", 50)
         max_agent_steps = ConfigFile.int(runtime, "max_agent_steps", 50)
         explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 12)
+        verify_agent_max_turns = ConfigFile.int(verify_agent, "max_turns", 12)
         session = cls(
             api_url=ConfigFile.str(api, "url"),
             api_key=ConfigFile.str(api, "key"),
@@ -965,6 +972,7 @@ class Session:
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
             worker_model_config=worker_model,
             explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 12),
+            verify_agent_max_turns=max(1, verify_agent_max_turns if verify_agent_max_turns is not None else 12),
             yolo=yolo,
             debug=debug,
         )
@@ -3278,7 +3286,7 @@ Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
 
-If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
+If Recent Tool Calls already contains the exact tool name and args you want to run, deliver using existing results instead.
 
 Sidecar field on tool or deliver:
 - "known": ["non-empty self-contained fact"]
@@ -3421,6 +3429,8 @@ Output format (Strict)
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
+
+If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
 Sidecar field on tool or deliver:
 - "known": ["non-empty self-contained fact"]
@@ -4337,7 +4347,7 @@ class ToolCallRunner:
         os.makedirs(directory, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         pid = os.getpid()
-        for attempt in range(100):
+        for attempt in range(3):
             suffix = "" if attempt == 0 else f"-{attempt}"
             filepath = os.path.join(directory, f"{timestamp}-{pid}-{key}{suffix}.log")
             try:
@@ -4898,11 +4908,14 @@ class BaseAgent:
         on_message: MessageCallback | None = None,
         on_step: Callable[[Json], AgentRunResult],
         on_step_limit: Callable[[], JsonValue],
+        on_before_step: Callable[[int, int], None] | None = None,
         on_format_error_limit: Callable[[Json, str], JsonValue] | None = None,
     ) -> JsonValue:
         consecutive_format_errors = 0
         try:
-            for _ in range(max_steps):
+            for index in range(max_steps):
+                if on_before_step is not None:
+                    on_before_step(index, max_steps)
                 response = self.step(on_message=on_message)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
@@ -5160,7 +5173,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         self.parent_session = parent_session
         self.parent_blackboard = parent_blackboard
         self.parent_known = list(self.parent_blackboard.known)
-        self.max_steps = parent_session.explore_agent_max_turns
+        self.max_steps = self._max_steps(parent_session)
         # Each worker handoff gets isolated blackboard/runtime/tool history; only its report is copied back.
         blackboard = Blackboard(user_input=goal, goal=goal)
         runtime = AgentRuntime()
@@ -5186,6 +5199,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
             allowed_tools=self.allowed_tools,
             activity=self.activity_name,
         )
+        self.seen_tool_call_keys: set[tuple[str, tuple[str, ...]]] = set()
+        self.final_deliver_only = False
 
     def run(
         self,
@@ -5210,7 +5225,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
                 on_live_done=on_live_done,
                 on_message=on_message,
             ),
-            on_step_limit=lambda: self._blocked_report(self.step_limit_reason),
+            on_step_limit=lambda: self._step_limit_report(on_message=on_message),
+            on_before_step=self._prepare_step,
             on_format_error_limit=lambda _response, _format_error: self._blocked_report("model returned invalid output repeatedly"),
         )
 
@@ -5249,6 +5265,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
                 latest_report = self.tool_runner.format_latest_compact_report(include_excerpt=False)
                 if latest_report:
                     on_message(latest_report)
+            self._remember_tool_call_keys()
             return AgentRunResult()
         self._remember_agent_error(self.feedback_message)
         self._report_gate(
@@ -5261,11 +5278,30 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         return None
 
+    def _max_steps(self, session: Session) -> int:
+        return session.explore_agent_max_turns
+
+    def _prepare_step(self, index: int, max_steps: int) -> None:
+        pass
+
+    def _remember_tool_call_keys(self) -> None:
+        for execution in self.tool_runner.latest_executions:
+            self.seen_tool_call_keys.add((execution.call.name, tuple(execution.call.args)))
+
+    def _parsed_tool_call(self, item: JsonValue) -> ParsedToolCall | None:
+        try:
+            return self.tool_runner.parse_tool_call(item)
+        except ToolCallArgError:
+            return None
+
     def _deliver_from_actions(self, actions: list[Json]) -> ReportT | None:
         raise NotImplementedError
 
     def _blocked_report(self, reason: str) -> ReportT:
         raise NotImplementedError
+
+    def _step_limit_report(self, *, on_message: MessageCallback | None) -> ReportT:
+        return self._blocked_report(self.step_limit_reason)
 
     def _string_items(self, value: JsonValue) -> list[str]:
         return [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(value)) if item]
@@ -5281,6 +5317,45 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
     retry_message: ClassVar[str] = "Retrying: explore returned only state actions; return tool or deliver."
     feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every ExploreAgent response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "explore step limit reached"
+
+    def _prepare_step(self, index: int, max_steps: int) -> None:
+        if index != max_steps - 1:
+            return
+        self.final_deliver_only = True
+        self.prompt_builder.allowed_tools = set()
+        self._remember_agent_error("FINAL TURN: deliver current findings/issues now. Do NOT call tools.")
+
+    def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
+        if self.final_deliver_only and tool_calls:
+            self._remember_agent_error("Error: final explore turn cannot call tools. Rule: deliver current findings/issues now.")
+            self._report_gate(
+                on_message,
+                "Stopped: explore final turn tried to call tools.",
+                "Explore_Gate: final turn tried to call tools.",
+            )
+            return AgentRunResult()
+        repeated = self._repeated_tool_call(tool_calls)
+        if repeated is None:
+            return None
+        self._remember_agent_error("Error: repeated explore tool call. Rule: use existing results and deliver targets/issues instead of repeating the same tool.")
+        self._report_gate(
+            on_message,
+            "Retrying: use existing explore results and deliver.",
+            "Explore_Gate: repeated tool call: " + ToolCallDisplayFormatter._format_call(repeated) + ".",
+        )
+        return AgentRunResult()
+
+    def _repeated_tool_call(self, tool_calls: list[JsonValue]) -> ParsedToolCall | None:
+        seen = set(self.seen_tool_call_keys)
+        for item in tool_calls:
+            call = self._parsed_tool_call(item)
+            if call is None:
+                continue
+            key = (call.name, tuple(call.args))
+            if key in seen:
+                return call
+            seen.add(key)
+        return None
 
     def _deliver_from_actions(self, actions: list[Json]) -> ExploreReport | None:
         for action in reversed(actions):
@@ -5341,7 +5416,25 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every VerifyAgent response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "verify step limit reached"
 
+    def _max_steps(self, session: Session) -> int:
+        return session.verify_agent_max_turns
+
+    def _prepare_step(self, index: int, max_steps: int) -> None:
+        if index != max_steps - 1:
+            return
+        self.final_deliver_only = True
+        self.prompt_builder.allowed_tools = set(self.allowed_tools) - {BashTool.name()}
+        self._remember_agent_error("FINAL TURN: deliver pass/fail/blocked from current evidence. Do NOT call Bash.")
+
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
+        if self.final_deliver_only and self._has_bash_tool_call(tool_calls):
+            self._remember_agent_error("Error: final verify turn cannot call Bash. Rule: deliver pass/fail/blocked from current evidence.")
+            self._report_gate(
+                on_message,
+                "Stopped: verify final turn tried to call Bash.",
+                "Verify_Gate: final turn tried to call Bash.",
+            )
+            return AgentRunResult()
         repeated = self._repeated_failed_process_call(tool_calls)
         if repeated is None:
             return None
@@ -5352,6 +5445,13 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
             "Verify_Gate: repeated failed verification command: " + ToolCallDisplayFormatter._format_call(repeated) + ".",
         )
         return AgentRunResult()
+
+    def _has_bash_tool_call(self, tool_calls: list[JsonValue]) -> bool:
+        for item in tool_calls:
+            call = self._parsed_tool_call(item)
+            if call is not None and call.name == BashTool.name():
+                return True
+        return False
 
     def _repeated_failed_process_call(self, tool_calls: list[JsonValue]) -> ParsedToolCall | None:
         failed = self._latest_failed_process_call()
@@ -6184,6 +6284,7 @@ CONFIG_SET_KEYS: tuple[str, ...] = (
     "worker.timeout",
     "worker.first_token_timeout",
     "explore.max_turns",
+    "verify.max_turns",
     "runtime.compact_at",
     "runtime.shell_timeout",
     "runtime.max_agent_steps",
@@ -6333,6 +6434,7 @@ class CommandDispatcher:
                 "main: " + self._format_model_status(session.model_config_for("main")),
                 "worker: " + self._format_model_status(session.model_config_for("worker")),
                 "explore: turns=" + str(session.explore_agent_max_turns),
+                "verify: turns=" + str(session.verify_agent_max_turns),
                 "runtime: yolo=" + self._format_bool(session.yolo) + " compact_at=" + str(session.compact_at),
                 "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
                 "tool_calls: turn=" + str(session.turn_tool_calls) + " session=" + str(session.session_tool_calls),
@@ -6391,6 +6493,7 @@ class CommandDispatcher:
                 "worker.timeout: " + self._format_optional(worker.timeout),
                 "worker.first_token_timeout: " + self._format_optional(worker.first_token_timeout),
                 "explore.max_turns: " + str(session.explore_agent_max_turns),
+                "verify.max_turns: " + str(session.verify_agent_max_turns),
                 "runtime.compact_at: " + str(session.compact_at),
                 "runtime.shell_timeout: " + str(session.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.max_agent_steps),
@@ -6459,6 +6562,8 @@ class CommandDispatcher:
             return self._format_optional(session.worker_model_config.first_token_timeout)
         if key == "explore.max_turns":
             return str(session.explore_agent_max_turns)
+        if key == "verify.max_turns":
+            return str(session.verify_agent_max_turns)
         if key == "runtime.compact_at":
             return str(session.compact_at)
         if key == "runtime.shell_timeout":
@@ -6493,6 +6598,7 @@ class CommandDispatcher:
             or key
             in {
                 "explore.max_turns",
+                "verify.max_turns",
                 "runtime.compact_at",
                 "runtime.shell_timeout",
                 "runtime.max_agent_steps",
@@ -6549,6 +6655,8 @@ class CommandDispatcher:
             self.agent.session.worker_model_config.first_token_timeout = value
         elif key == "explore.max_turns":
             self.agent.session.explore_agent_max_turns = value
+        elif key == "verify.max_turns":
+            self.agent.session.verify_agent_max_turns = value
         elif key == "runtime.compact_at":
             self.agent.session.compact_at = value
         elif key == "runtime.shell_timeout":
