@@ -635,6 +635,24 @@ class AgentRunResult:
     value: JsonValue = None
 
 
+@dataclass(frozen=True)
+class MainResponseContext:
+    response: Json
+    actions: list[Json]
+    goal_was_empty: bool
+    plan_was_empty: bool
+    chat_message: str | None
+    tool_calls: list[JsonValue]
+    explore_actions: list[Json]
+    pending_verify_requested: bool
+    progress_messages: list[str]
+    completion_message: str
+    has_goal_action: bool
+    has_plan_action: bool
+    has_learn_action: bool
+    state_or_work_requested: bool
+
+
 def _format_report_items(items: list[str]) -> list[str]:
     if not items:
         return ["    (empty)"]
@@ -5515,6 +5533,268 @@ class MainAgent(BaseAgent):
                 return "missing criteria"
         return ""
 
+    def _build_response_context(self, response: Json) -> MainResponseContext:
+        actions = self._response_actions(response)
+        tool_calls = self._tool_calls_from_actions(actions)
+        explore_actions = self._explore_actions_from_actions(actions)
+        pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
+        progress_messages = self._progress_messages_from_actions(actions)
+        has_goal_action = self._has_goal_action(actions)
+        has_plan_action = self._has_plan_action(actions)
+        return MainResponseContext(
+            response=response,
+            actions=actions,
+            goal_was_empty=not self.blackboard.goal,
+            plan_was_empty=not self.blackboard.plan,
+            chat_message=self._chat_message_from_actions(actions),
+            tool_calls=tool_calls,
+            explore_actions=explore_actions,
+            pending_verify_requested=pending_verify_requested,
+            progress_messages=progress_messages,
+            completion_message=self._completion_message_from_actions(actions),
+            has_goal_action=has_goal_action,
+            has_plan_action=has_plan_action,
+            has_learn_action=self._has_learn_action(actions),
+            state_or_work_requested=bool(tool_calls or explore_actions or pending_verify_requested or progress_messages or has_plan_action),
+        )
+
+    def _handle_chat_response(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+        if ctx.chat_message is None:
+            return None
+        self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
+        if on_message is not None:
+            on_message(ctx.chat_message)
+        return AgentRunResult(done=True, value=ctx.response)
+
+    def _gate_before_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> bool:
+        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
+            self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
+            self._report_gate(
+                on_message,
+                "Retrying: set goal and plan before tools/workers.",
+                "Goal_Gate: Goal is empty before task state/work.",
+            )
+            return True
+        if ctx.pending_verify_requested and self.blackboard.verification.status == VerificationStatus.DONE and not self.blackboard.verification_required:
+            self._remember_agent_error(self._format_agent_feedback_repeated_verification_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification already passed; update plan or complete.",
+                "Verification_Gate: verification already passed; do not repeat pending verify.",
+            )
+            return True
+        return False
+
+    def _emit_debug_frame_errors(self, response: Json, on_message: MessageCallback | None) -> None:
+        if not self.session.debug or on_message is None:
+            return
+        frame_error_report = self._format_frame_error_report(response)
+        if frame_error_report:
+            on_message(frame_error_report)
+
+    def _emit_state_and_progress(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> None:
+        if on_message is not None and self.state_updater.latest_report:
+            on_message(self.state_updater.latest_report)
+        if on_message is not None:
+            for message in ctx.progress_messages:
+                on_message(message)
+
+    def _gate_after_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None, *, stop_after_learn: bool) -> AgentRunResult | None:
+        explore_error = self._explore_actions_error(ctx.actions)
+        if explore_error:
+            self._remember_agent_error(self._format_agent_feedback_explore_error(explore_error))
+            self._report_gate(
+                on_message,
+                "Retrying: explore handoff needs kind and constraints.",
+                "Explore_Gate: explore handoff is invalid: " + explore_error + ".",
+            )
+            return AgentRunResult()
+
+        pending_verification_error = self._pending_verification_error(ctx.actions)
+        if pending_verification_error:
+            self.blackboard.verification.reset()
+            self._remember_agent_error(self._format_agent_feedback_pending_verification_error(pending_verification_error))
+            self._report_gate(
+                on_message,
+                "Retrying: pending verification needs kind and criteria.",
+                "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
+            )
+            return AgentRunResult()
+
+        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.tool_calls or ctx.explore_actions or ctx.pending_verify_requested):
+            self._remember_agent_error(self._format_agent_feedback_missing_plan_error())
+            self._report_gate(
+                on_message,
+                "Retrying: create a short plan before tools/workers.",
+                "Plan_Gate: Plan is empty before tool/explore/verify.",
+            )
+            return AgentRunResult()
+
+        if stop_after_learn and ctx.has_learn_action and not ctx.tool_calls and not ctx.explore_actions:
+            self.session.append_conversation(AssistantMessage(content="Project knowledge updated."))
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=ctx.response)
+
+        if (
+            not ctx.tool_calls
+            and not ctx.explore_actions
+            and not self.blackboard.goal_reached
+            and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        ):
+            self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification is done but goal is not complete.",
+                "Completion_Gate: verification is done but goal.complete is not true.",
+            )
+            return AgentRunResult()
+        return None
+
+    def _run_required_verification(
+        self,
+        ctx: MainResponseContext,
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> bool:
+        if self.blackboard.verification.status != VerificationStatus.REQUIRED:
+            return False
+        report = self.execute_verify(
+            completion_message=ctx.completion_message,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        )
+        if not self._apply_verify_report(report):
+            self.blackboard.goal_reached = False
+        return True
+
+    def _run_explore_actions(
+        self,
+        ctx: MainResponseContext,
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> bool:
+        if not ctx.explore_actions:
+            return False
+        self.execute_explore_actions(
+            ctx.explore_actions,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        )
+        self.maybe_auto_compact()
+        return True
+
+    def _run_tool_actions(
+        self,
+        ctx: MainResponseContext,
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> bool:
+        if not ctx.tool_calls:
+            return False
+        self.execute_tool_calls(
+            ctx.tool_calls,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+        )
+        if on_message is not None:
+            report = self.tool_runner.format_latest_report()
+            if report:
+                on_message(report)
+        self.maybe_auto_compact()
+        return True
+
+    def _run_completion_verification(
+        self,
+        ctx: MainResponseContext,
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> AgentRunResult | None:
+        if not (
+            self.blackboard.goal_reached
+            and self.blackboard.verification_required
+            and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        ):
+            return None
+        report = self.execute_verify(
+            completion_message=ctx.completion_message,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        )
+        if not self._apply_verify_report(report):
+            self.blackboard.goal_reached = False
+            return AgentRunResult()
+        return None
+
+    def _finish_or_continue(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
+        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_verification_error())
+            self._report_gate(
+                on_message,
+                "Retrying: verification is required before completion.",
+                "Verification_Gate: retrying until verification is passed or blocked.",
+            )
+            return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
+            self.blackboard.goal_reached = False
+            self._report_gate(
+                on_message,
+                "Retrying: verification failed; fix the reported issue first.",
+                "Verification_Gate: verification failed; fix before completion.",
+            )
+            return AgentRunResult()
+        if self.blackboard.goal_reached and not ctx.completion_message:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+            self._report_gate(
+                on_message,
+                "Retrying: goal is complete but message_for_complete is missing.",
+                "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
+            )
+            return AgentRunResult()
+        if self.blackboard.goal_reached:
+            self.session.append_conversation(AssistantMessage(content=ctx.completion_message))
+            if on_message is not None:
+                on_message(ctx.completion_message)
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=ctx.response)
+        self.blackboard.goal_reached = False
+        if not ctx.actions:
+            self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
+            self._report_gate(
+                on_message,
+                "Continuing: assistant must set current task's goal.",
+                "Continuation_Gate: goal not reached; retrying next useful action.",
+            )
+        return AgentRunResult()
+
     def run(
         self,
         user_input: str,
@@ -5567,187 +5847,66 @@ class MainAgent(BaseAgent):
         on_message: MessageCallback | None = None,
         stop_after_learn: bool = False,
     ) -> AgentRunResult:
-        actions = self._response_actions(response)
-        goal_was_empty = not self.blackboard.goal
-        plan_was_empty = not self.blackboard.plan
+        ctx = self._build_response_context(response)
         self.state_updater.apply_response_language(response)
-        chat_message = self._chat_message_from_actions(actions)
-        if chat_message is not None:
-            self.session.append_conversation(AssistantMessage(content=chat_message))
-            if on_message is not None:
-                on_message(chat_message)
-            return AgentRunResult(done=True, value=response)
-        tool_calls = self._tool_calls_from_actions(actions)
-        explore_actions = self._explore_actions_from_actions(actions)
-        pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
-        progress_messages = self._progress_messages_from_actions(actions)
-        completion_message = self._completion_message_from_actions(actions)
-        state_or_work_requested = bool(tool_calls or explore_actions or pending_verify_requested or progress_messages or self._has_plan_action(actions))
-        if goal_was_empty and not self._has_goal_action(actions) and state_or_work_requested:
-            self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
-            self._report_gate(
-                on_message,
-                "Retrying: set goal and plan before tools/workers.",
-                "Goal_Gate: Goal is empty before task state/work.",
-            )
+
+        chat_result = self._handle_chat_response(ctx, on_message)
+        if chat_result is not None:
+            return chat_result
+
+        if self._gate_before_apply(ctx, on_message):
             return AgentRunResult()
-        if pending_verify_requested and self.blackboard.verification.status == VerificationStatus.DONE and not self.blackboard.verification_required:
-            self._remember_agent_error(self._format_agent_feedback_repeated_verification_error())
-            self._report_gate(
-                on_message,
-                "Retrying: verification already passed; update plan or complete.",
-                "Verification_Gate: verification already passed; do not repeat pending verify.",
-            )
-            return AgentRunResult()
-        if self.session.debug and on_message is not None:
-            frame_error_report = self._format_frame_error_report(response)
-            if frame_error_report:
-                on_message(frame_error_report)
+
+        self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response)
-        if on_message is not None and self.state_updater.latest_report:
-            on_message(self.state_updater.latest_report)
-        if on_message is not None:
-            for message in progress_messages:
-                on_message(message)
-        explore_error = self._explore_actions_error(actions)
-        if explore_error:
-            self._remember_agent_error(self._format_agent_feedback_explore_error(explore_error))
-            self._report_gate(
-                on_message,
-                "Retrying: explore handoff needs kind and constraints.",
-                "Explore_Gate: explore handoff is invalid: " + explore_error + ".",
-            )
-            return AgentRunResult()
-        pending_verification_error = self._pending_verification_error(actions)
-        if pending_verification_error:
-            self.blackboard.verification.reset()
-            self._remember_agent_error(self._format_agent_feedback_pending_verification_error(pending_verification_error))
-            self._report_gate(
-                on_message,
-                "Retrying: pending verification needs kind and criteria.",
-                "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
-            )
-            return AgentRunResult()
-        if plan_was_empty and not self.blackboard.plan and (tool_calls or explore_actions or pending_verify_requested):
-            self._remember_agent_error(self._format_agent_feedback_missing_plan_error())
-            self._report_gate(
-                on_message,
-                "Retrying: create a short plan before tools/workers.",
-                "Plan_Gate: Plan is empty before tool/explore/verify.",
-            )
-            return AgentRunResult()
-        if stop_after_learn and self._has_learn_action(actions) and not tool_calls and not explore_actions:
-            self.session.append_conversation(AssistantMessage(content="Project knowledge updated."))
-            self._finish_current_goal()
-            return AgentRunResult(done=True, value=response)
-        if (
-            not tool_calls
-            and not explore_actions
-            and not self.blackboard.goal_reached
-            and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        self._emit_state_and_progress(ctx, on_message)
+
+        gate_result = self._gate_after_apply(ctx, on_message, stop_after_learn=stop_after_learn)
+        if gate_result is not None:
+            return gate_result
+
+        if self._run_required_verification(
+            ctx,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
         ):
-            self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
-            self._report_gate(
-                on_message,
-                "Retrying: verification is done but goal is not complete.",
-                "Completion_Gate: verification is done but goal.complete is not true.",
-            )
             return AgentRunResult()
-        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            report = self.execute_verify(
-                completion_message=completion_message,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            )
-            if not self._apply_verify_report(report):
-                self.blackboard.goal_reached = False
-                return AgentRunResult()
-            return AgentRunResult()
-        if explore_actions:
-            self.execute_explore_actions(
-                explore_actions,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            )
-            self.maybe_auto_compact()
-            return AgentRunResult()
-        if tool_calls:
-            self.execute_tool_calls(
-                tool_calls,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-            )
-            if on_message is not None:
-                report = self.tool_runner.format_latest_report()
-                if report:
-                    on_message(report)
-            self.maybe_auto_compact()
-            return AgentRunResult()
-        if (
-            self.blackboard.goal_reached
-            and self.blackboard.verification_required
-            and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+
+        if self._run_explore_actions(
+            ctx,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
         ):
-            report = self.execute_verify(
-                completion_message=completion_message,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            )
-            if not self._apply_verify_report(report):
-                self.blackboard.goal_reached = False
-                return AgentRunResult()
-        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(self._format_agent_feedback_verification_error())
-            self._report_gate(
-                on_message,
-                "Retrying: verification is required before completion.",
-                "Verification_Gate: retrying until verification is passed or blocked.",
-            )
             return AgentRunResult()
-        if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
-            self.blackboard.goal_reached = False
-            self._report_gate(
-                on_message,
-                "Retrying: verification failed; fix the reported issue first.",
-                "Verification_Gate: verification failed; fix before completion.",
-            )
+
+        if self._run_tool_actions(
+            ctx,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        ):
             return AgentRunResult()
-        if self.blackboard.goal_reached and not completion_message:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
-            self._report_gate(
-                on_message,
-                "Retrying: goal is complete but message_for_complete is missing.",
-                "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
-            )
-            return AgentRunResult()
-        if self.blackboard.goal_reached:
-            self.session.append_conversation(AssistantMessage(content=completion_message))
-            if on_message is not None:
-                on_message(completion_message)
-            self._finish_current_goal()
-            return AgentRunResult(done=True, value=response)
-        self.blackboard.goal_reached = False
-        if not actions:
-            self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
-            self._report_gate(
-                on_message,
-                "Continuing: assistant must set current task's goal.",
-                "Continuation_Gate: goal not reached; retrying next useful action.",
-            )
-        return AgentRunResult()
+
+        completion_verify_result = self._run_completion_verification(
+            ctx,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        )
+        if completion_verify_result is not None:
+            return completion_verify_result
+
+        return self._finish_or_continue(ctx, on_message)
 
 
 ############################
