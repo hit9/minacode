@@ -1030,7 +1030,7 @@ class Session:
 
     def model_config_for(self, activity: str, override: ModelConfig | None = None) -> ModelConfig:
         config = self.main_model_config
-        if activity in {"worker", "explore", "edit", "verify"}:
+        if activity in {"worker", "explore", "verify"}:
             config = self.worker_model_config.resolved(config)
         if override is not None:
             config = override.resolved(config)
@@ -4219,18 +4219,19 @@ class AgentStateUpdater:
         self.latest_report = ""
 
     def apply(self, response: Json) -> None:
+        actions = self._actions(response)
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
         before_project_knowledge = self.session.project_knowledge.format()
         before_verification = self.blackboard.verification.format()
-        self.apply_response_language(response)
-        goal_changed = self._apply_goal(response)
-        plan_replaced = self._apply_plan(response)
-        self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        self._apply_known(response)
-        self._apply_project_knowledge(response)
-        self._apply_verification(response)
+        self.apply_response_language(actions)
+        goal_changed = self._apply_goal(actions)
+        plan_replaced = self._apply_plan(actions)
+        self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_known(actions)
+        self._apply_project_knowledge(actions)
+        self._apply_verification(actions)
         self._bind_verification_goal()
         self.latest_report = self._format_state_report(
             before_goal,
@@ -4243,8 +4244,8 @@ class AgentStateUpdater:
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
-    def apply_response_language(self, response: Json) -> None:
-        for action in self._actions(response):
+    def apply_response_language(self, actions: list[Json]) -> None:
+        for action in actions:
             action_type = _json_str(action.get("type"))
             if action_type == "response_language":
                 tag = self._normalize_response_language_tag(_json_str(action.get("tag")) or "")
@@ -4361,9 +4362,9 @@ class AgentStateUpdater:
         text = " ".join(text.split())
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    def _apply_goal(self, response: Json) -> bool:
+    def _apply_goal(self, actions: list[Json]) -> bool:
         changed = False
-        for action in self._actions(response):
+        for action in actions:
             action_type = _json_str(action.get("type"))
             if action_type == "start":
                 update = _json_str(action.get("goal"))
@@ -4387,14 +4388,14 @@ class AgentStateUpdater:
                     self.blackboard.goal_reached = complete
         return changed
 
-    def _apply_plan(self, response: Json) -> bool:
+    def _apply_plan(self, actions: list[Json]) -> bool:
         replaced = False
-        for start in [action for action in self._actions(response) if _json_str(action.get("type")) == "start"]:
+        for start in [action for action in actions if _json_str(action.get("type")) == "start"]:
             items = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(start.get("plan"))) if item]
             if items:
                 self.blackboard.plan = items
                 replaced = True
-        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
+        for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
             if update.get("mode") == "replace":
                 if not items:
@@ -4436,18 +4437,18 @@ class AgentStateUpdater:
             context=_json_str(item.get("context")) or "",
         )
 
-    def _apply_known(self, response: Json) -> None:
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "known"]:
+    def _apply_known(self, actions: list[Json]) -> None:
+        for action in [action for action in actions if _json_str(action.get("type")) == "known"]:
             for raw in _json_list(action.get("items")):
                 fact = self._known_fact_from_json(raw)
                 if fact is not None:
                     self._add_known_item(fact)
 
-    def _apply_project_knowledge(self, response: Json) -> None:
+    def _apply_project_knowledge(self, actions: list[Json]) -> None:
         if not self.allow_project_learning:
             return
         changed = False
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "learn"]:
+        for action in [action for action in actions if _json_str(action.get("type")) == "learn"]:
             changed = self.session.project_knowledge.apply(action) or changed
         if changed:
             self.session.save_project_knowledge()
@@ -4466,8 +4467,8 @@ class AgentStateUpdater:
             self.blackboard.known.append(fact)
             del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
 
-    def _apply_verification(self, response: Json) -> None:
-        for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
+    def _apply_verification(self, actions: list[Json]) -> None:
+        for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
             kind = _json_str(data.get("kind"))
             if kind is not None:
                 self.blackboard.verification.kind = kind if kind in {item.value for item in VerificationKind} else ""
@@ -4492,7 +4493,7 @@ class AgentStateUpdater:
             if context is not None:
                 self.blackboard.verification.context = context
 
-    def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
+    def _reset_stale_verification(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
         verification = self.blackboard.verification
         if goal_changed:
             verification.reset()
@@ -4502,7 +4503,7 @@ class AgentStateUpdater:
             return
         if (
             plan_replaced
-            and not any(_json_str(action.get("type")) == "verify" for action in self._actions(response))
+            and not any(_json_str(action.get("type")) == "verify" for action in actions)
             and verification.status
             in {
                 VerificationStatus.REQUIRED,
@@ -5740,7 +5741,7 @@ class MainAgent(BaseAgent):
         stop_after_learn: bool = False,
     ) -> AgentRunResult:
         ctx = self._build_response_context(response)
-        self.state_updater.apply_response_language(response)
+        self.state_updater.apply_response_language(ctx.actions)
 
         chat_result = self._handle_chat_response(ctx, on_message)
         if chat_result is not None:
