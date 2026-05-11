@@ -1277,6 +1277,7 @@ class ReadTool(Tool):
     start: int = 0
     end: int = 0
     ranges: list[tuple[int, int]] = field(default_factory=list)
+    filepaths: list[str] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
@@ -1333,6 +1334,11 @@ class ReadTool(Tool):
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
             ranges = [cls._parse_line_range_token(arg) for arg in args[1:]]
+        elif len(args) == 3 and cls._is_integer_token(args[1]) and cls._is_integer_token(args[2]):
+            ranges = [_parse_line_range(args[1], args[2])]
+        elif cls._all_args_are_existing_files(session, args):
+            filepaths = [session.resolve_path(arg) for arg in args]
+            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
         elif len(args) == 3:
             ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
@@ -1342,16 +1348,39 @@ class ReadTool(Tool):
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
 
+    @staticmethod
+    def _all_args_are_existing_files(session: Session, args: list[str]) -> bool:
+        if len(args) < 2:
+            return False
+        return all(os.path.isfile(session.resolve_path(arg)) for arg in args)
+
+    @staticmethod
+    def _is_integer_token(value: str) -> bool:
+        return re.fullmatch(r"\s*-?\d+\s*", str(value)) is not None
+
     def requires_confirmation(self, session: Session) -> bool:
-        return not session.is_path_in_cwd(self.filepath)
+        return any(not session.is_path_in_cwd(filepath) for filepath in self._target_filepaths())
 
     def preview(self) -> str:
+        if self.filepaths:
+            return "Read(" + ", ".join(self.filepaths) + ")"
         if len(self.ranges) > 1:
             ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
             return f"Read({self.filepath}, {ranges})"
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
+        if self.filepaths:
+            lines = ["<ReadToolResult>", "  <file_count>" + str(len(self.filepaths)) + "</file_count>"]
+            for filepath in self.filepaths:
+                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(0, 0, filepath=filepath)
+                lines.append("  <ReadFile>")
+                lines.append("    <path>" + filepath + "</path>")
+                lines.extend(self._format_range_result(0, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
+                lines.append("  </ReadFile>")
+            lines.append("</ReadToolResult>")
+            return "\n".join(lines)
+
         if len(self.ranges) > 1:
             lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
             for start, end in self.ranges:
@@ -1368,16 +1397,20 @@ class ReadTool(Tool):
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
-    def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
+    def _target_filepaths(self) -> list[str]:
+        return self.filepaths or [self.filepath]
+
+    def _read_range(self, start: int, end: int, *, filepath: str | None = None) -> tuple[str, int, int, str, bool, int]:
+        target_filepath = filepath or self.filepath
         total_lines = 0
         selected_lines = []
         truncated = False
         bounded_read_lines = end - start if end else 0
         if end and bounded_read_lines <= self.MAX_LINES:
-            with open(self.filepath, "r", encoding="utf-8") as f:
+            with open(target_filepath, "r", encoding="utf-8") as f:
                 selected_lines = list(itertools.islice(f, start, end))
         else:
-            with open(self.filepath, "r", encoding="utf-8") as f:
+            with open(target_filepath, "r", encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     total_lines = index + 1
                     if index < start:
@@ -1392,7 +1425,7 @@ class ReadTool(Tool):
         returned_end = start + len(selected_lines)
         fingerprint_end = returned_end if truncated else end
         fingerprint = self.range_fingerprints.remember(
-            filepath=self.filepath,
+            filepath=target_filepath,
             start=start,
             end=fingerprint_end,
             content=content,

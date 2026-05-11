@@ -97,6 +97,43 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     assert "alpha\nbeta\n" in result
 
 
+def test_read_tool_accepts_multiple_existing_file_args_for_compatibility(tmp_path):
+    for name, content in {
+        "one.txt": "one\n",
+        "two.txt": "two\n",
+        "three.txt": "three\n",
+    }.items():
+        (tmp_path / name).write_text(content, encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, ["one.txt", "two.txt", "three.txt"])
+    result = tool.call()
+
+    assert tool.filepaths == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt"), str(tmp_path / "three.txt")]
+    assert "<file_count>3</file_count>" in result
+    assert "<path>" + str(tmp_path / "one.txt") + "</path>" in result
+    assert "<path>" + str(tmp_path / "two.txt") + "</path>" in result
+    assert "<path>" + str(tmp_path / "three.txt") + "</path>" in result
+    assert "one\n" in result
+    assert "two\n" in result
+    assert "three\n" in result
+
+
+def test_read_tool_keeps_start_end_args_preferred_over_existing_numeric_filenames(tmp_path):
+    (tmp_path / "sample.txt").write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
+    (tmp_path / "1").write_text("numeric filename one\n", encoding="utf-8")
+    (tmp_path / "3").write_text("numeric filename three\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, ["sample.txt", "1", "3"])
+    result = tool.call()
+
+    assert tool.filepaths == []
+    assert "<range>1:3</range>" in result
+    assert "one\ntwo\n" in result
+    assert "numeric filename" not in result
+
+
 def test_read_tool_truncates_full_file_reads_after_600_lines(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("".join(f"line-{index:04d}\n" for index in range(605)), encoding="utf-8")
