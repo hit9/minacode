@@ -2980,27 +2980,28 @@ STATE:
 LOOP:
 At each turn, do exactly one phase, then stop.
 
-1. If this is casual chat, output one chat action.
-2. If Goal is missing, output start only.
-3. If Plan is missing, output plan only.
-4. If Latest_Results exist:
-   - save useful durable facts as known
-   - patch plan if needed
-   - do not start unrelated new work in the same turn
-5. If Verification_State is failed, fix the reported issue.
-6. If Verification_State is passed or blocked, patch plan or complete. Do not verify the same thing again.
-7. Otherwise execute the next plan step:
+1. CHAT: if this is casual chat, output one chat action.
+2. ALIGN: compare User Request with Goal. For a new task, output start with a fresh short plan.
+3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
+4. OBSERVE: if Latest_Results exist, save durable facts as known, then update Plan before more work:
+   - mark completed steps done
+   - revise stale steps
+   - add the next needed step
+5. REPAIR: if Verification_State is failed, fix the reported issue.
+6. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
+7. ACT: execute only the next unfinished plan step:
    - unknown target -> explore
    - known target -> smallest useful batch of tool/edit actions
-8. After any edit:
-   - request verify, or inspect one narrow target
-9. Complete only when the goal is done and required verification is passed.
-10. DONE -> if stable reusable facts were discovered, output learn + goal complete=true. Otherwise output goal complete=true.
+8. CHECK: after any edit, request verify or inspect one narrow target.
+9. DONE: complete only when the goal is done and required verification has passed.
+10. LEARN: if stable reusable facts were discovered near completion, output learn + goal complete=true.
 
 PLANNING:
 - Use plan only for real tasks.
 - Keep the plan short.
+- Base every plan update on Goal + Known + Latest_Results.
 - When changing Goal, replace the plan in the same response.
+- Do not repeat done steps; revise or add plan items instead.
 - Each item has: id, text, status, context.
 - Status: todo | doing | done | blocked.
 - At most one item may be doing.
@@ -3162,12 +3163,12 @@ Reject:
 - Do NOT reject merely because the broader task mentions a bug, fix, diagnosis, or verification, as long as the requested Explore_Goal is only to locate concrete targets.
 - If Explore_Scope has NO path, symbol, keyword, changed-file, or search-hint constraint, deliver EMPTY targets with issues. Do NOT call tools.
 
-Workflow:
-1. Check Explore_Goal and Explore_Scope constraints.
-2. If the exact target is already known, Read the smallest useful range.
-3. Otherwise Search for symbols, paths, config names, keywords, or changed files.
-4. Batch small Read ranges around likely matches when line evidence is needed.
-5. Deliver concrete targets, known stable facts, and issues.
+WORKFLOW:
+1. SCOPE: check Explore_Goal and Explore_Scope constraints.
+2. DIRECT: if exact target is known, Read the smallest useful range.
+3. SEARCH: otherwise search symbols, paths, config names, keywords, or changed files.
+4. READ: batch small ranges around likely matches when line evidence is needed.
+5. DELIVER: concrete targets, stable known facts, and issues.
 
 Deliver:
 - targets are file/symbol/range/context/reason items the caller can use next.
@@ -3302,13 +3303,13 @@ Reject:
 - Do NOT reject narrow change_review/change_check requests when they include a concrete target and explicit expected condition.
 - If Verification_Scope lacks a CONCRETE target or EXPLICIT expected condition, deliver BLOCKED with issues. Do NOT call tools.
 
-Workflow:
-1. Check Verify_Goal and Verification_Scope.
-2. Review EXISTING evidence FIRST.
-3. If kind is change_review/change_check or edits are relevant to the expected condition, check Git status/diff.
-4. Read ONLY SMALL critical ranges if needed.
-5. Run the SMALLEST relevant test/lint/build command ONLY when useful.
-6. Deliver VERDICT.
+WORKFLOW:
+1. SCOPE: check Verify_Goal and Verification_Scope.
+2. EVIDENCE: review existing evidence first.
+3. DIFF: for change_review/change_check or relevant edits, check Git status/diff.
+4. READ: read only small critical ranges if needed.
+5. RUN: run the smallest relevant test/lint/build command only when useful.
+6. DELIVER: verdict with evidence.
 
 Verdict:
 - passed = the explicit expected condition is satisfied by concrete evidence, and no relevant check found a contradiction.
