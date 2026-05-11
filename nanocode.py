@@ -639,6 +639,7 @@ class MainResponseContext:
     actions: list[Json]
     goal_was_empty: bool
     plan_was_empty: bool
+    goal_will_change: bool
     chat_message: str | None
     tool_calls: list[JsonValue]
     explore_actions: list[Json]
@@ -647,6 +648,7 @@ class MainResponseContext:
     completion_message: str
     has_goal_action: bool
     has_plan_action: bool
+    has_fresh_plan_action: bool
     has_learn_action: bool
     state_or_work_requested: bool
 
@@ -2998,6 +3000,7 @@ At each turn, do exactly one phase, then stop.
 PLANNING:
 - Use plan only for real tasks.
 - Keep the plan short.
+- When changing Goal, replace the plan in the same response.
 - Each item has: id, text, status, context.
 - Status: todo | doing | done | blocked.
 - At most one item may be doing.
@@ -3053,6 +3056,7 @@ Learn:
 ACTIONS:
 JSON objects separated by __END_ACTION__.
 One JSON object may omit trailing __END_ACTION__.
+Tool actions MUST include name, intention, and args.
 
 {"type":"chat","text":"string"} __END_ACTION__
 
@@ -3287,28 +3291,31 @@ Must:
 Must not:
 - Do NOT edit, patch, fix, install, or start long-running processes.
 - Do NOT continue implementation for the caller.
-- Do NOT review, analyze, diagnose, find issues, judge design, or make architectural assessments.
+- Do NOT perform open-ended review, broad analysis, diagnosis, issue discovery, design judgment, or architectural assessment.
+- For change_review, only check the narrow expected condition and obvious edit mistakes in changed code.
 - Do NOT use Bash for cat, ls, grep, broad search, or file reading.
 - Do NOT output only known/state actions.
 - Do NOT paste long logs.
 
 Reject:
-- If Verify_Goal asks for review, analysis, diagnosis, issue discovery, design judgment, implementation, or open-ended investigation, deliver BLOCKED with issues. Do NOT call tools.
+- Reject only if Verify_Goal asks VerifyAgent itself to perform open-ended review, broad analysis, diagnosis, issue discovery, design judgment, implementation, or investigation.
+- Do NOT reject narrow change_review/change_check requests when they include a concrete target and explicit expected condition.
 - If Verification_Scope lacks a CONCRETE target or EXPLICIT expected condition, deliver BLOCKED with issues. Do NOT call tools.
 
 Workflow:
 1. Check Verify_Goal and Verification_Scope.
 2. Review EXISTING evidence FIRST.
-3. If edits exist, check Git status/diff.
+3. If kind is change_review/change_check or edits are relevant to the expected condition, check Git status/diff.
 4. Read ONLY SMALL critical ranges if needed.
 5. Run the SMALLEST relevant test/lint/build command ONLY when useful.
 6. Deliver VERDICT.
 
 Verdict:
-- passed = enough evidence shows the goal is satisfied.
-- failed = a real bug, mismatch, missing requirement, or failing relevant check was found.
-- blocked = cannot verify because scope is unclear, dependency/tooling is missing, or evidence is insufficient.
+- passed = the explicit expected condition is satisfied by concrete evidence, and no relevant check found a contradiction.
+- failed = positive evidence shows a mismatch, broken behavior, failing relevant check, or unmet expected condition.
+- blocked = cannot verify reliably because scope is unclear, dependency/tooling is missing, or evidence is insufficient.
 - Tests are evidence ONLY; passing tests alone do NOT guarantee passed.
+- Do NOT pass on weak evidence. If evidence is insufficient, deliver blocked, not passed.
 
 Kinds:
 - syntax_check: syntax, compile, parse, or importability check.
@@ -3322,8 +3329,8 @@ Kinds:
 For change_review:
 - Check Git diff/status or changed ranges FIRST.
 - Inspect changed code for OBVIOUS edit mistakes.
-- If a known build/syntax/test command exists and is not clearly irrelevant, run the smallest one.
-- Do NOT pass from Read/Search alone unless no runnable check is known.
+- If a known build/syntax/test command directly matches the changed target and expected condition, run the smallest one.
+- Do NOT pass from Read/Search alone when a directly relevant runnable check is known.
 
 Tools:
 - Max 10 tool actions per turn.
@@ -3332,6 +3339,7 @@ Tools:
 - Use Read/Recall for NARROW evidence checks.
 - Use Bash ONLY for EXPLICIT verification commands.
 - Use Project_Knowledge.workflows for durable test/lint/build commands.
+- If no explicit command is provided, use known durable workflows when they directly match the kind and target.
 
 { __tools__ }
 
@@ -4240,17 +4248,20 @@ class ToolCallRunner:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
         if not name:
-            raise ToolCallArgError("tool call missing name")
+            raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
         intention = _json_str(item.get("intention")) or ""
         args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
-        try:
-            raw = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            raw = repr(value)
-        return ParsedToolCall(name="InvalidToolCall", intention="parse malformed tool call", args=[_shorten(raw, 300)])
+        return ParsedToolCall(name="InvalidToolCall", intention=self._invalid_tool_call_summary(value), args=[])
+
+    @staticmethod
+    def _invalid_tool_call_summary(value: JsonValue) -> str:
+        item = _json_dict(value)
+        if _json_str(item.get("type")) == "tool" and not _json_str(item.get("name")):
+            return "invalid tool action: missing required field name"
+        return "invalid tool action"
 
     def _stores_tool_result(self, call: ParsedToolCall) -> bool:
         tool_class = TOOL_REGISTRY.get(call.name)
@@ -4306,6 +4317,8 @@ class AgentStateUpdater:
         self.apply_response_language(actions)
         goal_changed = self._apply_goal(actions)
         plan_replaced = self._apply_plan(actions)
+        if goal_changed and not plan_replaced:
+            self.blackboard.plan = []
         self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         self._apply_known(actions)
         self._apply_project_knowledge(actions)
@@ -4458,7 +4471,7 @@ class AgentStateUpdater:
                 complete = action.get("complete")
                 if update is not None:
                     goal_changed = update != self.blackboard.goal
-                    changed = changed or goal_changed
+                    changed = changed or (goal_changed and complete is not True)
                     self.blackboard.goal = update
                     if goal_changed and complete is not True:
                         self.blackboard.verification_required = False
@@ -5266,11 +5279,33 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message_for_complete")) or ""
         return ""
 
+    def _incomplete_goal_update_from_actions(self, actions: list[Json]) -> str:
+        update = ""
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                update = _json_str(action.get("goal")) or update
+            elif action_type == "goal" and action.get("complete") is not True:
+                update = _json_str(action.get("text")) or update
+        return update
+
     def _has_goal_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
 
     def _has_plan_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
+
+    def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start" and self._has_plan_items(action.get("plan")):
+                return True
+            if action_type == "plan" and action.get("mode") == "replace" and self._has_plan_items(action.get("items")):
+                return True
+        return False
+
+    def _has_plan_items(self, value: JsonValue) -> bool:
+        return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
     def _has_learn_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) == "learn" for action in actions)
@@ -5493,6 +5528,9 @@ class MainAgent(BaseAgent):
     def _format_agent_feedback_missing_plan_error(self) -> str:
         return "Error: attempted tool/explore/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step."
 
+    def _format_agent_feedback_stale_plan_error(self) -> str:
+        return 'Error: changed Goal without replacing Plan. Rule: include start.plan or plan mode="replace" with the new goal.'
+
     def _pending_verification_error(self, actions: list[Json]) -> str:
         pending = [action for action in actions if _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"]
         if not pending:
@@ -5515,11 +5553,13 @@ class MainAgent(BaseAgent):
         progress_messages = self._progress_messages_from_actions(actions)
         has_goal_action = self._has_goal_action(actions)
         has_plan_action = self._has_plan_action(actions)
+        goal_update = self._incomplete_goal_update_from_actions(actions)
         return MainResponseContext(
             response=response,
             actions=actions,
             goal_was_empty=not self.blackboard.goal,
             plan_was_empty=not self.blackboard.plan,
+            goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
             chat_message=self._chat_message_from_actions(actions),
             tool_calls=tool_calls,
             explore_actions=explore_actions,
@@ -5528,6 +5568,7 @@ class MainAgent(BaseAgent):
             completion_message=self._completion_message_from_actions(actions),
             has_goal_action=has_goal_action,
             has_plan_action=has_plan_action,
+            has_fresh_plan_action=self._has_fresh_plan_action(actions),
             has_learn_action=self._has_learn_action(actions),
             state_or_work_requested=bool(tool_calls or explore_actions or pending_verify_requested or progress_messages or has_plan_action),
         )
@@ -5547,6 +5588,14 @@ class MainAgent(BaseAgent):
                 on_message,
                 "Retrying: set goal and plan before tools/workers.",
                 "Goal_Gate: Goal is empty before task state/work.",
+            )
+            return True
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.explore_actions or ctx.pending_verify_requested):
+            self._remember_agent_error(self._format_agent_feedback_stale_plan_error())
+            self._report_gate(
+                on_message,
+                "Retrying: new goal requires a fresh plan.",
+                "Plan_Gate: Goal changed without replacing Plan.",
             )
             return True
         if ctx.pending_verify_requested and self.blackboard.verification.status == VerificationStatus.DONE and not self.blackboard.verification_required:

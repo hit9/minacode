@@ -15,8 +15,8 @@ def _final_actions(goal="answer", message="done"):
     ]
 
 
-def _seed_plan(agent):
-    agent.blackboard.goal = "test goal"
+def _seed_plan(agent, goal="test goal"):
+    agent.blackboard.goal = goal
     agent.blackboard.plan = [nanocode.PlanItem(text="test plan")]
 
 
@@ -620,7 +620,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "read sample")
     messages = []
 
     response = agent.run("read sample", on_message=messages.append)
@@ -1247,8 +1247,10 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
 
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
-    assert "ToolCallError: tool call missing name" in latest
+    assert "ToolCallError: tool action missing required field: name" in latest
+    assert '{"type":"tool","name":"Read","intention":"...","args":["path"]}' in latest
     assert "InvalidToolCall" in latest
+    assert "bad call" not in latest
     assert session.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
@@ -1466,7 +1468,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "read sample")
     fake_client = FakeModelClient()
     agent.model_client = fake_client
 
@@ -1564,7 +1566,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "relevant target")
     agent.model_client = FakeModelClient()
     agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent(goal=goal, scope=scope)
     messages = []
@@ -1606,7 +1608,7 @@ def test_agent_run_retries_explore_without_kind_or_constraints(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "relevant target")
     agent.model_client = FakeModelClient()
     agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
     messages = []
@@ -1650,7 +1652,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "change sample")
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
@@ -1683,7 +1685,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
 
     response = agent.run("read sample")
@@ -1757,7 +1759,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1813,6 +1815,56 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
 
 
+def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "new goal", "complete": False},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                    ]
+                },
+                {
+                    "actions": [
+                        {"type": "goal", "text": "new goal", "complete": False},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                    ]
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "start",
+                            "goal": "new goal",
+                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                        },
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                    ]
+                },
+                {"actions": _final_actions("new goal")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.blackboard.goal = "old goal"
+    agent.blackboard.plan = [nanocode.PlanItem(id="old", text="Old plan")]
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("new goal", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "Retrying: new goal requires a fresh plan." in messages
+    assert agent.blackboard.goal == "new goal"
+    assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
+    assert len(session.tool_result_store) == 1
+
+
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     class FakeModelClient:
         def __init__(self):
@@ -1828,7 +1880,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1851,7 +1903,7 @@ def test_agent_run_stops_after_chat_action(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "你好")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1875,7 +1927,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1899,7 +1951,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1948,7 +2000,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "change file")
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
@@ -2015,7 +2067,7 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "change file")
     agent.model_client = FakeModelClient()
     verifier = FakeVerifyAgent()
     agent._make_verify_agent = lambda *, goal, scope: verifier
@@ -2079,7 +2131,7 @@ def test_agent_run_does_not_repeat_failed_verification_before_fix(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "change file")
     agent.model_client = FakeModelClient()
     verifier = FakeVerifyAgent()
     agent._make_verify_agent = lambda *, goal, scope: verifier
@@ -2135,7 +2187,7 @@ def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
             return self.responses.pop(0)
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.blackboard.goal = "answer"
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
@@ -2214,7 +2266,7 @@ def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
             return self.responses.pop(0)
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.blackboard.goal = "answer"
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
@@ -2234,7 +2286,7 @@ def test_agent_run_treats_verify_scope_check_blocked_as_failed(tmp_path):
             return nanocode.VerifyReport(status="blocked", method="scope_check", summary="missing target")
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.blackboard.goal = "answer"
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
@@ -2299,7 +2351,7 @@ def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path)
             return self.responses.pop(0)
 
     agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
 
