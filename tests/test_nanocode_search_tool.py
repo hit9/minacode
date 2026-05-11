@@ -140,6 +140,44 @@ def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
     assert tool.call() == "rg:/fake/rg"
 
 
+def test_search_tool_retries_rg_with_pcre2_for_lookaround(tmp_path, monkeypatch):
+    path = tmp_path / "sample.py"
+    path.write_text("Session()\nPromptSession()\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    calls = []
+
+    def fake_run(cmd, text, stdout, stderr, timeout):
+        calls.append(cmd)
+        if "--pcre2" not in cmd:
+            return nanocode.subprocess.CompletedProcess(
+                cmd,
+                2,
+                "",
+                "regex parse error: look-around, including look-ahead and look-behind, is not supported; enable PCRE2 with --pcre2",
+            )
+        output = json_line = nanocode.json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": str(path)},
+                    "lines": {"text": "Session()\n"},
+                    "line_number": 1,
+                },
+            }
+        )
+        return nanocode.subprocess.CompletedProcess(cmd, 0, output + "\n", "")
+
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/rg" if name == "rg" else "")
+    monkeypatch.setattr(nanocode.subprocess, "run", fake_run)
+
+    result = SearchTool.make(session, [r"(?<!Prompt)Session\(", "sample.py"]).call()
+
+    assert "--pcre2" not in calls[0]
+    assert "--pcre2" in calls[1]
+    assert "* engine: rg-pcre2" in result
+    assert "* sample.py:1: Session()" in result
+
+
 def test_search_tool_uses_python_when_rg_is_missing(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("needle\n", encoding="utf-8")

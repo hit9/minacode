@@ -37,8 +37,10 @@ def test_known_action_accepts_string_items(tmp_path):
         {
             "actions": [
                 {
-                    "type": "known",
-                    "items": [
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "known": [
                         "Parser notes were captured.",
                     ],
                 }

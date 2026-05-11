@@ -473,7 +473,7 @@ first_token_timeout = 60
 
 [explore_agent]
 # ExploreAgent removes uncertainty about unknown file/code targets before editing.
-max_turns = 50
+max_turns = 12
 
 [paths]
 # Relative paths are resolved from the current project directory.
@@ -615,6 +615,8 @@ class WorkerReportHistory(PromptItem):
 class AgentRuntime:
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
+    last_readonly_call_key: tuple[str, tuple[str, ...]] | None = None
+    last_readonly_result_key: str = ""
 
 
 @dataclass
@@ -901,7 +903,7 @@ class Session:
     compact_at: int = 50
     max_agent_steps: int = 50
     worker_model_config: ModelConfig = field(default_factory=ModelConfig)
-    explore_agent_max_turns: int = 50
+    explore_agent_max_turns: int = 12
 
     # ---- runtime variables ----
     yolo: bool = False
@@ -946,7 +948,7 @@ class Session:
         shell_timeout = ConfigFile.int(runtime, "shell_timeout", 60)
         compact_at = ConfigFile.int(runtime, "compact_at", 50)
         max_agent_steps = ConfigFile.int(runtime, "max_agent_steps", 50)
-        explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 50)
+        explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 12)
         session = cls(
             api_url=ConfigFile.str(api, "url"),
             api_key=ConfigFile.str(api, "key"),
@@ -962,7 +964,7 @@ class Session:
             compact_at=compact_at if compact_at is not None else 50,
             max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
             worker_model_config=worker_model,
-            explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 50),
+            explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 12),
             yolo=yolo,
             debug=debug,
         )
@@ -1894,8 +1896,10 @@ class SearchTool(Tool):
         lines.append("</SearchToolResult>")
         return "\n".join(lines)
 
-    def _call_rg(self, rg: str) -> str:
+    def _rg_command(self, rg: str, *, pcre2: bool = False) -> list[str]:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        if pcre2:
+            cmd.append("--pcre2")
         if not self.regex:
             cmd.append("--fixed-strings")
         if self.glob_pattern:
@@ -1903,11 +1907,20 @@ class SearchTool(Tool):
         for pattern in self.patterns:
             cmd.extend(["-e", pattern])
         cmd.extend(["--", self.target_path])
+        return cmd
 
+    def _call_rg(self, rg: str) -> str:
+        pcre2 = False
         try:
-            proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            proc = subprocess.run(self._rg_command(rg), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         except subprocess.TimeoutExpired:
             raise ToolCallError("rg timed out")
+        if proc.returncode not in (0, 1) and self._should_retry_rg_with_pcre2(proc.stderr):
+            pcre2 = True
+            try:
+                proc = subprocess.run(self._rg_command(rg, pcre2=True), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            except subprocess.TimeoutExpired:
+                raise ToolCallError("rg timed out")
         if proc.returncode not in (0, 1):
             raise ToolCallError(proc.stderr.strip() or "rg failed")
 
@@ -1935,8 +1948,14 @@ class SearchTool(Tool):
             if len(matches) >= self.MAX_MATCHES:
                 truncated = True
                 break
-        engine = "rg-regex" if self.regex else "rg"
+        engine = "rg-pcre2" if pcre2 else ("rg-regex" if self.regex else "rg")
         return self._format_result(engine, matches, truncated)
+
+    def _should_retry_rg_with_pcre2(self, stderr: str) -> bool:
+        if not self.regex:
+            return False
+        text = stderr.lower()
+        return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
     def _call_python(self) -> str:
         matches = []
@@ -2983,7 +3002,7 @@ At each turn, do exactly one phase, then stop.
 1. CHAT: if this is casual chat, output one chat action.
 2. ALIGN: compare User Request with Goal. For a new task, output start with a fresh short plan.
 3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
-4. OBSERVE: if Latest_Results exist, save durable facts as known, then update Plan before more work:
+4. OBSERVE: if Latest_Results exist, attach only NEW durable facts as known, then update Plan before more work:
    - mark completed steps done
    - revise stale steps
    - add the next needed step
@@ -2994,7 +3013,7 @@ At each turn, do exactly one phase, then stop.
    - known target -> smallest useful batch of tool/edit actions
 8. CHECK: after any edit, request verify or inspect one narrow target.
 9. DONE: complete only when the goal is done and required verification has passed.
-10. LEARN: if stable reusable facts were discovered near completion, output learn + goal complete=true.
+10. LEARN: if stable reusable facts were discovered near completion, attach learn to goal complete=true.
 
 PLANNING:
 - Use plan only for real tasks.
@@ -3059,25 +3078,69 @@ JSON objects separated by __END_ACTION__.
 One JSON object may omit trailing __END_ACTION__.
 Tool actions MUST include name, intention, and args.
 
-{"type":"chat","text":"string"} __END_ACTION__
+Sidecar fields are optional on any MAIN action:
+- "known": ["new durable fact needed later"]
+- "progress": "optional short user-facing update"
+- "learn": {
+    "summary": "optional stable project summary",
+    "structure": [],
+    "architecture": [],
+    "workflows": [],
+    "conventions": [],
+    "corrections": []
+  }
+Do NOT output known/progress/learn as standalone action types.
 
-{"type":"start","goal":"string","response_language":null|"BCP47","plan":[{"id":"string","text":"string","status":"todo|doing|done|blocked","context":null|"string"}]} __END_ACTION__
+{
+  "type": "chat",
+  "text": "string"
+} __END_ACTION__
 
-{"type":"goal","text":"string","complete":true|false,"message_for_complete":null|"string"} __END_ACTION__
+{
+  "type": "start",
+  "goal": "string",
+  "response_language": null|"BCP47",
+  "plan": [{"id": "string", "text": "string", "status": "todo|doing|done|blocked", "context": null|"string"}]
+} __END_ACTION__
 
-{"type":"known","items":["non-empty self-contained durable fact"]} __END_ACTION__
+{
+  "type": "goal",
+  "text": "string",
+  "complete": true|false,
+  "message_for_complete": null|"string"
+} __END_ACTION__
 
-{"type":"learn","summary":"optional one-sentence project summary, not a process log","structure":["stable structure fact"],"architecture":["stable architecture fact"],"workflows":["stable workflow fact"],"conventions":["stable convention fact"],"corrections":[{"field":"structure|architecture|workflows|conventions","old":"exact old item","new":null|"replacement item"}]} __END_ACTION__
+{
+  "type": "plan",
+  "mode": "replace|patch",
+  "items": [{"op": "add|update|remove", "id": "string", "after": null|"string", "text": null|"string", "status": null|"todo|doing|done|blocked", "context": null|"string"}]
+} __END_ACTION__
 
-{"type":"plan","mode":"replace|patch","items":[{"op":"add|update|remove","id":"string","after":null|"string","text":null|"string","status":null|"todo|doing|done|blocked","context":null|"string"}]} __END_ACTION__
+{
+  "type": "tool",
+  "name": "{ __tool_names__ }",
+  "intention": "clear reason/question",
+  "args": ["string"]
+} __END_ACTION__
 
-{"type":"tool","name":"{ __tool_names__ }","intention":"clear reason/question","args":["string"]} __END_ACTION__
+{
+  "type": "explore",
+  "kind": "symbol|file|range|changed|reference|other",
+  "goal": "locate concrete code targets only",
+  "scope": ["known path/symbol/keyword"],
+  "constraints": ["required output or search boundary"],
+  "reason": "why target is unknown",
+  "context": null|"string"
+} __END_ACTION__
 
-{"type":"explore","kind":"symbol|file|range|changed|reference|other","goal":"locate concrete code targets only","scope":["known path/symbol/keyword"],"constraints":["required output or search boundary"],"reason":"why target is unknown","context":null|"string"} __END_ACTION__
-
-{"type":"verify","kind":"syntax_check|lint|test|build|change_review|change_check|other","method":null|"short target label, not command","criteria":["explicit pass/block criterion"],"status":"pending|passed|blocked","context":null|"string"} __END_ACTION__
-
-{"type":"progress","text":"string"} __END_ACTION__
+{
+  "type": "verify",
+  "kind": "syntax_check|lint|test|build|change_review|change_check|other",
+  "method": null|"short target label, not command",
+  "criteria": ["explicit pass/block criterion"],
+  "status": "pending|passed|blocked",
+  "context": null|"string"
+} __END_ACTION__
 
 TOOL SPECS:
 { __tools__ }
@@ -3149,6 +3212,8 @@ Must:
 - If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
 - Read ONLY SMALL ranges around likely matches or caller-provided exact targets.
 - Deliver as soon as the target is FOUND or CANNOT BE FOUND.
+- STOP and deliver when Read/Search gives enough concrete path/range evidence.
+- If the last batch adds no new useful information, deliver current targets/issues instead of searching again.
 - Deliverable is path/symbol/0-based line_range/context/reason evidence.
 
 Must not:
@@ -3205,7 +3270,6 @@ Good tool batches:
 Action types:
 - tool: call one available investigation tool.
 - deliver: finish exploration and return relevant targets, known facts, and issues when any.
-- known: optional durable exploration facts; include only together with tool or deliver.
 - verify: optional exploration verification status; include only together with deliver.
 
 Output format (Strict)
@@ -3214,9 +3278,11 @@ Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
 
+Sidecar field on tool or deliver:
+- "known": ["non-empty self-contained fact"]
+
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"], "issues": ["string"]} __END_ACTION__
-{"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 {"type": "verify", "method": null | "string", "status": "passed|blocked", "context": null | "string"} __END_ACTION__
 """
 
@@ -3347,7 +3413,6 @@ Tools:
 Action types:
 - tool: call one available verification tool.
 - deliver: finish verification and return a verdict.
-- known: optional verification facts; include only together with tool or deliver.
 
 Output format (Strict)
 
@@ -3355,9 +3420,11 @@ Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
 
+Sidecar field on tool or deliver:
+- "known": ["non-empty self-contained fact"]
+
 {"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "string", "summary": "string", "evidence": ["string"], "issues": ["string"], "next_steps": ["string"]} __END_ACTION__
-{"type": "known", "items": ["non-empty self-contained fact"]} __END_ACTION__
 """
 
 
@@ -4014,10 +4081,11 @@ class ToolCallDisplayFormatter:
 class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
-    def __init__(self, session: Session, runtime: AgentRuntime, allowed_tools: set[str] | None = None):
+    def __init__(self, session: Session, runtime: AgentRuntime, allowed_tools: set[str] | None = None, *, reuse_readonly_results: bool = False):
         self.session = session
         self.runtime = runtime
         self.allowed_tools = allowed_tools
+        self.reuse_readonly_results = reuse_readonly_results
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -4043,6 +4111,10 @@ class ToolCallRunner:
                     tool = item.tool
                 else:
                     call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
+                    cached = self._cached_readonly_execution(call)
+                    if cached is not None:
+                        executions.append(cached)
+                        continue
                     tool = self._make_tool(call)
                 requires_verification = tool.is_editing()
                 preview_error = self._preview_error(tool)
@@ -4094,9 +4166,41 @@ class ToolCallRunner:
                 requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
+            self._remember_last_readonly_result(call, outcome, result_key)
 
         self.latest_executions = executions
         return self._format_recent_tool_calls(executions)
+
+    def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
+        if not self.reuse_readonly_results:
+            return None
+        key = self._readonly_result_cache_key(call)
+        if key is None:
+            return None
+        if self.runtime.last_readonly_call_key != key or not self.runtime.last_readonly_result_key:
+            return None
+        result_key = self.runtime.last_readonly_result_key
+        item = self.runtime.tool_result_store.get(result_key)
+        if item is None or not item.description.startswith("success "):
+            return None
+        return ToolCallExecution(call=call, outcome="success", output=item.value, result_key=result_key, result_excerpted=item.excerpted)
+
+    def _remember_last_readonly_result(self, call: ParsedToolCall, outcome: str, result_key: str) -> None:
+        if not self.reuse_readonly_results:
+            return
+        key = self._readonly_result_cache_key(call)
+        if key is not None and outcome == "success" and result_key:
+            self.runtime.last_readonly_call_key = key
+            self.runtime.last_readonly_result_key = result_key
+            return
+        self.runtime.last_readonly_call_key = None
+        self.runtime.last_readonly_result_key = ""
+
+    def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None or not self._is_tool_allowed(call.name) or not tool_class.is_readonly():
+            return None
+        return call.name, tuple(call.args)
 
     @staticmethod
     def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
@@ -4128,27 +4232,18 @@ class ToolCallRunner:
                 on_live_done(call)
 
     def _dedupe_readonly_tool_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue | ParsedToolCall]:
-        parsed_calls: list[JsonValue | ParsedToolCall] = []
-        latest_by_key: dict[tuple[str, tuple[str, ...]], int] = {}
+        filtered: list[JsonValue | ParsedToolCall] = []
         for item in tool_calls:
             try:
                 call = self.parse_tool_call(item)
             except ToolCallArgError:
-                parsed_calls.append(item)
+                filtered.append(item)
                 continue
-            parsed_calls.append(call)
-            tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None or not self._is_tool_allowed(call.name) or not tool_class.is_readonly():
+            key = self._readonly_result_cache_key(call)
+            if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_result_cache_key(filtered[-1]) == key:
+                filtered[-1] = call
                 continue
-            latest_by_key[(call.name, tuple(call.args))] = len(parsed_calls) - 1
-        keep_indexes = set(latest_by_key.values())
-        filtered = []
-        for index, item in enumerate(parsed_calls):
-            if isinstance(item, ParsedToolCall):
-                tool_class = TOOL_REGISTRY.get(item.name)
-                if tool_class is not None and self._is_tool_allowed(item.name) and tool_class.is_readonly() and index not in keep_indexes:
-                    continue
-            filtered.append(item)
+            filtered.append(call)
         return filtered
 
     def _merge_adjacent_tool_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
@@ -4530,20 +4625,32 @@ class AgentStateUpdater:
         )
 
     def _apply_known(self, actions: list[Json]) -> None:
-        for action in [action for action in actions if _json_str(action.get("type")) == "known"]:
-            for raw in _json_list(action.get("items")):
+        for action in actions:
+            for raw in self._known_values(action):
                 fact = self._known_fact_from_json(raw)
                 if fact is not None:
                     self._add_known_item(fact)
+
+    def _known_values(self, action: Json) -> list[JsonValue]:
+        if _json_str(action.get("type")) == "known":
+            return _json_list(action.get("items"))
+        return _json_list(action.get("known"))
 
     def _apply_project_knowledge(self, actions: list[Json]) -> None:
         if not self.allow_project_learning:
             return
         changed = False
-        for action in [action for action in actions if _json_str(action.get("type")) == "learn"]:
-            changed = self.session.project_knowledge.apply(action) or changed
+        for action in actions:
+            learn = self._learn_value(action)
+            if learn:
+                changed = self.session.project_knowledge.apply(learn) or changed
         if changed:
             self.session.save_project_knowledge()
+
+    def _learn_value(self, action: Json) -> Json:
+        if _json_str(action.get("type")) == "learn":
+            return action
+        return _json_dict(action.get("learn"))
 
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
         fact = (_json_str(value) or "").strip()
@@ -4707,7 +4814,7 @@ class BaseAgent:
             allow_response_language_bootstrap=allow_response_language_bootstrap,
         )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=allowed_tools)
+        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=allowed_tools, reuse_readonly_results=activity != "main")
         self.state_updater = AgentStateUpdater(
             session,
             self.blackboard,
@@ -5236,6 +5343,8 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
 
 @final
 class MainAgent(BaseAgent):
+    STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "learn", "progress"}
+
     def __init__(self, session: Session):
         super().__init__(
             session,
@@ -5272,7 +5381,7 @@ class MainAgent(BaseAgent):
         return ""
 
     def _progress_messages_from_actions(self, actions: list[Json]) -> list[str]:
-        return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "progress") if message]
+        return [message for message in (_json_str(action.get("progress")) for action in actions) if message]
 
     def _completion_message_from_actions(self, actions: list[Json]) -> str:
         for action in reversed(actions):
@@ -5309,7 +5418,13 @@ class MainAgent(BaseAgent):
         return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
     def _has_learn_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "learn" for action in actions)
+        return any(bool(_json_dict(action.get("learn"))) for action in actions)
+
+    def _standalone_sidecar_action_error(self, actions: list[Json]) -> str:
+        invalid = sorted({_json_str(action.get("type")) or "" for action in actions if _json_str(action.get("type")) in self.STANDALONE_SIDECAR_TYPES})
+        if not invalid:
+            return ""
+        return ", ".join(invalid)
 
     def _handoff_context_snapshot(self) -> WorkerReportHistory:
         return WorkerReportHistory(
@@ -5517,7 +5632,14 @@ class MainAgent(BaseAgent):
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
         return (
-            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful state, tool, verify, progress action, or final goal action."
+            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful main action and optional progress field, or final goal action."
+        )
+
+    def _format_agent_feedback_standalone_sidecar_error(self, action_types: str) -> str:
+        return (
+            "Error: standalone sidecar action is invalid: "
+            + action_types
+            + ". Rule: put known, progress, or learn as fields on a main action."
         )
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
@@ -5583,6 +5705,15 @@ class MainAgent(BaseAgent):
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> bool:
+        standalone_sidecar_error = self._standalone_sidecar_action_error(ctx.actions)
+        if standalone_sidecar_error:
+            self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
+            self._report_gate(
+                on_message,
+                "Retrying: attach known/progress/learn to a main action.",
+                "Action_Gate: known/progress/learn must be sidecar fields.",
+            )
+            return True
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
             self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
             self._report_gate(

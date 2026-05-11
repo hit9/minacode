@@ -47,7 +47,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["main_model"]["temperature"] == 0.7
     assert config["main_model"]["timeout"] == 90
     assert config["main_model"]["first_token_timeout"] == 60
-    assert config["explore_agent"]["max_turns"] == 50
+    assert config["explore_agent"]["max_turns"] == 12
     assert config["runtime"]["compact_at"] == 50
 
 
@@ -384,7 +384,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
-            return {"actions": [{"type": "progress", "text": "assistant response"}]}
+            return {"actions": [{"type": "chat", "text": "assistant response"}]}
 
     inputs = iter(["/status", "hello", "/exit"])
     outputs = []

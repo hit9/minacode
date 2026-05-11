@@ -165,6 +165,54 @@ def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     assert "first read" not in latest
 
 
+def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.execute_tool_calls(
+        [
+            {"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]},
+            {"name": "Read", "intention": "middle read", "args": ["sample.txt", "1,2"]},
+            {"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]},
+        ]
+    )
+
+    assert [execution.call.intention for execution in agent.tool_runner.latest_executions] == ["first read", "middle read", "second read"]
+    assert list(session.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
+
+
+def test_worker_reuses_repeated_readonly_tool_results_across_turns(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=["sample.txt"])
+
+    explorer.execute_tool_calls([{"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]}])
+    explorer.execute_tool_calls([{"name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"]}])
+
+    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
+    assert explorer.tool_runner.latest_executions[0].result_key == "tr.1"
+    assert "alpha" in explorer.tool_runner.latest_executions[0].output
+
+
+def test_worker_does_not_reuse_nonconsecutive_readonly_tool_results(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=["sample.txt"])
+
+    explorer.execute_tool_calls([{"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]}])
+    explorer.execute_tool_calls([{"name": "LineCount", "intention": "count lines", "args": ["sample.txt"]}])
+    explorer.execute_tool_calls([{"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]}])
+
+    assert list(explorer.runtime.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
+    assert explorer.tool_runner.latest_executions[0].result_key == "tr.3"
+
+
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
@@ -859,8 +907,10 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
         {
             "actions": [
                 {
-                    "type": "known",
-                    "items": [
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "known": [
                         "Search only supports rg and Python fallback.",
                         "Search only supports rg and Python fallback.",
                     ],
@@ -880,8 +930,10 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
         {
             "actions": [
                 {
-                    "type": "known",
-                    "items": [
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "known": [
                         "Preview logic exists in _preview_segments.",
                         "Preview logic exists in _preview_segments.",
                         "Preview logic exists in _preview_segments!",
@@ -901,7 +953,7 @@ def test_agent_keeps_latest_100_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
-    agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(101)]}]})
+    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [], "known": ["fact " + str(index) for index in range(101)]}]})
 
     assert len(agent.blackboard.known) == 100
     assert agent.blackboard.known[0] == "fact 1"
@@ -916,12 +968,16 @@ def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
         {
             "actions": [
                 {
-                    "type": "learn",
-                    "summary": "Single-file CLI coding assistant.",
-                    "structure": ["nanocode.py contains the CLI and agent loop."],
-                    "architecture": ["MainAgent delegates uncertain code discovery to ExploreAgent."],
-                    "workflows": ["Run pytest for verification."],
-                    "conventions": ["Use JSON action frames."],
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "learn": {
+                        "summary": "Single-file CLI coding assistant.",
+                        "structure": ["nanocode.py contains the CLI and agent loop."],
+                        "architecture": ["MainAgent delegates uncertain code discovery to ExploreAgent."],
+                        "workflows": ["Run pytest for verification."],
+                        "conventions": ["Use JSON action frames."],
+                    },
                 }
             ]
         }
@@ -935,7 +991,7 @@ def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
     assert "structure: 1 item(s)" in agent.state_updater.latest_report
 
 
-def test_main_agent_stop_after_learn_finishes_after_learn_action(tmp_path):
+def test_main_agent_stop_after_learn_finishes_after_learn_sidecar(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
@@ -948,9 +1004,14 @@ def test_main_agent_stop_after_learn_finishes_after_learn_action(tmp_path):
             return {
                 "actions": [
                     {
-                        "type": "learn",
-                        "summary": "Single-file CLI coding assistant.",
-                        "structure": ["nanocode.py contains the CLI and agent loop."],
+                        "type": "goal",
+                        "text": "learn project",
+                        "complete": True,
+                        "message_for_complete": "Project knowledge updated.",
+                        "learn": {
+                            "summary": "Single-file CLI coding assistant.",
+                            "structure": ["nanocode.py contains the CLI and agent loop."],
+                        },
                     }
                 ]
             }
@@ -962,7 +1023,7 @@ def test_main_agent_stop_after_learn_finishes_after_learn_action(tmp_path):
     response = agent.run("learn project", stop_after_learn=True, on_message=messages.append)
 
     assert fake_client.calls == 1
-    assert response["actions"][0]["type"] == "learn"
+    assert response["actions"][0]["type"] == "goal"
     assert session.project_knowledge.summary == "Single-file CLI coding assistant."
     assert any(message.startswith("State Updated") for message in messages)
     assert session.conversation[-1].content == "Project knowledge updated."
@@ -976,8 +1037,10 @@ def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
         {
             "actions": [
                 {
-                    "type": "learn",
-                    "structure": ["item " + str(index) for index in range(31)] + ["item 30"],
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "learn": {"structure": ["item " + str(index) for index in range(31)] + ["item 30"]},
                 }
             ]
         }
@@ -995,9 +1058,13 @@ def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
         {
             "actions": [
                 {
-                    "type": "learn",
-                    "structure": ["old structure", "remove me"],
-                    "architecture": ["old architecture"],
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "learn": {
+                        "structure": ["old structure", "remove me"],
+                        "architecture": ["old architecture"],
+                    },
                 }
             ]
         }
@@ -1007,12 +1074,16 @@ def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
         {
             "actions": [
                 {
-                    "type": "learn",
-                    "corrections": [
-                        {"field": "structure", "old": "old structure", "new": "new structure"},
-                        {"field": "structure", "old": "remove me", "new": None},
-                        {"field": "architecture", "old": "old architecture", "new": "new architecture"},
-                    ],
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "learn": {
+                        "corrections": [
+                            {"field": "structure", "old": "old structure", "new": "new structure"},
+                            {"field": "structure", "old": "remove me", "new": None},
+                            {"field": "architecture", "old": "old architecture", "new": "new architecture"},
+                        ],
+                    },
                 }
             ]
         }
@@ -1031,9 +1102,13 @@ def test_explore_agent_does_not_apply_project_knowledge(tmp_path):
         {
             "actions": [
                 {
-                    "type": "learn",
-                    "summary": "Should be ignored.",
-                    "structure": ["Should not be saved."],
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "learn": {
+                        "summary": "Should be ignored.",
+                        "structure": ["Should not be saved."],
+                    },
                 }
             ]
         }
@@ -1051,8 +1126,10 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
         {
             "actions": [
                 {
-                    "type": "known",
-                    "items": [
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [],
+                    "known": [
                         "",
                         "Parser notes exist.",
                         "Parser notes were captured.",
@@ -1074,8 +1151,12 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
     response = {
         "actions": [
-            {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}]},
-            {"type": "known", "items": ["Search uses rg."]},
+            {
+                "type": "plan",
+                "mode": "replace",
+                "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}],
+                "known": ["Search uses rg."],
+            },
         ]
     }
 
@@ -1350,8 +1431,13 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
                     "actions": [
-                        {"type": "known", "items": ["sample.txt contains alpha."]},
-                        {"type": "verify", "method": "read", "status": "passed", "context": "target found"},
+                        {
+                            "type": "verify",
+                            "method": "read",
+                            "status": "passed",
+                            "context": "target found",
+                            "known": ["sample.txt contains alpha."],
+                        },
                         {
                             "type": "deliver",
                             "targets": [
@@ -1453,10 +1539,12 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                 {
                     "actions": [
                         {
-                            "type": "known",
-                            "items": ["Read sample.txt and found alpha."],
+                            "type": "verify",
+                            "method": "unit",
+                            "status": "passed",
+                            "context": "checked",
+                            "known": ["Read sample.txt and found alpha."],
                         },
-                        _verify_passed_action(),
                         {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"},
                     ],
                 },
@@ -1918,7 +2006,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"actions": [{"type": "known", "items": []}]},
+                {"actions": [{"type": "plan", "mode": "patch", "items": []}]},
                 {"actions": _final_actions()},
             ]
 
@@ -1935,6 +2023,29 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: goal is not complete yet." not in messages
+
+
+def test_main_agent_rejects_standalone_sidecar_actions(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "known", "items": ["fact"]}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    _seed_plan(agent, "answer")
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert agent.blackboard.known == []
+    assert any("standalone sidecar action is invalid" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
@@ -2535,7 +2646,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "progress", "text": "progress"}]},
+                {"actions": [{"type": "plan", "mode": "patch", "items": [], "progress": "progress"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -2567,8 +2678,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "progress", "text": "reading sample"},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"], "progress": "reading sample"},
                     ]
                 },
                 {"actions": _final_actions()},
@@ -2803,8 +2913,13 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
             self.responses = [
                 {
                     "actions": [
-                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "fallback message"},
-                        {"type": "progress", "text": "explicit progress"},
+                        {
+                            "type": "goal",
+                            "text": "answer",
+                            "complete": True,
+                            "message_for_complete": "fallback message",
+                            "progress": "explicit progress",
+                        },
                     ]
                 },
                 {"actions": _final_actions()},
@@ -2835,7 +2950,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": False, "message_for_complete": "should be ignored"}]},
-                {"actions": [{"type": "progress", "text": "done without goal"}]},
+                {"actions": [{"type": "plan", "mode": "patch", "items": [], "progress": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 
