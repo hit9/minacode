@@ -3502,7 +3502,6 @@ class PromptBuilder:
 @final
 class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
-    ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
     def __init__(self, session: Session, *, model_config: ModelConfig | None = None, model: str = "", reasoning_effort: str = ""):
@@ -3743,22 +3742,6 @@ class ModelClient:
             frames.append(trailing)
         return frames
 
-    def _completed_action_frames(self, text: str) -> tuple[list[str], str]:
-        frames: list[str] = []
-        current: list[str] = []
-        for line in text.splitlines(keepends=True):
-            if not self._has_action_frame_end(line):
-                current.append(line)
-                continue
-            parts = self.ACTION_FRAME_END_SPLIT_PATTERN.split(line)
-            for index, part in enumerate(parts):
-                if part:
-                    current.append(part)
-                if index < len(parts) - 1:
-                    frames.append("".join(current).strip())
-                    current = []
-        return frames, "".join(current)
-
     def _parse_action_frame(self, frame: str, frame_number: int) -> tuple[Json | None, str]:
         frame = frame.strip()
         if not frame:
@@ -3786,9 +3769,6 @@ class ModelClient:
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
-
-    def _is_action_frame_end(self, line: str) -> bool:
-        return self.ACTION_FRAME_END_PATTERN.match(line) is not None
 
     def _strip_json_fence(self, text: str) -> str:
         if not text.startswith("```"):
@@ -4668,8 +4648,6 @@ class BaseAgent:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
             try:
                 self.session.turn_model_calls += 1
-                if isinstance(self.model_client, ModelClient):
-                    return self.model_client.request(system_prompt, user_prompt, activity=activity)
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except LLMError as error:
                 if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
@@ -4834,14 +4812,6 @@ class BaseAgent:
         if bad_output is None:
             return _shorten(format_error, 180)
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
-
-    def _compact_gate_report(self, gate: str) -> str:
-        lines = gate.splitlines()
-        headline = lines[0] if lines else "Gate"
-        details = [line for line in lines[1:] if line.startswith("- ")]
-        if details:
-            return headline + ": " + _shorten("; ".join(details[:3]), 220)
-        return headline
 
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
         response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity=self.activity, on_message=on_message)
