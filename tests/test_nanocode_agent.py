@@ -897,15 +897,15 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
     ]
 
 
-def test_agent_keeps_latest_50_known_items(tmp_path):
+def test_agent_keeps_latest_100_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
-    agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(51)]}]})
+    agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(101)]}]})
 
-    assert len(agent.blackboard.known) == 50
+    assert len(agent.blackboard.known) == 100
     assert agent.blackboard.known[0] == "fact 1"
-    assert agent.blackboard.known[-1] == "fact 50"
+    assert agent.blackboard.known[-1] == "fact 100"
 
 
 def test_main_agent_applies_project_knowledge_and_saves(tmp_path):

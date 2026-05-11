@@ -4282,7 +4282,7 @@ class ToolCallRunner:
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_KNOWN_ITEMS: ClassVar[int] = 50
+    MAX_KNOWN_ITEMS: ClassVar[int] = 100
 
     def __init__(
         self,
@@ -4666,7 +4666,7 @@ class BaseAgent:
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_TOOL_CALLS: ClassVar[int] = 50
-    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 36_000
+    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
     RECENT_WORKER_REPORTS: ClassVar[int] = 8
 
     def __init__(
