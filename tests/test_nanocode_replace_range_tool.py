@@ -147,7 +147,7 @@ def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 1
     assert confirmations[0].startswith('ReplaceRange("sample.txt", "1", "2"')
-    assert "replace beta; replace delta" in session.tool_result_store["tr.1"].description
+    assert "replace beta; replace delta" in session.state.tool_result_store["tr.1"].description
     assert "* replacements: 2" in latest
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
 
@@ -244,7 +244,7 @@ def test_replace_range_tool_rejects_fingerprint_mismatch(tmp_path):
 
 def test_replace_range_cache_is_bounded(tmp_path):
     session = Session(cwd=str(tmp_path))
-    store = session.range_fingerprints
+    store = session.state.range_fingerprints
 
     for index in range(RangeFingerprintStore.MAX_ENTRIES + 5):
         store.remember(filepath=str(tmp_path / "sample.txt"), start=index, end=index + 1, content="line " + str(index))
@@ -274,7 +274,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
 
     agent.cancel_current_goal()
 
-    assert len(session.range_fingerprints) == 1
+    assert len(session.state.range_fingerprints) == 1
 
     class FakeModelClient:
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -283,7 +283,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
     agent.model_client = FakeModelClient()
     agent.run("next task")
 
-    assert len(session.range_fingerprints) == 0
+    assert len(session.state.range_fingerprints) == 0
 
 
 def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
@@ -300,7 +300,7 @@ def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
 
     agent.run("new task")
 
-    assert len(session.range_fingerprints) == 0
+    assert len(session.state.range_fingerprints) == 0
 
 
 def test_replace_range_tool_replaces_to_eof_when_end_is_zero(tmp_path):

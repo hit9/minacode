@@ -2,17 +2,22 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Blackboard, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, Session, StatusBar, VERIFY_MESSAGE_PREFIX
+from nanocode import AgentLoop, Blackboard, Config, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, VERIFY_MESSAGE_PREFIX
+
+
+def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
+    data = {"main_model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
 
 
 def test_session_reports_missing_required_config(tmp_path):
-    session = Session(cwd=str(tmp_path), api_url="", api_key="", model="")
+    session = Session(cwd=str(tmp_path))
 
     assert session.missing_required_config() == ["api.url", "api.key", "main_model.model"]
 
-    session.api_url = "url"
-    session.api_key = "key"
-    session.model = "model"
+    session.config.api.url = "url"
+    session.config.api.key = "key"
+    session.config.main_model.model = "model"
 
     assert session.missing_required_config() == []
 
@@ -28,8 +33,8 @@ def test_session_loads_project_knowledge_from_project_file(tmp_path, monkeypatch
 
     session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "main_model": {"model": "model"}})
 
-    assert session.project_knowledge.summary == "Project summary."
-    assert session.project_knowledge.structure == ["single file"]
+    assert session.state.project_knowledge.summary == "Project summary."
+    assert session.state.project_knowledge.structure == ["single file"]
 
 
 def test_init_config_file_writes_default_toml(tmp_path):
@@ -90,17 +95,17 @@ nanocode_dir = ".custom-nanocode"
     result = nanocode.main(["--config", str(config_path)])
 
     assert result == 0
-    assert sessions[0].api_url == "https://example.test/v1"
-    assert sessions[0].api_key == "key"
-    assert sessions[0].model == "custom-main"
-    assert sessions[0].nanocode_dir == ".custom-nanocode"
+    assert sessions[0].config.api.url == "https://example.test/v1"
+    assert sessions[0].config.api.key == "key"
+    assert sessions[0].config.main_model.model == "custom-main"
+    assert sessions[0].config.paths.nanocode_dir == ".custom-nanocode"
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
-    session = Session(cwd=str(tmp_path), model="provider/model", compact_at=9)
-    session.last_total_tokens = 42
-    session.session_total_tokens = 1200
-    session.turn_tool_calls = 3
+    session = make_session(tmp_path, model="provider/model", compact_at=9)
+    session.state.last_total_tokens = 42
+    session.state.session_total_tokens = 1200
+    session.state.turn_tool_calls = 3
     bar = StatusBar(session)
 
     text = bar._text(1.2, now=1.0)
@@ -119,11 +124,11 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
 
 
 def test_status_bar_shows_current_model_call_number(tmp_path):
-    session = Session(cwd=str(tmp_path), model="provider/model")
-    session.turn_model_calls = 2
-    session.current_model_call_started_at = 0.4
-    session.current_model_call_label = "provider/worker-model"
-    session.current_model_call_reasoning_label = "low"
+    session = make_session(tmp_path, model="provider/model")
+    session.state.turn_model_calls = 2
+    session.state.current_model_call_started_at = 0.4
+    session.state.current_model_call_label = "provider/worker-model"
+    session.state.current_model_call_reasoning_label = "low"
     bar = StatusBar(session)
 
     text = bar._text(0.0, now=1.0)
@@ -135,7 +140,7 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
 def test_agent_loop_highlights_only_diff_previews(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
@@ -160,7 +165,7 @@ def test_agent_loop_highlights_only_diff_previews(tmp_path):
 def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
@@ -173,7 +178,7 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
 def test_agent_loop_indents_top_level_tool_report(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
@@ -186,7 +191,7 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
@@ -199,7 +204,7 @@ def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
 def test_agent_loop_styles_tool_arg_error_report(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
@@ -212,7 +217,7 @@ def test_agent_loop_styles_tool_arg_error_report(tmp_path):
 def test_agent_loop_styles_explore_tool_report_with_scope_prefix(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: captured.append(message))
@@ -225,7 +230,7 @@ def test_agent_loop_styles_explore_tool_report_with_scope_prefix(tmp_path):
 def test_agent_loop_styles_explore_tool_status_by_color(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
@@ -238,7 +243,7 @@ def test_agent_loop_styles_explore_tool_status_by_color(tmp_path):
 def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
@@ -264,7 +269,7 @@ def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model", yolo=True)
+            self.session = make_session(tmp_path, model="model", yolo=True)
 
     class FakeTool:
         def preview(self):
@@ -288,7 +293,7 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
 def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
     completer = loop._command_completer()
@@ -328,7 +333,7 @@ def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(
 def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     outputs = []
     answers = iter(["do not edit generated files"])
@@ -343,7 +348,7 @@ def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):
 def test_agent_loop_confirmation_discards_pending_tty_input(tmp_path, monkeypatch):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     calls = []
 
@@ -377,7 +382,7 @@ def test_agent_loop_confirmation_discards_pending_tty_input(tmp_path, monkeypatc
 def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
             self.blackboard = Blackboard()
             self.runs = []
 
@@ -414,7 +419,7 @@ def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
 
     class FakeAgent:
         def __init__(self):
-            self.session = Session(cwd=str(tmp_path), model="model")
+            self.session = make_session(tmp_path, model="model")
 
     loop = AgentLoop(FakeAgent(), prompt_session=FakePromptSession())
 

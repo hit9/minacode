@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from nanocode import BashTool, Session
+from nanocode import BashTool, RuntimeSettings, Session
 
 
 def test_bash_tool_runs_command_and_returns_output(tmp_path):
@@ -37,7 +37,7 @@ def test_bash_tool_returns_nonzero_exit_and_stderr(tmp_path):
 
 
 def test_bash_tool_times_out_and_reports_timeout(tmp_path):
-    session = Session(cwd=str(tmp_path), shell_timeout=0)
+    session = Session(cwd=str(tmp_path), settings=RuntimeSettings(shell_timeout=0))
 
     result = BashTool.make(session, ["sleep 5 & wait"]).call()
 
@@ -46,7 +46,7 @@ def test_bash_tool_times_out_and_reports_timeout(tmp_path):
 
 
 def test_bash_tool_kills_process_group_on_interrupt(tmp_path):
-    session = Session(cwd=str(tmp_path), shell_timeout=30)
+    session = Session(cwd=str(tmp_path), settings=RuntimeSettings(shell_timeout=30))
     pid_file = tmp_path / "pid"
     tool = BashTool.make(session, [f"echo $$ > {pid_file}; printf started; sleep 30"])
 

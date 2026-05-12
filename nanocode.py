@@ -439,6 +439,133 @@ DEFAULT_MODEL_CONFIG = ModelConfig(
 )
 
 
+@dataclass
+class ApiConfig:
+    url: str = ""
+    key: str = ""
+
+
+@dataclass
+class PathsConfig:
+    nanocode_dir: str = ".nanocode"
+
+
+@dataclass
+class ExploreConfig:
+    max_turns: int = 12
+
+
+@dataclass
+class VerifyConfig:
+    max_turns: int = 12
+
+
+@dataclass
+class RuntimeSettings:
+    shell_timeout: int = 60
+    compact_at: int = 50
+    max_agent_steps: int = 50
+    yolo: bool = False
+    debug: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
+        runtime = Config.table(data, "runtime")
+        return cls(
+            shell_timeout=Config.int_or_default(runtime, "shell_timeout", 60),
+            compact_at=Config.int_or_default(runtime, "compact_at", 50),
+            max_agent_steps=Config.positive_int(runtime, "max_agent_steps", 50),
+            yolo=yolo,
+            debug=debug,
+        )
+
+
+@dataclass
+class Config:
+    api: ApiConfig = field(default_factory=ApiConfig)
+    main_model: ModelConfig = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.resolved(ModelConfig()))
+    worker_model: ModelConfig = field(default_factory=ModelConfig)
+    paths: PathsConfig = field(default_factory=PathsConfig)
+    explore: ExploreConfig = field(default_factory=ExploreConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
+
+    @classmethod
+    def from_dict(cls, data: Json) -> "Config":
+        api = cls.table(data, "api")
+        paths = cls.table(data, "paths")
+        explore = cls.table(data, "explore_agent")
+        verify = cls.table(data, "verify_agent")
+        return cls(
+            api=ApiConfig(url=cls.str(api, "url"), key=cls.str(api, "key")),
+            main_model=cls.model_config(cls.table(data, "main_model"), DEFAULT_MODEL_CONFIG),
+            worker_model=cls.model_config(cls.table(data, "worker_model"), ModelConfig()),
+            paths=PathsConfig(nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode")),
+            explore=ExploreConfig(max_turns=cls.positive_int(explore, "max_turns", 12)),
+            verify=VerifyConfig(max_turns=cls.positive_int(verify, "max_turns", 12)),
+        )
+
+    @classmethod
+    def table(cls, config: Json, name: str) -> Json:
+        value = config.get(name)
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def str(cls, config: Json, key: str, default: str = "") -> str:
+        value = config.get(key)
+        if value is None:
+            return default
+        return str(value)
+
+    @classmethod
+    def bool(cls, config: Json, key: str, default: bool | None = None) -> bool | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        raise ConfigError(f"config value `{key}` must be a boolean")
+
+    @classmethod
+    def float(cls, config: Json, key: str, default: float | None = None) -> float | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"config value `{key}` must be a number")
+        return float(value)
+
+    @classmethod
+    def int(cls, config: Json, key: str, default: int | None = None) -> int | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"config value `{key}` must be an integer")
+        return value
+
+    @classmethod
+    def int_or_default(cls, config: Json, key: str, default: int) -> int:
+        value = cls.int(config, key, default)
+        return value if value is not None else default
+
+    @classmethod
+    def positive_int(cls, config: Json, key: str, default: int) -> int:
+        value = cls.int(config, key, default)
+        return max(1, value if value is not None else default)
+
+    @classmethod
+    def model_config(cls, config: Json, defaults: ModelConfig) -> ModelConfig:
+        return ModelConfig(
+            model=cls.str(config, "model", defaults.model),
+            temperature=cls.float(config, "temperature", defaults.temperature),
+            reasoning=cls.bool(config, "reasoning", defaults.reasoning),
+            reasoning_effort=cls.str(config, "reasoning_effort", defaults.reasoning_effort),
+            stream=cls.bool(config, "stream", defaults.stream),
+            timeout=cls.int(config, "timeout", defaults.timeout),
+            first_token_timeout=cls.int(config, "first_token_timeout", defaults.first_token_timeout),
+        )
+
+
 @final
 class ConfigFile:
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
@@ -516,57 +643,6 @@ max_agent_steps = 50
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"Invalid config file {config_path}: {error}") from error
         return data if isinstance(data, dict) else {}
-
-    @classmethod
-    def table(cls, config: Json, name: str) -> Json:
-        value = config.get(name)
-        return value if isinstance(value, dict) else {}
-
-    @classmethod
-    def str(cls, config: Json, key: str, default: str = "") -> str:
-        value = config.get(key)
-        if value is None:
-            return default
-        return str(value)
-
-    @classmethod
-    def bool(cls, config: Json, key: str, default: bool | None = None) -> bool | None:
-        value = config.get(key)
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        raise ConfigError(f"config value `{key}` must be a boolean")
-
-    @classmethod
-    def float(cls, config: Json, key: str, default: float | None = None) -> float | None:
-        value = config.get(key)
-        if value is None:
-            return default
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ConfigError(f"config value `{key}` must be a number")
-        return float(value)
-
-    @classmethod
-    def int(cls, config: Json, key: str, default: int | None = None) -> int | None:
-        value = config.get(key)
-        if value is None:
-            return default
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ConfigError(f"config value `{key}` must be an integer")
-        return value
-
-    @classmethod
-    def model_config(cls, config: Json, defaults: ModelConfig) -> ModelConfig:
-        return ModelConfig(
-            model=cls.str(config, "model", defaults.model),
-            temperature=cls.float(config, "temperature", defaults.temperature),
-            reasoning=cls.bool(config, "reasoning", defaults.reasoning),
-            reasoning_effort=cls.str(config, "reasoning_effort", defaults.reasoning_effort),
-            stream=cls.bool(config, "stream", defaults.stream),
-            timeout=cls.int(config, "timeout", defaults.timeout),
-            first_token_timeout=cls.int(config, "first_token_timeout", defaults.first_token_timeout),
-        )
 
 
 ############################
@@ -785,40 +861,10 @@ class RangeFingerprintStore:
         return ranges
 
 
-@final
 @dataclass
-class Session:
-    # ---- system ----
-    system: str = field(default_factory=platform.system)
-    arch: str = field(default_factory=platform.machine)
-    cwd: str = field(default_factory=os.getcwd)
-    bash: str = field(default_factory=lambda: shutil.which("bash") or "")
-
-    # ---- configs ----
-    api_url: str = ""
-    api_key: str = ""
-    model: str = ""
-    nanocode_dir: str = ".nanocode"
-    temperature: float = 0.7
-    reasoning: bool = True
-    reasoning_effort: str = "medium"
-    stream: bool = True
-    model_timeout: int = 90
-    first_token_timeout: int = 60
-    shell_timeout: int = 60
-    compact_at: int = 50
-    max_agent_steps: int = 50
-    worker_model_config: ModelConfig = field(default_factory=ModelConfig)
-    explore_agent_max_turns: int = 12
-    verify_agent_max_turns: int = 12
-
-    # ---- runtime variables ----
-    yolo: bool = False
-    debug: bool = False
+class RuntimeState:
     debug_prompt_count: int = 0
     response_language_tag: str = ""
-
-    # ---- stats ---
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
@@ -829,8 +875,6 @@ class Session:
     current_model_call_started_at: float = 0.0
     current_model_call_label: str = ""
     current_model_call_reasoning_label: str = ""
-
-    # ---- conversation ---
     conversation: list[ConversationItem] = field(default_factory=list)
     project_knowledge: ProjectKnowledge = field(default_factory=ProjectKnowledge)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
@@ -840,44 +884,26 @@ class Session:
     session_tool_calls: int = 0
     turn_model_calls: int = 0
 
+
+@final
+@dataclass
+class Session:
+    # ---- system ----
+    system: str = field(default_factory=platform.system)
+    arch: str = field(default_factory=platform.machine)
+    cwd: str = field(default_factory=os.getcwd)
+    bash: str = field(default_factory=lambda: shutil.which("bash") or "")
+    config: Config = field(default_factory=Config)
+    settings: RuntimeSettings = field(default_factory=RuntimeSettings)
+    state: RuntimeState = field(default_factory=RuntimeState)
+
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
         return cls.from_config_data(ConfigFile.load(path), yolo=yolo, debug=debug)
 
     @classmethod
-    def from_config_data(cls, config: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
-        api = ConfigFile.table(config, "api")
-        paths = ConfigFile.table(config, "paths")
-        runtime = ConfigFile.table(config, "runtime")
-        main_model = ConfigFile.model_config(ConfigFile.table(config, "main_model"), DEFAULT_MODEL_CONFIG)
-        worker_model = ConfigFile.model_config(ConfigFile.table(config, "worker_model"), ModelConfig())
-        explore_agent = ConfigFile.table(config, "explore_agent")
-        verify_agent = ConfigFile.table(config, "verify_agent")
-        shell_timeout = ConfigFile.int(runtime, "shell_timeout", 60)
-        compact_at = ConfigFile.int(runtime, "compact_at", 50)
-        max_agent_steps = ConfigFile.int(runtime, "max_agent_steps", 50)
-        explore_agent_max_turns = ConfigFile.int(explore_agent, "max_turns", 12)
-        verify_agent_max_turns = ConfigFile.int(verify_agent, "max_turns", 12)
-        session = cls(
-            api_url=ConfigFile.str(api, "url"),
-            api_key=ConfigFile.str(api, "key"),
-            model=main_model.model,
-            nanocode_dir=ConfigFile.str(paths, "nanocode_dir", ".nanocode"),
-            temperature=main_model.temperature if main_model.temperature is not None else 0.7,
-            reasoning=main_model.reasoning if main_model.reasoning is not None else True,
-            reasoning_effort=main_model.reasoning_effort or "medium",
-            stream=main_model.stream if main_model.stream is not None else True,
-            model_timeout=main_model.timeout if main_model.timeout is not None else 90,
-            first_token_timeout=main_model.first_token_timeout if main_model.first_token_timeout is not None else 60,
-            shell_timeout=shell_timeout if shell_timeout is not None else 60,
-            compact_at=compact_at if compact_at is not None else 50,
-            max_agent_steps=max_agent_steps if max_agent_steps is not None else 50,
-            worker_model_config=worker_model,
-            explore_agent_max_turns=max(1, explore_agent_max_turns if explore_agent_max_turns is not None else 12),
-            verify_agent_max_turns=max(1, verify_agent_max_turns if verify_agent_max_turns is not None else 12),
-            yolo=yolo,
-            debug=debug,
-        )
+    def from_config_data(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
+        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
         session.load_project_knowledge()
         return session
 
@@ -896,49 +922,37 @@ class Session:
             return False
 
     def append_conversation(self, item: ConversationItem) -> None:
-        self.conversation.append(item)
+        self.state.conversation.append(item)
 
     def debug_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, "debug"))
+        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "debug"))
 
     def tool_results_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, "tool_results"))
+        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "tool_results"))
 
     def project_knowledge_path(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, "project_knowledge.json"))
+        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "project_knowledge.json"))
 
     def load_project_knowledge(self) -> None:
-        self.project_knowledge = ProjectKnowledge.load(self.project_knowledge_path())
+        self.state.project_knowledge = ProjectKnowledge.load(self.project_knowledge_path())
 
     def save_project_knowledge(self) -> None:
-        self.project_knowledge.save(self.project_knowledge_path())
+        self.state.project_knowledge.save(self.project_knowledge_path())
 
     def missing_required_config(self) -> list[str]:
         missing = []
-        if not self.api_url:
+        if not self.config.api.url:
             missing.append("api.url")
-        if not self.api_key:
+        if not self.config.api.key:
             missing.append("api.key")
-        if not self.model:
+        if not self.config.main_model.model:
             missing.append("main_model.model")
         return missing
 
-    @property
-    def main_model_config(self) -> ModelConfig:
-        return ModelConfig(
-            model=self.model,
-            temperature=self.temperature,
-            reasoning=self.reasoning,
-            reasoning_effort=self.reasoning_effort,
-            stream=self.stream,
-            timeout=self.model_timeout,
-            first_token_timeout=self.first_token_timeout,
-        )
-
     def model_config_for(self, activity: str, override: ModelConfig | None = None) -> ModelConfig:
-        config = self.main_model_config
+        config = self.config.main_model
         if activity in {"worker", "explore", "verify"}:
-            config = self.worker_model_config.resolved(config)
+            config = self.config.worker_model.resolved(config)
         if override is not None:
             config = override.resolved(config)
         return config
@@ -1252,7 +1266,7 @@ class ReadTool(Tool):
             ranges = [_parse_line_range(args[1], args[2])]
         elif cls._all_args_are_existing_files(session, args):
             filepaths = [session.resolve_path(arg) for arg in args]
-            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
+            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
         elif len(args) == 3:
             ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
@@ -1260,7 +1274,7 @@ class ReadTool(Tool):
         else:
             raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
         start, end = ranges[0]
-        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
+        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
 
     @staticmethod
     def _all_args_are_existing_files(session: Session, args: list[str]) -> bool:
@@ -1392,7 +1406,7 @@ class ReadTool(Tool):
 @final
 @dataclass
 class LineCountTool(Tool):
-    filepath: str = ""
+    filepaths: list[str] = field(default_factory=list)
 
     @classmethod
     def name(cls) -> str:
@@ -1404,31 +1418,53 @@ class LineCountTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Count one file's lines before choosing Read ranges; batch multiple LineCount actions in one turn when needed."]
+        return ["Count lines for one or more files. Useful before reading large files or deciding Read ranges."]
 
     @classmethod
     def signature(cls) -> str:
-        return "LineCount(filepath) -> LineCountToolResult<line_count>"
+        return "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["code.py"]']
+        return ['Example args: ["code.py", "other.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 1:
-            raise ToolCallArgError("requires exactly one arg: filepath")
-        return cls(filepath=session.resolve_path(args[0]))
+        if not args:
+            raise ToolCallArgError("requires at least one arg: filepath")
+        return cls(filepaths=[session.resolve_path(p) for p in args])
 
     def requires_confirmation(self, session: Session) -> bool:
-        return not session.is_path_in_cwd(self.filepath)
+        return any(not session.is_path_in_cwd(fp) for fp in self.filepaths)
 
     def preview(self) -> str:
-        return f"LineCount({self.filepath})"
+        n = len(self.filepaths)
+        sample = ", ".join(self.filepaths[:2]) if n > 2 else ", ".join(self.filepaths)
+        suffix = f"+{n-2} more" if n > 2 else ""
+        return f"LineCount([{sample}{suffix}])"
+
+    _wc_path: ClassVar[str | None] = None
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            return "<LineCountToolResult>" + str(sum(1 for _ in f)) + "</LineCountToolResult>"
+        wc_path = self._wc_command()
+        if wc_path:
+            result = subprocess.run([wc_path, "-l", *self.filepaths], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                raise ToolCallError((result.stderr or "wc failed").strip())
+            lines = result.stdout.strip().splitlines()
+            total = int(lines[-1].split()[0]) if lines else 0
+            return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
+        total = 0
+        for filepath in self.filepaths:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as file:
+                total += sum(1 for _ in file)
+        return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
+
+    @classmethod
+    def _wc_command(cls) -> str:
+        if cls._wc_path is None:
+            cls._wc_path = shutil.which("wc") or ""
+        return cls._wc_path
 
 
 @final
@@ -2185,7 +2221,7 @@ class ReplaceRangeTool(Tool):
             content=first.content,
             edits=edits,
             cwd=session.cwd,
-            range_fingerprints=session.range_fingerprints,
+            range_fingerprints=session.state.range_fingerprints,
         )
 
     def requires_confirmation(self, session: Session) -> bool:
@@ -2635,7 +2671,7 @@ class BashTool(Tool):
             raise ToolCallArgError("requires exactly one arg: command")
         if not session.bash:
             raise ToolCallError("bash not found")
-        return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.shell_timeout)
+        return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.settings.shell_timeout)
 
     def requires_confirmation(self, session: Session) -> bool:
         return True
@@ -2798,7 +2834,7 @@ class GitTool(Tool):
                 raise ToolCallError(f"cwd is not a directory: {cwd_arg}")
         if not git_args:
             raise ToolCallArgError("requires at least one git arg")
-        return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.shell_timeout)
+        return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.settings.shell_timeout)
 
     def requires_confirmation(self, session: Session) -> bool:
         readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
@@ -2857,7 +2893,7 @@ class ToolResultTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        return cls(keys=args, results=session.tool_result_store)
+        return cls(keys=args, results=session.state.tool_result_store)
 
     @classmethod
     def make_for_runtime(cls, session: Session, runtime: AgentRuntime, args: list[str]) -> Self:
@@ -3512,7 +3548,7 @@ class PromptBuilder:
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
         self.context = context or PromptContext(
             blackboard=MainBlackboard(),
-            runtime=AgentRuntime(tool_result_store=session.tool_result_store, tool_result_counter=session.tool_result_counter),
+            runtime=AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter),
         )
 
     def system_prompt(self) -> str:
@@ -3564,18 +3600,18 @@ class PromptBuilder:
         return "\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd])
 
     def _format_conversation_history(self) -> str:
-        if not self.session.conversation:
+        if not self.session.state.conversation:
             return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.conversation)
+        return "\n\n".join(item.format() for item in self.session.state.conversation)
 
     def _format_project_knowledge(self) -> str:
-        return self.session.project_knowledge.format()
+        return self.session.state.project_knowledge.format()
 
     def _format_response_language(self) -> str:
-        return "`" + self.session.response_language_tag + "`" if self.session.response_language_tag else "(empty)"
+        return "`" + self.session.state.response_language_tag + "`" if self.session.state.response_language_tag else "(empty)"
 
     def _format_response_language_bootstrap(self) -> str:
-        if not self.allow_response_language_bootstrap or self.session.response_language_tag:
+        if not self.allow_response_language_bootstrap or self.session.state.response_language_tag:
             return ""
         return (
             "If Response_Language is empty, include response_language in the start action once. "
@@ -3652,9 +3688,9 @@ class ModelClient:
         activity: str = "main",
         parse_actions: bool = True,
     ) -> Json:
-        if not self.session.api_url:
+        if not self.session.config.api.url:
             raise LLMError("config api.url is required")
-        if not self.session.api_key:
+        if not self.session.config.api.key:
             raise LLMError("config api.key is required")
         config = self._request_config(activity)
         model = config.model
@@ -3684,15 +3720,15 @@ class ModelClient:
             url=self._chat_completions_url(),
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": "Bearer " + self.session.api_key,
+                "Authorization": "Bearer " + self.session.config.api.key,
                 "Content-Type": "application/json",
             },
         )
         try:
-            self.session.current_model_call_started_at = time.monotonic()
-            self.session.current_model_call_label = model
-            self.session.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
-            request_deadline = self.session.current_model_call_started_at + max(0, timeout)
+            self.session.state.current_model_call_started_at = time.monotonic()
+            self.session.state.current_model_call_label = model
+            self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+            request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
             signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
@@ -3710,9 +3746,9 @@ class ModelClient:
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
-                self.session.current_model_call_started_at = 0.0
-                self.session.current_model_call_label = ""
-                self.session.current_model_call_reasoning_label = ""
+                self.session.state.current_model_call_started_at = 0.0
+                self.session.state.current_model_call_label = ""
+                self.session.state.current_model_call_reasoning_label = ""
         except ModelRequestTimeout:
             raise LLMError("request model timeout")
         except (socket.timeout, TimeoutError):
@@ -3784,13 +3820,13 @@ class ModelClient:
         signal.setitimer(signal.ITIMER_REAL, remaining)
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
-        if not self.session.debug:
+        if not self.session.settings.debug:
             return ""
-        self.session.debug_prompt_count += 1
+        self.session.state.debug_prompt_count += 1
         directory = self.session.debug_dir()
         os.makedirs(directory, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        filepath = os.path.join(directory, f"{timestamp}-{self.session.debug_prompt_count:04d}-{activity or 'request'}.txt")
+        filepath = os.path.join(directory, f"{timestamp}-{self.session.state.debug_prompt_count:04d}-{activity or 'request'}.txt")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(self._format_debug_prompt(messages=messages))
         return filepath
@@ -3938,7 +3974,7 @@ class ModelClient:
         return text.startswith("<tool_call>")
 
     def _chat_completions_url(self) -> str:
-        url = self.session.api_url.rstrip("/")
+        url = self.session.config.api.url.rstrip("/")
         if url.endswith("/chat/completions"):
             return url
         return url + "/chat/completions"
@@ -3946,7 +3982,7 @@ class ModelClient:
     def _reasoning_params(self, config: ModelConfig) -> Json:
         if config.reasoning is False:
             return {}
-        if "openrouter.ai" in self.session.api_url:
+        if "openrouter.ai" in self.session.config.api.url:
             return {"reasoning": {"effort": config.reasoning_effort or "medium"}}
         return {}
 
@@ -3974,13 +4010,13 @@ class ModelClient:
         prompt_tokens = self._json_int(usage.get("prompt_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
-        self.session.last_prompt_tokens = prompt_tokens
-        self.session.last_completion_tokens = completion_tokens
-        self.session.last_total_tokens = total_tokens
-        self.session.session_prompt_tokens += prompt_tokens
-        self.session.session_completion_tokens += completion_tokens
-        self.session.session_total_tokens += total_tokens
-        self.session.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
+        self.session.state.last_prompt_tokens = prompt_tokens
+        self.session.state.last_completion_tokens = completion_tokens
+        self.session.state.last_total_tokens = total_tokens
+        self.session.state.session_prompt_tokens += prompt_tokens
+        self.session.state.session_completion_tokens += completion_tokens
+        self.session.state.session_total_tokens += total_tokens
+        self.session.state.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -4095,7 +4131,7 @@ class ToolCallRunner:
                     raise ToolCallError("preview unavailable: " + preview_error)
                 requires_confirmation = tool.requires_confirmation(self.session)
                 if requires_confirmation:
-                    if self.session.yolo:
+                    if self.session.settings.yolo:
                         if on_auto_approve is not None:
                             on_auto_approve(call, tool)
                     elif confirm is None:
@@ -4289,8 +4325,8 @@ class ToolCallRunner:
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.runtime.tool_result_counter += 1
-        if self.runtime.tool_result_store is self.session.tool_result_store:
-            self.session.tool_result_counter = self.runtime.tool_result_counter
+        if self.runtime.tool_result_store is self.session.state.tool_result_store:
+            self.session.state.tool_result_counter = self.runtime.tool_result_counter
         key = "tr." + str(self.runtime.tool_result_counter)
         description = outcome + " " + ToolCallDisplayFormatter._format_call(call)
         if call.intention:
@@ -4400,7 +4436,7 @@ class AgentStateUpdater:
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
-        before_project_knowledge = self.session.project_knowledge.format()
+        before_project_knowledge = self.session.state.project_knowledge.format()
         before_extra_state = self._before_extra_state()
         if apply_response_language:
             self.apply_response_language(actions)
@@ -4440,7 +4476,7 @@ class AgentStateUpdater:
             else:
                 continue
             if tag:
-                self.session.response_language_tag = tag
+                self.session.state.response_language_tag = tag
 
     @staticmethod
     def _normalize_response_language_tag(value: str) -> str:
@@ -4485,7 +4521,7 @@ class AgentStateUpdater:
                 lines.append(self._state_heading())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        project_knowledge = self.session.project_knowledge.format()
+        project_knowledge = self.session.state.project_knowledge.format()
         if project_knowledge != before_project_knowledge:
             if not lines:
                 lines.append(self._state_heading())
@@ -4523,7 +4559,7 @@ class AgentStateUpdater:
         return rows
 
     def _format_project_knowledge_rows(self) -> list[str]:
-        knowledge = self.session.project_knowledge
+        knowledge = self.session.state.project_knowledge
         return [
             "    summary: " + ("set" if knowledge.summary else "empty"),
             "    structure: " + str(len(knowledge.structure)) + " item(s)",
@@ -4626,7 +4662,7 @@ class AgentStateUpdater:
         for action in actions:
             learn = self._learn_value(action)
             if learn:
-                changed = self.session.project_knowledge.apply(learn) or changed
+                changed = self.session.state.project_knowledge.apply(learn) or changed
         if changed:
             self.session.save_project_knowledge()
 
@@ -4762,20 +4798,20 @@ class ConversationCompactor:
         self.blackboard = blackboard
 
     def compact(self) -> int:
-        count = len(self.session.conversation)
+        count = len(self.session.state.conversation)
         if count <= self.KEEP_RECENT:
             return 0
-        old_items = self.session.conversation[: -self.KEEP_RECENT]
-        keep_items = self.session.conversation[-self.KEEP_RECENT :]
+        old_items = self.session.state.conversation[: -self.KEEP_RECENT]
+        keep_items = self.session.state.conversation[-self.KEEP_RECENT :]
         summary, known = self._summarize(old_items)
-        self.session.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
+        self.session.state.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
         self.blackboard.known = known
         return count
 
     def maybe_compact(self) -> bool:
-        if self.session.compact_at <= 0:
+        if self.session.settings.compact_at <= 0:
             return False
-        if len(self.session.conversation) <= self.session.compact_at:
+        if len(self.session.state.conversation) <= self.session.settings.compact_at:
             return False
         return self.compact() > 0
 
@@ -4829,7 +4865,7 @@ class BaseAgent:
     ):
         self.session = session
         self.blackboard = blackboard or Blackboard()
-        self.runtime = runtime or AgentRuntime(tool_result_store=session.tool_result_store, tool_result_counter=session.tool_result_counter)
+        self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
         self.activity = activity
         self.prompt_context = PromptContext(blackboard=self.blackboard, runtime=self.runtime)
         self.prompt_builder = prompt_builder or PromptBuilder(
@@ -4874,7 +4910,7 @@ class BaseAgent:
     ) -> Json:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
             try:
-                self.session.turn_model_calls += 1
+                self.session.state.turn_model_calls += 1
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except LLMError as error:
                 if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
@@ -5016,7 +5052,7 @@ class BaseAgent:
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is None:
             return
-        if self.session.debug:
+        if self.session.settings.debug:
             on_message(debug_message)
             return
         if not message.startswith(("Retrying:", "Continuing:")):
@@ -5073,8 +5109,8 @@ class BaseAgent:
             on_live_done=on_live_done,
         )
         self._append_latest_tool_call_blocks(self.tool_runner.latest_executions)
-        self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
-        self.session.session_tool_calls += len(self.tool_runner.latest_executions)
+        self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
+        self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
         return _join_tool_call_blocks(self.latest_tool_call_blocks)
@@ -5252,7 +5288,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
-        if self.session.debug and on_message is not None:
+        if self.session.settings.debug and on_message is not None:
             frame_error_report = self._format_frame_error_report(response)
             if frame_error_report:
                 on_message(frame_error_report)
@@ -5369,7 +5405,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         return any(_json_str(action.get("type")) == "deliver" for action in actions)
 
     def _max_steps(self, session: Session) -> int:
-        return session.explore_agent_max_turns
+        return session.config.explore.max_turns
 
     def _prepare_step(self, index: int, max_steps: int) -> None:
         pass
@@ -5618,7 +5654,7 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     step_limit_reason: ClassVar[str] = "verify step limit reached"
 
     def _max_steps(self, session: Session) -> int:
-        return session.verify_agent_max_turns
+        return session.config.verify.max_turns
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         repeated = self._repeated_failed_process_call(tool_calls)
@@ -6140,7 +6176,7 @@ class MainAgent(BaseAgent):
         return False
 
     def _emit_debug_frame_errors(self, response: Json, on_message: MessageCallback | None) -> None:
-        if not self.session.debug or on_message is None:
+        if not self.session.settings.debug or on_message is None:
             return
         frame_error_report = self._format_frame_error_report(response)
         if frame_error_report:
@@ -6409,10 +6445,10 @@ class MainAgent(BaseAgent):
         self.worker_reports.prune(self.RECENT_WORKER_REPORTS)
         self._prune_tool_result_store()
         # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
-        self.session.range_fingerprints.clear()
+        self.session.state.range_fingerprints.clear()
         self.mode = AgentMode.ACT
-        self.session.turn_tool_calls = 0
-        self.session.turn_model_calls = 0
+        self.session.state.turn_tool_calls = 0
+        self.session.state.turn_model_calls = 0
         self.blackboard.user_input = user_input
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -6421,7 +6457,7 @@ class MainAgent(BaseAgent):
         self.session.append_conversation(UserMessage(content=user_input))
 
         return self.run_loop(
-            max_steps=self.session.max_agent_steps,
+            max_steps=self.session.settings.max_agent_steps,
             on_message=on_message,
             on_step=lambda response: self.handle_response(
                 response,
@@ -6686,7 +6722,7 @@ class CommandDispatcher:
 
     def _yolo(self, args: str) -> str:
         if not args.strip():
-            current = self.agent.session.yolo
+            current = self.agent.session.settings.yolo
             return self._set("runtime.yolo " + ("off" if current else "on"))
         return self._set("runtime.yolo " + args)
 
@@ -6709,7 +6745,7 @@ class CommandDispatcher:
         known = self.agent.blackboard.known
         if known:
             sections.append("### Known To Consider\n" + "\n".join("- " + item for item in known))
-        conversation = self.agent.session.conversation
+        conversation = self.agent.session.state.conversation
         if conversation:
             sections.append("### Conversation To Consider\n" + "\n\n".join(item.format() for item in conversation))
         if not sections:
@@ -6726,12 +6762,12 @@ class CommandDispatcher:
             [
                 "main: " + self._format_model_status(session.model_config_for("main")),
                 "worker: " + self._format_model_status(session.model_config_for("worker")),
-                "explore: turns=" + str(session.explore_agent_max_turns),
-                "verify: turns=" + str(session.verify_agent_max_turns),
-                "runtime: yolo=" + self._format_bool(session.yolo) + " compact_at=" + str(session.compact_at),
-                "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "tool_calls: turn=" + str(session.turn_tool_calls) + " session=" + str(session.session_tool_calls),
-                "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
+                "explore: turns=" + str(session.config.explore.max_turns),
+                "verify: turns=" + str(session.config.verify.max_turns),
+                "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
+                "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
+                "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
+                "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 self._format_model_usage(),
                 "goal: " + (blackboard.goal or "(empty)"),
@@ -6744,10 +6780,10 @@ class CommandDispatcher:
         return (config.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(config.stream)
 
     def _format_model_usage(self) -> str:
-        if not self.agent.session.model_usage:
+        if not self.agent.session.state.model_usage:
             return "  (empty)"
         lines = []
-        for model, usage in self.agent.session.model_usage.items():
+        for model, usage in self.agent.session.state.model_usage.items():
             lines.append("  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens))
         return "\n".join(lines)
 
@@ -6760,13 +6796,13 @@ class CommandDispatcher:
         count = self.agent.compact_history()
         if count == 0:
             return "Conversation history is empty"
-        return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.conversation)) + " item(s)"
+        return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
 
     def _config(self, args: str) -> str:
         if args:
             return "Usage: /config"
         session = self.agent.session
-        main = session.main_model_config
+        main = session.config.main_model
         worker = session.model_config_for("worker")
         return "\n".join(
             [
@@ -6785,12 +6821,12 @@ class CommandDispatcher:
                 "worker.temperature: " + self._format_optional(worker.temperature),
                 "worker.timeout: " + self._format_optional(worker.timeout),
                 "worker.first_token_timeout: " + self._format_optional(worker.first_token_timeout),
-                "explore.max_turns: " + str(session.explore_agent_max_turns),
-                "verify.max_turns: " + str(session.verify_agent_max_turns),
-                "runtime.compact_at: " + str(session.compact_at),
-                "runtime.shell_timeout: " + str(session.shell_timeout),
-                "runtime.max_agent_steps: " + str(session.max_agent_steps),
-                "runtime.yolo: " + self._format_bool(session.yolo),
+                "explore.max_turns: " + str(session.config.explore.max_turns),
+                "verify.max_turns: " + str(session.config.verify.max_turns),
+                "runtime.compact_at: " + str(session.settings.compact_at),
+                "runtime.shell_timeout: " + str(session.settings.shell_timeout),
+                "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
+                "runtime.yolo: " + self._format_bool(session.settings.yolo),
             ]
         )
 
@@ -6826,45 +6862,45 @@ class CommandDispatcher:
     def _config_value(self, key: str) -> str:
         session = self.agent.session
         if key == "main.model":
-            return session.model or "(empty)"
+            return session.config.main_model.model or "(empty)"
         if key == "main.reasoning":
-            return self._format_bool(session.reasoning)
+            return self._format_bool(session.config.main_model.reasoning)
         if key == "main.effort":
-            return session.reasoning_effort
+            return session.config.main_model.reasoning_effort
         if key == "main.stream":
-            return self._format_bool(session.stream)
+            return self._format_bool(session.config.main_model.stream)
         if key == "main.temperature":
-            return str(session.temperature)
+            return str(session.config.main_model.temperature)
         if key == "main.timeout":
-            return str(session.model_timeout)
+            return str(session.config.main_model.timeout)
         if key == "main.first_token_timeout":
-            return str(session.first_token_timeout)
+            return str(session.config.main_model.first_token_timeout)
         if key == "worker.model":
-            return session.worker_model_config.model or "(main fallback)"
+            return session.config.worker_model.model or "(main fallback)"
         if key == "worker.reasoning":
-            return self._format_bool(session.worker_model_config.reasoning)
+            return self._format_bool(session.config.worker_model.reasoning)
         if key == "worker.effort":
-            return session.worker_model_config.reasoning_effort or "(main fallback)"
+            return session.config.worker_model.reasoning_effort or "(main fallback)"
         if key == "worker.stream":
-            return self._format_bool(session.worker_model_config.stream)
+            return self._format_bool(session.config.worker_model.stream)
         if key == "worker.temperature":
-            return self._format_optional(session.worker_model_config.temperature)
+            return self._format_optional(session.config.worker_model.temperature)
         if key == "worker.timeout":
-            return self._format_optional(session.worker_model_config.timeout)
+            return self._format_optional(session.config.worker_model.timeout)
         if key == "worker.first_token_timeout":
-            return self._format_optional(session.worker_model_config.first_token_timeout)
+            return self._format_optional(session.config.worker_model.first_token_timeout)
         if key == "explore.max_turns":
-            return str(session.explore_agent_max_turns)
+            return str(session.config.explore.max_turns)
         if key == "verify.max_turns":
-            return str(session.verify_agent_max_turns)
+            return str(session.config.verify.max_turns)
         if key == "runtime.compact_at":
-            return str(session.compact_at)
+            return str(session.settings.compact_at)
         if key == "runtime.shell_timeout":
-            return str(session.shell_timeout)
+            return str(session.settings.shell_timeout)
         if key == "runtime.max_agent_steps":
-            return str(session.max_agent_steps)
+            return str(session.settings.max_agent_steps)
         if key == "runtime.yolo":
-            return self._format_bool(session.yolo)
+            return self._format_bool(session.settings.yolo)
         return "(unknown)"
 
     def _apply_config_value(self, key: str, value: str) -> str:
@@ -6909,53 +6945,53 @@ class CommandDispatcher:
 
     def _set_model_value(self, key: str, value: str) -> None:
         if key == "main.model":
-            self.agent.session.model = value
+            self.agent.session.config.main_model.model = value
         elif key == "worker.model":
-            self.agent.session.worker_model_config.model = value
+            self.agent.session.config.worker_model.model = value
 
     def _set_bool_value(self, key: str, value: bool) -> None:
         if key == "main.reasoning":
-            self.agent.session.reasoning = value
+            self.agent.session.config.main_model.reasoning = value
         elif key == "main.stream":
-            self.agent.session.stream = value
+            self.agent.session.config.main_model.stream = value
         elif key == "worker.reasoning":
-            self.agent.session.worker_model_config.reasoning = value
+            self.agent.session.config.worker_model.reasoning = value
         elif key == "worker.stream":
-            self.agent.session.worker_model_config.stream = value
+            self.agent.session.config.worker_model.stream = value
         elif key == "runtime.yolo":
-            self.agent.session.yolo = value
+            self.agent.session.settings.yolo = value
 
     def _set_effort_value(self, key: str, value: str) -> None:
         if key == "main.effort":
-            self.agent.session.reasoning_effort = value
+            self.agent.session.config.main_model.reasoning_effort = value
         elif key == "worker.effort":
-            self.agent.session.worker_model_config.reasoning_effort = value
+            self.agent.session.config.worker_model.reasoning_effort = value
 
     def _set_temperature_value(self, key: str, value: float) -> None:
         if key == "main.temperature":
-            self.agent.session.temperature = value
+            self.agent.session.config.main_model.temperature = value
         elif key == "worker.temperature":
-            self.agent.session.worker_model_config.temperature = value
+            self.agent.session.config.worker_model.temperature = value
 
     def _set_int_value(self, key: str, value: int) -> None:
         if key == "main.timeout":
-            self.agent.session.model_timeout = value
+            self.agent.session.config.main_model.timeout = value
         elif key == "main.first_token_timeout":
-            self.agent.session.first_token_timeout = value
+            self.agent.session.config.main_model.first_token_timeout = value
         elif key == "worker.timeout":
-            self.agent.session.worker_model_config.timeout = value
+            self.agent.session.config.worker_model.timeout = value
         elif key == "worker.first_token_timeout":
-            self.agent.session.worker_model_config.first_token_timeout = value
+            self.agent.session.config.worker_model.first_token_timeout = value
         elif key == "explore.max_turns":
-            self.agent.session.explore_agent_max_turns = value
+            self.agent.session.config.explore.max_turns = value
         elif key == "verify.max_turns":
-            self.agent.session.verify_agent_max_turns = value
+            self.agent.session.config.verify.max_turns = value
         elif key == "runtime.compact_at":
-            self.agent.session.compact_at = value
+            self.agent.session.settings.compact_at = value
         elif key == "runtime.shell_timeout":
-            self.agent.session.shell_timeout = value
+            self.agent.session.settings.shell_timeout = value
         elif key == "runtime.max_agent_steps":
-            self.agent.session.max_agent_steps = value
+            self.agent.session.settings.max_agent_steps = value
 
     def _clean_logs(self, args: str) -> str:
         if args:
@@ -7113,19 +7149,19 @@ class StatusBar:
 
     def _format_line(self, turn_elapsed: float, *, now: float, show_elapsed: bool) -> str:
         session = self.session
-        active_model = session.current_model_call_label or session.main_model_config.model
+        active_model = session.state.current_model_call_label or session.config.main_model.model
         model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
-        reasoning = session.current_model_call_reasoning_label or (session.main_model_config.reasoning_effort if session.main_model_config.reasoning else "off")
-        yolo = " | yolo" if session.yolo else ""
-        context = str(len(session.conversation)) + "/" + str(session.compact_at)
-        last_tokens = self._format_count(session.last_total_tokens)
-        session_tokens = self._format_count(session.session_total_tokens)
+        reasoning = session.state.current_model_call_reasoning_label or (session.config.main_model.reasoning_effort if session.config.main_model.reasoning else "off")
+        yolo = " | yolo" if session.settings.yolo else ""
+        context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
+        last_tokens = self._format_count(session.state.last_total_tokens)
+        session_tokens = self._format_count(session.state.session_total_tokens)
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.turn_tool_calls), "tok(all):" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok(all):" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
-        if session.current_model_call_started_at > 0:
-            parts.append("calling(" + str(session.turn_model_calls) + "):" + f"{max(0.0, now - session.current_model_call_started_at):.1f}s")
+        if session.state.current_model_call_started_at > 0:
+            parts.append("calling(" + str(session.state.turn_model_calls) + "):" + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s")
         return " | ".join(parts)
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
@@ -7172,7 +7208,7 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
-        self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
+        self.history_path = agent.session.resolve_path(os.path.join(agent.session.config.paths.nanocode_dir, "history"))
         self.prompt_session = prompt_session
         self._active_scope: str | None = None
         self._live_preview_active = False
@@ -7212,7 +7248,7 @@ class AgentLoop:
                 self._run_agent(user_input)
 
     def _prompt(self) -> str:
-        return "[yolo] > " if self.agent.session.yolo else "> "
+        return "[yolo] > " if self.agent.session.settings.yolo else "> "
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:

@@ -5,7 +5,7 @@ from nanocode import MainAgent, Session, ToolCallError, ToolResultItem, ToolResu
 
 def test_tool_result_tool_gets_multiple_keys(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.tool_result_store = {
+    session.state.tool_result_store = {
         "tr.1": ToolResultItem(
             description="Read sample.",
             value="line 1\nline 2",
@@ -49,7 +49,7 @@ def test_known_action_accepts_string_items(tmp_path):
     )
 
     assert agent.blackboard.known == ["Parser notes were captured."]
-    assert session.tool_result_store == {}
+    assert session.state.tool_result_store == {}
 
 
 def test_tool_result_invalid_args(tmp_path):

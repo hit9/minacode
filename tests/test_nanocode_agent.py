@@ -28,6 +28,37 @@ def _blocks_text(blocks):
     return "\n".join(blocks)
 
 
+def _session(
+    tmp_path,
+    *,
+    api_url: str = "",
+    api_key: str = "",
+    model: str = "",
+    stream: bool | None = None,
+    timeout: int | None = None,
+    first_token_timeout: int | None = None,
+    reasoning_effort: str = "",
+    yolo: bool = False,
+    debug: bool = False,
+    explore_max_turns: int = 12,
+) -> Session:
+    main_model: dict[str, object] = {"model": model}
+    if stream is not None:
+        main_model["stream"] = stream
+    if timeout is not None:
+        main_model["timeout"] = timeout
+    if first_token_timeout is not None:
+        main_model["first_token_timeout"] = first_token_timeout
+    if reasoning_effort:
+        main_model["reasoning_effort"] = reasoning_effort
+    data = {
+        "api": {"url": api_url, "key": api_key},
+        "main_model": main_model,
+        "explore_agent": {"max_turns": explore_max_turns},
+    }
+    return Session(cwd=str(tmp_path), config=nanocode.Config.from_dict(data), settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
+
+
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -49,14 +80,14 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert "why: read sample" in latest
     assert "result_key: tr.1" in latest
     assert "output:\n<ReadToolResult>" in latest
-    assert session.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
-    assert "alpha" in session.tool_result_store["tr.1"].value
-    assert session.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
-    assert session.tool_result_store["tr.1"].original_chars > 0
-    assert session.tool_result_store["tr.1"].original_lines > 0
-    assert session.tool_result_store["tr.1"].excerpted is False
-    assert (tmp_path / session.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.tool_result_store["tr.1"].value
-    assert session.conversation == []
+    assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
+    assert "alpha" in session.state.tool_result_store["tr.1"].value
+    assert session.state.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
+    assert session.state.tool_result_store["tr.1"].original_chars > 0
+    assert session.state.tool_result_store["tr.1"].original_lines > 0
+    assert session.state.tool_result_store["tr.1"].excerpted is False
+    assert (tmp_path / session.state.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.state.tool_result_store["tr.1"].value
+    assert session.state.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
@@ -191,8 +222,8 @@ def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.tool_runner.latest_executions[0].call.intention == "second read"
-    assert list(session.tool_result_store) == ["tr.1"]
-    assert "second read" in session.tool_result_store["tr.1"].description
+    assert list(session.state.tool_result_store) == ["tr.1"]
+    assert "second read" in session.state.tool_result_store["tr.1"].description
     assert "first read" not in latest
 
 
@@ -211,13 +242,13 @@ def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp
     )
 
     assert [execution.call.intention for execution in agent.tool_runner.latest_executions] == ["first read", "middle read", "second read"]
-    assert list(session.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
+    assert list(session.state.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
 
 
 def test_agent_merges_adjacent_recall_calls(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
-    session.tool_result_store["tr.2"] = nanocode.ToolResultItem(description="success Read b", value="beta")
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
+    session.state.tool_result_store["tr.2"] = nanocode.ToolResultItem(description="success Read b", value="beta")
     agent = MainAgent(session)
 
     agent.execute_tool_calls(
@@ -293,7 +324,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 2
     assert [execution.outcome for execution in agent.tool_runner.latest_executions] == ["success", "failure"]
-    assert list(session.tool_result_store) == ["tr.1", "tr.2"]
+    assert list(session.state.tool_result_store) == ["tr.1", "tr.2"]
     assert path.read_text(encoding="utf-8") == "new\n"
 
 
@@ -305,7 +336,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0", "1"]}])
 
-    item = session.tool_result_store["tr.1"]
+    item = session.state.tool_result_store["tr.1"]
     assert item.excerpted is True
     assert len(item.value) <= nanocode.MAX_TOOL_OUTPUT_CHARS
     assert "excerpted: true" in item.value
@@ -367,10 +398,10 @@ def test_tool_result_store_keeps_latest_256_items(tmp_path):
     for index in range(257):
         agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
 
-    assert len(session.tool_result_store) == 256
-    assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
-    assert list(session.tool_result_store)[-1] == "tr.257"
-    assert session.tool_result_counter == 257
+    assert len(session.state.tool_result_store) == 256
+    assert list(session.state.tool_result_store)[:2] == ["tr.2", "tr.3"]
+    assert list(session.state.tool_result_store)[-1] == "tr.257"
+    assert session.state.tool_result_counter == 257
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -399,7 +430,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12, stream=False)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, stream=False)
 
     response = MainAgent(session).request("system", "user")
 
@@ -412,9 +443,9 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert "response_format" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert "reasoning" not in captured["payload"]
-    assert session.last_prompt_tokens == 2
-    assert session.last_completion_tokens == 3
-    assert session.last_total_tokens == 5
+    assert session.state.last_prompt_tokens == 2
+    assert session.state.last_completion_tokens == 3
+    assert session.state.last_total_tokens == 5
 
 
 def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, monkeypatch):
@@ -441,8 +472,8 @@ def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, m
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://openrouter.ai/api/v1", api_key="key", model="main", stream=False)
-    session.worker_model_config = nanocode.ModelConfig(
+    session = _session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="main", stream=False)
+    session.config.worker_model = nanocode.ModelConfig(
         model="worker",
         temperature=0.2,
         reasoning=True,
@@ -480,7 +511,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
 
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 4
-    assert agent.session.turn_model_calls == 4
+    assert agent.session.state.turn_model_calls == 4
     assert sleeps == [3, 10, 20]
 
 
@@ -505,7 +536,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
 
     assert response["actions"][0]["text"] == "ok"
     assert agent.model_client.calls == 3
-    assert agent.session.turn_model_calls == 3
+    assert agent.session.state.turn_model_calls == 3
     assert sleeps == [3, 10]
     assert messages == [
         "Retrying: request model timeout; retry 1/6 in 3s.",
@@ -525,7 +556,7 @@ def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
 
 
 def test_agent_gate_reports_immediately_in_debug(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path), debug=True))
+    agent = MainAgent(_session(tmp_path, debug=True))
     messages = []
 
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: debug")
@@ -555,7 +586,7 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
         raise AssertionError("expected LLMError")
 
     assert agent.model_client.calls == 7
-    assert agent.session.turn_model_calls == 7
+    assert agent.session.state.turn_model_calls == 7
     assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
@@ -581,7 +612,7 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
         raise AssertionError("expected LLMError")
 
     assert agent.model_client.calls == 1
-    assert agent.session.turn_model_calls == 1
+    assert agent.session.state.turn_model_calls == 1
     assert sleeps == []
 
 
@@ -615,7 +646,7 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
 
     response = MainAgent(session).request("system", "user")
 
@@ -625,10 +656,10 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
         {"type": "message", "text": "done"},
     ]
-    assert session.last_prompt_tokens == 2
-    assert session.last_completion_tokens == 3
-    assert session.last_total_tokens == 5
-    assert session.session_total_tokens == 5
+    assert session.state.last_prompt_tokens == 2
+    assert session.state.last_completion_tokens == 3
+    assert session.state.last_total_tokens == 5
+    assert session.state.session_total_tokens == 5
 
 
 def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, monkeypatch):
@@ -648,14 +679,7 @@ def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, m
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
-    session = Session(
-        cwd=str(tmp_path),
-        api_url="https://example.test/v1",
-        api_key="key",
-        model="model",
-        model_timeout=90,
-        first_token_timeout=4,
-    )
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
 
     response = MainAgent(session).request("system", "user")
 
@@ -680,7 +704,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     sleeps = []
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", model_timeout=12)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12)
 
     try:
         MainAgent(session).request("system", "user")
@@ -689,7 +713,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     else:
         raise AssertionError("expected LLMError")
 
-    assert session.current_model_call_started_at == 0.0
+    assert session.state.current_model_call_started_at == 0.0
     assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
@@ -730,7 +754,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
         return FakeResponse(responses.pop(0))
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model")
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
     agent = MainAgent(session)
     _seed_plan(agent, "read sample")
     messages = []
@@ -763,14 +787,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(
-        cwd=str(tmp_path),
-        api_url="https://openrouter.ai/api/v1",
-        api_key="key",
-        model="model",
-        reasoning_effort="high",
-        stream=False,
-    )
+    session = _session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="model", reasoning_effort="high", stream=False)
 
     MainAgent(session).request("system", "user")
 
@@ -790,15 +807,7 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
             return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
-    session = Session(
-        cwd=str(tmp_path),
-        api_url="https://example.test/v1",
-        api_key="key",
-        model="model",
-        model_timeout=12,
-        debug=True,
-        stream=False,
-    )
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, debug=True, stream=False)
 
     response = MainAgent(session).request("system prompt", "user prompt")
 
@@ -832,7 +841,7 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = MainAgent(session).request("system", "user")
 
@@ -911,7 +920,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = MainAgent(session).request("system", "user")
 
@@ -954,7 +963,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = Session(cwd=str(tmp_path), api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = MainAgent(session).request("system", "user")
 
@@ -1048,7 +1057,7 @@ def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
     )
 
     data = json.loads((tmp_path / ".nanocode" / "project_knowledge.json").read_text(encoding="utf-8"))
-    assert session.project_knowledge.summary == "Single-file CLI coding assistant."
+    assert session.state.project_knowledge.summary == "Single-file CLI coding assistant."
     assert data["summary"] == "Single-file CLI coding assistant."
     assert data["structure"] == ["nanocode.py contains the CLI and agent loop."]
     assert "  Project_Knowledge\n" in agent.state_updater.latest_report
@@ -1088,9 +1097,9 @@ def test_main_agent_stop_after_learn_finishes_after_learn_sidecar(tmp_path):
 
     assert fake_client.calls == 1
     assert response["actions"][0]["type"] == "goal"
-    assert session.project_knowledge.summary == "Single-file CLI coding assistant."
+    assert session.state.project_knowledge.summary == "Single-file CLI coding assistant."
     assert any(message.startswith("State Updated") for message in messages)
-    assert session.conversation[-1].content == "Project knowledge updated."
+    assert session.state.conversation[-1].content == "Project knowledge updated."
 
 
 def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
@@ -1110,9 +1119,9 @@ def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
         }
     )
 
-    assert len(session.project_knowledge.structure) == 30
-    assert session.project_knowledge.structure[0] == "item 1"
-    assert session.project_knowledge.structure[-1] == "item 30"
+    assert len(session.state.project_knowledge.structure) == 30
+    assert session.state.project_knowledge.structure[0] == "item 1"
+    assert session.state.project_knowledge.structure[-1] == "item 30"
 
 
 def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
@@ -1153,8 +1162,8 @@ def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
         }
     )
 
-    assert session.project_knowledge.structure == ["new structure"]
-    assert session.project_knowledge.architecture == ["new architecture"]
+    assert session.state.project_knowledge.structure == ["new structure"]
+    assert session.state.project_knowledge.architecture == ["new architecture"]
 
 
 def test_explore_agent_does_not_apply_project_knowledge(tmp_path):
@@ -1178,7 +1187,7 @@ def test_explore_agent_does_not_apply_project_knowledge(tmp_path):
         }
     )
 
-    assert session.project_knowledge.is_empty()
+    assert session.state.project_knowledge.is_empty()
     assert not (tmp_path / ".nanocode" / "project_knowledge.json").exists()
 
 
@@ -1313,7 +1322,7 @@ def test_agent_applies_response_language_from_start_action(tmp_path):
         }
     )
 
-    assert session.response_language_tag == "zh-CN"
+    assert session.state.response_language_tag == "zh-CN"
 
 
 def test_agent_resets_verification_when_goal_changes(tmp_path):
@@ -1386,7 +1395,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
 
     assert "Cancelled: user refused: please inspect tests first" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
-    assert session.conversation == []
+    assert session.state.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
@@ -1417,7 +1426,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     assert '{"type":"tool","name":"Read","intention":"...","args":["path"]}' in latest
     assert "InvalidToolCall" in latest
     assert "bad call" not in latest
-    assert session.conversation == []
+    assert session.state.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
@@ -1489,7 +1498,7 @@ def test_explore_agent_rejects_edit_tools(tmp_path):
     assert "tool not allowed for this agent: Edit" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
     assert explorer.session is parent_session
-    assert parent_session.tool_result_store == {}
+    assert parent_session.state.tool_result_store == {}
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
 
 
@@ -1510,7 +1519,7 @@ def test_verify_agent_rejects_edit_tools(tmp_path):
     assert "tool not allowed for this agent: Edit" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
     assert verifier.session is parent_session
-    assert parent_session.tool_result_store == {}
+    assert parent_session.state.tool_result_store == {}
     assert list(verifier.runtime.tool_result_store) == ["tr.1"]
 
 
@@ -1735,7 +1744,7 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
     ]
     assert report.known == ["sample.txt contains alpha.", "relevant target is sample.txt line 1."]
     assert explorer.session is parent_session
-    assert parent_session.tool_result_store == {}
+    assert parent_session.state.tool_result_store == {}
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
     assert len(explorer.model_client.user_prompts) == 2
 
@@ -1790,7 +1799,7 @@ def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
 
 def test_explore_agent_uses_observe_turn_after_tool_results(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path), explore_agent_max_turns=2)
+    parent_session = _session(tmp_path, explore_max_turns=2)
     parent_agent = MainAgent(parent_session)
 
     class FakeModelClient:
@@ -1840,7 +1849,7 @@ def test_explore_agent_uses_observe_turn_after_tool_results(tmp_path):
 
 def test_explore_agent_goal_changes_do_not_clear_parent_range_fingerprints(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
-    parent_session.range_fingerprints.remember(filepath=str(tmp_path / "sample.txt"), start=0, end=1, content="alpha\n")
+    parent_session.state.range_fingerprints.remember(filepath=str(tmp_path / "sample.txt"), start=0, end=1, content="alpha\n")
     parent_agent = MainAgent(parent_session)
     explorer = nanocode.ExploreAgent(
         parent_session=parent_session,
@@ -1851,13 +1860,13 @@ def test_explore_agent_goal_changes_do_not_clear_parent_range_fingerprints(tmp_p
 
     explorer.apply_response({"actions": [{"type": "goal", "text": "refined target", "complete": False}]})
 
-    assert len(parent_session.range_fingerprints) == 1
+    assert len(parent_session.state.range_fingerprints) == 1
 
 
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path), yolo=True)
+    session = _session(tmp_path, yolo=True)
     agent = MainAgent(session)
     confirmations = []
     auto_approvals = []
@@ -2014,7 +2023,7 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
-    assert session.tool_result_store == {}
+    assert session.state.tool_result_store == {}
     assert agent.recent_tool_call_blocks == []
     assert '[explore] [success] Read("sample.txt", "0", "1")' in messages
     assert messages[-1] == "done"
@@ -2229,16 +2238,16 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
 
     agent.run("read samples")
 
-    assert len(session.tool_result_store) == 51
-    assert list(session.tool_result_store)[0] == "tr.1"
+    assert len(session.state.tool_result_store) == 51
+    assert list(session.state.tool_result_store)[0] == "tr.1"
 
     agent.model_client.responses = [{"actions": [{"type": "chat", "text": "ok"}]}]
     agent.run("next task")
 
-    assert len(session.tool_result_store) == 50
-    assert list(session.tool_result_store)[:2] == ["tr.2", "tr.3"]
-    assert list(session.tool_result_store)[-1] == "tr.51"
-    assert session.tool_result_counter == 51
+    assert len(session.state.tool_result_store) == 50
+    assert list(session.state.tool_result_store)[:2] == ["tr.2", "tr.3"]
+    assert list(session.state.tool_result_store)[-1] == "tr.51"
+    assert session.state.tool_result_counter == 51
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
@@ -2315,7 +2324,7 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Retrying: create a short plan before tools/workers." in messages
-    assert len(session.tool_result_store) == 1
+    assert len(session.state.tool_result_store) == 1
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
 
 
@@ -2366,7 +2375,7 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
     assert "Retrying: new goal requires a fresh plan." in messages
     assert agent.blackboard.goal == "new goal"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
-    assert len(session.tool_result_store) == 1
+    assert len(session.state.tool_result_store) == 1
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
@@ -3089,7 +3098,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert messages[0] == "progress"
     assert messages[-1] == "done"
-    assert "progress" not in [item.content for item in session.conversation]
+    assert "progress" not in [item.content for item in session.state.conversation]
     assert agent.agent_feedback_errors == []
 
 
@@ -3121,7 +3130,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert messages[0] == "reading sample"
-    assert "reading sample" not in [item.content for item in session.conversation]
+    assert "reading sample" not in [item.content for item in session.state.conversation]
 
 
 def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
@@ -3219,7 +3228,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
     assert "Format_Warning:" not in "\n".join(messages)
     assert messages[-1] == "done"
 
-    debug_session = Session(cwd=str(tmp_path), debug=True)
+    debug_session = _session(tmp_path, debug=True)
     debug_agent = MainAgent(debug_session)
     debug_agent.model_client = FakeModelClient()
     debug_messages = []
@@ -3241,7 +3250,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
         def request(self, system_prompt, user_prompt, *, activity="main"):
             return self.responses.pop(0)
 
-    session = Session(cwd=str(tmp_path), debug=True)
+    session = _session(tmp_path, debug=True)
     agent = MainAgent(session)
     agent.model_client = FakeModelClient()
     messages = []
@@ -3364,7 +3373,7 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
     assert "explicit progress" in messages
     assert messages[-1] == "fallback message"
     assert len(agent.model_client.user_prompts) == 1
-    assert "explicit progress" not in [item.content for item in session.conversation]
+    assert "explicit progress" not in [item.content for item in session.state.conversation]
 
 
 def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path):

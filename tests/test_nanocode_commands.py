@@ -2,7 +2,7 @@ import os
 
 import shutil
 
-from nanocode import MainAgent, CommandDispatcher, CommandStatus, ModelUsage, Session, UserMessage
+from nanocode import Config, MainAgent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, UserMessage
 
 
 class FakeModelClient:
@@ -15,13 +15,20 @@ class FakeModelClient:
         return {"summary": self.summary}
 
 
+def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
+    data = {"main_model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    if stream is not None:
+        data["main_model"]["stream"] = stream
+    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
+
+
 def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
-    session = Session(cwd=str(tmp_path), model="old", compact_at=100)
+    session = make_session(tmp_path, model="old", compact_at=100)
     agent = MainAgent(session)
     fake_client = FakeModelClient()
     agent.compactor.model_client = fake_client
     dispatcher = CommandDispatcher(agent)
-    session.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
+    session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
     model_result = dispatcher.dispatch("/set main.model new-model")
     worker_model_result = dispatcher.dispatch("/set worker.model worker-model")
@@ -34,31 +41,31 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     exit_result = dispatcher.dispatch("/exit")
 
     assert model_result.status == CommandStatus.HANDLED
-    assert session.model == "new-model"
+    assert session.config.main_model.model == "new-model"
     assert worker_model_result.message == "Set worker.model = worker-model"
-    assert session.worker_model_config.model == "worker-model"
+    assert session.config.worker_model.model == "worker-model"
     assert effort_result.message == "Set main.effort = high"
-    assert session.reasoning_effort == "high"
+    assert session.config.main_model.reasoning_effort == "high"
     assert reason_result.message == "Set main.reasoning = off"
-    assert session.reasoning is False
+    assert session.config.main_model.reasoning is False
     assert stream_result.message == "Set main.stream = off"
-    assert session.stream is False
+    assert session.config.main_model.stream is False
     assert first_token_result.message == "Set main.first_token_timeout = 6"
-    assert session.first_token_timeout == 6
+    assert session.config.main_model.first_token_timeout == 6
     assert yolo_result.message == "Set runtime.yolo = on"
-    assert session.yolo is True
+    assert session.settings.yolo is True
     assert compact_result.message == "Set runtime.compact_at = 2"
-    assert session.compact_at == 2
-    assert len(session.conversation) == 3
+    assert session.settings.compact_at == 2
+    assert len(session.state.conversation) == 3
     assert fake_client.requests == []
     assert exit_result.status == CommandStatus.EXIT
 
 
 def test_status_reports_tokens_in_human_readable_format(tmp_path):
-    session = Session(cwd=str(tmp_path), model="model")
-    session.last_total_tokens = 1200
-    session.session_total_tokens = 2_345_678
-    session.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678)
+    session = make_session(tmp_path, model="model")
+    session.state.last_total_tokens = 1200
+    session.state.session_total_tokens = 2_345_678
+    session.state.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678)
     dispatcher = CommandDispatcher(MainAgent(session))
 
     result = dispatcher.dispatch("/status")
@@ -75,7 +82,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
 
 def test_set_command_shows_and_validates_runtime_config(tmp_path):
-    session = Session(cwd=str(tmp_path), stream=True)
+    session = make_session(tmp_path, stream=True)
     dispatcher = CommandDispatcher(MainAgent(session))
 
     status_result = dispatcher.dispatch("/set main.stream")
@@ -89,12 +96,12 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     assert off_status_result.message == "Current main.stream is off"
     assert on_result.message == "Set main.stream = on"
     assert invalid_result.message == "Usage: /set main.stream [on|off]"
-    assert session.stream is True
+    assert session.config.main_model.stream is True
 
 
 def test_config_command_reports_resolved_model_config(tmp_path):
-    session = Session(cwd=str(tmp_path), model="main-model")
-    session.worker_model_config.model = "worker-model"
+    session = make_session(tmp_path, model="main-model")
+    session.config.worker_model.model = "worker-model"
     dispatcher = CommandDispatcher(MainAgent(session))
 
     result = dispatcher.dispatch("/config")
@@ -171,7 +178,7 @@ def test_learn_command_includes_current_session_known_and_conversation(tmp_path)
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     agent.blackboard.known.append("Tests run with uv run pytest -q.")
-    session.conversation.append(UserMessage(content="We decided config uses TOML."))
+    session.state.conversation.append(UserMessage(content="We decided config uses TOML."))
     dispatcher = CommandDispatcher(agent, run_agent=calls.append)
 
     result = dispatcher.dispatch("/learn")
@@ -187,11 +194,11 @@ def test_learn_command_includes_current_session_known_and_conversation(tmp_path)
 
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
-    session = Session(cwd=str(tmp_path), compact_at=2)
+    session = make_session(tmp_path, compact_at=2)
     agent = MainAgent(session)
     agent.compactor.model_client = FakeModelClient()
     dispatcher = CommandDispatcher(agent)
-    session.conversation = [
+    session.state.conversation = [
         UserMessage(content="old"),
         UserMessage(content="keep 1"),
         UserMessage(content="keep 2"),
@@ -203,16 +210,16 @@ def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(
     result = dispatcher.dispatch("/set runtime.compact_at 2")
 
     assert result.message == "Set runtime.compact_at = 2 and compacted history"
-    assert len(session.conversation) == 6
-    assert session.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
-    assert session.conversation[1].content == "keep 1"
+    assert len(session.state.conversation) == 6
+    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
+    assert session.state.conversation[1].content == "keep 1"
 
 
 def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
-    session = Session(cwd=str(tmp_path), compact_at=2)
+    session = make_session(tmp_path, compact_at=2)
     agent = MainAgent(session)
     agent.compactor.model_client = FakeModelClient()
-    session.conversation = [
+    session.state.conversation = [
         UserMessage(content="old"),
         UserMessage(content="keep 1"),
         UserMessage(content="keep 2"),
@@ -233,14 +240,14 @@ def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert result.message == "Compacted conversation history: 6 item(s) -> 6 item(s)"
     assert status_calls == ["run"]
-    assert session.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
+    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
 
 
 def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
-    session = Session(cwd=str(tmp_path), compact_at=100)
+    session = make_session(tmp_path, compact_at=100)
     agent = MainAgent(session)
     agent.compactor.model_client = FakeModelClient()
-    session.conversation = [
+    session.state.conversation = [
         UserMessage(content="old"),
         UserMessage(content="keep 1"),
         UserMessage(content="keep 2"),
@@ -255,7 +262,7 @@ def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
 
     assert result.message == "Set runtime.compact_at = 2 and compacted history"
     assert status_calls == ["run"]
-    assert session.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
+    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
 
 
 def test_command_dispatcher_reports_unhandled_input(tmp_path):
