@@ -4382,6 +4382,8 @@ class ToolCallRunner:
         name = _json_str(item.get("name"))
         if not name:
             raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
+        if name not in TOOL_REGISTRY and name == name.lower():
+            name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == name), name)
         intention = _json_str(item.get("intention")) or ""
         args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
         return ParsedToolCall(name=name, intention=intention, args=args)

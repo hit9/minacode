@@ -56,6 +56,27 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert (tmp_path / ".nanocode" / "tool_results").exists()
 
 
+def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    latest = agent.execute_tool_calls(
+        [
+            {
+                "name": "read",
+                "intention": "read sample",
+                "args": ["sample.txt", "0", "1"],
+            }
+        ]
+    )
+
+    assert "alpha" in latest
+    assert "- ok | Read sample.txt 0:1" in latest
+    assert agent.tool_runner.latest_executions[0].call.name == "Read"
+
+
 def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
