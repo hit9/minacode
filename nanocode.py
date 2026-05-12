@@ -2027,7 +2027,7 @@ class EditTool(Tool):
 
     @classmethod
     def description(cls) -> list[str]:
-        return ["Replace/delete the first exact literal text block in an existing file; use only for tiny unambiguous edits, not regex."]
+        return ["Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex."]
 
     @classmethod
     def signature(cls) -> str:
@@ -2070,6 +2070,8 @@ class EditTool(Tool):
             return label + "\n# preview unavailable: empty find creates missing files only"
         if self.find not in content:
             return label
+        if content.count(self.find) != 1:
+            return label + "\n# preview unavailable: target `find` text matched multiple times; use ReplaceRange or a larger unique find block"
         return _make_unified_diff(content, content.replace(self.find, self.replace, 1), self.filepath) or label
 
     def call(self) -> str:
@@ -2086,6 +2088,8 @@ class EditTool(Tool):
             raise ToolCallError("empty find creates missing files only")
         if self.find not in content:
             raise ToolCallError("target `find` text not found")
+        if content.count(self.find) != 1:
+            raise ToolCallError("target `find` text matched multiple times; use ReplaceRange or a larger unique find block")
 
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(content.replace(self.find, self.replace, 1))
@@ -3061,6 +3065,9 @@ EDITING:
 - New file: create minimal skeleton first.
 - Existing file: inspect exact target first, then edit.
 - Never rewrite a large file in one action.
+- Use Edit for tiny unique literal replacements.
+- Use ReplaceRange for exact line ranges.
+- Use ApplyPatch for complex or multiple focused hunks.
 - Before ReplaceRange, Read the exact target range plus one boundary line before/after; pass exact before_context and after_context.
 
 TARGET DISCOVERY:

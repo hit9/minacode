@@ -3,9 +3,9 @@ import pytest
 from nanocode import EditTool, Session, ToolCallError
 
 
-def test_edit_tool_replaces_first_exact_match(tmp_path):
+def test_edit_tool_replaces_unique_exact_match(tmp_path):
     path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\nbeta\n", encoding="utf-8")
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
     tool = EditTool.make(session, ["sample.txt", "beta", "BETA"])
@@ -15,7 +15,7 @@ def test_edit_tool_replaces_first_exact_match(tmp_path):
     assert tool.requires_confirmation(session) is True
     assert "-beta\n" in display
     assert "+BETA\n" in display
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\nbeta\n"
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
     assert result == "\n".join(
         [
             "<EditToolResult>",
@@ -24,6 +24,19 @@ def test_edit_tool_replaces_first_exact_match(tmp_path):
             "</EditToolResult>",
         ]
     )
+
+
+def test_edit_tool_rejects_repeated_find_text(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = EditTool.make(session, ["sample.txt", "beta", "BETA"])
+
+    assert "matched multiple times" in tool.preview()
+    with pytest.raises(ToolCallError, match="matched multiple times"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "alpha\nbeta\nbeta\n"
 
 
 def test_edit_tool_raises_when_find_text_is_missing(tmp_path):
