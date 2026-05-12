@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Generic, Iterator, Protocol, Self, Type, TypeAlias, TypeVar, final
+from typing import Any, Callable, ClassVar, Generic, Iterator, Protocol, Self, Type, TypeAlias, TypeVar, cast, final
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -371,9 +371,13 @@ class Blackboard:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
-    verification_required: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MainBlackboard(Blackboard):
+    verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
 
 
@@ -3260,9 +3264,6 @@ EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 ### Plan
 {plan}
 
-### Verification State
-{verification_state}
-
 ### Response Language
 {response_language}
 
@@ -3498,7 +3499,7 @@ class PromptBuilder:
         self.allowed_tools = allowed_tools
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
         self.context = context or PromptContext(
-            blackboard=Blackboard(),
+            blackboard=MainBlackboard(),
             runtime=AgentRuntime(tool_result_store=session.tool_result_store, tool_result_counter=session.tool_result_counter),
         )
 
@@ -3519,7 +3520,7 @@ class PromptBuilder:
             goal=current.goal or "(empty)",
             scope=self._format_scope(),
             plan=self._format_plan(),
-            verification_state=current.verification.format(),
+            verification_state=self._format_verification_state(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
             worker_reports=self.context.worker_reports.format(),
@@ -3601,6 +3602,11 @@ class PromptBuilder:
         if not self.context.blackboard.plan:
             return "(empty)"
         return "\n".join(item.format() for item in self.context.blackboard.plan)
+
+    def _format_verification_state(self) -> str:
+        if not isinstance(self.context.blackboard, MainBlackboard):
+            return "(empty)"
+        return self.context.blackboard.verification.format()
 
 
 ############################
@@ -4361,7 +4367,6 @@ class ToolCallRunner:
 ############################
 
 
-@final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 100
@@ -4384,25 +4389,29 @@ class AgentStateUpdater:
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
         before_project_knowledge = self.session.project_knowledge.format()
-        before_verification = self.blackboard.verification.format()
+        before_extra_state = self._before_extra_state()
         if apply_response_language:
             self.apply_response_language(actions)
         goal_changed = self._apply_goal(actions)
         plan_replaced = self._apply_plan(actions)
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
-        self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         self._apply_known(actions)
         self._apply_project_knowledge(actions)
-        self._apply_verification(actions)
-        self._bind_verification_goal()
+        self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
             before_project_knowledge,
-            before_verification,
+            before_extra_state,
         )
+
+    def _before_extra_state(self) -> str:
+        return ""
+
+    def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        pass
 
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
@@ -4441,37 +4450,39 @@ class AgentStateUpdater:
         before_plan: list[str],
         before_known: list[str],
         before_project_knowledge: str,
-        before_verification: str,
+        before_extra_state: str,
     ) -> str:
         current = self.blackboard
         lines = []
         if current.goal != before_goal:
-            lines.append("State Updated | " + self._verification_badge())
+            lines.append(self._state_heading())
             lines.append("  Goal    " + self._compact(current.goal or "(empty)"))
         plan = [item.format() for item in current.plan]
         if plan != before_plan:
             if not lines:
-                lines.append("State Updated | " + self._verification_badge())
+                lines.append(self._state_heading())
             lines.append("  Plan")
             lines.extend(self._format_plan_rows())
         known = list(current.known)
         if known != before_known:
             if not lines:
-                lines.append("State Updated | " + self._verification_badge())
+                lines.append(self._state_heading())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
         project_knowledge = self.session.project_knowledge.format()
         if project_knowledge != before_project_knowledge:
             if not lines:
-                lines.append("State Updated | " + self._verification_badge())
+                lines.append(self._state_heading())
             lines.append("  Project_Knowledge")
             lines.extend(self._format_project_knowledge_rows())
-        verification = current.verification.format()
-        if verification != before_verification:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Verify  " + self._format_verification())
+        self._append_extra_state_report(lines, before_extra_state)
         return "\n".join(lines)
+
+    def _state_heading(self) -> str:
+        return "State Updated"
+
+    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
+        pass
 
     def _format_plan_rows(self) -> list[str]:
         items = self.blackboard.plan
@@ -4505,22 +4516,6 @@ class AgentStateUpdater:
             "    conventions: " + str(len(knowledge.conventions)) + " item(s)",
         ]
 
-    def _format_verification(self) -> str:
-        verification = self.blackboard.verification
-        parts = [verification.status]
-        if verification.kind:
-            parts.append(verification.kind)
-        if verification.method:
-            parts.append(self._compact(verification.method))
-        if verification.criteria:
-            parts.append("criteria: " + self._compact("; ".join(verification.criteria)))
-        if verification.context:
-            parts.append("context: " + self._compact(verification.context))
-        return " | ".join(parts)
-
-    def _verification_badge(self) -> str:
-        return "VERIFY:" + self.blackboard.verification.status
-
     def _compact(self, text: str, limit: int = 140) -> str:
         text = " ".join(text.split())
         return text if len(text) <= limit else text[: limit - 3] + "..."
@@ -4536,8 +4531,6 @@ class AgentStateUpdater:
                     changed = changed or goal_changed
                     self.blackboard.goal = update
                     self.blackboard.goal_reached = False
-                    if goal_changed:
-                        self.blackboard.verification_required = False
             if action_type == "goal":
                 update = _json_str(action.get("text"))
                 complete = action.get("complete")
@@ -4545,8 +4538,6 @@ class AgentStateUpdater:
                     goal_changed = update != self.blackboard.goal
                     changed = changed or (goal_changed and complete is not True)
                     self.blackboard.goal = update
-                    if goal_changed and complete is not True:
-                        self.blackboard.verification_required = False
                 if isinstance(complete, bool):
                     self.blackboard.goal_reached = complete
         return changed
@@ -4642,38 +4633,79 @@ class AgentStateUpdater:
             self.blackboard.known.append(fact)
             del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
 
+
+@final
+class MainAgentStateUpdater(AgentStateUpdater):
+    @property
+    def main_blackboard(self) -> MainBlackboard:
+        return cast(MainBlackboard, self.blackboard)
+
+    def _before_extra_state(self) -> str:
+        return self.main_blackboard.verification.format()
+
+    def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        if goal_changed:
+            self.main_blackboard.verification_required = False
+        self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_verification(actions)
+        self._bind_verification_goal()
+
+    def _state_heading(self) -> str:
+        return "State Updated | VERIFY:" + self.main_blackboard.verification.status
+
+    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
+        verification = self.main_blackboard.verification.format()
+        if verification == before_extra_state:
+            return
+        if not lines:
+            lines.append(self._state_heading())
+        lines.append("  Verify  " + self._format_verification())
+
+    def _format_verification(self) -> str:
+        verification = self.main_blackboard.verification
+        parts = [verification.status]
+        if verification.kind:
+            parts.append(verification.kind)
+        if verification.method:
+            parts.append(self._compact(verification.method))
+        if verification.criteria:
+            parts.append("criteria: " + self._compact("; ".join(verification.criteria)))
+        if verification.context:
+            parts.append("context: " + self._compact(verification.context))
+        return " | ".join(parts)
+
     def _apply_verification(self, actions: list[Json]) -> None:
         for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
             kind = _json_str(data.get("kind"))
             if kind is not None:
-                self.blackboard.verification.kind = kind if kind in {item.value for item in VerificationKind} else ""
+                self.main_blackboard.verification.kind = kind if kind in {item.value for item in VerificationKind} else ""
             criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
             if "criteria" in data:
-                self.blackboard.verification.criteria = criteria
+                self.main_blackboard.verification.criteria = criteria
             method = _json_str(data.get("method"))
             if method is not None:
-                if method != self.blackboard.verification.method:
-                    self.blackboard.verification.context = ""
-                self.blackboard.verification.method = method
+                if method != self.main_blackboard.verification.method:
+                    self.main_blackboard.verification.context = ""
+                self.main_blackboard.verification.method = method
             status = _json_str(data.get("status"))
             if status == "pending":
-                self.blackboard.verification.status = VerificationStatus.REQUIRED
+                self.main_blackboard.verification.status = VerificationStatus.REQUIRED
                 if "context" not in data:
-                    self.blackboard.verification.context = ""
+                    self.main_blackboard.verification.context = ""
             elif status == "passed":
-                self.blackboard.verification.status = VerificationStatus.DONE
+                self.main_blackboard.verification.status = VerificationStatus.DONE
             elif status == "blocked":
-                self.blackboard.verification.status = VerificationStatus.BLOCKED
+                self.main_blackboard.verification.status = VerificationStatus.BLOCKED
             context = _json_str(data.get("context"))
             if context is not None:
-                self.blackboard.verification.context = context
+                self.main_blackboard.verification.context = context
 
     def _reset_stale_verification(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
-        verification = self.blackboard.verification
+        verification = self.main_blackboard.verification
         if goal_changed:
             verification.reset()
             return
-        if verification.goal and verification.goal != self.blackboard.goal:
+        if verification.goal and verification.goal != self.main_blackboard.goal:
             verification.reset()
             return
         if (
@@ -4690,12 +4722,12 @@ class AgentStateUpdater:
             verification.reset()
 
     def _bind_verification_goal(self) -> None:
-        verification = self.blackboard.verification
+        verification = self.main_blackboard.verification
         if not verification.has_context():
             verification.goal = ""
             return
-        if self.blackboard.goal:
-            verification.goal = self.blackboard.goal
+        if self.main_blackboard.goal:
+            verification.goal = self.main_blackboard.goal
 
 
 ############################
@@ -4777,6 +4809,7 @@ class BaseAgent:
         activity: str = "main",
         allow_project_learning: bool = False,
         allow_response_language_bootstrap: bool = False,
+        state_updater_class: type[AgentStateUpdater] = AgentStateUpdater,
     ):
         self.session = session
         self.blackboard = blackboard or Blackboard()
@@ -4791,7 +4824,7 @@ class BaseAgent:
         )
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=allowed_tools, reuse_readonly_results=activity != "main")
-        self.state_updater = AgentStateUpdater(
+        self.state_updater = state_updater_class(
             session,
             self.blackboard,
             allow_project_learning=allow_project_learning,
@@ -4908,7 +4941,6 @@ class BaseAgent:
 
     def _finish_current_goal(self) -> None:
         self.blackboard.goal_reached = False
-        self.blackboard.verification_required = False
 
     def _clear_recent_tool_calls(self) -> None:
         self.latest_tool_call_executions = []
@@ -5028,11 +5060,12 @@ class BaseAgent:
         self.session.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
-            if self.activity == "main" and execution.requires_verification:
-                self.blackboard.verification_required = True
-            if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
-                self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
+            self._after_tool_execution(execution)
         return _join_tool_call_blocks(self.latest_tool_call_blocks)
+
+    def _after_tool_execution(self, execution: ToolCallExecution) -> None:
+        if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+            self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
 
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
@@ -5367,7 +5400,6 @@ class ExploreKind(StrEnum):
 class ExploreReport(PromptItem):
     targets: list[Json]
     known: list[str]
-    verification: Verification
     issues: list[str] = field(default_factory=list)
 
     @override
@@ -5387,9 +5419,6 @@ class ExploreReport(PromptItem):
             lines.append("- (empty)")
         lines.append("issues:")
         lines.extend(_format_report_items(self.issues))
-        if self.verification.has_context():
-            lines.append("verification:")
-            lines.append(self.verification.format("  "))
         return _format_lines(lines, indent)
 
     def brief(self) -> list[str]:
@@ -5410,8 +5439,6 @@ class ExploreReport(PromptItem):
         for item in self.issues[:3]:
             if item:
                 lines.append("issue: " + item)
-        if not lines and self.verification.context:
-            lines.append((self.verification.status or VerificationStatus.BLOCKED) + " | " + self.verification.context)
         return lines
 
 
@@ -5477,7 +5504,7 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
                 fact = (_json_str(raw) or "").strip()
                 if fact and fact not in known:
                     known.append(fact)
-            return ExploreReport(targets=targets, known=known, verification=self._verification_snapshot(), issues=self._string_items(action.get("issues")))
+            return ExploreReport(targets=targets, known=known, issues=self._string_items(action.get("issues")))
         return None
 
     def _target_from_json(self, value: JsonValue) -> Json:
@@ -5493,25 +5520,10 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
         }
 
     def _blocked_report(self, reason: str) -> ExploreReport:
-        verification = Verification(
-            goal=self.blackboard.goal,
-            status=VerificationStatus.BLOCKED,
-            method="explore",
-            context=reason,
-        )
         known = list(self.blackboard.known)
         if reason and reason not in known:
             known.append(reason)
-        return ExploreReport(targets=[], known=known, verification=verification, issues=[reason] if reason else [])
-
-    def _verification_snapshot(self) -> Verification:
-        current = self.blackboard.verification
-        return Verification(
-            goal=current.goal,
-            status=current.status,
-            method=current.method,
-            context=current.context,
-        )
+        return ExploreReport(targets=[], known=known, issues=[reason] if reason else [])
 
 
 ############################
@@ -5683,6 +5695,7 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 
 @final
 class MainAgent(BaseAgent):
+    blackboard: MainBlackboard
     STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "learn", "progress"}
     ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"observe", "plan", "verify", "goal", "response_language"}
@@ -5690,15 +5703,26 @@ class MainAgent(BaseAgent):
     def __init__(self, session: Session):
         super().__init__(
             session,
+            blackboard=MainBlackboard(),
             allowed_tools=MAIN_AGENT_ALLOWED_TOOLS,
             allow_project_learning=True,
             allow_response_language_bootstrap=True,
+            state_updater_class=MainAgentStateUpdater,
         )
 
     def build_system_prompt(self) -> str:
         if self.mode == AgentMode.OBSERVE:
             return MAIN_AGENT_OBSERVE_SYSTEM_PROMPT.strip()
         return super().build_system_prompt()
+
+    def _after_tool_execution(self, execution: ToolCallExecution) -> None:
+        super()._after_tool_execution(execution)
+        if execution.requires_verification:
+            self.blackboard.verification_required = True
+
+    def _finish_current_goal(self) -> None:
+        super()._finish_current_goal()
+        self.blackboard.verification_required = False
 
     def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
         for action in actions:
@@ -5836,8 +5860,8 @@ class MainAgent(BaseAgent):
             return "\n".join(lines)
         if report.known:
             return "Explore returned known only\n  " + _shorten(report.known[0], 180)
-        if report.verification.context:
-            return "Explore done: 0 target(s)\n  " + _shorten(report.verification.context, 180)
+        if report.issues:
+            return "Explore done: 0 target(s)\n  " + _shorten(report.issues[0], 180)
         return "Explore done: 0 target(s)"
 
     def _format_explore_target(self, target: Json) -> str:
@@ -6681,6 +6705,7 @@ class CommandDispatcher:
             return "Usage: /status"
         session = self.agent.session
         blackboard = self.agent.blackboard
+        verification_status = blackboard.verification.status if isinstance(blackboard, MainBlackboard) else "(empty)"
         return "\n".join(
             [
                 "main: " + self._format_model_status(session.model_config_for("main")),
@@ -6694,7 +6719,7 @@ class CommandDispatcher:
                 "models:",
                 self._format_model_usage(),
                 "goal: " + (blackboard.goal or "(empty)"),
-                "verification: " + blackboard.verification.status,
+                "verification: " + verification_status,
             ]
         )
 

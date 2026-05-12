@@ -130,7 +130,6 @@ def test_agent_formats_explore_done_targets_on_separate_lines(tmp_path):
                 {"path": "detector.py", "line_range": "186-206", "area": "page type detection"},
             ],
             known=[],
-            verification=nanocode.Verification(),
         )
     )
 
@@ -141,7 +140,6 @@ def test_explore_report_formats_and_briefs_issues():
     report = nanocode.ExploreReport(
         targets=[],
         known=[],
-        verification=nanocode.Verification(status=VerificationStatus.BLOCKED, method="explore", context="blocked"),
         issues=["handoff goal asks for analysis, not location"],
     )
 
@@ -262,6 +260,21 @@ def test_worker_does_not_reuse_nonconsecutive_readonly_tool_results(tmp_path):
 
     assert list(explorer.runtime.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
     assert explorer.tool_runner.latest_executions[0].result_key == "tr.3"
+
+
+def test_worker_prompts_do_not_include_parent_verification_state(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    parent_agent.blackboard.verification.status = VerificationStatus.DONE
+    parent_agent.blackboard.verification.context = "parent verification should stay private"
+
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=[])
+    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=[])
+
+    assert "### Verification State" not in explorer.build_user_prompt()
+    assert "parent verification should stay private" not in explorer.build_user_prompt()
+    assert "### Verification State" not in verifier.build_user_prompt()
+    assert "parent verification should stay private" not in verifier.build_user_prompt()
 
 
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
@@ -1700,7 +1713,6 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
         }
     ]
     assert report.known == ["sample.txt contains alpha.", "relevant target is sample.txt line 1."]
-    assert report.verification.status == VerificationStatus.IDLE
     assert explorer.session is parent_session
     assert parent_session.tool_result_store == {}
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
@@ -1968,7 +1980,6 @@ def test_agent_run_executes_explore_and_completes(tmp_path):
             return nanocode.ExploreReport(
                 targets=[{"path": "sample.txt", "area": "line 1", "reason": "target found"}],
                 known=["sample.txt line 1 is the relevant target."],
-                verification=nanocode.Verification(status=VerificationStatus.DONE, method="explore", context="target found"),
             )
 
     session = Session(cwd=str(tmp_path))
