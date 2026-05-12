@@ -67,8 +67,8 @@ def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
     count = agent.compact_history()
 
     assert count == 8
-    assert len(agent.blackboard.known) == 30
-    assert agent.blackboard.known[0] == "known 5"
+    assert len(agent.blackboard.known) == 35
+    assert agent.blackboard.known[0] == "known 0"
     assert agent.blackboard.known[-1] == "known 34"
 
 

@@ -22,19 +22,15 @@ def test_session_reports_missing_required_config(tmp_path):
     assert session.missing_required_config() == []
 
 
-def test_session_loads_project_knowledge_from_project_file(tmp_path, monkeypatch):
-    knowledge_dir = tmp_path / ".nanocode"
-    knowledge_dir.mkdir()
-    (knowledge_dir / "project_knowledge.json").write_text(
-        '{"version": 1, "summary": "Project summary.", "structure": ["single file"], "architecture": [], "workflows": [], "conventions": []}\n',
-        encoding="utf-8",
-    )
+def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
+    rules_dir = tmp_path / ".nanocode"
+    rules_dir.mkdir()
+    (rules_dir / "user_rules.md").write_text("# User Rules\n\n- Prompt-only changes do not need tests.\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "main_model": {"model": "model"}})
 
-    assert session.state.project_knowledge.summary == "Project summary."
-    assert session.state.project_knowledge.structure == ["single file"]
+    assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
 def test_init_config_file_writes_default_toml(tmp_path):
@@ -386,7 +382,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.blackboard = Blackboard()
             self.runs = []
 
-        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None, stop_after_learn=False):
+        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")

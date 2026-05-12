@@ -249,128 +249,46 @@ class ToolResultItem(PromptItem):
 
 
 @dataclass
-class ProjectKnowledge:
-    LIST_LIMIT: ClassVar[int] = 30
-    LIST_FIELDS: ClassVar[tuple[str, ...]] = ("structure", "architecture", "workflows", "conventions")
-
-    summary: str = ""
-    structure: list[str] = field(default_factory=list)
-    architecture: list[str] = field(default_factory=list)
-    workflows: list[str] = field(default_factory=list)
-    conventions: list[str] = field(default_factory=list)
-
-    def apply(self, action: Json) -> bool:
-        changed = False
-        summary = (_json_str(action.get("summary")) or "").strip()
-        if summary and summary != self.summary:
-            self.summary = summary
-            changed = True
-        changed = self._apply_corrections(_json_list(action.get("corrections"))) or changed
-        for field_name in self.LIST_FIELDS:
-            items = getattr(self, field_name)
-            changed = self._append_items(items, _json_list(action.get(field_name))) or changed
-        return changed
-
-    def _append_items(self, target: list[str], values: list[JsonValue]) -> bool:
-        changed = False
-        for value in values:
-            item = (_json_str(value) or "").strip()
-            if not item or item in target:
-                continue
-            target.append(item)
-            changed = True
-        overflow = len(target) - self.LIST_LIMIT
-        if overflow > 0:
-            del target[:overflow]
-            changed = True
-        return changed
-
-    def _apply_corrections(self, values: list[JsonValue]) -> bool:
-        changed = False
-        for value in values:
-            correction = _json_dict(value)
-            field_name = _json_str(correction.get("field")) or ""
-            old = (_json_str(correction.get("old")) or "").strip()
-            new = (_json_str(correction.get("new")) or "").strip()
-            if field_name not in self.LIST_FIELDS or not old or old == new:
-                continue
-            target = getattr(self, field_name)
-            if old not in target:
-                continue
-            index = target.index(old)
-            del target[index]
-            changed = True
-            if new and new not in target:
-                target.insert(min(index, len(target)), new)
-        return changed
-
-    def is_empty(self) -> bool:
-        return not (self.summary or self.structure or self.architecture or self.workflows or self.conventions)
-
-    def format(self) -> str:
-        if self.is_empty():
-            return "(empty)"
-        lines = ["Summary:", self.summary or "(empty)", "", "Structure:"]
-        lines.extend(self._format_items(self.structure))
-        lines.extend(["", "Architecture:"])
-        lines.extend(self._format_items(self.architecture))
-        lines.extend(["", "Workflows:"])
-        lines.extend(self._format_items(self.workflows))
-        lines.extend(["", "Conventions:"])
-        lines.extend(self._format_items(self.conventions))
-        return "\n".join(lines)
-
-    def to_json(self) -> Json:
-        return {
-            "version": 1,
-            "summary": self.summary,
-            "structure": list(self.structure),
-            "architecture": list(self.architecture),
-            "workflows": list(self.workflows),
-            "conventions": list(self.conventions),
-        }
+class UserRules(PromptItem):
+    content: str = ""
 
     @classmethod
-    def from_json(cls, data: Json) -> "ProjectKnowledge":
-        return cls(
-            summary=_json_str(data.get("summary")) or "",
-            structure=cls._string_list(data.get("structure")),
-            architecture=cls._string_list(data.get("architecture")),
-            workflows=cls._string_list(data.get("workflows")),
-            conventions=cls._string_list(data.get("conventions")),
-        )
-
-    @classmethod
-    def load(cls, path: str) -> "ProjectKnowledge":
+    def load(cls, path: str) -> "UserRules":
         try:
             with open(path, "r", encoding="utf-8") as file:
-                data = json.load(file)
+                return cls(file.read().strip())
         except FileNotFoundError:
             return cls()
-        except json.JSONDecodeError as error:
-            raise ConfigError(f"Invalid project knowledge file {path}: {error}") from error
-        return cls.from_json(_json_dict(data))
+
+    def add(self, rule: str) -> bool:
+        rule = self._clean_rule(rule)
+        if not rule or rule in self._rules():
+            return False
+        prefix = "# User Rules\n\n" if not self.content.strip() else self.content.rstrip() + "\n"
+        self.content = prefix + "- " + rule
+        return True
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(self.to_json(), file, ensure_ascii=False, indent=2)
-            file.write("\n")
+            file.write((self.content.strip() or "# User Rules").rstrip() + "\n")
+
+    @override
+    def format(self, indent: str = "") -> str:
+        return _format_lines((self.content.strip() or "(empty)").splitlines(), indent)
+
+    def _rules(self) -> set[str]:
+        rules = set()
+        for line in self.content.splitlines():
+            rule = self._clean_rule(line)
+            if rule and not rule.startswith("#"):
+                rules.add(rule)
+        return rules
 
     @staticmethod
-    def _format_items(items: list[str]) -> list[str]:
-        if not items:
-            return ["(empty)"]
-        return [str(index) + ". " + item for index, item in enumerate(items, start=1)]
-
-    @classmethod
-    def _string_list(cls, value: JsonValue) -> list[str]:
-        items = []
-        for raw in _json_list(value):
-            item = (_json_str(raw) or "").strip()
-            if item and item not in items:
-                items.append(item)
-        return items[-cls.LIST_LIMIT :]
+    def _clean_rule(rule: str) -> str:
+        rule = " ".join(rule.strip().split())
+        return rule[2:].strip() if rule.startswith("- ") else rule
 
 
 @dataclass
@@ -876,7 +794,7 @@ class RuntimeState:
     current_model_call_label: str = ""
     current_model_call_reasoning_label: str = ""
     conversation: list[ConversationItem] = field(default_factory=list)
-    project_knowledge: ProjectKnowledge = field(default_factory=ProjectKnowledge)
+    user_rules: UserRules = field(default_factory=UserRules)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
@@ -904,7 +822,7 @@ class Session:
     @classmethod
     def from_config_data(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
         session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
-        session.load_project_knowledge()
+        session.load_user_rules()
         return session
 
     def resolve_path(self, path: str) -> str:
@@ -930,14 +848,14 @@ class Session:
     def tool_results_dir(self) -> str:
         return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "tool_results"))
 
-    def project_knowledge_path(self) -> str:
-        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "project_knowledge.json"))
+    def user_rules_path(self) -> str:
+        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "user_rules.md"))
 
-    def load_project_knowledge(self) -> None:
-        self.state.project_knowledge = ProjectKnowledge.load(self.project_knowledge_path())
+    def load_user_rules(self) -> None:
+        self.state.user_rules = UserRules.load(self.user_rules_path())
 
-    def save_project_knowledge(self) -> None:
-        self.state.project_knowledge.save(self.project_knowledge_path())
+    def save_user_rules(self) -> None:
+        self.state.user_rules.save(self.user_rules_path())
 
     def missing_required_config(self) -> list[str]:
         missing = []
@@ -2951,8 +2869,8 @@ HARD RULES:
 - User-facing text must be plain, concise, direct, and non-Markdown unless requested.
 - Latest User Request has priority over old Goal. Never answer by repeating a previous completion.
 - Never claim external actions happened (commit, test, build, edit) unless recent tool/worker results prove success.
-- known is for current task facts. learn is for stable reusable memory only, and should be emitted only at task boundaries.
-- learn is optional and rare. Prefer no learn over noisy learn.
+- User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
+- Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
 
 STATE:
@@ -2965,7 +2883,7 @@ LOOP:
 Choose exactly one phase, then stop.
 
 1. CHAT: if this is casual chat, output one chat action.
-2. ALIGN: compare Latest User Request with Goal. If it is new, changed, corrective, or a command, output start with a fresh short plan. If it is a durable preference, acknowledge and attach learn.
+2. ALIGN: compare Latest User Request with Goal. If it is new, changed, corrective, or a command, output start with a fresh short plan. If it explicitly asks to remember a future behavior, output user_rule.
 3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
 4. REPAIR: if Verification_State is failed, fix the reported issue.
 5. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
@@ -2974,7 +2892,6 @@ Choose exactly one phase, then stop.
    - known target -> smallest useful batch of tool/edit actions
 7. CHECK: after any edit, request verify or inspect one narrow target.
 8. DONE: complete only when the goal is done and required verification has passed.
-9. LEARN: if stable reusable facts were discovered near completion, attach learn to goal complete=true.
 
 PLANNING:
 - Use plan only for real tasks.
@@ -3032,12 +2949,6 @@ TOOL INTENTION:
 - Bad: "read file"
 - Good: "inspect the existing router setup before adding the new route"
 
-Learn:
-- Use learn only near completion, after a user correction, or before major context compaction.
-- Learn stores long-lived reusable memory, not task progress.
-- Do NOT learn raw logs, temporary errors, one-off observations, tool outputs, or facts already stored unless they are reusable.
-- Prefer no learn over noisy learn.
-
 ACTIONS:
 JSON objects separated by __END_ACTION__.
 One JSON object may omit trailing __END_ACTION__.
@@ -3046,15 +2957,7 @@ Tool actions MUST include name, intention, and args.
 Sidecar fields are optional on any MAIN action:
 - "known": ["<new durable fact needed later>"]
 - "progress": "<optional short user-facing update>"
-- "learn": {
-    "summary": "<optional stable project summary>",
-    "structure": [],
-    "architecture": [],
-    "workflows": [],
-    "conventions": [],
-    "corrections": []
-  }
-Do NOT output known/progress/learn as standalone action types.
+Do NOT output known/progress as standalone action types.
 
 {
   "type": "chat",
@@ -3079,6 +2982,12 @@ Do NOT output known/progress/learn as standalone action types.
   "type": "plan",
   "mode": "replace|patch",
   "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]
+} __END_ACTION__
+
+{
+  "type": "user_rule",
+  "text": "<long-term user behavior rule>",
+  "message": "<short acknowledgement>"
 } __END_ACTION__
 
 {
@@ -3117,8 +3026,8 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 ### Environment
 {environment}
 
-### Project Knowledge
-{project_knowledge}
+### User Rules
+{user_rules}
 
 ### Conversation History
 {conversation_history}
@@ -3269,8 +3178,8 @@ known MUST be non-empty and based on latest tool results.
 If concrete targets are clear, deliver now.
 Otherwise observe known and name the single missing target in next.
 
-{"type": "observe", "known": ["<non-empty fact learned from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
-{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<non-empty fact learned from latest tool results>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
+{"type": "observe", "known": ["<non-empty fact from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<non-empty fact from latest tool results>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
 
@@ -3280,8 +3189,8 @@ EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 ### Environment
 {environment}
 
-### Project Knowledge
-{project_knowledge}
+### User Rules
+{user_rules}
 
 ### Parent Known
 {parent_known}
@@ -3393,7 +3302,7 @@ Tools:
 - Use Git for status, diff, history, and changed files.
 - Use Read/Recall for NARROW evidence checks.
 - Use Bash ONLY for EXPLICIT verification commands.
-- Use Project_Knowledge.workflows for durable test/lint/build commands.
+- Use User_Rules when they specify durable test/lint/build preferences.
 - If no explicit command is provided, use known durable workflows when they directly match the kind and target.
 
 { __tools__ }
@@ -3411,7 +3320,7 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
 Sidecar field on tool or deliver:
-- "known": ["<non-empty fact learned from prior evidence>"]
+- "known": ["<non-empty fact from prior evidence>"]
 
 After tool results, your NEXT tool or deliver action MUST include a non-empty known sidecar.
 Invalid after tool results: {"type": "tool", "name": "Read", "intention": "...", "args": ["..."]}
@@ -3430,8 +3339,8 @@ known MUST be non-empty and based on latest evidence.
 If the verdict is clear, deliver now.
 Otherwise observe known and name the single missing evidence in next.
 
-{"type": "observe", "known": ["<non-empty fact learned from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
-{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"], "known": ["<non-empty fact learned from latest evidence>"]} __END_ACTION__
+{"type": "observe", "known": ["<non-empty fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
+{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"], "known": ["<non-empty fact from latest evidence>"]} __END_ACTION__
 """
 
 
@@ -3441,8 +3350,8 @@ VERIFY_AGENT_USER_PROMPT_TEMPLATE = """
 ### Environment
 {environment}
 
-### Project Knowledge
-{project_knowledge}
+### User Rules
+{user_rules}
 
 ### Parent Known
 {parent_known}
@@ -3559,7 +3468,7 @@ class PromptBuilder:
         return self.user_prompt_template.format(
             environment=self._format_environment(),
             conversation_history=self._format_conversation_history(),
-            project_knowledge=self._format_project_knowledge(),
+            user_rules=self._format_user_rules(),
             response_language=self._format_response_language(),
             response_language_bootstrap=self._format_response_language_bootstrap(),
             parent_known=self._format_parent_known(),
@@ -3604,8 +3513,8 @@ class PromptBuilder:
             return "(empty)"
         return "\n\n".join(item.format() for item in self.session.state.conversation)
 
-    def _format_project_knowledge(self) -> str:
-        return self.session.state.project_knowledge.format()
+    def _format_user_rules(self) -> str:
+        return self.session.state.user_rules.format()
 
     def _format_response_language(self) -> str:
         return "`" + self.session.state.response_language_tag + "`" if self.session.state.response_language_tag else "(empty)"
@@ -4417,18 +4326,15 @@ class ToolCallRunner:
 
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    MAX_KNOWN_ITEMS: ClassVar[int] = 100
+    MAX_KNOWN_ITEMS: ClassVar[int] = 500
 
     def __init__(
         self,
         session: Session,
         blackboard: Blackboard,
-        *,
-        allow_project_learning: bool = False,
     ):
         self.session = session
         self.blackboard = blackboard
-        self.allow_project_learning = allow_project_learning
         self.latest_report = ""
 
     def apply(self, response: Json, *, apply_response_language: bool = True) -> None:
@@ -4436,7 +4342,7 @@ class AgentStateUpdater:
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
-        before_project_knowledge = self.session.state.project_knowledge.format()
+        before_user_rules = self.session.state.user_rules.format()
         before_extra_state = self._before_extra_state()
         if apply_response_language:
             self.apply_response_language(actions)
@@ -4445,14 +4351,14 @@ class AgentStateUpdater:
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
         self._apply_known(actions)
-        self._apply_project_knowledge(actions)
+        self._apply_user_rules(actions)
         self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         force_goal_report = any(_json_str(action.get("type")) == "start" for action in actions)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
-            before_project_knowledge,
+            before_user_rules,
             before_extra_state,
             force_goal_report=force_goal_report,
         )
@@ -4499,7 +4405,7 @@ class AgentStateUpdater:
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_project_knowledge: str,
+        before_user_rules: str,
         before_extra_state: str,
         *,
         force_goal_report: bool = False,
@@ -4521,12 +4427,11 @@ class AgentStateUpdater:
                 lines.append(self._state_heading())
             lines.append("  Known")
             lines.extend(self._format_known_rows())
-        project_knowledge = self.session.state.project_knowledge.format()
-        if project_knowledge != before_project_knowledge:
+        user_rules = self.session.state.user_rules.format()
+        if user_rules != before_user_rules:
             if not lines:
                 lines.append(self._state_heading())
-            lines.append("  Project_Knowledge")
-            lines.extend(self._format_project_knowledge_rows())
+            lines.append("  User_Rules    updated")
         self._append_extra_state_report(lines, before_extra_state)
         return "\n".join(lines)
 
@@ -4557,16 +4462,6 @@ class AgentStateUpdater:
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". " + self._compact(item))
         return rows
-
-    def _format_project_knowledge_rows(self) -> list[str]:
-        knowledge = self.session.state.project_knowledge
-        return [
-            "    summary: " + ("set" if knowledge.summary else "empty"),
-            "    structure: " + str(len(knowledge.structure)) + " item(s)",
-            "    architecture: " + str(len(knowledge.architecture)) + " item(s)",
-            "    workflows: " + str(len(knowledge.workflows)) + " item(s)",
-            "    conventions: " + str(len(knowledge.conventions)) + " item(s)",
-        ]
 
     def _compact(self, text: str, limit: int = 140) -> str:
         text = " ".join(text.split())
@@ -4655,21 +4550,15 @@ class AgentStateUpdater:
             return _json_list(action.get("items"))
         return _json_list(action.get("known"))
 
-    def _apply_project_knowledge(self, actions: list[Json]) -> None:
-        if not self.allow_project_learning:
-            return
+    def _apply_user_rules(self, actions: list[Json]) -> None:
         changed = False
         for action in actions:
-            learn = self._learn_value(action)
-            if learn:
-                changed = self.session.state.project_knowledge.apply(learn) or changed
+            if _json_str(action.get("type")) != "user_rule":
+                continue
+            rule = (_json_str(action.get("text")) or "").strip()
+            changed = self.session.state.user_rules.add(rule) or changed
         if changed:
-            self.session.save_project_knowledge()
-
-    def _learn_value(self, action: Json) -> Json:
-        if _json_str(action.get("type")) == "learn":
-            return action
-        return _json_dict(action.get("learn"))
+            self.session.save_user_rules()
 
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
         fact = (_json_str(value) or "").strip()
@@ -4790,7 +4679,7 @@ class MainAgentStateUpdater(AgentStateUpdater):
 @final
 class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
-    MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 30
+    MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 150
 
     def __init__(self, session: Session, model_client: ModelClient, blackboard: Blackboard):
         self.session = session
@@ -4859,7 +4748,6 @@ class BaseAgent:
         prompt_builder: PromptBuilder | None = None,
         allowed_tools: set[str] | None = None,
         activity: str = "main",
-        allow_project_learning: bool = False,
         allow_response_language_bootstrap: bool = False,
         state_updater_class: type[AgentStateUpdater] = AgentStateUpdater,
     ):
@@ -4879,7 +4767,6 @@ class BaseAgent:
         self.state_updater = state_updater_class(
             session,
             self.blackboard,
-            allow_project_learning=allow_project_learning,
         )
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.latest_tool_call_executions: list[ToolCallExecution] = []
@@ -5725,11 +5612,12 @@ class MainResponseContext:
     explore_actions: list[Json]
     pending_verify_requested: bool
     progress_messages: list[str]
+    user_rule_message: str | None
     completion_message: str
     has_goal_action: bool
     has_plan_action: bool
     has_fresh_plan_action: bool
-    has_learn_action: bool
+    has_user_rule_action: bool
     state_or_work_requested: bool
 
 
@@ -5748,8 +5636,8 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 @final
 class MainAgent(BaseAgent):
     blackboard: MainBlackboard
-    STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "learn", "progress"}
-    ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language"}
+    STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "progress"}
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language", "user_rule"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"observe", "plan", "verify", "goal", "response_language"}
 
     def __init__(self, session: Session):
@@ -5757,7 +5645,6 @@ class MainAgent(BaseAgent):
             session,
             blackboard=MainBlackboard(),
             allowed_tools=MAIN_AGENT_ALLOWED_TOOLS,
-            allow_project_learning=True,
             allow_response_language_bootstrap=True,
             state_updater_class=MainAgentStateUpdater,
         )
@@ -5843,8 +5730,14 @@ class MainAgent(BaseAgent):
     def _has_plan_items(self, value: JsonValue) -> bool:
         return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
-    def _has_learn_action(self, actions: list[Json]) -> bool:
-        return any(bool(_json_dict(action.get("learn"))) for action in actions)
+    def _has_user_rule_action(self, actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "user_rule" for action in actions)
+
+    def _user_rule_message_from_actions(self, actions: list[Json]) -> str | None:
+        for action in actions:
+            if _json_str(action.get("type")) == "user_rule":
+                return _json_str(action.get("message")) or "Rule saved."
+        return None
 
     def _standalone_sidecar_action_error(self, actions: list[Json]) -> str:
         invalid = sorted({_json_str(action.get("type")) or "" for action in actions if _json_str(action.get("type")) in self.STANDALONE_SIDECAR_TYPES})
@@ -6065,7 +5958,7 @@ class MainAgent(BaseAgent):
         return (
             "Error: standalone sidecar action is invalid: "
             + action_types
-            + ". Rule: put known, progress, or learn as fields on a main action."
+            + ". Rule: put known or progress as fields on a main action."
         )
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
@@ -6114,11 +6007,12 @@ class MainAgent(BaseAgent):
             explore_actions=explore_actions,
             pending_verify_requested=pending_verify_requested,
             progress_messages=progress_messages,
+            user_rule_message=self._user_rule_message_from_actions(actions),
             completion_message=self._completion_message_from_actions(actions),
             has_goal_action=has_goal_action,
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
-            has_learn_action=self._has_learn_action(actions),
+            has_user_rule_action=self._has_user_rule_action(actions),
             state_or_work_requested=bool(tool_calls or explore_actions or pending_verify_requested or progress_messages or has_plan_action),
         )
 
@@ -6136,8 +6030,8 @@ class MainAgent(BaseAgent):
             self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
             self._report_gate(
                 on_message,
-                "Retrying: attach known/progress/learn to a main action.",
-                "Action_Gate: known/progress/learn must be sidecar fields.",
+                "Retrying: attach known/progress to a main action.",
+                "Action_Gate: known/progress must be sidecar fields.",
             )
             return True
         action_gate = self._gate_action_types(
@@ -6189,7 +6083,7 @@ class MainAgent(BaseAgent):
             for message in ctx.progress_messages:
                 on_message(message)
 
-    def _gate_after_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None, *, stop_after_learn: bool) -> AgentRunResult | None:
+    def _gate_after_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         explore_error = self._explore_actions_error(ctx.actions)
         if explore_error:
             self._remember_agent_error(self._format_agent_feedback_explore_error(explore_error))
@@ -6219,11 +6113,6 @@ class MainAgent(BaseAgent):
                 "Plan_Gate: Plan is empty before tool/explore/verify.",
             )
             return AgentRunResult()
-
-        if stop_after_learn and ctx.has_learn_action and not ctx.tool_calls and not ctx.explore_actions:
-            self.session.append_conversation(AssistantMessage(content="Project knowledge updated."))
-            self._finish_current_goal()
-            return AgentRunResult(done=True, value=ctx.response)
 
         if (
             not ctx.tool_calls
@@ -6346,8 +6235,8 @@ class MainAgent(BaseAgent):
             self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
             self._report_gate(
                 on_message,
-                "Retrying: attach known/progress/learn to a main action.",
-                "Action_Gate: known/progress/learn must be sidecar fields.",
+                "Retrying: attach known/progress to a main action.",
+                "Action_Gate: known/progress must be sidecar fields.",
             )
             return AgentRunResult()
         gate_result = self._gate_action_types(
@@ -6438,7 +6327,6 @@ class MainAgent(BaseAgent):
         on_live_output: ToolLiveOutputCallback | None = None,
         on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
-        stop_after_learn: bool = False,
     ) -> Json:
         self._clear_agent_feedback()
         self._prune_recent_tool_calls()
@@ -6466,7 +6354,6 @@ class MainAgent(BaseAgent):
                 on_live_output=on_live_output,
                 on_live_done=on_live_done,
                 on_message=on_message,
-                stop_after_learn=stop_after_learn,
             ),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
         )
@@ -6480,7 +6367,6 @@ class MainAgent(BaseAgent):
         on_live_output: ToolLiveOutputCallback | None = None,
         on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
-        stop_after_learn: bool = False,
     ) -> AgentRunResult:
         ctx = self._build_response_context(response)
         self.state_updater.apply_response_language(ctx.actions)
@@ -6505,8 +6391,15 @@ class MainAgent(BaseAgent):
         self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response, apply_response_language=False)
         self._emit_state_and_progress(ctx, on_message)
+        if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.explore_actions and not ctx.pending_verify_requested:
+            message = ctx.user_rule_message or "Rule saved."
+            self.session.append_conversation(AssistantMessage(content=message))
+            if on_message is not None:
+                on_message(message)
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=response)
 
-        gate_result = self._gate_after_apply(ctx, on_message, stop_after_learn=stop_after_learn)
+        gate_result = self._gate_after_apply(ctx, on_message)
         if gate_result is not None:
             return gate_result
 
@@ -6577,7 +6470,7 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
-    CommandSpec("/learn", "Learn stable project knowledge", "Info", "/learn [prompt]"),
+    CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
@@ -6635,17 +6528,15 @@ class CommandDispatcher:
         self,
         agent: MainAgent,
         run_agent: MessageCallback | None = None,
-        run_learn_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
     ):
         self.agent = agent
         self.run_agent = run_agent
-        self.run_learn_agent = run_learn_agent
         self.run_with_status = run_with_status
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
-            "/learn": self._learn,
+            "/rules": self._rules,
             "/compact": self._compact,
             "/config": self._config,
             "/set": self._set,
@@ -6704,16 +6595,6 @@ class CommandDispatcher:
             ]
         )
 
-    def _learn(self, args: str) -> str:
-        task = self._format_learn_task(args)
-        if self.run_learn_agent is not None:
-            self.run_learn_agent(task)
-        elif self.run_agent is not None:
-            self.run_agent(task)
-        else:
-            self.agent.run(task, stop_after_learn=True)
-        return ""
-
     def _model(self, args: str) -> str:
         return self._set("main.model " + args)
 
@@ -6726,31 +6607,10 @@ class CommandDispatcher:
             return self._set("runtime.yolo " + ("off" if current else "on"))
         return self._set("runtime.yolo " + args)
 
-    def _format_learn_task(self, args: str) -> str:
-        prompt = args.strip()
-        guidance = (
-            "Review existing Project_Knowledge plus Known/Conversation. Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-            "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
-            "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
-        )
-        context = self._format_learn_session_context()
-        if prompt:
-            task = "Learn stable project knowledge about: " + prompt + ". " + guidance
-        else:
-            task = "Learn stable project knowledge for this codebase. " + guidance
-        return task + context
-
-    def _format_learn_session_context(self) -> str:
-        sections = []
-        known = self.agent.blackboard.known
-        if known:
-            sections.append("### Known To Consider\n" + "\n".join("- " + item for item in known))
-        conversation = self.agent.session.state.conversation
-        if conversation:
-            sections.append("### Conversation To Consider\n" + "\n\n".join(item.format() for item in conversation))
-        if not sections:
-            return ""
-        return "\n\nUse these current-session notes only to extract stable project knowledge or correct stale Project_Knowledge:\n" + "\n\n".join(sections)
+    def _rules(self, args: str) -> str:
+        if args:
+            return "Usage: /rules"
+        return self.agent.session.state.user_rules.format()
 
     def _status(self, args: str) -> str:
         if args:
@@ -7222,7 +7082,7 @@ class AgentLoop:
     def run(self) -> int:
         self._print_welcome()
         with self.status_bar:
-            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_learn_agent=self._run_learn_agent, run_with_status=self._run_with_status)
+            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_with_status=self._run_with_status)
             while True:
                 try:
                     user_input = self._read_input(self._prompt()).strip()
@@ -7284,10 +7144,7 @@ class AgentLoop:
     def _command_completer(self) -> Completer:
         return CommandCompleter()
 
-    def _run_learn_agent(self, user_input: str) -> None:
-        self._run_agent(user_input, stop_after_learn=True)
-
-    def _run_agent(self, user_input: str, *, stop_after_learn: bool = False) -> None:
+    def _run_agent(self, user_input: str) -> None:
         try:
             self._active_scope = None
             self.status_bar.reset_timer()
@@ -7298,7 +7155,6 @@ class AgentLoop:
                 on_auto_approve=self._show_auto_tool_call,
                 **self._live_preview_callbacks(),
                 on_message=self._emit,
-                stop_after_learn=stop_after_learn,
             )
         except KeyboardInterrupt:
             self.agent.cancel_current_goal()

@@ -124,73 +124,15 @@ def test_blackboard_command_is_not_registered(tmp_path):
     assert result.message == ""
 
 
-def test_learn_command_dispatches_default_learning_task(tmp_path):
-    calls = []
-    dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))), run_agent=calls.append)
-
-    result = dispatcher.dispatch("/learn")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == ""
-    assert calls == [
-        "Learn stable project knowledge for this codebase. Review existing Project_Knowledge plus Known/Conversation. "
-        "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-        "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
-        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
-    ]
-
-
-def test_learn_command_uses_learn_runner_when_available(tmp_path):
-    normal_calls = []
-    learn_calls = []
-    dispatcher = CommandDispatcher(
-        MainAgent(Session(cwd=str(tmp_path))),
-        run_agent=normal_calls.append,
-        run_learn_agent=learn_calls.append,
-    )
-
-    result = dispatcher.dispatch("/learn")
-
-    assert result.status == CommandStatus.HANDLED
-    assert normal_calls == []
-    assert len(learn_calls) == 1
-    assert learn_calls[0].startswith("Learn stable project knowledge for this codebase.")
-
-
-def test_learn_command_dispatches_scoped_learning_task(tmp_path):
-    calls = []
-    dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))), run_agent=calls.append)
-
-    result = dispatcher.dispatch("/learn test layout")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == ""
-    assert calls == [
-        "Learn stable project knowledge about: test layout. Review existing Project_Knowledge plus Known/Conversation. "
-        "Focus on stable structure, architecture, workflows, and conventions; workflows include durable test/lint/build/release/verification commands; use explore as needed. "
-        "Normalize before writing: merge duplicates, fix misfiled items, and keep summary as a one-sentence project description, not a process log. "
-        "Use corrections to update or delete stale facts by exact text. Append only stable project-level facts; do not store current file contents, temporary task state, audit conclusions, one-off findings, line numbers, or large code."
-    ]
-
-
-def test_learn_command_includes_current_session_known_and_conversation(tmp_path):
-    calls = []
+def test_rules_command_shows_rules_content(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    agent.blackboard.known.append("Tests run with uv run pytest -q.")
-    session.state.conversation.append(UserMessage(content="We decided config uses TOML."))
-    dispatcher = CommandDispatcher(agent, run_agent=calls.append)
+    session.state.user_rules.add("Prompt-only changes do not need tests.")
+    dispatcher = CommandDispatcher(MainAgent(session))
 
-    result = dispatcher.dispatch("/learn")
+    result = dispatcher.dispatch("/rules")
 
     assert result.status == CommandStatus.HANDLED
-    assert len(calls) == 1
-    assert "### Known To Consider" in calls[0]
-    assert "Tests run with uv run pytest -q." in calls[0]
-    assert "### Conversation To Consider" in calls[0]
-    assert "#### User " in calls[0]
-    assert "We decided config uses TOML." in calls[0]
-    assert "Use these current-session notes only to extract stable project knowledge or correct stale Project_Knowledge" in calls[0]
+    assert result.message == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):

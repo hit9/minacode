@@ -1022,49 +1022,46 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
     ]
 
 
-def test_agent_keeps_latest_100_known_items(tmp_path):
+def test_agent_keeps_latest_500_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
-    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [], "known": ["fact " + str(index) for index in range(101)]}]})
+    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [], "known": ["fact " + str(index) for index in range(501)]}]})
 
-    assert len(agent.blackboard.known) == 100
+    assert len(agent.blackboard.known) == 500
     assert agent.blackboard.known[0] == "fact 1"
-    assert agent.blackboard.known[-1] == "fact 100"
+    assert agent.blackboard.known[-1] == "fact 500"
 
 
-def test_main_agent_applies_project_knowledge_and_saves(tmp_path):
+def test_main_agent_applies_user_rule_and_saves(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response({"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests."}]})
+
+    content = (tmp_path / ".nanocode" / "user_rules.md").read_text(encoding="utf-8")
+    assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
+    assert content == "# User Rules\n\n- Prompt-only changes do not need tests.\n"
+    assert "  User_Rules    updated" in agent.state_updater.latest_report
+
+
+def test_user_rules_deduplicate(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
     agent.apply_response(
         {
             "actions": [
-                {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "learn": {
-                        "summary": "Single-file CLI coding assistant.",
-                        "structure": ["nanocode.py contains the CLI and agent loop."],
-                        "architecture": ["MainAgent delegates uncertain code discovery to ExploreAgent."],
-                        "workflows": ["Run pytest for verification."],
-                        "conventions": ["Use JSON action frames."],
-                    },
-                }
+                {"type": "user_rule", "text": "Prompt-only changes do not need tests."},
+                {"type": "user_rule", "text": "- Prompt-only changes do not need tests."},
             ]
         }
     )
 
-    data = json.loads((tmp_path / ".nanocode" / "project_knowledge.json").read_text(encoding="utf-8"))
-    assert session.state.project_knowledge.summary == "Single-file CLI coding assistant."
-    assert data["summary"] == "Single-file CLI coding assistant."
-    assert data["structure"] == ["nanocode.py contains the CLI and agent loop."]
-    assert "  Project_Knowledge\n" in agent.state_updater.latest_report
-    assert "structure: 1 item(s)" in agent.state_updater.latest_report
+    assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
-def test_main_agent_stop_after_learn_finishes_after_learn_sidecar(tmp_path):
+def test_main_agent_user_rule_finishes_with_message(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
@@ -1077,14 +1074,9 @@ def test_main_agent_stop_after_learn_finishes_after_learn_sidecar(tmp_path):
             return {
                 "actions": [
                     {
-                        "type": "goal",
-                        "text": "learn project",
-                        "complete": True,
-                        "message_for_complete": "Project knowledge updated.",
-                        "learn": {
-                            "summary": "Single-file CLI coding assistant.",
-                            "structure": ["nanocode.py contains the CLI and agent loop."],
-                        },
+                        "type": "user_rule",
+                        "text": "Prompt-only changes do not need tests.",
+                        "message": "记住了。",
                     }
                 ]
             }
@@ -1093,102 +1085,13 @@ def test_main_agent_stop_after_learn_finishes_after_learn_sidecar(tmp_path):
     agent.model_client = fake_client
     messages = []
 
-    response = agent.run("learn project", stop_after_learn=True, on_message=messages.append)
+    response = agent.run("记住：prompt 改动不用测试", on_message=messages.append)
 
     assert fake_client.calls == 1
-    assert response["actions"][0]["type"] == "goal"
-    assert session.state.project_knowledge.summary == "Single-file CLI coding assistant."
+    assert response["actions"][0]["type"] == "user_rule"
+    assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
     assert any(message.startswith("State Updated") for message in messages)
-    assert session.state.conversation[-1].content == "Project knowledge updated."
-
-
-def test_project_knowledge_dedupes_and_keeps_latest_30_items(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "learn": {"structure": ["item " + str(index) for index in range(31)] + ["item 30"]},
-                }
-            ]
-        }
-    )
-
-    assert len(session.state.project_knowledge.structure) == 30
-    assert session.state.project_knowledge.structure[0] == "item 1"
-    assert session.state.project_knowledge.structure[-1] == "item 30"
-
-
-def test_project_knowledge_can_correct_and_delete_existing_items(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "learn": {
-                        "structure": ["old structure", "remove me"],
-                        "architecture": ["old architecture"],
-                    },
-                }
-            ]
-        }
-    )
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "learn": {
-                        "corrections": [
-                            {"field": "structure", "old": "old structure", "new": "new structure"},
-                            {"field": "structure", "old": "remove me", "new": None},
-                            {"field": "architecture", "old": "old architecture", "new": "new architecture"},
-                        ],
-                    },
-                }
-            ]
-        }
-    )
-
-    assert session.state.project_knowledge.structure == ["new structure"]
-    assert session.state.project_knowledge.architecture == ["new architecture"]
-
-
-def test_explore_agent_does_not_apply_project_knowledge(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(session)
-    explorer = nanocode.ExploreAgent(parent_session=session, parent_blackboard=parent_agent.blackboard, goal="inspect", scope=[])
-
-    explorer.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "learn": {
-                        "summary": "Should be ignored.",
-                        "structure": ["Should not be saved."],
-                    },
-                }
-            ]
-        }
-    )
-
-    assert session.state.project_knowledge.is_empty()
-    assert not (tmp_path / ".nanocode" / "project_knowledge.json").exists()
+    assert session.state.conversation[-1].content == "记住了。"
 
 
 def test_agent_ignores_known_items_without_fact(tmp_path):
