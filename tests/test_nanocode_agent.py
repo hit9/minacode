@@ -1673,6 +1673,8 @@ def test_explore_agent_injects_final_deliver_only_turn(tmp_path):
     assert "FINAL TURN" in explorer.model_client.user_prompts[-1]
     assert "Read(filepath" in explorer.model_client.system_prompts[0]
     assert "Read(filepath" not in explorer.model_client.system_prompts[-1]
+    assert "Good tool batches" not in explorer.model_client.system_prompts[-1]
+    assert "Return exactly ONE deliver action" in explorer.model_client.system_prompts[-1]
     assert len(explorer.model_client.user_prompts) == 2
 
 

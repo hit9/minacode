@@ -3298,6 +3298,17 @@ Sidecar field on tool or deliver:
 """
 
 
+EXPLORE_AGENT_FINAL_SYSTEM_PROMPT = """You are ExploreAgent. FINAL TURN.
+Use only Context, Known, Errors, Tool Result Store, and Recent Tool Calls.
+Do NOT call tools. Do NOT output plan/known/verify alone.
+Return exactly ONE deliver action.
+If targets were found, include concrete path/area/line_range/context/reason.
+If no target was found, use targets=[] and explain what was searched, within what scope, and why no target was found in issues.
+
+{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"], "issues": ["string"]} __END_ACTION__
+"""
+
+
 EXPLORE_AGENT_USER_PROMPT_TEMPLATE = """
 --- Context ---
 
@@ -5318,6 +5329,11 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
     retry_message: ClassVar[str] = "Retrying: explore returned only state actions; return tool or deliver."
     feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every ExploreAgent response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "explore step limit reached"
+
+    def build_system_prompt(self) -> str:
+        if self.final_deliver_only:
+            return EXPLORE_AGENT_FINAL_SYSTEM_PROMPT.strip()
+        return super().build_system_prompt()
 
     def _prepare_step(self, index: int, max_steps: int) -> None:
         if index != max_steps - 1:
