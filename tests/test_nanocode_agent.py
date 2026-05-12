@@ -1510,6 +1510,8 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
     assert explorer.blackboard.known == ["sample.txt contains alpha."]
     assert explorer.observation_pending is False
 
+    explorer.execute_tool_calls([{"name": "LineCount", "intention": "count sample lines", "args": ["sample.txt"]}])
+
     delivered = explorer.handle_response(
         {
             "actions": [
@@ -1537,6 +1539,19 @@ def test_explore_agent_rejects_observe_outside_observation_turn(tmp_path):
 
     assert result.done is False
     assert any("observe action is only valid after tool results" in error for error in explorer.agent_feedback_errors)
+
+
+def test_explore_agent_rejects_deliver_outside_observation_or_final_turn(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
+
+    result = explorer.handle_response(
+        {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": ["sample fact"]}]}
+    )
+
+    assert result.done is False
+    assert any("normal ExploreAgent turn cannot deliver" in error for error in explorer.agent_feedback_errors)
 
 
 def test_verify_agent_requires_known_after_tool_results(tmp_path):

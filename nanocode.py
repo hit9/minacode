@@ -3244,18 +3244,11 @@ Your ONLY job: locate CONCRETE code targets for the caller.
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
-- EVERY response must include tool or deliver.
+- EVERY response must include tool.
 - Explore_Goal includes kind and constraints from MainAgent.
-- Maintain your own Known: save useful tool-result facts in the next tool/deliver known sidecar.
-- REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
-- Do NOT rely on Recent Tool Calls as memory; record durable findings into your Known as you iterate.
 - SEARCH BEFORE READ only when the target path/range is unknown.
 - If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
 - Read ONLY SMALL ranges around likely matches or caller-provided exact targets.
-- Deliver as soon as the target is FOUND or CANNOT BE FOUND.
-- STOP and deliver when Read/Search gives enough concrete path/range evidence.
-- After every Read, decide whether to DELIVER before calling more tools.
-- If the last batch adds no new useful information, deliver current targets/issues instead of searching again.
 - Call more tools only when a specific missing path/range/reference is needed.
 - Deliverable is path/symbol/0-based line_range/context/reason evidence.
 
@@ -3266,29 +3259,11 @@ Must not:
 - Do NOT output only known/verify/state actions.
 - Do NOT deliver large raw content.
 
-Reject:
-- Reject only if Explore_Goal asks ExploreAgent itself to review, analyze, diagnose, decide, verify, fix, confirm, or answer.
-- Do NOT reject merely because the broader task mentions a bug, fix, diagnosis, or verification, as long as the requested Explore_Goal is only to locate concrete targets.
-- If Explore_Scope has NO path, symbol, keyword, changed-file, or search-hint constraint, deliver EMPTY targets with issues. Do NOT call tools.
-
 WORKFLOW:
 1. SCOPE: check Explore_Goal and Explore_Scope constraints.
-2. OBSERVE: if Recent Tool Calls exist, record NEW known facts before anything else.
-3. DIRECT: if exact target is known, Read the smallest useful range.
-4. SEARCH: otherwise search symbols, paths, config names, keywords, or changed files.
-5. READ: batch small ranges around likely matches when line evidence is needed.
-6. DECIDE: after every tool batch, record known, then deliver unless a specific missing target remains.
-7. DELIVER: concrete targets, stable known facts, and issues.
-
-Deliver:
-- targets are file/symbol/range/context/reason items the caller can use next.
-- Prefer EXACT path + 0-based line_range from Read.
-- known contains STABLE facts ONLY.
-- issues contains blockers, out-of-role handoffs, or not-found notes.
-- If targets are empty, issues MUST explain what was searched, within what scope, and why no concrete target was found.
-- If a target is approximate, mark line_range as null and explain what extra Read/Search is needed.
-- Do not omit relevant targets found within scope just because one best target exists.
-- Deliver at most 10 targets, ordered by usefulness to the caller.
+2. DIRECT: if exact target is known, Read the smallest useful range.
+3. SEARCH: otherwise search symbols, paths, config names, keywords, or changed files.
+4. READ: batch small ranges around likely matches when line evidence is needed.
 
 Kinds:
 - symbol: locate classes, functions, variables, config keys, commands, or named code concepts.
@@ -3312,29 +3287,15 @@ Good tool batches:
 {"type": "tool", "name": "Search", "intention": "Find relevant config code", "args": ["ConfigFile|from_config|init_config", "path=nanocode.py"]} __END_ACTION__
 {"type": "tool", "name": "Search", "intention": "Find CLI entry handling", "args": ["argparse|--init-config|def main", "path=nanocode.py"]} __END_ACTION__
 
-Action types:
-- tool: call one available investigation tool.
-- deliver: finish exploration and return relevant targets, known facts, and issues when any.
-- verify: optional exploration verification status; include only together with deliver.
-
 Output format (Strict)
 
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
-Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
+Frame shape below is the schema; every actual response must include tool.
 
-If Recent Tool Calls already contains the exact tool name and args you want to run, deliver using existing results instead.
-
-Sidecar field on tool or deliver:
-- "known": ["<non-empty fact learned from prior tool results>"]
-
-After tool results, your NEXT tool or deliver action MUST include a non-empty known sidecar.
-Invalid after tool results: {"type": "tool", "name": "Search", "intention": "...", "args": ["..."]}
-Valid after tool results: {"type": "tool", "name": "Search", "intention": "...", "args": ["..."], "known": ["Search found AgentLoop in nanocode.py."]}
+If Recent Tool Calls already contains the exact tool name and args you want to run, choose a different useful tool or wait for observe turn.
 
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
-{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<stable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
-{"type": "verify", "method": null | "<method>", "status": "passed|blocked", "context": null | "<context>"} __END_ACTION__
 """
 
 
@@ -5349,6 +5310,9 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         observe_gate_result = self._gate_observation_turn(actions, on_message)
         if observe_gate_result is not None:
             return observe_gate_result
+        deliver_gate_result = self._gate_deliver_action(actions, observation_turn, on_message)
+        if deliver_gate_result is not None:
+            return deliver_gate_result
         self.apply_response(response)
         report = self._deliver_from_actions(actions)
         if report is not None:
@@ -5392,6 +5356,9 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         return AgentRunResult()
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
+        return None
+
+    def _gate_deliver_action(self, actions: list[Json], observation_turn: bool, on_message: MessageCallback | None) -> AgentRunResult | None:
         return None
 
     def execute_tool_calls(self, tool_calls: list[JsonValue], **kwargs: Any) -> str:
@@ -5518,11 +5485,23 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
         repeated = self._repeated_tool_call(tool_calls)
         if repeated is None:
             return None
+        self.observation_pending = True
         self._remember_agent_error("Error: repeated explore tool call. Rule: use existing results and deliver targets/issues instead of repeating the same tool.")
         self._report_gate(
             on_message,
             "Retrying: use existing explore results and deliver.",
             "Explore_Gate: repeated tool call: " + ToolCallDisplayFormatter._format_call(repeated) + ".",
+        )
+        return AgentRunResult()
+
+    def _gate_deliver_action(self, actions: list[Json], observation_turn: bool, on_message: MessageCallback | None) -> AgentRunResult | None:
+        if not self._has_deliver_action(actions) or observation_turn or self.final_deliver_only:
+            return None
+        self._remember_agent_error("Error: normal ExploreAgent turn cannot deliver. Rule: call tools; only observe/final turns deliver.")
+        self._report_gate(
+            on_message,
+            "Retrying: explore must call tools.",
+            "Explore_Gate: normal turn cannot deliver.",
         )
         return AgentRunResult()
 
