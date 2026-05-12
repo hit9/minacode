@@ -7352,7 +7352,7 @@ class AgentLoop:
             self._emit_segments(self._state_segments(message), message)
             return
         if self._is_tool_report(message):
-            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "))
+            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
@@ -7379,7 +7379,7 @@ class AgentLoop:
             )
             return
         if self._is_tool_report(message):
-            self._emit_segments(prefix + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix))
+            self._emit_segments(prefix + self._indent_segments(self._tool_segments(message), "  "), self._scoped_plain(scope, message, show_prefix=show_prefix), end="")
             return
         if message.startswith("Retrying:"):
             self._emit_segments(prefix + [("ansibrightblack", "  " + message + "\n")], self._scoped_plain(scope, message, show_prefix=show_prefix))
@@ -7417,9 +7417,9 @@ class AgentLoop:
     def _is_tool_call_line(self, line: str) -> bool:
         return line.startswith("[success] ") or line.startswith("[failure] ")
 
-    def _emit_segments(self, segments: list[tuple[str, str]], plain: str) -> None:
+    def _emit_segments(self, segments: list[tuple[str, str]], plain: str, *, end: str = "\n") -> None:
         if self.output_fn is print:
-            print_formatted_text(FormattedText(segments), flush=True)
+            print_formatted_text(FormattedText(segments), end=end, flush=True)
         else:
             self.output_fn(plain)
 
