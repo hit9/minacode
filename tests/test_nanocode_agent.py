@@ -1502,7 +1502,7 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     assert still_searching.done is False
     assert explorer.blackboard.known == []
-    assert any("observe turn cannot call tools" in error for error in explorer.agent_feedback_errors)
+    assert any("tool results must be summarized before more tools" in error for error in explorer.agent_feedback_errors)
 
     observed = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
 
@@ -1538,10 +1538,10 @@ def test_explore_agent_rejects_observe_outside_observation_turn(tmp_path):
     result = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample fact"], "next": "read sample"}]})
 
     assert result.done is False
-    assert any("observe action is only valid after tool results" in error for error in explorer.agent_feedback_errors)
+    assert any("unsupported action in normal worker turn" in error for error in explorer.agent_feedback_errors)
 
 
-def test_explore_agent_rejects_deliver_outside_observation_or_final_turn(tmp_path):
+def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
     explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
@@ -1551,7 +1551,7 @@ def test_explore_agent_rejects_deliver_outside_observation_or_final_turn(tmp_pat
     )
 
     assert result.done is False
-    assert any("normal ExploreAgent turn cannot deliver" in error for error in explorer.agent_feedback_errors)
+    assert any("normal ExploreAgent turn used an unsupported action" in error for error in explorer.agent_feedback_errors)
 
 
 def test_verify_agent_requires_known_after_tool_results(tmp_path):
@@ -1641,41 +1641,6 @@ def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
     assert delivered.done is True
     assert isinstance(delivered.value, nanocode.VerifyReport)
     assert delivered.value.status == "failed"
-
-
-def test_verify_agent_final_turn_removes_bash_tool(tmp_path):
-    parent_session = Session(cwd=str(tmp_path), explore_agent_max_turns=9, verify_agent_max_turns=2)
-    parent_agent = MainAgent(parent_session)
-
-    class FakeModelClient:
-        def __init__(self):
-            self.system_prompts = []
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["true"]}]},
-                {"actions": [{"type": "deliver", "status": "passed", "method": "Bash true", "summary": "check passed", "known": ["Bash true exited successfully."]}]},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.system_prompts.append(system_prompt)
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    verifier = nanocode.VerifyAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="verify command",
-        scope=["kind: test", "target: true", "expect: exit code 0"],
-    )
-    verifier.model_client = FakeModelClient()
-
-    report = verifier.run(confirm=lambda call, tool: True)
-
-    assert verifier.max_steps == 2
-    assert report.status == "passed"
-    assert "Bash(command)" in verifier.model_client.system_prompts[0]
-    assert "Bash(command)" not in verifier.model_client.system_prompts[-1]
-    assert "FINAL TURN" in verifier.model_client.user_prompts[-1]
 
 
 def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
@@ -1794,7 +1759,7 @@ def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
     assert any("repeated explore tool call" in error for error in explorer.agent_feedback_errors)
 
 
-def test_explore_agent_injects_final_deliver_only_turn(tmp_path):
+def test_explore_agent_uses_observe_turn_after_tool_results(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path), explore_agent_max_turns=2)
     parent_agent = MainAgent(parent_session)
@@ -1841,11 +1806,6 @@ def test_explore_agent_injects_final_deliver_only_turn(tmp_path):
 
     assert report.targets[0]["path"] == "sample.txt"
     assert report.known == ["sample.txt contains alpha."]
-    assert "FINAL TURN" in explorer.model_client.user_prompts[-1]
-    assert "Read(filepath" in explorer.model_client.system_prompts[0]
-    assert "Read(filepath" not in explorer.model_client.system_prompts[-1]
-    assert "Good tool batches" not in explorer.model_client.system_prompts[-1]
-    assert "Return exactly ONE deliver action" in explorer.model_client.system_prompts[-1]
     assert len(explorer.model_client.user_prompts) == 2
 
 
