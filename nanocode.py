@@ -301,12 +301,6 @@ class Blackboard:
 
 
 @dataclass
-class MainBlackboard(Blackboard):
-    verification_required: bool = False
-    verification: Verification = field(default_factory=Verification)
-
-
-@dataclass
 class ModelConfig:
     model: str = ""
     temperature: float | None = None
@@ -631,6 +625,7 @@ class AgentRuntime:
 class PromptContext:
     blackboard: Blackboard
     runtime: AgentRuntime
+    verification: Verification | None = None
     parent_known: list[str] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
     worker_reports: WorkerReportHistory = field(default_factory=WorkerReportHistory)
@@ -1138,7 +1133,7 @@ class ReadTool(Tool):
     @classmethod
     def description(cls) -> list[str]:
         return [
-            "Read known UTF-8 file paths; pass multiple 0-based start,end ranges for the same file.",
+            "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
             "Each range returns at most 600 lines.",
         ]
 
@@ -3456,7 +3451,7 @@ class PromptBuilder:
         self.allowed_tools = allowed_tools
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
         self.context = context or PromptContext(
-            blackboard=MainBlackboard(),
+            blackboard=Blackboard(),
             runtime=AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter),
         )
 
@@ -3561,9 +3556,9 @@ class PromptBuilder:
         return "\n".join(item.format() for item in self.context.blackboard.plan)
 
     def _format_verification_state(self) -> str:
-        if not isinstance(self.context.blackboard, MainBlackboard):
+        if self.context.verification is None:
             return "(empty)"
-        return self.context.blackboard.verification.format()
+        return self.context.verification.format()
 
 
 ############################
@@ -4573,6 +4568,17 @@ class AgentStateUpdater:
         if fact not in self.blackboard.known:
             self.blackboard.known.append(fact)
             del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
+
+
+############################
+# MainAgent State
+############################
+
+
+@dataclass
+class MainBlackboard(Blackboard):
+    verification_required: bool = False
+    verification: Verification = field(default_factory=Verification)
 
 
 @final
@@ -5648,6 +5654,7 @@ class MainAgent(BaseAgent):
             allow_response_language_bootstrap=True,
             state_updater_class=MainAgentStateUpdater,
         )
+        self.prompt_context.verification = self.blackboard.verification
 
     def build_system_prompt(self) -> str:
         if self.mode == AgentMode.OBSERVE:
