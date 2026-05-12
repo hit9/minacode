@@ -556,6 +556,11 @@ max_agent_steps = 50
 ############################
 
 
+class AgentMode(StrEnum):
+    ACT = "act"
+    OBSERVE = "observe"
+
+
 @final
 @dataclass
 class WorkerReportHistory(PromptItem):
@@ -2894,14 +2899,12 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 # MainAgent Prompt
 ############################
 
-MAIN_AGENT_SYSTEM_PROMPT = """You are MainAgent, a looping coding assistant.
+MAIN_AGENT_SYSTEM_PROMPT = """You are the main coding worker in an AI coding assistant.
 
 HARD RULES:
 - Output JSON actions only. No prose outside actions. No native/function tool calls.
 - Use Response_Language if set; otherwise use the latest user language.
 - User-facing text must be plain, concise, direct, and non-Markdown unless requested.
-- Tool/worker results are volatile. Save every durable fact into known before using it later.
-- If you receive tool/worker results, the NEXT response MUST attach useful known facts before any more work.
 - known is for current task facts. learn is for stable reusable memory only, and should be emitted only at task boundaries.
 - learn is optional and rare. Prefer no learn over noisy learn.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
@@ -2911,26 +2914,21 @@ STATE:
 - Plan: ordered steps.
 - Known: durable facts.
 - Verification_State: null | pending | passed | failed | blocked.
-- Latest_Results: new tool/worker results, if any.
 
 LOOP:
-At each turn, do exactly one phase, then stop.
+Choose exactly one phase, then stop.
 
 1. CHAT: if this is casual chat, output one chat action.
 2. ALIGN: compare User Request with Goal. For a new task, output start with a fresh short plan.
 3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
-4. OBSERVE: if Latest_Results exist, attach only NEW durable facts as known, then update Plan before more work:
-   - mark completed steps done
-   - revise stale steps
-   - add the next needed step
-5. REPAIR: if Verification_State is failed, fix the reported issue.
-6. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
-7. ACT: execute only the next unfinished plan step:
+4. REPAIR: if Verification_State is failed, fix the reported issue.
+5. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
+6. ACT: execute only the next unfinished plan step:
    - unknown target -> explore
    - known target -> smallest useful batch of tool/edit actions
-8. CHECK: after any edit, request verify or inspect one narrow target.
-9. DONE: complete only when the goal is done and required verification has passed.
-10. LEARN: if stable reusable facts were discovered near completion, attach learn to goal complete=true.
+7. CHECK: after any edit, request verify or inspect one narrow target.
+8. DONE: complete only when the goal is done and required verification has passed.
+9. LEARN: if stable reusable facts were discovered near completion, attach learn to goal complete=true.
 
 PLANNING:
 - Use plan only for real tasks.
@@ -3121,19 +3119,48 @@ YOUR OUTPUT:
 """
 
 
+MAIN_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the main coding worker in an AI coding assistant.
+Your ONLY job: digest latest tool/worker results into task state.
+
+Must:
+- Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
+- Do NOT call tools or workers.
+- Record NEW durable facts in known.
+- Update Plan toward Goal before more work.
+- Use worker reports and recent tool calls as volatile input; keep only durable facts.
+- Complete only when Goal is done and required verification is satisfied.
+
+Allowed actions:
+- observe: record known facts from latest results.
+- plan: revise or advance current plan.
+- verify: record passed/blocked verification status from latest results.
+- goal: complete or update current goal.
+
+Output format (Strict)
+
+Output one or more JSON objects separated by __END_ACTION__:
+If the entire output is one JSON action object, __END_ACTION__ may be omitted.
+
+{"type": "observe", "known": ["<new durable fact from latest results>"], "progress": null|"<optional short progress>"} __END_ACTION__
+{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|lint|test|build|change_review|change_check|other", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|blocked", "context": null|"<verification result>"} __END_ACTION__
+{"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
+"""
+
+
 ############################
 # ExploreAgent Prompt
 ############################
 
 
-EXPLORE_AGENT_SYSTEM_PROMPT = """You are ExploreAgent.
+EXPLORE_AGENT_SYSTEM_PROMPT = """You are the explore worker in an AI coding assistant.
 Your ONLY job: locate CONCRETE code targets for the caller.
 
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Use Response_Language for tool intention. Do not infer language from handoff text.
 - EVERY response must include tool.
-- Explore_Goal includes kind and constraints from MainAgent.
+- Explore_Goal includes kind and constraints from the main worker.
 - SEARCH BEFORE READ only when the target path/range is unknown.
 - If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
 - Read ONLY SMALL ranges around likely matches or caller-provided exact targets.
@@ -3186,7 +3213,7 @@ Do NOT repeat the exact same tool name and args from Recent Tool Calls.
 """
 
 
-EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT = """You are ExploreAgent. OBSERVE TURN.
+EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the explore worker in an AI coding assistant.
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/verify/state.
 Return exactly ONE observe or deliver action.
@@ -3257,7 +3284,7 @@ YOUR OUTPUT:
 ############################
 
 
-VERIFY_AGENT_SYSTEM_PROMPT = """You are VerifyAgent.
+VERIFY_AGENT_SYSTEM_PROMPT = """You are the verify worker in an AI coding assistant.
 Your ONLY job: check whether a NARROW expected condition is true.
 
 Must:
@@ -3265,7 +3292,7 @@ Must:
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - EVERY response must include tool or deliver.
 - Verify the EXPECTED CONDITION, NOT the whole user task.
-- Verify_Goal includes kind, target, and expect from MainAgent.
+- Verify_Goal includes kind, target, and expect from the main worker.
 - Maintain your own Known: save useful evidence facts in the next tool/deliver known sidecar.
 - REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
 - Do NOT rely on Recent Tool Calls as memory; record durable verification facts into your Known as you iterate.
@@ -3282,7 +3309,7 @@ Must not:
 - Do NOT paste long logs.
 
 Reject:
-- Reject only if Verify_Goal asks VerifyAgent itself to perform open-ended review, broad analysis, diagnosis, issue discovery, design judgment, implementation, or investigation.
+- Reject only if Verify_Goal asks the verify worker itself to perform open-ended review, broad analysis, diagnosis, issue discovery, design judgment, implementation, or investigation.
 - Do NOT reject narrow change_review/change_check requests when they include a concrete target and explicit expected condition.
 - If Verification_Scope lacks a CONCRETE target or EXPLICIT expected condition, deliver BLOCKED with issues. Do NOT call tools.
 
@@ -3351,7 +3378,7 @@ Valid after tool results: {"type": "deliver", "status": "failed", "method": "bui
 """
 
 
-VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT = """You are VerifyAgent. OBSERVE TURN.
+VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the verify worker in an AI coding assistant.
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/state.
 Return exactly ONE observe or deliver action.
@@ -4790,6 +4817,7 @@ class BaseAgent:
         self.prompt_context.worker_reports = self.worker_reports
         self.agent_feedback_errors: list[str] = []
         self.gate_report_counts: dict[str, int] = {}
+        self.mode = AgentMode.ACT
 
     def build_system_prompt(self) -> str:
         return self.prompt_builder.system_prompt()
@@ -5022,6 +5050,15 @@ class BaseAgent:
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
 
+    def _requires_observation(self, execution: ToolCallExecution) -> bool:
+        if self._is_tool_call_arg_error(execution):
+            return False
+        return execution.outcome == "success"
+
+    @staticmethod
+    def _is_tool_call_arg_error(execution: ToolCallExecution) -> bool:
+        return execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError)
+
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
             "actions": [],
@@ -5052,6 +5089,36 @@ class BaseAgent:
     def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
         return [action for action in actions if _json_str(action.get("type")) == "tool"]
 
+    def _has_known_sidecar(self, actions: list[Json]) -> bool:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
+            if any((_json_str(raw) or "").strip() for raw in values):
+                return True
+        return False
+
+    def _action_types(self, actions: list[Json]) -> set[str]:
+        return {action_type for action_type in (_json_str(action.get("type")) for action in actions) if action_type}
+
+    def _gate_action_types(
+        self,
+        actions: list[Json],
+        *,
+        allowed: set[str],
+        on_message: MessageCallback | None,
+        retry_message: str,
+        feedback_message: str,
+    ) -> AgentRunResult | None:
+        invalid = sorted(self._action_types(actions) - allowed)
+        if not invalid:
+            return None
+        self._remember_agent_error(feedback_message + " Invalid action(s): " + ", ".join(invalid) + ".")
+        self._report_gate(
+            on_message,
+            retry_message,
+            self.activity + "_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
+        )
+        return AgentRunResult()
+
 
 ############################
 # WorkerAgent
@@ -5068,7 +5135,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
     retry_message: ClassVar[str]
     feedback_message: ClassVar[str]
     step_limit_reason: ClassVar[str]
-    normal_action_rule: ClassVar[str] = "tool or deliver"
+    act_action_types: ClassVar[set[str]] = {"tool", "deliver"}
+    observe_action_types: ClassVar[set[str]] = {"observe", "deliver"}
 
     def __init__(
         self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
@@ -5103,10 +5171,9 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
             activity=self.activity_name,
         )
         self.seen_tool_call_keys: set[tuple[str, tuple[str, ...]]] = set()
-        self.observation_pending = False
 
     def build_system_prompt(self) -> str:
-        if self.observation_pending:
+        if self.mode == AgentMode.OBSERVE:
             return self.observation_system_prompt.strip()
         return super().build_system_prompt()
 
@@ -5149,30 +5216,51 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
-        observation_turn = self.observation_pending
         if self.session.debug and on_message is not None:
             frame_error_report = self._format_frame_error_report(response)
             if frame_error_report:
                 on_message(frame_error_report)
-        observe_gate_result = self._gate_observation_turn(actions, on_message)
-        if observe_gate_result is not None:
-            return observe_gate_result
-        deliver_gate_result = self._gate_deliver_action(actions, observation_turn, on_message)
-        if deliver_gate_result is not None:
-            return deliver_gate_result
+        if self.mode == AgentMode.OBSERVE:
+            return self._handle_observe_response(response, actions, on_message)
+        return self._handle_act_response(
+            response,
+            actions,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        )
+
+    def _handle_act_response(
+        self,
+        response: Json,
+        actions: list[Json],
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> AgentRunResult:
+        gate_result = self._gate_action_types(
+            actions,
+            allowed=self.act_action_types,
+            on_message=on_message,
+            retry_message=self.retry_message,
+            feedback_message=self.feedback_message,
+        )
+        if gate_result is not None:
+            return gate_result
         self.apply_response(response)
         report = self._deliver_from_actions(actions)
         if report is not None:
-            self.observation_pending = False
             return AgentRunResult(done=True, value=report)
-        if observation_turn and self._has_observe_action(actions):
-            self.observation_pending = False
-            return AgentRunResult()
         tool_calls = self._tool_calls_from_actions(actions)
-        gate_result = self._gate_tool_calls(tool_calls, on_message)
-        if gate_result is not None:
-            return gate_result
         if tool_calls:
+            gate_result = self._gate_tool_calls(tool_calls, on_message)
+            if gate_result is not None:
+                return gate_result
             self.execute_tool_calls(
                 tool_calls,
                 confirm=confirm,
@@ -5186,78 +5274,55 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
                     on_message(latest_report)
             self._remember_tool_call_keys()
             return AgentRunResult()
-        if self._has_observe_action(actions):
-            self._remember_agent_error("Error: unsupported action in normal worker turn. Rule: return " + self.normal_action_rule + ".")
-            self._report_gate(
-                on_message,
-                "Retrying: use " + self.normal_action_rule + ".",
-                self.gate_name + ": normal turn only accepts " + self.normal_action_rule + ".",
-            )
-            return AgentRunResult()
         self._remember_agent_error(self.feedback_message)
         self._report_gate(
             on_message,
             self.retry_message,
-            self.gate_name + ": normal turn expected " + self.normal_action_rule + " action.",
+            self.gate_name + ": use one of these action types now: " + ", ".join(sorted(self.act_action_types)) + ".",
+        )
+        return AgentRunResult()
+
+    def _handle_observe_response(self, response: Json, actions: list[Json], on_message: MessageCallback | None) -> AgentRunResult:
+        gate_result = self._gate_action_types(
+            actions,
+            allowed=self.observe_action_types,
+            on_message=on_message,
+            retry_message="Retrying: summarize latest results.",
+            feedback_message="Error: latest results must be summarized or delivered.",
+        )
+        if gate_result is not None:
+            return gate_result
+        if not self._has_known_sidecar(actions):
+            self._remember_agent_error("Error: latest results were not recorded. Rule: include non-empty known facts.")
+            self._report_gate(
+                on_message,
+                "Retrying: record known from latest results.",
+                self.gate_name + ": record non-empty known facts from latest results.",
+            )
+            return AgentRunResult()
+        self.apply_response(response)
+        report = self._deliver_from_actions(actions)
+        if report is not None:
+            self.mode = AgentMode.ACT
+            return AgentRunResult(done=True, value=report)
+        if self._has_observe_action(actions):
+            self.mode = AgentMode.ACT
+            return AgentRunResult()
+        self._remember_agent_error("Error: latest results were not summarized or delivered. Rule: return observe or deliver.")
+        self._report_gate(
+            on_message,
+            "Retrying: summarize latest results.",
+            self.gate_name + ": summarize latest results or deliver.",
         )
         return AgentRunResult()
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         return None
 
-    def _gate_deliver_action(self, actions: list[Json], observation_turn: bool, on_message: MessageCallback | None) -> AgentRunResult | None:
-        return None
-
     def execute_tool_calls(self, tool_calls: list[JsonValue], **kwargs: Any) -> str:
         report = super().execute_tool_calls(tool_calls, **kwargs)
-        self.observation_pending = any(self._requires_observation(execution) for execution in self.latest_tool_call_executions)
+        self.mode = AgentMode.OBSERVE if any(self._requires_observation(execution) for execution in self.latest_tool_call_executions) else AgentMode.ACT
         return report
-
-    def _gate_observation_turn(self, actions: list[Json], on_message: MessageCallback | None) -> AgentRunResult | None:
-        if not self.observation_pending:
-            return None
-        if self._tool_calls_from_actions(actions):
-            self._remember_agent_error("Error: tool results must be summarized before more tools. Rule: summarize latest tool results or finish.")
-            self._report_gate(
-                on_message,
-                "Retrying: summarize latest tool results before more tools.",
-                self.gate_name + ": tool results need summary before more tools.",
-            )
-            return AgentRunResult()
-        if not (self._has_observe_action(actions) or self._has_deliver_action(actions)):
-            self._remember_agent_error("Error: tool results were not summarized. Rule: record known facts or finish from latest tool results.")
-            self._report_gate(
-                on_message,
-                "Retrying: summarize latest tool results.",
-                self.gate_name + ": tool results need summary.",
-            )
-            return AgentRunResult()
-        if not self._has_known_sidecar(actions):
-            self._remember_agent_error("Error: tool results were received but no known facts were recorded. Rule: include non-empty known facts.")
-            self._report_gate(
-                on_message,
-                "Retrying: record known from tool results.",
-                self.gate_name + ": observe turn requires known facts.",
-            )
-            return AgentRunResult()
-        return None
-
-    def _requires_observation(self, execution: ToolCallExecution) -> bool:
-        if self._is_tool_call_arg_error(execution):
-            return False
-        return execution.outcome == "success"
-
-    @staticmethod
-    def _is_tool_call_arg_error(execution: ToolCallExecution) -> bool:
-        return execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError)
-
-    @staticmethod
-    def _has_known_sidecar(actions: list[Json]) -> bool:
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
-            if any((_json_str(raw) or "").strip() for raw in values):
-                return True
-        return False
 
     @staticmethod
     def _has_observe_action(actions: list[Json]) -> bool:
@@ -5385,31 +5450,20 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
     activity_name: ClassVar[str] = "explore"
     gate_name: ClassVar[str] = "Explore_Gate"
     retry_message: ClassVar[str] = "Retrying: explore must call a tool."
-    feedback_message: ClassVar[str] = "Error: normal ExploreAgent turn returned no tool action. Rule: return exactly tool actions."
+    feedback_message: ClassVar[str] = "Error: explore worker must locate targets by calling tools. Rule: return tool actions."
     step_limit_reason: ClassVar[str] = "explore step limit reached"
-    normal_action_rule: ClassVar[str] = "tool"
+    act_action_types: ClassVar[set[str]] = {"tool"}
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         repeated = self._repeated_tool_call(tool_calls)
         if repeated is None:
             return None
-        self.observation_pending = True
+        self.mode = AgentMode.OBSERVE
         self._remember_agent_error("Error: repeated explore tool call. Rule: summarize existing results instead of repeating the same tool.")
         self._report_gate(
             on_message,
             "Retrying: summarize existing explore results.",
             "Explore_Gate: repeated tool call: " + ToolCallDisplayFormatter._format_call(repeated) + ".",
-        )
-        return AgentRunResult()
-
-    def _gate_deliver_action(self, actions: list[Json], observation_turn: bool, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if not self._has_deliver_action(actions) or observation_turn:
-            return None
-        self._remember_agent_error("Error: normal ExploreAgent turn used an unsupported action. Rule: return tool actions only.")
-        self._report_gate(
-            on_message,
-            "Retrying: explore must call tools.",
-            "Explore_Gate: normal turn only accepts tool actions.",
         )
         return AgentRunResult()
 
@@ -5545,7 +5599,7 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     activity_name: ClassVar[str] = "verify"
     gate_name: ClassVar[str] = "Verify_Gate"
     retry_message: ClassVar[str] = "Retrying: verify returned only state actions; return tool or deliver."
-    feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every VerifyAgent response must include tool or deliver."
+    feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every verify worker response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "verify step limit reached"
 
     def _max_steps(self, session: Session) -> int:
@@ -5643,6 +5697,8 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 @final
 class MainAgent(BaseAgent):
     STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "learn", "progress"}
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"observe", "plan", "verify", "goal", "response_language"}
 
     def __init__(self, session: Session):
         super().__init__(
@@ -5651,6 +5707,11 @@ class MainAgent(BaseAgent):
             allow_project_learning=True,
             allow_response_language_bootstrap=True,
         )
+
+    def build_system_prompt(self) -> str:
+        if self.mode == AgentMode.OBSERVE:
+            return MAIN_AGENT_OBSERVE_SYSTEM_PROMPT.strip()
+        return super().build_system_prompt()
 
     def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
         for action in actions:
@@ -6016,6 +6077,15 @@ class MainAgent(BaseAgent):
                 "Action_Gate: known/progress/learn must be sidecar fields.",
             )
             return True
+        action_gate = self._gate_action_types(
+            ctx.actions,
+            allowed=self.ACT_ACTION_TYPES,
+            on_message=on_message,
+            retry_message="Retrying: use a valid main action.",
+            feedback_message="Error: this step only accepts main work actions.",
+        )
+        if action_gate is not None:
+            return True
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
             self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
             self._report_gate(
@@ -6127,9 +6197,23 @@ class MainAgent(BaseAgent):
             on_live_done=on_live_done,
             on_message=on_message,
         )
+        self.mode = AgentMode.OBSERVE
         if not self._apply_verify_report(report):
             self.blackboard.goal_reached = False
         return True
+
+    def _promote_required_verification(self, ctx: MainResponseContext) -> None:
+        verification = self.blackboard.verification
+        if not self.blackboard.verification_required or not self.blackboard.goal_reached:
+            return
+        if verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.BLOCKED}:
+            return
+        verification.status = VerificationStatus.REQUIRED
+        verification.kind = verification.kind or VerificationKind.CHANGE_REVIEW
+        verification.method = verification.method or self.blackboard.goal or self.blackboard.user_input
+        if not verification.criteria:
+            verification.criteria = ["changed code satisfies the current goal and has no obvious edit mistakes"]
+        verification.context = verification.context or ctx.completion_message or self.blackboard.goal
 
     def _run_explore_actions(
         self,
@@ -6152,6 +6236,7 @@ class MainAgent(BaseAgent):
             on_message=on_message,
         )
         self.maybe_auto_compact()
+        self.mode = AgentMode.OBSERVE
         return True
 
     def _run_tool_actions(
@@ -6178,36 +6263,65 @@ class MainAgent(BaseAgent):
             if report:
                 on_message(report)
         self.maybe_auto_compact()
+        if any(self._requires_observation(execution) for execution in self.latest_tool_call_executions):
+            self.mode = AgentMode.OBSERVE
         return True
 
-    def _run_completion_verification(
+    def _handle_observe_response(
         self,
         ctx: MainResponseContext,
+        response: Json,
         *,
         confirm: ConfirmCallback | None,
         on_auto_approve: ToolDisplayCallback | None,
         on_live_output: ToolLiveOutputCallback | None,
         on_live_done: ToolLiveDoneCallback | None,
         on_message: MessageCallback | None,
-    ) -> AgentRunResult | None:
-        if not (
-            self.blackboard.goal_reached
-            and self.blackboard.verification_required
-            and self.blackboard.verification.status not in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
-        ):
-            return None
-        report = self.execute_verify(
-            completion_message=ctx.completion_message,
+    ) -> AgentRunResult:
+        standalone_sidecar_error = self._standalone_sidecar_action_error(ctx.actions)
+        if standalone_sidecar_error:
+            self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
+            self._report_gate(
+                on_message,
+                "Retrying: attach known/progress/learn to a main action.",
+                "Action_Gate: known/progress/learn must be sidecar fields.",
+            )
+            return AgentRunResult()
+        gate_result = self._gate_action_types(
+            ctx.actions,
+            allowed=self.OBSERVE_ACTION_TYPES,
+            on_message=on_message,
+            retry_message="Retrying: observe latest results.",
+            feedback_message="Error: latest results must be digested before more work.",
+        )
+        if gate_result is not None:
+            return gate_result
+        if self._observe_verify_error(ctx.actions):
+            self._remember_agent_error("Error: cannot request new verification before digesting latest results. Rule: summarize results first.")
+            self._report_gate(
+                on_message,
+                "Retrying: observe latest results before new verification.",
+                "Observe_Gate: verify status=pending is not allowed while digesting latest results.",
+            )
+            return AgentRunResult()
+        self._emit_debug_frame_errors(response, on_message)
+        self.apply_response(response, apply_response_language=False)
+        self._emit_state_and_progress(ctx, on_message)
+        self.mode = AgentMode.ACT
+        self._promote_required_verification(ctx)
+        if self._run_required_verification(
+            ctx,
             confirm=confirm,
             on_auto_approve=on_auto_approve,
             on_live_output=on_live_output,
             on_live_done=on_live_done,
             on_message=on_message,
-        )
-        if not self._apply_verify_report(report):
-            self.blackboard.goal_reached = False
+        ):
             return AgentRunResult()
-        return None
+        return self._finish_or_continue(ctx, on_message)
+
+    def _observe_verify_error(self, actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
 
     def _finish_or_continue(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
@@ -6269,6 +6383,7 @@ class MainAgent(BaseAgent):
         self._prune_tool_result_store()
         # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
         self.session.range_fingerprints.clear()
+        self.mode = AgentMode.ACT
         self.session.turn_tool_calls = 0
         self.session.turn_model_calls = 0
         self.blackboard.user_input = user_input
@@ -6306,6 +6421,16 @@ class MainAgent(BaseAgent):
     ) -> AgentRunResult:
         ctx = self._build_response_context(response)
         self.state_updater.apply_response_language(ctx.actions)
+        if self.mode == AgentMode.OBSERVE:
+            return self._handle_observe_response(
+                ctx,
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            )
 
         chat_result = self._handle_chat_response(ctx, on_message)
         if chat_result is not None:
@@ -6322,6 +6447,7 @@ class MainAgent(BaseAgent):
         if gate_result is not None:
             return gate_result
 
+        self._promote_required_verification(ctx)
         if self._run_required_verification(
             ctx,
             confirm=confirm,
@@ -6351,17 +6477,6 @@ class MainAgent(BaseAgent):
             on_message=on_message,
         ):
             return AgentRunResult()
-
-        completion_verify_result = self._run_completion_verification(
-            ctx,
-            confirm=confirm,
-            on_auto_approve=on_auto_approve,
-            on_live_output=on_live_output,
-            on_live_done=on_live_done,
-            on_message=on_message,
-        )
-        if completion_verify_result is not None:
-            return completion_verify_result
 
         return self._finish_or_continue(ctx, on_message)
 

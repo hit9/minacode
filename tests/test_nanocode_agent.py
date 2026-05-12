@@ -15,6 +15,10 @@ def _final_actions(goal="answer", message="done"):
     ]
 
 
+def _observe_actions(fact="observed latest result"):
+    return [{"type": "observe", "known": [fact]}]
+
+
 def _seed_plan(agent, goal="test goal"):
     agent.blackboard.goal = goal
     agent.blackboard.plan = [nanocode.PlanItem(text="test plan")]
@@ -86,7 +90,6 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "goal", "text": "find sample", "complete": False},
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
@@ -1485,7 +1488,7 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     explorer.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
-    assert "OBSERVE TURN" in explorer.build_system_prompt()
+    assert "Use only Recent Tool Calls" in explorer.build_system_prompt()
     assert '"type": "tool"' not in explorer.build_system_prompt()
 
     missing_known = explorer.handle_response(
@@ -1494,7 +1497,7 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     assert missing_known.done is False
     assert explorer.blackboard.known == []
-    assert any("tool results were received but no known facts were recorded" in error for error in explorer.agent_feedback_errors)
+    assert any("latest results were not recorded" in error for error in explorer.agent_feedback_errors)
 
     still_searching = explorer.handle_response(
         {"actions": [{"type": "tool", "name": "Search", "intention": "keep searching", "args": ["alpha"], "known": ["sample.txt contains alpha."]}]}
@@ -1502,13 +1505,13 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     assert still_searching.done is False
     assert explorer.blackboard.known == []
-    assert any("tool results must be summarized before more tools" in error for error in explorer.agent_feedback_errors)
+    assert any("Invalid action(s): tool" in error for error in explorer.agent_feedback_errors)
 
     observed = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
 
     assert observed.done is False
     assert explorer.blackboard.known == ["sample.txt contains alpha."]
-    assert explorer.observation_pending is False
+    assert explorer.mode == nanocode.AgentMode.ACT
 
     explorer.execute_tool_calls([{"name": "LineCount", "intention": "count sample lines", "args": ["sample.txt"]}])
 
@@ -1538,7 +1541,7 @@ def test_explore_agent_rejects_observe_outside_observation_turn(tmp_path):
     result = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample fact"], "next": "read sample"}]})
 
     assert result.done is False
-    assert any("unsupported action in normal worker turn" in error for error in explorer.agent_feedback_errors)
+    assert any("Invalid action(s): observe" in error for error in explorer.agent_feedback_errors)
 
 
 def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
@@ -1551,7 +1554,7 @@ def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
     )
 
     assert result.done is False
-    assert any("normal ExploreAgent turn used an unsupported action" in error for error in explorer.agent_feedback_errors)
+    assert any("Invalid action(s): deliver" in error for error in explorer.agent_feedback_errors)
 
 
 def test_verify_agent_requires_known_after_tool_results(tmp_path):
@@ -1562,7 +1565,7 @@ def test_verify_agent_requires_known_after_tool_results(tmp_path):
 
     verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
-    assert "OBSERVE TURN" in verifier.build_system_prompt()
+    assert "Use only Recent Tool Calls" in verifier.build_system_prompt()
     assert '"type": "tool"' not in verifier.build_system_prompt()
 
     missing_known = verifier.handle_response(
@@ -1571,13 +1574,13 @@ def test_verify_agent_requires_known_after_tool_results(tmp_path):
 
     assert missing_known.done is False
     assert verifier.blackboard.known == []
-    assert any("tool results were received but no known facts were recorded" in error for error in verifier.agent_feedback_errors)
+    assert any("latest results were not recorded" in error for error in verifier.agent_feedback_errors)
 
     observed = verifier.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
 
     assert observed.done is False
     assert verifier.blackboard.known == ["sample.txt contains alpha."]
-    assert verifier.observation_pending is False
+    assert verifier.mode == nanocode.AgentMode.ACT
 
     delivered = verifier.handle_response(
         {
@@ -1657,13 +1660,6 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
                 {
                     "actions": [
                         {
-                            "type": "verify",
-                            "method": "read",
-                            "status": "passed",
-                            "context": "target found",
-                            "known": ["sample.txt contains alpha."],
-                        },
-                        {
                             "type": "deliver",
                             "targets": [
                                 {
@@ -1674,7 +1670,7 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
                                     "reason": "contains alpha",
                                 }
                             ],
-                            "known": ["relevant target is sample.txt line 1."],
+                            "known": ["sample.txt contains alpha.", "relevant target is sample.txt line 1."],
                         },
                     ]
                 },
@@ -1704,7 +1700,7 @@ def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
         }
     ]
     assert report.known == ["sample.txt contains alpha.", "relevant target is sample.txt line 1."]
-    assert report.verification.status == VerificationStatus.DONE
+    assert report.verification.status == VerificationStatus.IDLE
     assert explorer.session is parent_session
     assert parent_session.tool_result_store == {}
     assert list(explorer.runtime.tool_result_store) == ["tr.1"]
@@ -2114,6 +2110,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                     ]
                 },
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
+                {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -2490,6 +2487,11 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
                         {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
                     ],
                 },
+                {
+                    "actions": [
+                        {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
+                    ],
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -2506,12 +2508,12 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
+    assert len(agent.model_client.user_prompts) == 3
     assert len(verify_confirm_callbacks) == 1
     assert verify_confirm_callbacks[0] is not None
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.verification.context == "diff matches goal"
-    assert "Verifying: change file done" in messages
+    assert "Verifying: change_review change file done" in messages
     assert '[verify] [success] Git("diff", "--", "sample.txt")' in messages
     assert "Verify done: passed | git diff\n  diff matches goal" in messages
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
@@ -2546,6 +2548,7 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
                     ],
                 },
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
+                {"actions": _observe_actions("unit verification failed: assertion failed.")},
                 {
                     "actions": [
                         {
@@ -2556,6 +2559,7 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
                         },
                     ],
                 },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
             ]
 
@@ -2573,7 +2577,7 @@ def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
     response = agent.run("change file", confirm=lambda call, tool: True)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 4
+    assert len(agent.model_client.user_prompts) == 6
     assert "Worker Reports:" in agent.model_client.user_prompts[2]
     assert "<Agent_Reports>" not in agent.model_client.user_prompts[2]
     assert "assertion failed" in agent.model_client.user_prompts[2]
@@ -2619,6 +2623,7 @@ def test_agent_run_does_not_repeat_failed_verification_before_fix(tmp_path):
                         },
                     ],
                 },
+                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
                 {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
             ]
 
@@ -2774,7 +2779,7 @@ def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(verifier_calls) == 1
-    assert "Retrying: verification already passed; update plan or complete." in messages
+    assert "Retrying: observe latest results before new verification." in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
