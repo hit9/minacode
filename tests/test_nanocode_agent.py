@@ -1275,6 +1275,27 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
+def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.blackboard.goal = "change map"
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "change map",
+                    "plan": [{"id": "p1", "text": "Find map code", "status": "doing"}],
+                }
+            ]
+        }
+    )
+
+    assert "  Goal    change map" in agent.state_updater.latest_report
+    assert "  Plan\n" in agent.state_updater.latest_report
+
+
 def test_agent_applies_response_language_from_start_action(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -2524,7 +2545,7 @@ def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
     assert verify_confirm_callbacks[0] is not None
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.verification.context == "diff matches goal"
-    assert "Verifying: change_review change file done" in messages
+    assert "Verifying: change_syntax_check change file done" in messages
     assert '[verify] [success] Git("diff", "--", "sample.txt")' in messages
     assert "Verify done: passed | git diff\n  diff matches goal" in messages
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"

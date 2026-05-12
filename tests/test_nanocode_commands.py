@@ -178,9 +178,10 @@ def test_learn_command_includes_current_session_known_and_conversation(tmp_path)
 
     assert result.status == CommandStatus.HANDLED
     assert len(calls) == 1
-    assert "<Known_To_Consider>" in calls[0]
+    assert "### Known To Consider" in calls[0]
     assert "Tests run with uv run pytest -q." in calls[0]
-    assert "<Conversation_To_Consider>" in calls[0]
+    assert "### Conversation To Consider" in calls[0]
+    assert "#### User " in calls[0]
     assert "We decided config uses TOML." in calls[0]
     assert "Use these current-session notes only to extract stable project knowledge or correct stale Project_Knowledge" in calls[0]
 

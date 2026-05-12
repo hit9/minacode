@@ -420,3 +420,31 @@ def test_search_tool_python_backend_honors_gitignore_glob(tmp_path, monkeypatch)
 
     assert "keep.txt" in result
     assert "skip.log" not in result
+
+
+def test_search_tool_python_fallback_case_insensitive_normal(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    (tmp_path / "test.txt").write_text("Hello World\n", encoding="utf-8")
+
+    tool = SearchTool.make(session, ["hello", "."])
+    assert tool._line_matches("Hello World") is True
+    assert tool._line_matches("hello world") is True
+    assert tool._line_matches("HELLO WORLD") is True
+
+
+def test_search_tool_python_fallback_case_insensitive_regex(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    (tmp_path / "test.txt").write_text("Hello World\n", encoding="utf-8")
+
+    tool = SearchTool.make(session, ["[h]ello", "."])
+    assert tool._line_matches("Hello World") is True
+    assert tool._line_matches("hello world") is True
+    assert tool._line_matches("HELLO WORLD") is True
+
+
+def test_search_tool_rg_backend_is_case_insensitive(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["hello", "."])
+
+    assert "-i" in tool._rg_command("rg")
