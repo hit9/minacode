@@ -1265,6 +1265,41 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert agent.blackboard.goal_reached is True
 
 
+def test_agent_accepts_combined_pending_verification_kind(tmp_path):
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+
+    assert (
+        agent._pending_verification_error(
+            [
+                {
+                    "type": "verify",
+                    "kind": "syntax_check+test",
+                    "method": "check edit",
+                    "criteria": ["syntax passes", "tests pass"],
+                    "status": "pending",
+                }
+            ]
+        )
+        == ""
+    )
+
+    for kind in ["syntax_check+", "+test", "syntax_check+unknown"]:
+        assert (
+            agent._pending_verification_error(
+                [
+                    {
+                        "type": "verify",
+                        "kind": kind,
+                        "method": "check edit",
+                        "criteria": ["check passes"],
+                        "status": "pending",
+                    }
+                ]
+            )
+            == "missing or invalid kind"
+        )
+
+
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")

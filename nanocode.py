@@ -2864,6 +2864,7 @@ HARD RULES:
 - User-facing text must be plain, concise, direct, and non-Markdown unless requested.
 - Latest User Request has priority over old Goal. Never answer by repeating a previous completion.
 - Never claim external actions happened (commit, test, build, edit) unless recent tool/worker results prove success.
+- User_Rules are mandatory constraints, not hints.
 - User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
 - Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
@@ -2924,6 +2925,9 @@ VERIFICATION:
   - kind
   - narrow method label, not a shell command
   - explicit pass/block criteria
+- Before verify, check User_Rules and include every required check.
+- Use combined kind like syntax_check+test when more than one check is required.
+- If User_Rules require tests/build/lint after edits, include them in verify kind and criteria.
 - Do not ask Verify to review broadly, diagnose, fix, or continue implementation.
 - After verify status=pending, output no tool/explore in the same response.
 - If Main already ran the exact user-requested build/test/check successfully, do not verify that same check again.
@@ -3004,7 +3008,7 @@ Do NOT output known/progress as standalone action types.
 
 {
   "type": "verify",
-  "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other",
+  "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind",
   "method": null|"<short target label, not command>",
   "criteria": ["<explicit pass/block criterion>"],
   "status": "pending|passed|blocked",
@@ -3093,7 +3097,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "observe", "known": ["<new durable fact from latest results>"], "progress": null|"<optional short progress>"} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
-{"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|blocked", "context": null|"<verification result>"} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|blocked", "context": null|"<verification result>"} __END_ACTION__
 {"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
 """
 
@@ -3242,6 +3246,7 @@ Must:
 - EVERY response must include tool or deliver.
 - Verify the EXPECTED CONDITION, NOT the whole user task.
 - Verify_Goal includes kind, target, and expect from the main worker.
+- User_Rules are mandatory constraints, not hints.
 - Maintain your own Known: save useful evidence facts in the next tool/deliver known sidecar.
 - REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
 - Do NOT rely on Recent Tool Calls as memory; record durable verification facts into your Known as you iterate.
@@ -3277,6 +3282,9 @@ Verdict:
 - Do NOT pass on weak evidence. If evidence is insufficient, deliver blocked, not passed.
 
 Kinds:
+- kind may combine multiple checks with "+", e.g. syntax_check+test.
+- If kind contains "+", every listed kind must be checked or explicitly blocked.
+- Do NOT deliver passed until all listed checks pass.
 - syntax_check: syntax, compile, parse, or importability check.
 - change_syntax_check: after edits, run or inspect the smallest syntax/compile/import check for changed files.
 - lint: lint, format, or static style check.
@@ -5947,7 +5955,7 @@ class MainAgent(BaseAgent):
         return (
             "Error: pending verify is invalid: "
             + reason
-            + ". Rule: pending verify must include kind=syntax_check|change_syntax_check|lint|test|build|change_check|other and non-empty criteria."
+            + ". Rule: pending verify must include kind=syntax_check|change_syntax_check|lint|test|build|change_check|other or kind+kind, plus non-empty criteria."
         )
 
     def _format_agent_feedback_repeated_verification_error(self) -> str:
@@ -5988,11 +5996,16 @@ class MainAgent(BaseAgent):
         for action in pending:
             kind = _json_str(action.get("kind")) or ""
             criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get("criteria"))) if item]
-            if kind not in valid_kinds:
+            if not self._is_valid_verification_kind(kind, valid_kinds):
                 return "missing or invalid kind"
             if not criteria:
                 return "missing criteria"
         return ""
+
+    @staticmethod
+    def _is_valid_verification_kind(kind: str, valid_kinds: set[str]) -> bool:
+        parts = kind.split("+")
+        return bool(parts) and all(part in valid_kinds for part in parts)
 
     def _build_response_context(self, response: Json) -> MainResponseContext:
         actions = self._response_actions(response)
