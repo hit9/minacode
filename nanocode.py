@@ -3018,6 +3018,7 @@ HARD RULES:
 - Use Response_Language if set; otherwise use the latest user language.
 - User-facing text must be plain, concise, direct, and non-Markdown unless requested.
 - Tool/worker results are volatile. Save every durable fact into known before using it later.
+- If you receive tool/worker results, the NEXT response MUST attach useful known facts before any more work.
 - known is for current task facts. learn is for stable reusable memory only, and should be emitted only at task boundaries.
 - learn is optional and rare. Prefer no learn over noisy learn.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
@@ -3094,6 +3095,7 @@ TOOLS:
 - Bash is only for explicit shell commands, not search/list/edit when a dedicated tool exists.
 - Git is for status, diff, history, changed files.
 - Recall is for stored result keys.
+- Recall each needed result key at most once per response; batch distinct keys in one Recall action.
 - Read is for known paths/ranges.
 - Explore is for unknown targets.
 
@@ -3244,12 +3246,17 @@ Must:
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
 - EVERY response must include tool or deliver.
 - Explore_Goal includes kind and constraints from MainAgent.
+- Maintain your own Known: save useful tool-result facts in the next tool/deliver known sidecar.
+- REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
+- Do NOT rely on Recent Tool Calls as memory; record durable findings into your Known as you iterate.
 - SEARCH BEFORE READ only when the target path/range is unknown.
 - If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
 - Read ONLY SMALL ranges around likely matches or caller-provided exact targets.
 - Deliver as soon as the target is FOUND or CANNOT BE FOUND.
 - STOP and deliver when Read/Search gives enough concrete path/range evidence.
+- After every Read, decide whether to DELIVER before calling more tools.
 - If the last batch adds no new useful information, deliver current targets/issues instead of searching again.
+- Call more tools only when a specific missing path/range/reference is needed.
 - Deliverable is path/symbol/0-based line_range/context/reason evidence.
 
 Must not:
@@ -3266,10 +3273,12 @@ Reject:
 
 WORKFLOW:
 1. SCOPE: check Explore_Goal and Explore_Scope constraints.
-2. DIRECT: if exact target is known, Read the smallest useful range.
-3. SEARCH: otherwise search symbols, paths, config names, keywords, or changed files.
-4. READ: batch small ranges around likely matches when line evidence is needed.
-5. DELIVER: concrete targets, stable known facts, and issues.
+2. OBSERVE: if Recent Tool Calls exist, record NEW known facts before anything else.
+3. DIRECT: if exact target is known, Read the smallest useful range.
+4. SEARCH: otherwise search symbols, paths, config names, keywords, or changed files.
+5. READ: batch small ranges around likely matches when line evidence is needed.
+6. DECIDE: after every tool batch, record known, then deliver unless a specific missing target remains.
+7. DELIVER: concrete targets, stable known facts, and issues.
 
 Deliver:
 - targets are file/symbol/range/context/reason items the caller can use next.
@@ -3317,7 +3326,11 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 If Recent Tool Calls already contains the exact tool name and args you want to run, deliver using existing results instead.
 
 Sidecar field on tool or deliver:
-- "known": ["<non-empty self-contained fact>"]
+- "known": ["<non-empty fact learned from prior tool results>"]
+
+After tool results, your NEXT tool or deliver action MUST include a non-empty known sidecar.
+Invalid after tool results: {"type": "tool", "name": "Search", "intention": "...", "args": ["..."]}
+Valid after tool results: {"type": "tool", "name": "Search", "intention": "...", "args": ["..."], "known": ["Search found AgentLoop in nanocode.py."]}
 
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
 {"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<stable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
@@ -3331,8 +3344,22 @@ Do NOT call tools. Do NOT output plan/known/verify alone.
 Return exactly ONE deliver action.
 If targets were found, include concrete path/area/line_range/context/reason.
 If no target was found, use targets=[] and explain what was searched, within what scope, and why no target was found in issues.
+known MUST include non-empty facts learned from latest tool results when Recent Tool Calls is non-empty.
 
 {"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<stable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
+"""
+
+
+EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT = """You are ExploreAgent. OBSERVE TURN.
+Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
+Do NOT call tools. Do NOT output plan/verify/state.
+Return exactly ONE observe or deliver action.
+known MUST be non-empty and based on latest tool results.
+If concrete targets are clear, deliver now.
+Otherwise observe known and name the single missing target in next.
+
+{"type": "observe", "known": ["<non-empty fact learned from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<non-empty fact learned from latest tool results>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
 
@@ -3401,6 +3428,9 @@ Must:
 - EVERY response must include tool or deliver.
 - Verify the EXPECTED CONDITION, NOT the whole user task.
 - Verify_Goal includes kind, target, and expect from MainAgent.
+- Maintain your own Known: save useful evidence facts in the next tool/deliver known sidecar.
+- REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
+- Do NOT rely on Recent Tool Calls as memory; record durable verification facts into your Known as you iterate.
 - Prefer EXISTING evidence, worker reports, recent tool calls, and Git diff/status.
 - Deliver as soon as you have PASSED, FAILED, or BLOCKED.
 
@@ -3472,10 +3502,27 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
 Sidecar field on tool or deliver:
-- "known": ["<non-empty self-contained fact>"]
+- "known": ["<non-empty fact learned from prior evidence>"]
+
+After tool results, your NEXT tool or deliver action MUST include a non-empty known sidecar.
+Invalid after tool results: {"type": "tool", "name": "Read", "intention": "...", "args": ["..."]}
+Valid after tool results: {"type": "deliver", "status": "failed", "method": "build", "summary": "...", "evidence": ["..."], "issues": ["..."], "next_steps": ["..."], "known": ["make test failed with IndentationError in nanocode.py."]}
 
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
+"""
+
+
+VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT = """You are VerifyAgent. OBSERVE TURN.
+Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
+Do NOT call tools. Do NOT output plan/state.
+Return exactly ONE observe or deliver action.
+known MUST be non-empty and based on latest evidence.
+If the verdict is clear, deliver now.
+Otherwise observe known and name the single missing evidence in next.
+
+{"type": "observe", "known": ["<non-empty fact learned from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
+{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"], "known": ["<non-empty fact learned from latest evidence>"]} __END_ACTION__
 """
 
 
@@ -4299,6 +4346,11 @@ class ToolCallRunner:
             key = self._readonly_result_cache_key(call)
             if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_result_cache_key(filtered[-1]) == key:
                 filtered[-1] = call
+                continue
+            if call.name == ToolResultTool.name() and filtered and isinstance(filtered[-1], ParsedToolCall) and filtered[-1].name == call.name:
+                merged_args = list(filtered[-1].args)
+                merged_args.extend(arg for arg in call.args if arg not in merged_args)
+                filtered[-1] = ParsedToolCall(name=call.name, intention=call.intention, args=merged_args)
                 continue
             filtered.append(call)
         return filtered
@@ -5200,6 +5252,7 @@ VERIFY_MESSAGE_PREFIX = "[verify] "
 
 class WorkerAgent(BaseAgent, Generic[ReportT]):
     system_prompt_template: ClassVar[str]
+    observation_system_prompt: ClassVar[str]
     user_prompt_template: ClassVar[str]
     allowed_tools: ClassVar[set[str]]
     activity_name: ClassVar[str]
@@ -5242,6 +5295,12 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         )
         self.seen_tool_call_keys: set[tuple[str, tuple[str, ...]]] = set()
         self.final_deliver_only = False
+        self.observation_pending = False
+
+    def build_system_prompt(self) -> str:
+        if self.observation_pending:
+            return self.observation_system_prompt.strip()
+        return super().build_system_prompt()
 
     def run(
         self,
@@ -5282,14 +5341,22 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         actions = self._response_actions(response)
+        observation_turn = self.observation_pending
         if self.session.debug and on_message is not None:
             frame_error_report = self._format_frame_error_report(response)
             if frame_error_report:
                 on_message(frame_error_report)
+        observe_gate_result = self._gate_observation_turn(actions, on_message)
+        if observe_gate_result is not None:
+            return observe_gate_result
         self.apply_response(response)
         report = self._deliver_from_actions(actions)
         if report is not None:
+            self.observation_pending = False
             return AgentRunResult(done=True, value=report)
+        if observation_turn and self._has_observe_action(actions):
+            self.observation_pending = False
+            return AgentRunResult()
         tool_calls = self._tool_calls_from_actions(actions)
         gate_result = self._gate_tool_calls(tool_calls, on_message)
         if gate_result is not None:
@@ -5308,16 +5375,83 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
                     on_message(latest_report)
             self._remember_tool_call_keys()
             return AgentRunResult()
+        if self._has_observe_action(actions):
+            self._remember_agent_error("Error: observe action is only valid after tool results. Rule: normal worker turns must return tool or deliver.")
+            self._report_gate(
+                on_message,
+                "Retrying: use tool or deliver.",
+                self.gate_name + ": observe action is only valid after tool results.",
+            )
+            return AgentRunResult()
         self._remember_agent_error(self.feedback_message)
         self._report_gate(
             on_message,
             self.retry_message,
-            self.gate_name + ": expected tool or deliver action.",
+            self.gate_name + ": normal turn expected tool or deliver action.",
         )
         return AgentRunResult()
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         return None
+
+    def execute_tool_calls(self, tool_calls: list[JsonValue], **kwargs: Any) -> str:
+        report = super().execute_tool_calls(tool_calls, **kwargs)
+        self.observation_pending = any(self._requires_observation(execution) for execution in self.latest_tool_call_executions)
+        return report
+
+    def _gate_observation_turn(self, actions: list[Json], on_message: MessageCallback | None) -> AgentRunResult | None:
+        if not self.observation_pending:
+            return None
+        if self._tool_calls_from_actions(actions):
+            self._remember_agent_error("Error: observe turn cannot call tools. Rule: summarize latest tool results with observe or deliver.")
+            self._report_gate(
+                on_message,
+                "Retrying: summarize latest tool results before more tools.",
+                self.gate_name + ": observe turn cannot call tools.",
+            )
+            return AgentRunResult()
+        if not (self._has_observe_action(actions) or self._has_deliver_action(actions)):
+            self._remember_agent_error("Error: observe turn requires observe or deliver. Rule: record known from latest tool results.")
+            self._report_gate(
+                on_message,
+                "Retrying: summarize latest tool results.",
+                self.gate_name + ": observe turn requires observe or deliver.",
+            )
+            return AgentRunResult()
+        if not self._has_known_sidecar(actions):
+            self._remember_agent_error("Error: tool results were received but no known facts were recorded. Rule: observe/deliver must include non-empty known.")
+            self._report_gate(
+                on_message,
+                "Retrying: record known from tool results.",
+                self.gate_name + ": observe turn requires known facts.",
+            )
+            return AgentRunResult()
+        return None
+
+    def _requires_observation(self, execution: ToolCallExecution) -> bool:
+        if self._is_tool_call_arg_error(execution):
+            return False
+        return execution.outcome == "success"
+
+    @staticmethod
+    def _is_tool_call_arg_error(execution: ToolCallExecution) -> bool:
+        return execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError)
+
+    @staticmethod
+    def _has_known_sidecar(actions: list[Json]) -> bool:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
+            if any((_json_str(raw) or "").strip() for raw in values):
+                return True
+        return False
+
+    @staticmethod
+    def _has_observe_action(actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "observe" for action in actions)
+
+    @staticmethod
+    def _has_deliver_action(actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "deliver" for action in actions)
 
     def _max_steps(self, session: Session) -> int:
         return session.explore_agent_max_turns
@@ -5351,6 +5485,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
 @final
 class ExploreAgent(WorkerAgent[ExploreReport]):
     system_prompt_template: ClassVar[str] = EXPLORE_AGENT_SYSTEM_PROMPT
+    observation_system_prompt: ClassVar[str] = EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT
     user_prompt_template: ClassVar[str] = EXPLORE_AGENT_USER_PROMPT_TEMPLATE
     allowed_tools: ClassVar[set[str]] = EXPLORE_AGENT_ALLOWED_TOOLS
     activity_name: ClassVar[str] = "explore"
@@ -5454,6 +5589,7 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
 @final
 class VerifyAgent(WorkerAgent[VerifyReport]):
     system_prompt_template: ClassVar[str] = VERIFY_AGENT_SYSTEM_PROMPT
+    observation_system_prompt: ClassVar[str] = VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT
     user_prompt_template: ClassVar[str] = VERIFY_AGENT_USER_PROMPT_TEMPLATE
     allowed_tools: ClassVar[set[str]] = VERIFY_AGENT_ALLOWED_TOOLS
     activity_name: ClassVar[str] = "verify"
@@ -5686,7 +5822,7 @@ class MainAgent(BaseAgent):
                 lines.append("  +" + str(remaining) + " more")
             return "\n".join(lines)
         if report.known:
-            return "Explore done: 0 target(s)\n  " + _shorten(report.known[0], 180)
+            return "Explore returned known only\n  " + _shorten(report.known[0], 180)
         if report.verification.context:
             return "Explore done: 0 target(s)\n  " + _shorten(report.verification.context, 180)
         return "Explore done: 0 target(s)"

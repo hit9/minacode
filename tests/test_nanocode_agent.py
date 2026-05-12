@@ -90,7 +90,16 @@ def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
-                {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": [], "issues": []}]},
+                {
+                    "actions": [
+                        {
+                            "type": "deliver",
+                            "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}],
+                            "known": ["sample.txt contains alpha."],
+                            "issues": [],
+                        }
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -202,6 +211,24 @@ def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp
 
     assert [execution.call.intention for execution in agent.tool_runner.latest_executions] == ["first read", "middle read", "second read"]
     assert list(session.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
+
+
+def test_agent_merges_adjacent_recall_calls(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
+    session.tool_result_store["tr.2"] = nanocode.ToolResultItem(description="success Read b", value="beta")
+    agent = MainAgent(session)
+
+    agent.execute_tool_calls(
+        [
+            {"name": "Recall", "intention": "recall first", "args": ["tr.1"]},
+            {"name": "Recall", "intention": "recall second", "args": ["tr.2"]},
+            {"name": "Recall", "intention": "recall duplicated", "args": ["tr.1", "tr.2"]},
+        ]
+    )
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].call.args == ["tr.1", "tr.2"]
 
 
 def test_worker_reuses_repeated_readonly_tool_results_across_turns(tmp_path):
@@ -1450,6 +1477,113 @@ def test_verify_agent_rejects_edit_tools(tmp_path):
     assert list(verifier.runtime.tool_result_store) == ["tr.1"]
 
 
+def test_explore_agent_requires_known_after_tool_results(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
+
+    explorer.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+
+    assert "OBSERVE TURN" in explorer.build_system_prompt()
+    assert '"type": "tool"' not in explorer.build_system_prompt()
+
+    missing_known = explorer.handle_response(
+        {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "issues": []}]}
+    )
+
+    assert missing_known.done is False
+    assert explorer.blackboard.known == []
+    assert any("tool results were received but no known facts were recorded" in error for error in explorer.agent_feedback_errors)
+
+    still_searching = explorer.handle_response(
+        {"actions": [{"type": "tool", "name": "Search", "intention": "keep searching", "args": ["alpha"], "known": ["sample.txt contains alpha."]}]}
+    )
+
+    assert still_searching.done is False
+    assert explorer.blackboard.known == []
+    assert any("observe turn cannot call tools" in error for error in explorer.agent_feedback_errors)
+
+    observed = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
+
+    assert observed.done is False
+    assert explorer.blackboard.known == ["sample.txt contains alpha."]
+    assert explorer.observation_pending is False
+
+    delivered = explorer.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "deliver",
+                    "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}],
+                    "known": ["sample.txt contains alpha."],
+                    "issues": [],
+                }
+            ]
+        }
+    )
+
+    assert delivered.done is True
+    assert isinstance(delivered.value, nanocode.ExploreReport)
+    assert delivered.value.known == ["sample.txt contains alpha."]
+
+
+def test_explore_agent_rejects_observe_outside_observation_turn(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
+
+    result = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample fact"], "next": "read sample"}]})
+
+    assert result.done is False
+    assert any("observe action is only valid after tool results" in error for error in explorer.agent_feedback_errors)
+
+
+def test_verify_agent_requires_known_after_tool_results(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=["sample.txt"])
+
+    verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+
+    assert "OBSERVE TURN" in verifier.build_system_prompt()
+    assert '"type": "tool"' not in verifier.build_system_prompt()
+
+    missing_known = verifier.handle_response(
+        {"actions": [{"type": "deliver", "status": "passed", "method": "read", "summary": "sample has alpha", "evidence": ["alpha"]}]}
+    )
+
+    assert missing_known.done is False
+    assert verifier.blackboard.known == []
+    assert any("tool results were received but no known facts were recorded" in error for error in verifier.agent_feedback_errors)
+
+    observed = verifier.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
+
+    assert observed.done is False
+    assert verifier.blackboard.known == ["sample.txt contains alpha."]
+    assert verifier.observation_pending is False
+
+    delivered = verifier.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "deliver",
+                    "status": "passed",
+                    "method": "read",
+                    "summary": "sample has alpha",
+                    "evidence": ["alpha"],
+                    "known": ["sample.txt contains alpha."],
+                }
+            ]
+        }
+    )
+
+    assert delivered.done is True
+    assert isinstance(delivered.value, nanocode.VerifyReport)
+    assert verifier.blackboard.known == ["sample.txt contains alpha."]
+
+
 def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
@@ -1463,7 +1597,7 @@ def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
 
     verifier.execute_tool_calls([{"name": "Bash", "intention": "run tests", "args": ["exit 7"]}], confirm=lambda call, tool: True)
     result = verifier.handle_response(
-        {"actions": [{"type": "tool", "name": "Bash", "intention": "run tests again", "args": ["exit 7"]}]},
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "run tests again", "args": ["exit 7"], "known": ["exit 7 command failed."]}]},
         confirm=lambda call, tool: True,
         on_message=messages.append,
     )
@@ -1504,7 +1638,7 @@ def test_verify_agent_final_turn_removes_bash_tool(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["true"]}]},
-                {"actions": [{"type": "deliver", "status": "passed", "method": "Bash true", "summary": "check passed"}]},
+                {"actions": [{"type": "deliver", "status": "passed", "method": "Bash true", "summary": "check passed", "known": ["Bash true exited successfully."]}]},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
@@ -1606,7 +1740,8 @@ def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
         def __init__(self):
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver or avoid repeat"}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"], "known": ["sample.txt contains alpha."]}]},
                 {
                     "actions": [
                         {
