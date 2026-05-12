@@ -1899,6 +1899,70 @@ def test_agent_run_retries_explore_without_kind_or_constraints(tmp_path):
     assert "Retrying: explore handoff needs kind and constraints." in messages
 
 
+def test_agent_run_retries_explore_with_generic_goal(tmp_path):
+    class FakeExploreAgent:
+        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
+            raise AssertionError("generic explore handoff should not start ExploreAgent")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "goal", "text": "support lowercase tool names", "complete": False},
+                        {
+                            "type": "explore",
+                            "kind": "symbol",
+                            "goal": "locate concrete code targets only",
+                            "scope": ["tool name"],
+                            "constraints": ["find parser and dispatcher"],
+                            "reason": "target uncertain",
+                        },
+                    ]
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "explore",
+                            "kind": "symbol",
+                            "goal": "locate concrete code targets only",
+                            "scope": ["tool name"],
+                            "constraints": ["find parser and dispatcher"],
+                            "reason": "target uncertain",
+                        },
+                    ]
+                },
+                {"actions": _final_actions("support lowercase tool names")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="main"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    _seed_plan(agent, "support lowercase tool names")
+    agent.model_client = FakeModelClient()
+    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
+    messages = []
+
+    assert "too generic" in agent._explore_actions_error(
+        [
+            {
+                "type": "explore",
+                "kind": "symbol",
+                "goal": "locate concrete code targets only",
+                "scope": ["tool name"],
+                "constraints": ["find parser and dispatcher"],
+            }
+        ]
+    )
+
+    response = agent.run("support lowercase tool names", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "Retrying: explore handoff needs kind and constraints." in messages
+
+
 def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
     verify_calls = []

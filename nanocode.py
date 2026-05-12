@@ -3088,10 +3088,10 @@ One JSON object may omit trailing __END_ACTION__.
 Tool actions MUST include name, intention, and args.
 
 Sidecar fields are optional on any MAIN action:
-- "known": ["new durable fact needed later"]
-- "progress": "optional short user-facing update"
+- "known": ["<new durable fact needed later>"]
+- "progress": "<optional short user-facing update>"
 - "learn": {
-    "summary": "optional stable project summary",
+    "summary": "<optional stable project summary>",
     "structure": [],
     "architecture": [],
     "workflows": [],
@@ -3102,53 +3102,53 @@ Do NOT output known/progress/learn as standalone action types.
 
 {
   "type": "chat",
-  "text": "string"
+  "text": "<chat reply>"
 } __END_ACTION__
 
 {
   "type": "start",
-  "goal": "string",
-  "response_language": null|"BCP47",
-  "plan": [{"id": "string", "text": "string", "status": "todo|doing|done|blocked", "context": null|"string"}]
+  "goal": "<current task goal>",
+  "response_language": null|"<BCP47 language tag>",
+  "plan": [{"id": "<plan id>", "text": "<plan step>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]
 } __END_ACTION__
 
 {
   "type": "goal",
-  "text": "string",
+  "text": "<current task goal>",
   "complete": true|false,
-  "message_for_complete": null|"string"
+  "message_for_complete": null|"<final user message>"
 } __END_ACTION__
 
 {
   "type": "plan",
   "mode": "replace|patch",
-  "items": [{"op": "add|update|remove", "id": "string", "after": null|"string", "text": null|"string", "status": null|"todo|doing|done|blocked", "context": null|"string"}]
+  "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]
 } __END_ACTION__
 
 {
   "type": "tool",
   "name": "{ __tool_names__ }",
-  "intention": "clear reason/question",
-  "args": ["string"]
+  "intention": "<clear reason/question>",
+  "args": ["<arg>"]
 } __END_ACTION__
 
 {
   "type": "explore",
   "kind": "symbol|file|range|changed|reference|other",
-  "goal": "locate concrete code targets only",
-  "scope": ["known path/symbol/keyword"],
-  "constraints": ["required output or search boundary"],
-  "reason": "why target is unknown",
-  "context": null|"string"
+  "goal": "<specific locator question, e.g. find where tool action name is parsed and dispatched>",
+  "scope": ["<exact known path/symbol/keyword/search boundary>"],
+  "constraints": ["<specific target needed, exclusions, or output boundary>"],
+  "reason": "<why target is unknown>",
+  "context": null|"<relevant facts for worker>"
 } __END_ACTION__
 
 {
   "type": "verify",
   "kind": "syntax_check|lint|test|build|change_review|change_check|other",
-  "method": null|"short target label, not command",
-  "criteria": ["explicit pass/block criterion"],
+  "method": null|"<short target label, not command>",
+  "criteria": ["<explicit pass/block criterion>"],
   "status": "pending|passed|blocked",
-  "context": null|"string"
+  "context": null|"<verification scope context>"
 } __END_ACTION__
 
 TOOL SPECS:
@@ -3290,11 +3290,11 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 If Recent Tool Calls already contains the exact tool name and args you want to run, deliver using existing results instead.
 
 Sidecar field on tool or deliver:
-- "known": ["non-empty self-contained fact"]
+- "known": ["<non-empty self-contained fact>"]
 
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"], "issues": ["string"]} __END_ACTION__
-{"type": "verify", "method": null | "string", "status": "passed|blocked", "context": null | "string"} __END_ACTION__
+{"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<stable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
+{"type": "verify", "method": null | "<method>", "status": "passed|blocked", "context": null | "<context>"} __END_ACTION__
 """
 
 
@@ -3305,7 +3305,7 @@ Return exactly ONE deliver action.
 If targets were found, include concrete path/area/line_range/context/reason.
 If no target was found, use targets=[] and explain what was searched, within what scope, and why no target was found in issues.
 
-{"type": "deliver", "targets": [{"path": "string", "area": "string", "line_range": "string|null", "context": "string|null", "reason": "string"}], "known": ["string"], "issues": ["string"]} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<stable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
 
@@ -3445,10 +3445,10 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
 Sidecar field on tool or deliver:
-- "known": ["non-empty self-contained fact"]
+- "known": ["<non-empty self-contained fact>"]
 
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]} __END_ACTION__
-{"type": "deliver", "status": "passed|failed|blocked", "method": "string", "summary": "string", "evidence": ["string"], "issues": ["string"], "next_steps": ["string"]} __END_ACTION__
+{"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
+{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
 """
 
 
@@ -3526,7 +3526,7 @@ Omit noise:
 Write the shortest complete continuation summary.
 Compress Known to at most 30 concise stable facts.
 
-Output strict JSON only: {"summary": "string", "known": ["string"]}
+Output strict JSON only: {"summary": "<summary>", "known": ["<stable fact>"]}
 """
 
 
@@ -5542,9 +5542,12 @@ class MainAgent(BaseAgent):
         valid_kinds = {item.value for item in ExploreKind}
         for action in explore_actions:
             kind = _json_str(action.get("kind")) or ""
+            goal = (_json_str(action.get("goal")) or "").strip().lower()
             constraints = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get("constraints"))) if item]
             if kind not in valid_kinds:
                 return "missing or invalid kind"
+            if goal in {"locate concrete code targets only", "find concrete code targets", "locate concrete targets"}:
+                return "explore goal is too generic; name the exact path, symbol, parser, dispatcher, config key, or code entry being located"
             if not constraints:
                 return "missing constraints"
         return ""
