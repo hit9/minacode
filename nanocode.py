@@ -222,15 +222,22 @@ class ToolResultItem(PromptItem):
     excerpted: bool = False
 
     @override
-    def format(self, indent: str = "") -> str:
-        lines = ["<ToolResultItem>", "  <description>" + self.description + "</description>"]
+    def format(self, indent: str = "", *, result_key: str = "", include_content: bool = False, details_hint: bool = False) -> str:
+        lines = ["- result_key: " + result_key] if result_key else ["- result"]
+        lines.append("  description: " + self.description)
         if self.log_path:
-            lines.append("  <log_path>" + self.log_path + "</log_path>")
+            lines.append("  log: " + self.log_path)
         if self.original_lines or self.original_chars:
-            lines.append("  <original_lines>" + str(self.original_lines) + "</original_lines>")
-            lines.append("  <original_chars>" + str(self.original_chars) + "</original_chars>")
-        lines.append("  <excerpted>" + str(self.excerpted).lower() + "</excerpted>")
-        lines.append("</ToolResultItem>")
+            lines.append("  size: " + str(self.original_lines) + " lines, " + str(self.original_chars) + " chars")
+        if self.excerpted:
+            lines.append("  excerpted: true")
+            if details_hint and result_key:
+                lines.append('  details: use Recall("' + result_key + '") only if the visible excerpt is insufficient')
+        if include_content:
+            lines.append("  content:")
+            lines.append("  <content>")
+            lines.append(self.value)
+            lines.append("  </content>")
         return _format_lines(lines, indent)
 
 
@@ -2858,19 +2865,7 @@ class ToolResultTool(Tool):
                 lines.append("- result_key: " + key)
                 lines.append("  status: missing")
                 continue
-            item = self.results[key]
-            lines.append("- result_key: " + key)
-            lines.append("  description: " + item.description)
-            if item.log_path:
-                lines.append("  log: " + item.log_path)
-            if item.original_lines or item.original_chars:
-                lines.append("  size: " + str(item.original_lines) + " lines, " + str(item.original_chars) + " chars")
-            if item.excerpted:
-                lines.append("  excerpted: true")
-            lines.append("  content:")
-            lines.append("  <content>")
-            lines.append(item.value)
-            lines.append("  </content>")
+            lines.append(self.results[key].format(result_key=key, include_content=True))
         result = "\n".join(lines)
         return _bound_tool_output(result).value
 
@@ -3597,15 +3592,7 @@ class PromptBuilder:
         for key, item in self.context.runtime.tool_result_store.items():
             if key in hidden_keys:
                 continue
-            lines.append("- result_key: " + key)
-            lines.append("  description: " + item.description)
-            if item.log_path:
-                lines.append("  log: " + item.log_path)
-            if item.original_lines or item.original_chars:
-                lines.append("  size: " + str(item.original_lines) + " lines, " + str(item.original_chars) + " chars")
-            if item.excerpted:
-                lines.append("  excerpted: true")
-                lines.append('  details: use Recall("' + key + '") only if the visible excerpt is insufficient')
+            lines.append(item.format(result_key=key, details_hint=True))
         if not lines:
             return "(empty; current result keys are already shown in Recent Tool Calls)"
         return "\n".join(lines)
