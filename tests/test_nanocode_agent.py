@@ -1334,7 +1334,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     confirmations = []
 
     latest = agent.execute_tool_calls(
-        [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", "0", "1", "bad", "new"]}],
+        [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", "0", "1", "bad", "", "", "new"]}],
         confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or True,
     )
 

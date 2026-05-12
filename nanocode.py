@@ -2174,6 +2174,8 @@ class ReplaceRangeEdit:
     start: int
     end: int
     fingerprint: str
+    before_context: str
+    after_context: str
     content: str
 
 
@@ -2184,6 +2186,8 @@ class ReplaceRangeTool(Tool):
     start: int = 0
     end: int = 0
     fingerprint: str = ""
+    before_context: str = ""
+    after_context: str = ""
     content: str = ""
     edits: list[ReplaceRangeEdit] = field(default_factory=list)
     cwd: str = ""
@@ -2201,17 +2205,17 @@ class ReplaceRangeTool(Tool):
     def description(cls) -> list[str]:
         return [
             "Replace one small Read-backed [start,end) range in an existing file.",
-            "Content is only the replacement for that range; do not include outside lines.",
-            "Pass start/end as separate args and reuse the Read fingerprint.",
+            "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
+            "Content is only the replacement for that range; do not include boundary lines.",
         ]
 
     @classmethod
     def signature(cls) -> str:
-        return "ReplaceRange(filepath, start, end, fingerprint, content) -> ReplaceRangeToolResult<path, range>"
+        return "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
 
     @classmethod
     def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "10", "12", "a1b2c3", "replacement lines\\n"]']
+        return ['Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -2221,7 +2225,7 @@ class ReplaceRangeTool(Tool):
 
     @classmethod
     def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
-        if len(call.args) != 5:
+        if len(call.args) != 7:
             return None
         return (call.args[0],)
 
@@ -2240,7 +2244,7 @@ class ReplaceRangeTool(Tool):
             fingerprint = call.args[3]
             if not fingerprint:
                 return None
-            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=call.args[4]))
+            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=call.args[4], after_context=call.args[5], content=call.args[6]))
             if call.intention:
                 intentions.append(call.intention)
         tool = cls._from_edits(session, filepath=filepath, edits=edits)
@@ -2249,8 +2253,8 @@ class ReplaceRangeTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 5:
-            raise ToolCallArgError("requires exactly 5 args: filepath, start, end, fingerprint, content")
+        if len(args) != 7:
+            raise ToolCallArgError("requires exactly 7 args: filepath, start, end, fingerprint, before_context, after_context, content")
         start, end = _parse_line_range(args[1], args[2])
         fingerprint = str(args[3])
         if not fingerprint and (start != 0 or end != 0):
@@ -2258,7 +2262,7 @@ class ReplaceRangeTool(Tool):
         return cls._from_edits(
             session,
             filepath=args[0],
-            edits=[ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, content=str(args[4]))],
+            edits=[ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[4]), after_context=str(args[5]), content=str(args[6]))],
         )
 
     @classmethod
@@ -2269,6 +2273,8 @@ class ReplaceRangeTool(Tool):
             start=first.start,
             end=first.end,
             fingerprint=first.fingerprint,
+            before_context=first.before_context,
+            after_context=first.after_context,
             content=first.content,
             edits=edits,
             cwd=session.cwd,
@@ -2357,8 +2363,8 @@ class ReplaceRangeTool(Tool):
         replacements = []
         for edit in self.edits:
             if file_missing:
-                if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint:
-                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, "0", "0", "", content) to create')
+                if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint or edit.before_context or edit.after_context:
+                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, "0", "0", "", "", "", content) to create')
                 resolved = RangeFingerprintStore.Resolved(start=0, end=0, fingerprint=_range_fingerprint(""))
             else:
                 resolved = self.range_fingerprints.resolve(
@@ -2369,6 +2375,7 @@ class ReplaceRangeTool(Tool):
                     fingerprint=edit.fingerprint,
                 )
             replacement = self._replacement_lines(edit.content, has_following_line=resolved.end < len(lines))
+            self._validate_boundary_context(lines, resolved, edit, replacement)
             replacements.append((resolved, replacement))
         self._reject_overlapping_ranges(replacements)
         new_lines = list(lines)
@@ -2388,6 +2395,19 @@ class ReplaceRangeTool(Tool):
             if previous is not None and resolved.start < previous.end:
                 raise ToolCallError(f"range replacements overlap: {previous.start}:{previous.end} and {resolved.start}:{resolved.end}")
             previous = resolved
+
+    @staticmethod
+    def _validate_boundary_context(lines: list[str], resolved: RangeFingerprintStore.Resolved, edit: ReplaceRangeEdit, replacement: list[str]) -> None:
+        before_context = "" if resolved.start == 0 else lines[resolved.start - 1]
+        after_context = "" if resolved.end >= len(lines) else lines[resolved.end]
+        if edit.before_context != before_context:
+            raise ToolCallError("before_context mismatch; Read the target range with one line before and retry")
+        if edit.after_context != after_context:
+            raise ToolCallError("after_context mismatch; Read the target range with one line after and retry")
+        if before_context and replacement and replacement[0] == before_context:
+            raise ToolCallError("content includes before_context; expand start or remove the boundary line from content")
+        if after_context and replacement and replacement[-1] == after_context:
+            raise ToolCallError("content includes after_context; expand end or remove the boundary line from content")
 
     @staticmethod
     def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
@@ -3041,7 +3061,7 @@ EDITING:
 - New file: create minimal skeleton first.
 - Existing file: inspect exact target first, then edit.
 - Never rewrite a large file in one action.
-- Before ReplaceRange, Read the exact target range and reuse its fingerprint.
+- Before ReplaceRange, Read the exact target range plus one boundary line before/after; pass exact before_context and after_context.
 
 TARGET DISCOVERY:
 - Use explore when the exact file/path/symbol/range is unknown.
