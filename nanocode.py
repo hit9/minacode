@@ -7528,8 +7528,6 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Context"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):
                 status = line[10:].strip().split(" ", 1)[0]
                 segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])
@@ -7549,13 +7547,6 @@ class AgentLoop:
                 marker, _, tail = line.partition(" ")
                 status_style = "ansigreen" if marker == "[success]" else "ansired"
                 segments.append((status_style, tail + "\n"))
-            elif line.startswith("  ") and ". [" in line:
-                style = "ansigreen" if "[success]" in line else "ansired"
-                segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
-            elif line.startswith("  why:"):
-                segments.extend([("ansibrightblack", "  why: "), ("ansimagenta", line[7:] + "\n")])
-            elif line.startswith("  result:"):
-                segments.extend([("ansibrightblack", "  result: "), ("ansiblue", line[10:] + "\n")])
             else:
                 segments.extend([("ansibrightblack", line + "\n")])
         return segments
