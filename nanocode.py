@@ -4482,14 +4482,15 @@ class AgentStateUpdater:
         self.allow_project_learning = allow_project_learning
         self.latest_report = ""
 
-    def apply(self, response: Json) -> None:
+    def apply(self, response: Json, *, apply_response_language: bool = True) -> None:
         actions = self._actions(response)
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_known = list(self.blackboard.known)
         before_project_knowledge = self.session.project_knowledge.format()
         before_verification = self.blackboard.verification.format()
-        self.apply_response_language(actions)
+        if apply_response_language:
+            self.apply_response_language(actions)
         goal_changed = self._apply_goal(actions)
         plan_replaced = self._apply_plan(actions)
         if goal_changed and not plan_replaced:
@@ -5107,8 +5108,8 @@ class BaseAgent:
             return invalid_response
         return response
 
-    def apply_response(self, response: Json) -> None:
-        self.state_updater.apply(response)
+    def apply_response(self, response: Json, *, apply_response_language: bool = True) -> None:
+        self.state_updater.apply(response, apply_response_language=apply_response_language)
 
     def execute_tool_calls(
         self,
@@ -6329,7 +6330,7 @@ class MainAgent(BaseAgent):
             return AgentRunResult()
 
         self._emit_debug_frame_errors(response, on_message)
-        self.apply_response(response)
+        self.apply_response(response, apply_response_language=False)
         self._emit_state_and_progress(ctx, on_message)
 
         gate_result = self._gate_after_apply(ctx, on_message, stop_after_learn=stop_after_learn)
