@@ -1198,6 +1198,15 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
     ]
 
 
+def test_agent_ignores_schema_placeholder_known_facts(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response({"actions": [{"type": "known", "items": ["<fact from latest tool results>", "Real fact."]}]})
+
+    assert agent.blackboard.known == ["Real fact."]
+
+
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -1344,6 +1353,22 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
 
 def test_agent_accepts_combined_pending_verification_kind(tmp_path):
     agent = MainAgent(Session(cwd=str(tmp_path)))
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "verify",
+                    "kind": "syntax_check+test",
+                    "method": "check edit",
+                    "criteria": ["syntax passes", "tests pass"],
+                    "status": "pending",
+                }
+            ]
+        }
+    )
+
+    assert agent.blackboard.verification.kind == "syntax_check+test"
 
     assert (
         agent._pending_verification_error(
@@ -1599,6 +1624,18 @@ def test_explore_agent_accepts_deliver_in_act_turn(tmp_path):
     assert result.done is True
     assert isinstance(result.value, nanocode.ExploreReport)
     assert result.value.known == ["sample fact"]
+
+
+def test_explore_agent_ignores_placeholder_deliver_known(tmp_path):
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
+
+    result = explorer.handle_response({"actions": [{"type": "deliver", "targets": [], "known": ["<fact from latest tool results>"]}]})
+
+    assert result.done is True
+    assert isinstance(result.value, nanocode.ExploreReport)
+    assert result.value.known == []
 
 
 def test_verify_agent_allows_deliver_after_tool_results_without_known(tmp_path):

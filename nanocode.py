@@ -366,7 +366,7 @@ class PathsConfig:
 
 @dataclass
 class ExploreConfig:
-    max_turns: int = 12
+    max_turns: int = 20
 
 
 @dataclass
@@ -414,7 +414,7 @@ class Config:
             main_model=cls.model_config(cls.table(data, "main_model"), DEFAULT_MODEL_CONFIG),
             worker_model=cls.model_config(cls.table(data, "worker_model"), ModelConfig()),
             paths=PathsConfig(nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode")),
-            explore=ExploreConfig(max_turns=cls.positive_int(explore, "max_turns", 12)),
+            explore=ExploreConfig(max_turns=cls.positive_int(explore, "max_turns", 20)),
             verify=VerifyConfig(max_turns=cls.positive_int(verify, "max_turns", 12)),
         )
 
@@ -514,7 +514,7 @@ first_token_timeout = 60
 
 [explore_agent]
 # ExploreAgent removes uncertainty about unknown file/code targets before editing.
-max_turns = 12
+max_turns = 20
 
 [verify_agent]
 # VerifyAgent checks concrete expected conditions and reports pass/fail/blocked.
@@ -2893,7 +2893,8 @@ HARD RULES:
 - User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
 - Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
 - Known is current-task memory. Stable_Knowledge is reusable session codebase memory: stack, structure, workflow, convention, gotcha.
-- Tool results and worker reports are volatile. Write useful durable facts into Known while working.
+- Tool results and worker reports are volatile. RECORD useful durable facts into Known BEFORE they disappear.
+- Do NOT store result keys like tr.1 in Goal, Plan, Known, Stable_Knowledge, or worker reports. Store path/range/fact instead.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
 
 STATE:
@@ -2910,7 +2911,7 @@ Choose exactly one phase, then stop.
 3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
 4. REPAIR: if Verification_State is failed, fix the reported issue.
 5. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
-6. ACT: update Known/Stable_Knowledge/Progress if latest results contain useful facts, then execute only the next unfinished plan step:
+6. ACT: if latest tool results or worker reports changed what you know, update Known/Plan first; then execute only the next unfinished plan step:
    - unknown target -> explore
    - known target -> smallest useful batch of tool/edit actions
 7. CHECK: after any edit, request verify or inspect one narrow target.
@@ -4617,13 +4618,7 @@ class AgentStateUpdater:
             self.session.save_user_rules()
 
     def _known_fact_from_json(self, value: JsonValue) -> str | None:
-        fact = (_json_str(value) or "").strip()
-        if not fact:
-            item = _json_dict(value)
-            fact = (_json_str(item.get("fact")) or "").strip()
-        if not fact:
-            return None
-        return fact
+        return _memory_fact_from_json(value)
 
     def _add_known_item(self, fact: str) -> None:
         if fact not in self.blackboard.known:
@@ -4757,7 +4752,7 @@ class MainAgentStateUpdater(AgentStateUpdater):
         for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
             kind = _json_str(data.get("kind"))
             if kind is not None:
-                self.main_blackboard.verification.kind = kind if kind in {item.value for item in VerificationKind} else ""
+                self.main_blackboard.verification.kind = kind if _is_valid_verification_kind(kind) else ""
             criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
             if "criteria" in data:
                 self.main_blackboard.verification.criteria = criteria
@@ -5245,7 +5240,7 @@ class BaseAgent:
     def _has_known_facts(self, actions: list[Json]) -> bool:
         for action in actions:
             values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
-            if any((_json_str(raw) or "").strip() for raw in values):
+            if any(_memory_fact_from_json(raw) for raw in values):
                 return True
         return False
 
@@ -5623,7 +5618,7 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
             targets = [target for target in targets if target]
             known = list(self.blackboard.known)
             for raw in _json_list(action.get("known")):
-                fact = (_json_str(raw) or "").strip()
+                fact = _memory_fact_from_json(raw)
                 if fact and fact not in known:
                     known.append(fact)
             return ExploreReport(targets=targets, known=known, issues=self._string_items(action.get("issues")))
@@ -5661,6 +5656,12 @@ class VerificationKind(StrEnum):
     BUILD = "build"
     CHANGE_CHECK = "change_check"
     OTHER = "other"
+
+
+def _is_valid_verification_kind(kind: str) -> bool:
+    valid_kinds = {item.value for item in VerificationKind}
+    parts = kind.split("+")
+    return bool(kind) and all(part in valid_kinds for part in parts)
 
 
 @final
@@ -6002,7 +6003,7 @@ class MainAgent(BaseAgent):
                 lines.append("  +" + str(remaining) + " more")
             return "\n".join(lines)
         if report.known:
-            return "Explore returned known only\n  " + _shorten(report.known[0], 180)
+            return "Explore done: 0 target(s)\n  known: " + _shorten(report.known[0], 180)
         if report.issues:
             return "Explore done: 0 target(s)\n  " + _shorten(report.issues[0], 180)
         return "Explore done: 0 target(s)"
@@ -6168,20 +6169,14 @@ class MainAgent(BaseAgent):
         pending = [action for action in actions if _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"]
         if not pending:
             return ""
-        valid_kinds = {item.value for item in VerificationKind}
         for action in pending:
             kind = _json_str(action.get("kind")) or ""
             criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(action.get("criteria"))) if item]
-            if not self._is_valid_verification_kind(kind, valid_kinds):
+            if not _is_valid_verification_kind(kind):
                 return "missing or invalid kind"
             if not criteria:
                 return "missing criteria"
         return ""
-
-    @staticmethod
-    def _is_valid_verification_kind(kind: str, valid_kinds: set[str]) -> bool:
-        parts = kind.split("+")
-        return bool(parts) and all(part in valid_kinds for part in parts)
 
     def _build_response_context(self, response: Json) -> MainResponseContext:
         actions = self._response_actions(response)
@@ -7821,6 +7816,24 @@ def _json_str(value: JsonValue) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _memory_fact_from_json(value: JsonValue) -> str | None:
+    fact = (_json_str(value) or "").strip()
+    if not fact:
+        item = _json_dict(value)
+        fact = (_json_str(item.get("fact")) or "").strip()
+    if not fact or _is_schema_placeholder(fact):
+        return None
+    return fact
+
+
+def _is_schema_placeholder(text: str) -> bool:
+    stripped = text.strip()
+    if not (stripped.startswith("<") and stripped.endswith(">")):
+        return False
+    inner = stripped[1:-1].strip().lower()
+    return bool(inner) and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "evidence", "result", "context", "message", "goal"))
 
 
 def _shorten(text: str, limit: int = 500) -> str:

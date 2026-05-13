@@ -73,7 +73,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
     assert "main: model reasoning=medium stream=on" in result.message
-    assert "explore: turns=12" in result.message
+    assert "explore: turns=20" in result.message
     assert "runtime: yolo=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
@@ -112,7 +112,7 @@ def test_config_command_reports_resolved_model_config(tmp_path):
     assert "main.first_token_timeout: 60" in result.message
     assert "worker.model: worker-model" in result.message
     assert "worker.first_token_timeout: 60" in result.message
-    assert "explore.max_turns: 12" in result.message
+    assert "explore.max_turns: 20" in result.message
 
 
 def test_blackboard_command_is_not_registered(tmp_path):
