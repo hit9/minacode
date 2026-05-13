@@ -1044,8 +1044,8 @@ def test_main_agent_applies_stable_knowledge_action(tmp_path):
                 {
                     "type": "stable_knowledge",
                     "items": [
-                        "Project test command is make test.",
-                        "Project test command is make test.",
+                        {"category": "workflow", "text": "Project test command is make test."},
+                        {"category": "workflow", "text": "Project test command is make test."},
                     ],
                 }
             ]
@@ -1053,30 +1053,40 @@ def test_main_agent_applies_stable_knowledge_action(tmp_path):
     )
 
     assert agent.blackboard.known == ["Read pyproject.toml."]
-    assert agent.blackboard.stable_knowledge == ["Project test command is make test."]
+    assert agent.blackboard.stable_knowledge == {"workflow": ["Project test command is make test."]}
     assert "  Stable_Knowledge\n" in agent.state_updater.latest_report
-    assert "    1. Project test command is make test." in agent.state_updater.latest_report
+    assert "    workflow\n" in agent.state_updater.latest_report
+    assert "      1. Project test command is make test." in agent.state_updater.latest_report
 
 
-def test_main_agent_keeps_latest_100_stable_knowledge_items(tmp_path):
+def test_main_agent_keeps_latest_30_stable_knowledge_items_per_category(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
-    agent.apply_response({"actions": [{"type": "stable_knowledge", "items": ["stable fact " + str(index) for index in range(101)]}]})
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "stable_knowledge",
+                    "items": [{"category": "workflow", "text": "stable fact " + str(index)} for index in range(31)],
+                }
+            ]
+        }
+    )
 
-    assert len(agent.blackboard.stable_knowledge) == 100
-    assert agent.blackboard.stable_knowledge[0] == "stable fact 1"
-    assert agent.blackboard.stable_knowledge[-1] == "stable fact 100"
+    assert len(agent.blackboard.stable_knowledge["workflow"]) == 30
+    assert agent.blackboard.stable_knowledge["workflow"][0] == "stable fact 1"
+    assert agent.blackboard.stable_knowledge["workflow"][-1] == "stable fact 30"
 
 
 def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
-    agent.blackboard.stable_knowledge = ["Project test command is make test."]
+    agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
 
     prompt = agent.build_user_prompt()
 
-    assert "### Stable Knowledge\nProject test command is make test.\n\n### Known" in prompt
+    assert "### Stable Knowledge\nworkflow:\n- Project test command is make test.\n\n### Known" in prompt
 
 
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
@@ -1584,7 +1594,7 @@ def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
     assert any("Invalid action(s): deliver" in error for error in explorer.agent_feedback_errors)
 
 
-def test_verify_agent_requires_known_after_tool_results(tmp_path):
+def test_verify_agent_allows_deliver_after_tool_results_without_known(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
@@ -1595,13 +1605,24 @@ def test_verify_agent_requires_known_after_tool_results(tmp_path):
     assert "Use only Recent Tool Calls" in verifier.build_system_prompt()
     assert '"type": "tool"' not in verifier.build_system_prompt()
 
-    missing_known = verifier.handle_response(
+    delivered = verifier.handle_response(
         {"actions": [{"type": "deliver", "status": "passed", "method": "read", "summary": "sample has alpha", "evidence": ["alpha"]}]}
     )
 
-    assert missing_known.done is False
+    assert delivered.done is True
+    assert isinstance(delivered.value, nanocode.VerifyReport)
+    assert delivered.value.status == "passed"
     assert verifier.blackboard.known == []
-    assert any("latest results were not recorded" in error for error in verifier.agent_feedback_errors)
+    assert verifier.agent_feedback_errors == []
+
+
+def test_verify_agent_accepts_known_after_tool_results(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    parent_session = Session(cwd=str(tmp_path))
+    parent_agent = MainAgent(parent_session)
+    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=["sample.txt"])
+
+    verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
     observed = verifier.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
 
@@ -2216,7 +2237,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
-    agent.blackboard.stable_knowledge = ["Project test command is make test."]
+    agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -2235,7 +2256,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.stable_knowledge == ["Project test command is make test."]
+    assert agent.blackboard.stable_knowledge == {"workflow": ["Project test command is make test."]}
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.goal_reached is False
 

@@ -81,7 +81,7 @@ USE AT YOUR OWN RISK.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/compact`.
+- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
 - Config: `/config`, `/set <key> <value>`.
 - Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.

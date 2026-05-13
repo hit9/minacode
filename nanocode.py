@@ -376,7 +376,7 @@ class VerifyConfig:
 class RuntimeSettings:
     shell_timeout: int = 60
     compact_at: int = 50
-    max_agent_steps: int = 50
+    max_agent_steps: int = 100
     yolo: bool = False
     debug: bool = False
 
@@ -386,7 +386,7 @@ class RuntimeSettings:
         return cls(
             shell_timeout=Config.int_or_default(runtime, "shell_timeout", 60),
             compact_at=Config.int_or_default(runtime, "compact_at", 50),
-            max_agent_steps=Config.positive_int(runtime, "max_agent_steps", 50),
+            max_agent_steps=Config.positive_int(runtime, "max_agent_steps", 100),
             yolo=yolo,
             debug=debug,
         )
@@ -525,7 +525,7 @@ nanocode_dir = ".nanocode"
 [runtime]
 shell_timeout = 60
 compact_at = 50
-max_agent_steps = 50
+max_agent_steps = 100
 """
 
     @classmethod
@@ -2867,7 +2867,7 @@ HARD RULES:
 - User_Rules are mandatory constraints, not hints.
 - User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
 - Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
-- Known is current-task memory. Stable_Knowledge is reusable session codebase memory.
+- Known is current-task memory. Stable_Knowledge is reusable session codebase memory: stack, structure, workflow, convention, gotcha.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
 
 STATE:
@@ -3086,7 +3086,7 @@ Must:
 
 Allowed actions:
 - known: record current-task facts from latest results.
-- stable_knowledge: record reusable session codebase facts.
+- stable_knowledge: record rare reusable session codebase facts by category.
 - progress: optional short user-facing progress.
 - plan: revise or advance current plan.
 - verify: record passed/blocked verification status from latest results.
@@ -3098,7 +3098,7 @@ Output one or more JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
-{"type": "stable_knowledge", "items": ["<stable reusable session codebase fact>"]} __END_ACTION__
+{"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "progress", "text": "<optional short progress>"} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|blocked", "context": null|"<verification result>"} __END_ACTION__
@@ -3332,9 +3332,9 @@ If Recent Tool Calls already shows a relevant failed verification command, deliv
 VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the verify worker in an AI coding assistant.
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/state.
-Return known, plus deliver if the verdict is clear.
-known MUST be non-empty and based on latest evidence.
-If the verdict is unclear, output only known and name the single missing evidence in next.
+If the verdict is clear, deliver immediately.
+known is optional; use it only when it helps later verification.
+If the verdict is unclear, output known and name the single missing evidence in next.
 
 {"type": "known", "items": ["<non-empty fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
@@ -3531,10 +3531,18 @@ class PromptBuilder:
         return "\n".join(self.context.blackboard.known)
 
     def _format_stable_knowledge(self) -> str:
-        items = getattr(self.context.blackboard, "stable_knowledge", [])
-        if not items:
+        knowledge = getattr(self.context.blackboard, "stable_knowledge", {})
+        if not isinstance(knowledge, dict) or not any(knowledge.values()):
             return "(empty)"
-        return "\n".join(items)
+        lines = []
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = [item for item in knowledge.get(category, []) if item]
+            if not items:
+                continue
+            lines.append(category + ":")
+            lines.extend("- " + item for item in items)
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     def _format_parent_known(self) -> str:
         if not self.context.parent_known:
@@ -4586,14 +4594,17 @@ class AgentStateUpdater:
 
 @dataclass
 class MainBlackboard(Blackboard):
-    stable_knowledge: list[str] = field(default_factory=list)
+    stable_knowledge: dict[str, list[str]] = field(default_factory=dict)
     verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
 
 
+STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow", "convention", "gotcha")
+
+
 @final
 class MainAgentStateUpdater(AgentStateUpdater):
-    MAX_STABLE_KNOWLEDGE_ITEMS: ClassVar[int] = 100
+    MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
 
     @property
     def main_blackboard(self) -> MainBlackboard:
@@ -4641,29 +4652,49 @@ class MainAgentStateUpdater(AgentStateUpdater):
         return _json_dict(data)
 
     def _format_stable_knowledge_rows(self) -> list[str]:
-        items = self.main_blackboard.stable_knowledge
-        if not items:
+        knowledge = self.main_blackboard.stable_knowledge
+        if not any(knowledge.values()):
             return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(item))
+        rows = []
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = knowledge.get(category, [])
+            if not items:
+                continue
+            rows.append("    " + category)
+            offset = max(0, len(items) - self.DISPLAY_LIMIT)
+            if offset:
+                rows.append("      ... " + str(offset) + " older")
+            for index, item in enumerate(items[offset:], start=offset + 1):
+                rows.append("      " + str(index) + ". " + self._compact(item))
         return rows
 
     def _apply_stable_knowledge(self, actions: list[Json]) -> None:
         for action in actions:
             values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else _json_list(action.get("stable_knowledge"))
             for raw in values:
-                fact = self._known_fact_from_json(raw)
-                if fact is not None:
-                    self._add_stable_knowledge_item(fact)
+                category, fact = self._stable_knowledge_item_from_json(raw)
+                if fact:
+                    self._add_stable_knowledge_item(category, fact)
 
-    def _add_stable_knowledge_item(self, fact: str) -> None:
-        items = self.main_blackboard.stable_knowledge
+    def _stable_knowledge_item_from_json(self, value: JsonValue) -> tuple[str, str]:
+        item = _json_dict(value)
+        if item:
+            category = _json_str(item.get("category")) or "gotcha"
+            fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
+        else:
+            category = "gotcha"
+            fact = (_json_str(value) or "").strip()
+        if category not in STABLE_KNOWLEDGE_CATEGORIES:
+            category = "gotcha"
+        return category, fact
+
+    def _add_stable_knowledge_item(self, category: str, fact: str) -> None:
+        knowledge = self.main_blackboard.stable_knowledge
+        items = knowledge.setdefault(category, [])
         if fact in items:
             return
         items.append(fact)
-        del items[: max(0, len(items) - self.MAX_STABLE_KNOWLEDGE_ITEMS)]
+        del items[: max(0, len(items) - self.MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY)]
 
     def _format_verification(self) -> str:
         verification = self.main_blackboard.verification
@@ -5159,6 +5190,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
     step_limit_reason: ClassVar[str]
     act_action_types: ClassVar[set[str]] = {"tool", "deliver"}
     observe_action_types: ClassVar[set[str]] = {"known", "deliver"}
+    require_observe_known: ClassVar[bool] = True
 
     def __init__(
         self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
@@ -5314,7 +5346,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         )
         if gate_result is not None:
             return gate_result
-        if not self._has_known_facts(actions):
+        if self.require_observe_known and not self._has_known_facts(actions):
             self._remember_agent_error("Error: latest results were not recorded. Rule: include non-empty known facts.")
             self._report_gate(
                 on_message,
@@ -5602,6 +5634,7 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     retry_message: ClassVar[str] = "Retrying: verify returned only state actions; return tool or deliver."
     feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every verify worker response must include tool or deliver."
     step_limit_reason: ClassVar[str] = "verify step limit reached"
+    require_observe_known: ClassVar[bool] = False
 
     def _max_steps(self, session: Session) -> int:
         return session.config.verify.max_turns
@@ -6548,6 +6581,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
+    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
 )
 
 
@@ -6612,6 +6646,7 @@ class CommandDispatcher:
             "/model": self._model,
             "/worker_model": self._worker_model,
             "/yolo": self._yolo,
+            "/knowledge": self._knowledge,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -6757,6 +6792,21 @@ class CommandDispatcher:
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
             ]
         )
+
+    def _knowledge(self, args: str) -> str:
+        if args:
+            return "Usage: /knowledge"
+        knowledge = self.agent.blackboard.stable_knowledge
+        if not any(knowledge.values()):
+            return "No stable knowledge stored."
+        lines = ["Stable knowledge:"]
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = knowledge.get(category, [])
+            if not items:
+                continue
+            lines.append(category + ":")
+            lines.extend("- " + item for item in items)
+        return "\n".join(lines)
 
     def _set(self, args: str) -> str:
         key, value = self._parse_set_args(args)
