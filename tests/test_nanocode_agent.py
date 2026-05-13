@@ -16,7 +16,7 @@ def _final_actions(goal="answer", message="done"):
 
 
 def _observe_actions(fact="observed latest result"):
-    return [{"type": "observe", "known": [fact]}]
+    return [{"type": "known", "items": [fact]}]
 
 
 def _seed_plan(agent, goal="test goal"):
@@ -1033,6 +1033,52 @@ def test_agent_keeps_latest_500_known_items(tmp_path):
     assert agent.blackboard.known[-1] == "fact 500"
 
 
+def test_main_agent_applies_stable_knowledge_action(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {"type": "known", "items": ["Read pyproject.toml."]},
+                {
+                    "type": "stable_knowledge",
+                    "items": [
+                        "Project test command is make test.",
+                        "Project test command is make test.",
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert agent.blackboard.known == ["Read pyproject.toml."]
+    assert agent.blackboard.stable_knowledge == ["Project test command is make test."]
+    assert "  Stable_Knowledge\n" in agent.state_updater.latest_report
+    assert "    1. Project test command is make test." in agent.state_updater.latest_report
+
+
+def test_main_agent_keeps_latest_100_stable_knowledge_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+
+    agent.apply_response({"actions": [{"type": "stable_knowledge", "items": ["stable fact " + str(index) for index in range(101)]}]})
+
+    assert len(agent.blackboard.stable_knowledge) == 100
+    assert agent.blackboard.stable_knowledge[0] == "stable fact 1"
+    assert agent.blackboard.stable_knowledge[-1] == "stable fact 100"
+
+
+def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = MainAgent(session)
+    agent.blackboard.stable_knowledge = ["Project test command is make test."]
+
+    prompt = agent.build_user_prompt()
+
+    assert "### Stable Knowledge\nProject test command is make test.\n\n### Known" in prompt
+
+
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
@@ -1488,7 +1534,7 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
     assert explorer.blackboard.known == []
     assert any("Invalid action(s): tool" in error for error in explorer.agent_feedback_errors)
 
-    observed = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
+    observed = explorer.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
 
     assert observed.done is False
     assert explorer.blackboard.known == ["sample.txt contains alpha."]
@@ -1499,10 +1545,10 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
     delivered = explorer.handle_response(
         {
             "actions": [
+                {"type": "known", "items": ["sample.txt has one line."]},
                 {
                     "type": "deliver",
                     "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}],
-                    "known": ["sample.txt contains alpha."],
                     "issues": [],
                 }
             ]
@@ -1511,18 +1557,18 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     assert delivered.done is True
     assert isinstance(delivered.value, nanocode.ExploreReport)
-    assert delivered.value.known == ["sample.txt contains alpha."]
+    assert delivered.value.known == ["sample.txt contains alpha.", "sample.txt has one line."]
 
 
-def test_explore_agent_rejects_observe_outside_observation_turn(tmp_path):
+def test_explore_agent_rejects_known_outside_observation_turn(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
     explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
 
-    result = explorer.handle_response({"actions": [{"type": "observe", "known": ["sample fact"], "next": "read sample"}]})
+    result = explorer.handle_response({"actions": [{"type": "known", "items": ["sample fact"], "next": "read sample"}]})
 
     assert result.done is False
-    assert any("Invalid action(s): observe" in error for error in explorer.agent_feedback_errors)
+    assert any("Invalid action(s): known" in error for error in explorer.agent_feedback_errors)
 
 
 def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
@@ -1557,7 +1603,7 @@ def test_verify_agent_requires_known_after_tool_results(tmp_path):
     assert verifier.blackboard.known == []
     assert any("latest results were not recorded" in error for error in verifier.agent_feedback_errors)
 
-    observed = verifier.handle_response({"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
+    observed = verifier.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
 
     assert observed.done is False
     assert verifier.blackboard.known == ["sample.txt contains alpha."]
@@ -1572,7 +1618,6 @@ def test_verify_agent_requires_known_after_tool_results(tmp_path):
                     "method": "read",
                     "summary": "sample has alpha",
                     "evidence": ["alpha"],
-                    "known": ["sample.txt contains alpha."],
                 }
             ]
         }
@@ -1696,7 +1741,7 @@ def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
         def __init__(self):
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
-                {"actions": [{"type": "observe", "known": ["sample.txt contains alpha."], "next": "deliver or avoid repeat"}]},
+                {"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver or avoid repeat"}]},
                 {"actions": [{"type": "tool", "name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"], "known": ["sample.txt contains alpha."]}]},
                 {
                     "actions": [
@@ -2171,6 +2216,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
+    agent.blackboard.stable_knowledge = ["Project test command is make test."]
     agent.latest_tool_call_blocks = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -2189,6 +2235,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
+    assert agent.blackboard.stable_knowledge == ["Project test command is make test."]
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.goal_reached is False
 
@@ -2388,7 +2435,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
     assert "Continuing: goal is not complete yet." not in messages
 
 
-def test_main_agent_rejects_standalone_sidecar_actions(tmp_path):
+def test_main_agent_rejects_memory_actions_during_act_turn(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
@@ -2408,7 +2455,7 @@ def test_main_agent_rejects_standalone_sidecar_actions(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert agent.blackboard.known == []
-    assert any("standalone sidecar action is invalid" in error for error in agent.agent_feedback_errors)
+    assert any("memory action is invalid during work" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):

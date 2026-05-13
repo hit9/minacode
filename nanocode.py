@@ -2867,6 +2867,7 @@ HARD RULES:
 - User_Rules are mandatory constraints, not hints.
 - User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
 - Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
+- Known is current-task memory. Stable_Knowledge is reusable session codebase memory.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
 
 STATE:
@@ -2952,11 +2953,7 @@ ACTIONS:
 JSON objects separated by __END_ACTION__.
 One JSON object may omit trailing __END_ACTION__.
 Tool actions MUST include name, intention, and args.
-
-Sidecar fields are optional on any MAIN action:
-- "known": ["<new durable fact needed later>"]
-- "progress": "<optional short user-facing update>"
-Do NOT output known/progress as standalone action types.
+Memory actions are OBSERVE-only; do not output known/stable_knowledge/progress in ACT.
 
 {
   "type": "chat",
@@ -3049,6 +3046,9 @@ MAIN_AGENT_USER_PROMPT_TEMPLATE = """
 ### Goal
 {goal}
 
+### Stable Knowledge
+{stable_knowledge}
+
 ### Known
 {known}
 
@@ -3085,7 +3085,9 @@ Must:
 - Complete only when Goal is done and required verification is satisfied.
 
 Allowed actions:
-- observe: record known facts from latest results.
+- known: record current-task facts from latest results.
+- stable_knowledge: record reusable session codebase facts.
+- progress: optional short user-facing progress.
 - plan: revise or advance current plan.
 - verify: record passed/blocked verification status from latest results.
 - goal: complete or update current goal.
@@ -3095,7 +3097,9 @@ Output format (Strict)
 Output one or more JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
-{"type": "observe", "known": ["<new durable fact from latest results>"], "progress": null|"<optional short progress>"} __END_ACTION__
+{"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
+{"type": "stable_knowledge", "items": ["<stable reusable session codebase fact>"]} __END_ACTION__
+{"type": "progress", "text": "<optional short progress>"} __END_ACTION__
 {"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|blocked", "context": null|"<verification result>"} __END_ACTION__
 {"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
@@ -3172,13 +3176,12 @@ Do NOT repeat the exact same tool name and args from Recent Tool Calls.
 EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the explore worker in an AI coding assistant.
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/verify/state.
-Return exactly ONE observe or deliver action.
+Return known, plus deliver if concrete targets are clear.
 known MUST be non-empty and based on latest tool results.
-If concrete targets are clear, deliver now.
-Otherwise observe known and name the single missing target in next.
+If targets are unclear, output only known and name the single missing target in next.
 
-{"type": "observe", "known": ["<non-empty fact from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
-{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<non-empty fact from latest tool results>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
+{"type": "known", "items": ["<non-empty fact from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
 
@@ -3247,8 +3250,7 @@ Must:
 - Verify the EXPECTED CONDITION, NOT the whole user task.
 - Verify_Goal includes kind, target, and expect from the main worker.
 - User_Rules are mandatory constraints, not hints.
-- Maintain your own Known: save useful evidence facts in the next tool/deliver known sidecar.
-- REQUIRED: after tool results, your next response MUST attach non-empty known facts before more tools or deliver.
+- Maintain your own Known when the observation prompt asks for it after tool results.
 - Do NOT rely on Recent Tool Calls as memory; record durable verification facts into your Known as you iterate.
 - Prefer EXISTING evidence, worker reports, recent tool calls, and Git diff/status.
 - Deliver as soon as you have PASSED, FAILED, or BLOCKED.
@@ -3322,13 +3324,6 @@ Frame shapes below are schemas; every actual response must include tool or deliv
 
 If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
-Sidecar field on tool or deliver:
-- "known": ["<non-empty fact from prior evidence>"]
-
-After tool results, your NEXT tool or deliver action MUST include a non-empty known sidecar.
-Invalid after tool results: {"type": "tool", "name": "Read", "intention": "...", "args": ["..."]}
-Valid after tool results: {"type": "deliver", "status": "failed", "method": "build", "summary": "...", "evidence": ["..."], "issues": ["..."], "next_steps": ["..."], "known": ["make test failed with IndentationError in nanocode.py."]}
-
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
 """
@@ -3337,13 +3332,12 @@ Valid after tool results: {"type": "deliver", "status": "failed", "method": "bui
 VERIFY_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the verify worker in an AI coding assistant.
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/state.
-Return exactly ONE observe or deliver action.
+Return known, plus deliver if the verdict is clear.
 known MUST be non-empty and based on latest evidence.
-If the verdict is clear, deliver now.
-Otherwise observe known and name the single missing evidence in next.
+If the verdict is unclear, output only known and name the single missing evidence in next.
 
-{"type": "observe", "known": ["<non-empty fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
-{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"], "known": ["<non-empty fact from latest evidence>"]} __END_ACTION__
+{"type": "known", "items": ["<non-empty fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
+{"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
 """
 
 
@@ -3476,6 +3470,7 @@ class PromptBuilder:
             response_language_bootstrap=self._format_response_language_bootstrap(),
             parent_known=self._format_parent_known(),
             known=self._format_known(),
+            stable_knowledge=self._format_stable_knowledge(),
             tool_result_store=self._format_tool_result_store(_result_keys_from_recent_tool_calls(recent_tool_calls)),
             goal=current.goal or "(empty)",
             scope=self._format_scope(),
@@ -3534,6 +3529,12 @@ class PromptBuilder:
         if not self.context.blackboard.known:
             return "(empty)"
         return "\n".join(self.context.blackboard.known)
+
+    def _format_stable_knowledge(self) -> str:
+        items = getattr(self.context.blackboard, "stable_knowledge", [])
+        if not items:
+            return "(empty)"
+        return "\n".join(items)
 
     def _format_parent_known(self) -> str:
         if not self.context.parent_known:
@@ -4585,20 +4586,30 @@ class AgentStateUpdater:
 
 @dataclass
 class MainBlackboard(Blackboard):
+    stable_knowledge: list[str] = field(default_factory=list)
     verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
 
 
 @final
 class MainAgentStateUpdater(AgentStateUpdater):
+    MAX_STABLE_KNOWLEDGE_ITEMS: ClassVar[int] = 100
+
     @property
     def main_blackboard(self) -> MainBlackboard:
         return cast(MainBlackboard, self.blackboard)
 
     def _before_extra_state(self) -> str:
-        return self.main_blackboard.verification.format()
+        return json.dumps(
+            {
+                "verification": self.main_blackboard.verification.format(),
+                "stable_knowledge": self.main_blackboard.stable_knowledge,
+            },
+            ensure_ascii=False,
+        )
 
     def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        self._apply_stable_knowledge(actions)
         if goal_changed:
             self.main_blackboard.verification_required = False
         self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
@@ -4609,12 +4620,50 @@ class MainAgentStateUpdater(AgentStateUpdater):
         return "State Updated | VERIFY:" + self.main_blackboard.verification.status
 
     def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
+        before = self._decode_extra_state(before_extra_state)
+        if self.main_blackboard.stable_knowledge != before.get("stable_knowledge", []):
+            if not lines:
+                lines.append(self._state_heading())
+            lines.append("  Stable_Knowledge")
+            lines.extend(self._format_stable_knowledge_rows())
         verification = self.main_blackboard.verification.format()
-        if verification == before_extra_state:
+        if verification == before.get("verification", ""):
             return
         if not lines:
             lines.append(self._state_heading())
         lines.append("  Verify  " + self._format_verification())
+
+    def _decode_extra_state(self, value: str) -> Json:
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            data = {}
+        return _json_dict(data)
+
+    def _format_stable_knowledge_rows(self) -> list[str]:
+        items = self.main_blackboard.stable_knowledge
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            rows.append("    " + str(index) + ". " + self._compact(item))
+        return rows
+
+    def _apply_stable_knowledge(self, actions: list[Json]) -> None:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else _json_list(action.get("stable_knowledge"))
+            for raw in values:
+                fact = self._known_fact_from_json(raw)
+                if fact is not None:
+                    self._add_stable_knowledge_item(fact)
+
+    def _add_stable_knowledge_item(self, fact: str) -> None:
+        items = self.main_blackboard.stable_knowledge
+        if fact in items:
+            return
+        items.append(fact)
+        del items[: max(0, len(items) - self.MAX_STABLE_KNOWLEDGE_ITEMS)]
 
     def _format_verification(self) -> str:
         verification = self.main_blackboard.verification
@@ -5062,7 +5111,7 @@ class BaseAgent:
     def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
         return [action for action in actions if _json_str(action.get("type")) == "tool"]
 
-    def _has_known_sidecar(self, actions: list[Json]) -> bool:
+    def _has_known_facts(self, actions: list[Json]) -> bool:
         for action in actions:
             values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
             if any((_json_str(raw) or "").strip() for raw in values):
@@ -5109,7 +5158,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
     feedback_message: ClassVar[str]
     step_limit_reason: ClassVar[str]
     act_action_types: ClassVar[set[str]] = {"tool", "deliver"}
-    observe_action_types: ClassVar[set[str]] = {"observe", "deliver"}
+    observe_action_types: ClassVar[set[str]] = {"known", "deliver"}
 
     def __init__(
         self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
@@ -5265,7 +5314,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         )
         if gate_result is not None:
             return gate_result
-        if not self._has_known_sidecar(actions):
+        if not self._has_known_facts(actions):
             self._remember_agent_error("Error: latest results were not recorded. Rule: include non-empty known facts.")
             self._report_gate(
                 on_message,
@@ -5278,10 +5327,10 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         if report is not None:
             self.mode = AgentMode.ACT
             return AgentRunResult(done=True, value=report)
-        if self._has_observe_action(actions):
+        if self._has_known_action(actions):
             self.mode = AgentMode.ACT
             return AgentRunResult()
-        self._remember_agent_error("Error: latest results were not summarized or delivered. Rule: return observe or deliver.")
+        self._remember_agent_error("Error: latest results were not summarized or delivered. Rule: return known or deliver.")
         self._report_gate(
             on_message,
             "Retrying: summarize latest results.",
@@ -5298,8 +5347,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         return report
 
     @staticmethod
-    def _has_observe_action(actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "observe" for action in actions)
+    def _has_known_action(actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) == "known" for action in actions)
 
     @staticmethod
     def _has_deliver_action(actions: list[Json]) -> bool:
@@ -5650,9 +5699,9 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 @final
 class MainAgent(BaseAgent):
     blackboard: MainBlackboard
-    STANDALONE_SIDECAR_TYPES: ClassVar[set[str]] = {"known", "progress"}
+    ACT_MEMORY_ACTION_TYPES: ClassVar[set[str]] = {"known", "progress", "stable_knowledge"}
     ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language", "user_rule"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"observe", "plan", "verify", "goal", "response_language"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal", "response_language"}
 
     def __init__(self, session: Session):
         super().__init__(
@@ -5709,7 +5758,15 @@ class MainAgent(BaseAgent):
         return ""
 
     def _progress_messages_from_actions(self, actions: list[Json]) -> list[str]:
-        return [message for message in (_json_str(action.get("progress")) for action in actions) if message]
+        messages = []
+        for action in actions:
+            if _json_str(action.get("type")) == "progress":
+                message = _json_str(action.get("text")) or _json_str(action.get("message")) or ""
+            else:
+                message = _json_str(action.get("progress")) or ""
+            if message:
+                messages.append(message)
+        return messages
 
     def _completion_message_from_actions(self, actions: list[Json]) -> str:
         for action in reversed(actions):
@@ -5754,8 +5811,8 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message")) or "Rule saved."
         return None
 
-    def _standalone_sidecar_action_error(self, actions: list[Json]) -> str:
-        invalid = sorted({_json_str(action.get("type")) or "" for action in actions if _json_str(action.get("type")) in self.STANDALONE_SIDECAR_TYPES})
+    def _act_memory_action_error(self, actions: list[Json]) -> str:
+        invalid = sorted({_json_str(action.get("type")) or "" for action in actions if _json_str(action.get("type")) in self.ACT_MEMORY_ACTION_TYPES})
         if not invalid:
             return ""
         return ", ".join(invalid)
@@ -5969,11 +6026,11 @@ class MainAgent(BaseAgent):
             "Error: returned no actions while the goal is incomplete. Rule: continue with a useful main action and optional progress field, or final goal action."
         )
 
-    def _format_agent_feedback_standalone_sidecar_error(self, action_types: str) -> str:
+    def _format_agent_feedback_act_memory_action_error(self, action_types: str) -> str:
         return (
-            "Error: standalone sidecar action is invalid: "
+            "Error: memory action is invalid during work: "
             + action_types
-            + ". Rule: put known or progress as fields on a main action."
+            + ". Rule: use memory actions only after latest results are available."
         )
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
@@ -6045,13 +6102,13 @@ class MainAgent(BaseAgent):
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> bool:
-        standalone_sidecar_error = self._standalone_sidecar_action_error(ctx.actions)
-        if standalone_sidecar_error:
-            self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
+        memory_action_error = self._act_memory_action_error(ctx.actions)
+        if memory_action_error:
+            self._remember_agent_error(self._format_agent_feedback_act_memory_action_error(memory_action_error))
             self._report_gate(
                 on_message,
-                "Retrying: attach known/progress to a main action.",
-                "Action_Gate: known/progress must be sidecar fields.",
+                "Retrying: use a work action.",
+                "Action_Gate: memory actions are only valid while digesting latest results.",
             )
             return True
         action_gate = self._gate_action_types(
@@ -6250,15 +6307,6 @@ class MainAgent(BaseAgent):
         on_live_done: ToolLiveDoneCallback | None,
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
-        standalone_sidecar_error = self._standalone_sidecar_action_error(ctx.actions)
-        if standalone_sidecar_error:
-            self._remember_agent_error(self._format_agent_feedback_standalone_sidecar_error(standalone_sidecar_error))
-            self._report_gate(
-                on_message,
-                "Retrying: attach known/progress to a main action.",
-                "Action_Gate: known/progress must be sidecar fields.",
-            )
-            return AgentRunResult()
         gate_result = self._gate_action_types(
             ctx.actions,
             allowed=self.OBSERVE_ACTION_TYPES,
