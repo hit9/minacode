@@ -42,7 +42,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.13"
+__version__ = "0.3.14"
 
 
 JsonValue: TypeAlias = Any
@@ -298,6 +298,8 @@ class Blackboard:
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
+    memory_checkpoint_tool_result_counter: int = 0
+    memory_checkpoint_worker_report_counter: int = 0
 
 
 @dataclass
@@ -569,9 +571,21 @@ class AgentMode(StrEnum):
 
 @final
 @dataclass
+class WorkerReportItem(PromptItem):
+    kind: str
+    seq: int
+    text: str
+
+    @override
+    def format(self, indent: str = "") -> str:
+        return _format_lines(self.text.splitlines(), indent)
+
+
+@final
+@dataclass
 class WorkerReportHistory(PromptItem):
-    explore: list[str] = field(default_factory=list)
-    verify: list[str] = field(default_factory=list)
+    explore: list[WorkerReportItem] = field(default_factory=list)
+    verify: list[WorkerReportItem] = field(default_factory=list)
     explored: list[str] = field(default_factory=list)
     verified: list[str] = field(default_factory=list)
 
@@ -581,14 +595,19 @@ class WorkerReportHistory(PromptItem):
         self.explored.clear()
         self.verified.clear()
 
-    def prune(self, max_items: int) -> None:
+    def prune(self, max_items: int) -> list[WorkerReportItem]:
         if max_items <= 0:
+            evicted = self.explore + self.verify
             self.clear()
-            return
-        del self.explore[: max(0, len(self.explore) - max_items)]
-        del self.verify[: max(0, len(self.verify) - max_items)]
+            return evicted
+        explore_overflow = max(0, len(self.explore) - max_items)
+        verify_overflow = max(0, len(self.verify) - max_items)
+        evicted = self.explore[:explore_overflow] + self.verify[:verify_overflow]
+        del self.explore[:explore_overflow]
+        del self.verify[:verify_overflow]
         del self.explored[: max(0, len(self.explored) - max_items)]
         del self.verified[: max(0, len(self.verified) - max_items)]
+        return evicted
 
     @override
     def format(self, indent: str = "") -> str:
@@ -604,11 +623,12 @@ class WorkerReportHistory(PromptItem):
         return _format_lines(lines, indent)
 
     @staticmethod
-    def _append_section(lines: list[str], name: str, items: list[str]) -> None:
+    def _append_section(lines: list[str], name: str, items: list[WorkerReportItem] | list[str]) -> None:
         lines.append(name + ":")
         if items:
             for item in items:
-                lines.append("- " + item.replace("\n", "\n  "))
+                text = item.text if isinstance(item, WorkerReportItem) else item
+                lines.append("- " + text.replace("\n", "\n  "))
         else:
             lines.append("- (empty)")
 
@@ -1040,6 +1060,11 @@ def _join_tool_call_blocks(blocks: list[str]) -> str:
 
 def _result_keys_from_recent_tool_calls(recent_tool_calls: str) -> set[str]:
     return set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))
+
+
+def _tool_result_counter_from_block(block: str) -> int:
+    match = re.search(r"(?m)^\s*result_key:\s*tr\.(\d+)\b", block)
+    return int(match.group(1)) if match else 0
 
 
 def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bool = True) -> str:
@@ -2868,6 +2893,7 @@ HARD RULES:
 - User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
 - Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
 - Known is current-task memory. Stable_Knowledge is reusable session codebase memory: stack, structure, workflow, convention, gotcha.
+- Tool results and worker reports are volatile. Write useful durable facts into Known while working.
 - Never mark complete unless the goal is actually achieved and required verification has passed.
 
 STATE:
@@ -2884,7 +2910,7 @@ Choose exactly one phase, then stop.
 3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
 4. REPAIR: if Verification_State is failed, fix the reported issue.
 5. VERIFY_STATE: if Verification_State is passed or blocked, update Plan or complete. Do not verify the same thing again.
-6. ACT: execute only the next unfinished plan step:
+6. ACT: update Known/Stable_Knowledge/Progress if latest results contain useful facts, then execute only the next unfinished plan step:
    - unknown target -> explore
    - known target -> smallest useful batch of tool/edit actions
 7. CHECK: after any edit, request verify or inspect one narrow target.
@@ -2953,7 +2979,6 @@ ACTIONS:
 JSON objects separated by __END_ACTION__.
 One JSON object may omit trailing __END_ACTION__.
 Tool actions MUST include name, intention, and args.
-Memory actions are OBSERVE-only; do not output known/stable_knowledge/progress in ACT.
 
 {
   "type": "chat",
@@ -2978,6 +3003,21 @@ Memory actions are OBSERVE-only; do not output known/stable_knowledge/progress i
   "type": "plan",
   "mode": "replace|patch",
   "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]
+} __END_ACTION__
+
+{
+  "type": "known",
+  "items": ["<new current-task fact from latest results>"]
+} __END_ACTION__
+
+{
+  "type": "stable_knowledge",
+  "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<rare reusable session codebase fact>"}]
+} __END_ACTION__
+
+{
+  "type": "progress",
+  "text": "<optional short progress>"
 } __END_ACTION__
 
 {
@@ -3074,15 +3114,16 @@ YOUR OUTPUT:
 
 
 MAIN_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the main coding worker in an AI coding assistant.
-Your ONLY job: digest latest tool/worker results into task state.
+Your ONLY job: digest volatile results before they leave the prompt window.
 
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Do NOT call tools or workers.
-- Record NEW durable facts in known.
+- Record NEW durable facts in known when useful.
 - Update Plan toward Goal before more work.
 - Use worker reports and recent tool calls as volatile input; keep only durable facts.
 - Complete only when Goal is done and required verification is satisfied.
+- If there is nothing useful to retain, return an empty actions array.
 
 Allowed actions:
 - known: record current-task facts from latest results.
@@ -3117,7 +3158,7 @@ Your ONLY job: locate CONCRETE code targets for the caller.
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Use Response_Language for tool intention. Do not infer language from handoff text.
-- EVERY response must include tool.
+- Return tool to gather evidence, known to retain useful facts, or deliver when concrete targets are clear.
 - Explore_Goal includes kind and constraints from the main worker.
 - SEARCH BEFORE READ only when the target path/range is unknown.
 - If Explore_Scope provides an exact path and useful line/range hint, Read that small range directly.
@@ -3131,7 +3172,7 @@ Must not:
 - Do NOT edit, patch, fix, verify, install, run long processes, or answer the user.
 - Do NOT review, analyze, diagnose, decide, or make final judgments.
 - Do NOT do broad project surveys.
-- Do NOT output only known/verify/state actions.
+- Do NOT output verify/state actions.
 
 WORKFLOW:
 1. SCOPE: check Explore_Goal and Explore_Scope constraints.
@@ -3165,11 +3206,13 @@ Output format (Strict)
 
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
-Frame shape below is the schema; every actual response must include tool.
+Frame shapes below are schemas.
 
 Do NOT repeat the exact same tool name and args from Recent Tool Calls.
 
+{"type": "known", "items": ["<new durable fact from latest results>"], "next": "<single missing target or question>"} __END_ACTION__
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
+{"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "known": ["<durable fact>"], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
 
@@ -3177,10 +3220,9 @@ EXPLORE_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the explore worker in an AI cod
 Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/verify/state.
 Return known, plus deliver if concrete targets are clear.
-known MUST be non-empty and based on latest tool results.
-If targets are unclear, output only known and name the single missing target in next.
+If there is nothing useful to retain yet, return an empty actions array.
 
-{"type": "known", "items": ["<non-empty fact from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
+{"type": "known", "items": ["<fact from latest tool results>"], "next": "<single missing target or question>"} __END_ACTION__
 {"type": "deliver", "targets": [{"path": "<path>", "area": "<symbol/area>", "line_range": "<0-based start,end>|null", "context": "<short evidence>|null", "reason": "<why this target matters>"}], "issues": ["<blocker or not-found note>"]} __END_ACTION__
 """
 
@@ -3246,11 +3288,11 @@ Your ONLY job: check whether a NARROW expected condition is true.
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Use Response_Language for tool intention, deliver, and user-facing text. Do not infer language from handoff text.
-- EVERY response must include tool or deliver.
+- Return tool to gather evidence, known to retain useful facts, or deliver when verdict is clear.
 - Verify the EXPECTED CONDITION, NOT the whole user task.
 - Verify_Goal includes kind, target, and expect from the main worker.
 - User_Rules are mandatory constraints, not hints.
-- Maintain your own Known when the observation prompt asks for it after tool results.
+- Maintain your own Known while verifying useful facts from evidence.
 - Do NOT rely on Recent Tool Calls as memory; record durable verification facts into your Known as you iterate.
 - Prefer EXISTING evidence, worker reports, recent tool calls, and Git diff/status.
 - Deliver as soon as you have PASSED, FAILED, or BLOCKED.
@@ -3260,7 +3302,7 @@ Must not:
 - Do NOT continue implementation for the caller.
 - Do NOT perform review, broad analysis, diagnosis, issue discovery, design judgment, or architectural assessment.
 - Do NOT use Bash for cat, ls, grep, broad search, or file reading.
-- Do NOT output only known/state actions.
+- Do NOT output state actions.
 - Do NOT paste long logs.
 
 Reject:
@@ -3314,16 +3356,18 @@ Tools:
 
 Action types:
 - tool: call one available verification tool.
+- known: record durable verification facts from latest evidence.
 - deliver: finish verification and return a verdict.
 
 Output format (Strict)
 
 Output multiple JSON objects separated by __END_ACTION__:
 If the entire output is one JSON action object, __END_ACTION__ may be omitted.
-Frame shapes below are schemas; every actual response must include tool or deliver in the same response.
+Frame shapes below are schemas.
 
 If Recent Tool Calls already shows a relevant failed verification command, deliver failed. Do NOT run that same command again.
 
+{"type": "known", "items": ["<fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
 {"type": "tool", "name": "<tool name>", "intention": "<clear reason/question>", "args": ["<arg>"]} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
 """
@@ -3334,9 +3378,9 @@ Use only Recent Tool Calls, Tool Result Store, Known, and Errors.
 Do NOT call tools. Do NOT output plan/state.
 If the verdict is clear, deliver immediately.
 known is optional; use it only when it helps later verification.
-If the verdict is unclear, output known and name the single missing evidence in next.
+If there is nothing useful to retain yet, return an empty actions array.
 
-{"type": "known", "items": ["<non-empty fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
+{"type": "known", "items": ["<fact from latest evidence>"], "next": "<single missing evidence or question>"} __END_ACTION__
 {"type": "deliver", "status": "passed|failed|blocked", "method": "<method>", "summary": "<short verdict summary>", "evidence": ["<evidence>"], "issues": ["<issue>"], "next_steps": ["<next step>"]} __END_ACTION__
 """
 
@@ -3460,7 +3504,7 @@ class PromptBuilder:
     def system_prompt(self) -> str:
         return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace("{ __tool_names__ }", self._format_tool_names()).strip()
 
-    def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
+    def user_prompt(self, recent_tool_calls: str, errors: str, *, worker_reports: str | None = None) -> str:
         current = self.context.blackboard
         return self.user_prompt_template.format(
             environment=self._format_environment(),
@@ -3478,7 +3522,7 @@ class PromptBuilder:
             verification_state=self._format_verification_state(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
-            worker_reports=self.context.worker_reports.format(),
+            worker_reports=worker_reports if worker_reports is not None else self.context.worker_reports.format(),
             handoff_context=self.context.handoff_context.format_handoff_context(),
             user_request=_format_fenced_text(current.user_input or "(empty)"),
         ).strip()
@@ -4866,7 +4910,10 @@ class BaseAgent:
         self.latest_tool_call_executions: list[ToolCallExecution] = []
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_call_blocks: list[str] = []
+        self.pending_observation_blocks: list[str] = []
         self.worker_reports = WorkerReportHistory()
+        self.worker_report_counter = 0
+        self.pending_observation_worker_reports: list[WorkerReportItem] = []
         self.prompt_context.worker_reports = self.worker_reports
         self.agent_feedback_errors: list[str] = []
         self.gate_report_counts: dict[str, int] = {}
@@ -4879,6 +4926,7 @@ class BaseAgent:
         return self.prompt_builder.user_prompt(
             self._format_recent_tool_call_context(),
             self._format_agent_feedback(),
+            worker_reports=self._format_worker_report_context(),
         )
 
     def request(
@@ -4979,9 +5027,25 @@ class BaseAgent:
         self.latest_tool_call_executions = []
         self.latest_tool_call_blocks = []
         self.recent_tool_call_blocks = []
+        self.pending_observation_blocks = []
+        self.pending_observation_worker_reports = []
 
     def _format_recent_tool_call_context(self) -> str:
+        if self.mode == AgentMode.OBSERVE and self.pending_observation_blocks:
+            return _join_tool_call_blocks(self.pending_observation_blocks)
         return _join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
+
+    def _format_worker_report_context(self) -> str:
+        if self.mode == AgentMode.OBSERVE and self.pending_observation_worker_reports:
+            return self._worker_report_history_from_items(self.pending_observation_worker_reports).format()
+        return self.worker_reports.format()
+
+    @staticmethod
+    def _worker_report_history_from_items(items: list[WorkerReportItem]) -> WorkerReportHistory:
+        history = WorkerReportHistory()
+        history.explore = [item for item in items if item.kind == "explore"]
+        history.verify = [item for item in items if item.kind == "verify"]
+        return history
 
     def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
@@ -4999,9 +5063,35 @@ class BaseAgent:
     def _prune_recent_tool_calls(self) -> None:
         overflow = len(self.recent_tool_call_blocks) - self.RECENT_TOOL_CALLS
         if overflow > 0:
+            evicted = self.recent_tool_call_blocks[:overflow]
             del self.recent_tool_call_blocks[:overflow]
+            self._queue_observation_for_evicted_blocks(evicted)
         while len(_join_tool_call_blocks(self.recent_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS and self.recent_tool_call_blocks:
-            self.recent_tool_call_blocks.pop(0)
+            self._queue_observation_for_evicted_blocks([self.recent_tool_call_blocks.pop(0)])
+
+    def _queue_observation_for_evicted_blocks(self, blocks: list[str]) -> None:
+        for block in blocks:
+            counter = _tool_result_counter_from_block(block)
+            if counter > self.blackboard.memory_checkpoint_tool_result_counter:
+                self.pending_observation_blocks.append(block)
+        if self.pending_observation_blocks:
+            self.mode = AgentMode.OBSERVE
+
+    def _append_worker_report(self, kind: str, report: str) -> None:
+        self.worker_report_counter += 1
+        item = WorkerReportItem(kind=kind, seq=self.worker_report_counter, text=report)
+        if kind == "explore":
+            self.worker_reports.explore.append(item)
+        elif kind == "verify":
+            self.worker_reports.verify.append(item)
+        self._queue_observation_for_evicted_worker_reports(self.worker_reports.prune(self.RECENT_WORKER_REPORTS))
+
+    def _queue_observation_for_evicted_worker_reports(self, reports: list[WorkerReportItem]) -> None:
+        for report in reports:
+            if report.seq > self.blackboard.memory_checkpoint_worker_report_counter:
+                self.pending_observation_worker_reports.append(report)
+        if self.pending_observation_worker_reports:
+            self.mode = AgentMode.OBSERVE
 
     def _prune_tool_result_store(self) -> None:
         overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
@@ -5072,6 +5162,25 @@ class BaseAgent:
 
     def apply_response(self, response: Json, *, apply_response_language: bool = True) -> None:
         self.state_updater.apply(response, apply_response_language=apply_response_language)
+        if self._has_memory_update_action(self._response_actions(response)):
+            self._mark_memory_checkpoint()
+
+    def _mark_memory_checkpoint(self) -> None:
+        self.blackboard.memory_checkpoint_tool_result_counter = self.runtime.tool_result_counter
+        self.blackboard.memory_checkpoint_worker_report_counter = self.worker_report_counter
+        self.pending_observation_blocks = []
+        self.pending_observation_worker_reports = []
+
+    def _has_memory_update_action(self, actions: list[Json]) -> bool:
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if self._has_known_facts([action]):
+                return True
+            if action_type == "stable_knowledge" and _json_list(action.get("items")):
+                return True
+            if action_type == "progress" and (_json_str(action.get("text")) or _json_str(action.get("message")) or _json_str(action.get("progress"))):
+                return True
+        return False
 
     def execute_tool_calls(
         self,
@@ -5188,9 +5297,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
     retry_message: ClassVar[str]
     feedback_message: ClassVar[str]
     step_limit_reason: ClassVar[str]
-    act_action_types: ClassVar[set[str]] = {"tool", "deliver"}
+    act_action_types: ClassVar[set[str]] = {"tool", "known", "deliver"}
     observe_action_types: ClassVar[set[str]] = {"known", "deliver"}
-    require_observe_known: ClassVar[bool] = True
 
     def __init__(
         self, *, parent_session: Session, parent_blackboard: Blackboard, goal: str, scope: list[str], handoff_context: WorkerReportHistory | None = None
@@ -5328,6 +5436,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
                     on_message(latest_report)
             self._remember_tool_call_keys()
             return AgentRunResult()
+        if self._has_known_action(actions):
+            return AgentRunResult()
         self._remember_agent_error(self.feedback_message)
         self._report_gate(
             on_message,
@@ -5346,15 +5456,8 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         )
         if gate_result is not None:
             return gate_result
-        if self.require_observe_known and not self._has_known_facts(actions):
-            self._remember_agent_error("Error: latest results were not recorded. Rule: include non-empty known facts.")
-            self._report_gate(
-                on_message,
-                "Retrying: record known from latest results.",
-                self.gate_name + ": record non-empty known facts from latest results.",
-            )
-            return AgentRunResult()
         self.apply_response(response)
+        self._mark_memory_checkpoint()
         report = self._deliver_from_actions(actions)
         if report is not None:
             self.mode = AgentMode.ACT
@@ -5362,12 +5465,7 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
         if self._has_known_action(actions):
             self.mode = AgentMode.ACT
             return AgentRunResult()
-        self._remember_agent_error("Error: latest results were not summarized or delivered. Rule: return known or deliver.")
-        self._report_gate(
-            on_message,
-            "Retrying: summarize latest results.",
-            self.gate_name + ": summarize latest results or deliver.",
-        )
+        self.mode = AgentMode.ACT
         return AgentRunResult()
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
@@ -5375,7 +5473,6 @@ class WorkerAgent(BaseAgent, Generic[ReportT]):
 
     def execute_tool_calls(self, tool_calls: list[JsonValue], **kwargs: Any) -> str:
         report = super().execute_tool_calls(tool_calls, **kwargs)
-        self.mode = AgentMode.OBSERVE if any(self._requires_observation(execution) for execution in self.latest_tool_call_executions) else AgentMode.ACT
         return report
 
     @staticmethod
@@ -5497,10 +5594,10 @@ class ExploreAgent(WorkerAgent[ExploreReport]):
     allowed_tools: ClassVar[set[str]] = EXPLORE_AGENT_ALLOWED_TOOLS
     activity_name: ClassVar[str] = "explore"
     gate_name: ClassVar[str] = "Explore_Gate"
-    retry_message: ClassVar[str] = "Retrying: explore must call a tool."
-    feedback_message: ClassVar[str] = "Error: explore worker must locate targets by calling tools. Rule: return tool actions."
+    retry_message: ClassVar[str] = "Retrying: explore must use tool, known, or deliver."
+    feedback_message: ClassVar[str] = "Error: explore worker must locate targets, retain facts, or deliver results."
     step_limit_reason: ClassVar[str] = "explore step limit reached"
-    act_action_types: ClassVar[set[str]] = {"tool"}
+    act_action_types: ClassVar[set[str]] = {"tool", "known", "deliver"}
 
     def _gate_tool_calls(self, tool_calls: list[JsonValue], on_message: MessageCallback | None) -> AgentRunResult | None:
         repeated = self._repeated_tool_call(tool_calls)
@@ -5631,10 +5728,9 @@ class VerifyAgent(WorkerAgent[VerifyReport]):
     allowed_tools: ClassVar[set[str]] = VERIFY_AGENT_ALLOWED_TOOLS
     activity_name: ClassVar[str] = "verify"
     gate_name: ClassVar[str] = "Verify_Gate"
-    retry_message: ClassVar[str] = "Retrying: verify returned only state actions; return tool or deliver."
-    feedback_message: ClassVar[str] = "Error: previous output had only state actions. Rule: every verify worker response must include tool or deliver."
+    retry_message: ClassVar[str] = "Retrying: verify must use tool, known, or deliver."
+    feedback_message: ClassVar[str] = "Error: verify worker must gather evidence, retain facts, or deliver verdict."
     step_limit_reason: ClassVar[str] = "verify step limit reached"
-    require_observe_known: ClassVar[bool] = False
 
     def _max_steps(self, session: Session) -> int:
         return session.config.verify.max_turns
@@ -5732,8 +5828,20 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 @final
 class MainAgent(BaseAgent):
     blackboard: MainBlackboard
-    ACT_MEMORY_ACTION_TYPES: ClassVar[set[str]] = {"known", "progress", "stable_knowledge"}
-    ACT_ACTION_TYPES: ClassVar[set[str]] = {"chat", "start", "goal", "plan", "tool", "explore", "verify", "response_language", "user_rule"}
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {
+        "chat",
+        "start",
+        "goal",
+        "plan",
+        "known",
+        "stable_knowledge",
+        "progress",
+        "tool",
+        "explore",
+        "verify",
+        "response_language",
+        "user_rule",
+    }
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal", "response_language"}
 
     def __init__(self, session: Session):
@@ -5844,12 +5952,6 @@ class MainAgent(BaseAgent):
                 return _json_str(action.get("message")) or "Rule saved."
         return None
 
-    def _act_memory_action_error(self, actions: list[Json]) -> str:
-        invalid = sorted({_json_str(action.get("type")) or "" for action in actions if _json_str(action.get("type")) in self.ACT_MEMORY_ACTION_TYPES})
-        if not invalid:
-            return ""
-        return ", ".join(invalid)
-
     def _handoff_context_snapshot(self) -> WorkerReportHistory:
         return WorkerReportHistory(
             explored=list(self.worker_reports.explored),
@@ -5891,7 +5993,7 @@ class MainAgent(BaseAgent):
                 kwargs["on_live_done"] = on_live_done
             report = self._make_explore_agent(goal=goal, scope=scope).run(**kwargs)
             reports.append(report)
-            self.worker_reports.explore.append(report.format())
+            self._append_worker_report("explore", report.format())
             self.worker_reports.explored.extend(report.brief())
             if on_message is not None:
                 on_message(self._format_explore_done(report))
@@ -5971,7 +6073,7 @@ class MainAgent(BaseAgent):
         if on_live_done is not None:
             kwargs["on_live_done"] = on_live_done
         report = self._make_verify_agent(goal=goal, scope=scope).run(**kwargs)
-        self.worker_reports.verify.append(report.format())
+        self._append_worker_report("verify", report.format())
         self.worker_reports.verified.append(report.brief())
         if on_message is not None:
             on_message(self._format_verify_done(report))
@@ -6059,13 +6161,6 @@ class MainAgent(BaseAgent):
             "Error: returned no actions while the goal is incomplete. Rule: continue with a useful main action and optional progress field, or final goal action."
         )
 
-    def _format_agent_feedback_act_memory_action_error(self, action_types: str) -> str:
-        return (
-            "Error: memory action is invalid during work: "
-            + action_types
-            + ". Rule: use memory actions only after latest results are available."
-        )
-
     def _format_agent_feedback_completion_without_message_error(self) -> str:
         return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
 
@@ -6135,15 +6230,6 @@ class MainAgent(BaseAgent):
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> bool:
-        memory_action_error = self._act_memory_action_error(ctx.actions)
-        if memory_action_error:
-            self._remember_agent_error(self._format_agent_feedback_act_memory_action_error(memory_action_error))
-            self._report_gate(
-                on_message,
-                "Retrying: use a work action.",
-                "Action_Gate: memory actions are only valid while digesting latest results.",
-            )
-            return True
         action_gate = self._gate_action_types(
             ctx.actions,
             allowed=self.ACT_ACTION_TYPES,
@@ -6259,7 +6345,6 @@ class MainAgent(BaseAgent):
             on_live_done=on_live_done,
             on_message=on_message,
         )
-        self.mode = AgentMode.OBSERVE
         if not self._apply_verify_report(report):
             self.blackboard.goal_reached = False
         return True
@@ -6298,7 +6383,6 @@ class MainAgent(BaseAgent):
             on_message=on_message,
         )
         self.maybe_auto_compact()
-        self.mode = AgentMode.OBSERVE
         return True
 
     def _run_tool_actions(
@@ -6325,8 +6409,6 @@ class MainAgent(BaseAgent):
             if report:
                 on_message(report)
         self.maybe_auto_compact()
-        if any(self._requires_observation(execution) for execution in self.latest_tool_call_executions):
-            self.mode = AgentMode.OBSERVE
         return True
 
     def _handle_observe_response(
@@ -6361,6 +6443,7 @@ class MainAgent(BaseAgent):
         self.apply_response(response, apply_response_language=False)
         self._emit_state_and_progress(ctx, on_message)
         self.mode = AgentMode.ACT
+        self._mark_memory_checkpoint()
         self._promote_required_verification(ctx)
         if self._run_required_verification(
             ctx,
@@ -6431,6 +6514,8 @@ class MainAgent(BaseAgent):
     ) -> Json:
         self._clear_agent_feedback()
         self._prune_recent_tool_calls()
+        self.pending_observation_blocks = []
+        self.pending_observation_worker_reports = []
         self.worker_reports.prune(self.RECENT_WORKER_REPORTS)
         self._prune_tool_result_store()
         # Range fingerprints are tied to previously read file content; require a fresh read before later edits.

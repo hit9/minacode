@@ -182,7 +182,7 @@ def test_explore_report_formats_and_briefs_issues():
 
 
 def test_worker_report_history_uses_worker_reports_heading():
-    history = nanocode.WorkerReportHistory(verify=["Verify Report: passed"], verified=["verify: passed"])
+    history = nanocode.WorkerReportHistory(verify=[nanocode.WorkerReportItem(kind="verify", seq=1, text="Verify Report: passed")], verified=["verify: passed"])
 
     formatted = history.format()
 
@@ -193,18 +193,37 @@ def test_worker_report_history_uses_worker_reports_heading():
 
 def test_worker_report_history_prunes_old_items():
     history = nanocode.WorkerReportHistory(
-        explore=[f"explore {index}" for index in range(4)],
-        verify=[f"verify {index}" for index in range(4)],
+        explore=[nanocode.WorkerReportItem(kind="explore", seq=index + 1, text=f"explore {index}") for index in range(4)],
+        verify=[nanocode.WorkerReportItem(kind="verify", seq=index + 5, text=f"verify {index}") for index in range(4)],
         explored=[f"explored {index}" for index in range(4)],
         verified=[f"verified {index}" for index in range(4)],
     )
 
-    history.prune(2)
+    evicted = history.prune(2)
 
-    assert history.explore == ["explore 2", "explore 3"]
-    assert history.verify == ["verify 2", "verify 3"]
+    assert [item.text for item in evicted] == ["explore 0", "explore 1", "verify 0", "verify 1"]
+    assert [item.text for item in history.explore] == ["explore 2", "explore 3"]
+    assert [item.text for item in history.verify] == ["verify 2", "verify 3"]
     assert history.explored == ["explored 2", "explored 3"]
     assert history.verified == ["verified 2", "verified 3"]
+
+
+def test_worker_report_eviction_triggers_observe_until_memory_checkpoint(tmp_path):
+    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent.RECENT_WORKER_REPORTS = 1
+
+    agent._append_worker_report("explore", "Explore Report:\ntargets:\n- old target")
+    agent._append_worker_report("explore", "Explore Report:\ntargets:\n- new target")
+
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    prompt = agent.build_user_prompt()
+    assert "old target" in prompt
+    assert "new target" not in prompt
+
+    agent.apply_response({"actions": [{"type": "known", "items": ["old target was retained"]}]})
+
+    assert agent.pending_observation_worker_reports == []
+    assert agent.blackboard.memory_checkpoint_worker_report_counter == 2
 
 
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
@@ -372,9 +391,11 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert "output_summary:" in recent
     assert "Recall(" not in recent
     assert len(agent.recent_tool_call_blocks) == 2
+    assert agent.mode == nanocode.AgentMode.OBSERVE
     context = agent._format_recent_tool_call_context()
-    assert "one.txt" not in context
-    assert context.index("two.txt") < context.index("three.txt") < context.index("four.txt")
+    assert "one.txt" in context
+    assert "two.txt" not in context
+    assert agent.pending_observation_blocks
 
 
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
@@ -1517,7 +1538,7 @@ def test_verify_agent_rejects_edit_tools(tmp_path):
     assert list(verifier.runtime.tool_result_store) == ["tr.1"]
 
 
-def test_explore_agent_requires_known_after_tool_results(tmp_path):
+def test_explore_agent_accepts_known_and_deliver_in_act_turn(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
@@ -1525,24 +1546,8 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
 
     explorer.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
-    assert "Use only Recent Tool Calls" in explorer.build_system_prompt()
-    assert '"type": "tool"' not in explorer.build_system_prompt()
-
-    missing_known = explorer.handle_response(
-        {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "issues": []}]}
-    )
-
-    assert missing_known.done is False
-    assert explorer.blackboard.known == []
-    assert any("latest results were not recorded" in error for error in explorer.agent_feedback_errors)
-
-    still_searching = explorer.handle_response(
-        {"actions": [{"type": "tool", "name": "Search", "intention": "keep searching", "args": ["alpha"], "known": ["sample.txt contains alpha."]}]}
-    )
-
-    assert still_searching.done is False
-    assert explorer.blackboard.known == []
-    assert any("Invalid action(s): tool" in error for error in explorer.agent_feedback_errors)
+    assert "Return tool to gather evidence" in explorer.build_system_prompt()
+    assert '"type": "tool"' in explorer.build_system_prompt()
 
     observed = explorer.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
 
@@ -1570,7 +1575,7 @@ def test_explore_agent_requires_known_after_tool_results(tmp_path):
     assert delivered.value.known == ["sample.txt contains alpha.", "sample.txt has one line."]
 
 
-def test_explore_agent_rejects_known_outside_observation_turn(tmp_path):
+def test_explore_agent_accepts_known_only_in_act_turn(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
     explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
@@ -1578,10 +1583,11 @@ def test_explore_agent_rejects_known_outside_observation_turn(tmp_path):
     result = explorer.handle_response({"actions": [{"type": "known", "items": ["sample fact"], "next": "read sample"}]})
 
     assert result.done is False
-    assert any("Invalid action(s): known" in error for error in explorer.agent_feedback_errors)
+    assert explorer.blackboard.known == ["sample fact"]
+    assert explorer.agent_feedback_errors == []
 
 
-def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
+def test_explore_agent_accepts_deliver_in_act_turn(tmp_path):
     parent_session = Session(cwd=str(tmp_path))
     parent_agent = MainAgent(parent_session)
     explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
@@ -1590,8 +1596,9 @@ def test_explore_agent_rejects_deliver_outside_observation_turn(tmp_path):
         {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": ["sample fact"]}]}
     )
 
-    assert result.done is False
-    assert any("Invalid action(s): deliver" in error for error in explorer.agent_feedback_errors)
+    assert result.done is True
+    assert isinstance(result.value, nanocode.ExploreReport)
+    assert result.value.known == ["sample fact"]
 
 
 def test_verify_agent_allows_deliver_after_tool_results_without_known(tmp_path):
@@ -1602,8 +1609,8 @@ def test_verify_agent_allows_deliver_after_tool_results_without_known(tmp_path):
 
     verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
-    assert "Use only Recent Tool Calls" in verifier.build_system_prompt()
-    assert '"type": "tool"' not in verifier.build_system_prompt()
+    assert "Return tool to gather evidence" in verifier.build_system_prompt()
+    assert '"type": "tool"' in verifier.build_system_prompt()
 
     delivered = verifier.handle_response(
         {"actions": [{"type": "deliver", "status": "passed", "method": "read", "summary": "sample has alpha", "evidence": ["alpha"]}]}
@@ -2456,7 +2463,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
     assert "Continuing: goal is not complete yet." not in messages
 
 
-def test_main_agent_rejects_memory_actions_during_act_turn(tmp_path):
+def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
@@ -2475,8 +2482,8 @@ def test_main_agent_rejects_memory_actions_during_act_turn(tmp_path):
     response = agent.run("answer")
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert agent.blackboard.known == []
-    assert any("memory action is invalid during work" in error for error in agent.agent_feedback_errors)
+    assert agent.blackboard.known == ["fact"]
+    assert agent.agent_feedback_errors == []
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
@@ -2826,7 +2833,7 @@ def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(verifier_calls) == 1
-    assert "Retrying: observe latest results before new verification." in messages
+    assert "Retrying: verification already passed; update plan or complete." in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
