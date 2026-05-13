@@ -16,9 +16,9 @@ class FakeModelClient:
 
 
 def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
-    data = {"main_model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    data = {"model": {"model": model}, "runtime": {"compact_at": compact_at}}
     if stream is not None:
-        data["main_model"]["stream"] = stream
+        data["model"]["stream"] = stream
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
 
 
@@ -30,28 +30,25 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     dispatcher = CommandDispatcher(agent)
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
-    model_result = dispatcher.dispatch("/set main.model new-model")
-    worker_model_result = dispatcher.dispatch("/set worker.model worker-model")
-    effort_result = dispatcher.dispatch("/set main.effort high")
-    reason_result = dispatcher.dispatch("/set main.reasoning off")
-    stream_result = dispatcher.dispatch("/set main.stream off")
-    first_token_result = dispatcher.dispatch("/set main.first_token_timeout 6")
+    model_result = dispatcher.dispatch("/set model.model new-model")
+    effort_result = dispatcher.dispatch("/set model.effort high")
+    reason_result = dispatcher.dispatch("/set model.reasoning off")
+    stream_result = dispatcher.dispatch("/set model.stream off")
+    first_token_result = dispatcher.dispatch("/set model.first_token_timeout 6")
     yolo_result = dispatcher.dispatch("/set runtime.yolo on")
     compact_result = dispatcher.dispatch("/set runtime.compact_at 2")
     exit_result = dispatcher.dispatch("/exit")
 
     assert model_result.status == CommandStatus.HANDLED
-    assert session.config.main_model.model == "new-model"
-    assert worker_model_result.message == "Set worker.model = worker-model"
-    assert session.config.worker_model.model == "worker-model"
-    assert effort_result.message == "Set main.effort = high"
-    assert session.config.main_model.reasoning_effort == "high"
-    assert reason_result.message == "Set main.reasoning = off"
-    assert session.config.main_model.reasoning is False
-    assert stream_result.message == "Set main.stream = off"
-    assert session.config.main_model.stream is False
-    assert first_token_result.message == "Set main.first_token_timeout = 6"
-    assert session.config.main_model.first_token_timeout == 6
+    assert session.config.model.model == "new-model"
+    assert effort_result.message == "Set model.effort = high"
+    assert session.config.model.reasoning_effort == "high"
+    assert reason_result.message == "Set model.reasoning = off"
+    assert session.config.model.reasoning is False
+    assert stream_result.message == "Set model.stream = off"
+    assert session.config.model.stream is False
+    assert first_token_result.message == "Set model.first_token_timeout = 6"
+    assert session.config.model.first_token_timeout == 6
     assert yolo_result.message == "Set runtime.yolo = on"
     assert session.settings.yolo is True
     assert compact_result.message == "Set runtime.compact_at = 2"
@@ -72,8 +69,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
-    assert "main: model reasoning=medium stream=on" in result.message
-    assert "explore: turns=20" in result.message
+    assert "model: model reasoning=medium stream=on" in result.message
     assert "runtime: yolo=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
@@ -85,34 +81,31 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     session = make_session(tmp_path, stream=True)
     dispatcher = CommandDispatcher(MainAgent(session))
 
-    status_result = dispatcher.dispatch("/set main.stream")
-    off_result = dispatcher.dispatch("/set main.stream off")
-    off_status_result = dispatcher.dispatch("/set main.stream")
-    on_result = dispatcher.dispatch("/set main.stream on")
-    invalid_result = dispatcher.dispatch("/set main.stream maybe")
+    status_result = dispatcher.dispatch("/set model.stream")
+    off_result = dispatcher.dispatch("/set model.stream off")
+    off_status_result = dispatcher.dispatch("/set model.stream")
+    on_result = dispatcher.dispatch("/set model.stream on")
+    invalid_result = dispatcher.dispatch("/set model.stream maybe")
 
-    assert status_result.message == "Current main.stream is on"
-    assert off_result.message == "Set main.stream = off"
-    assert off_status_result.message == "Current main.stream is off"
-    assert on_result.message == "Set main.stream = on"
-    assert invalid_result.message == "Usage: /set main.stream [on|off]"
-    assert session.config.main_model.stream is True
+    assert status_result.message == "Current model.stream is on"
+    assert off_result.message == "Set model.stream = off"
+    assert off_status_result.message == "Current model.stream is off"
+    assert on_result.message == "Set model.stream = on"
+    assert invalid_result.message == "Usage: /set model.stream [on|off]"
+    assert session.config.model.stream is True
 
 
 def test_config_command_reports_resolved_model_config(tmp_path):
     session = make_session(tmp_path, model="main-model")
-    session.config.worker_model.model = "worker-model"
     dispatcher = CommandDispatcher(MainAgent(session))
 
     result = dispatcher.dispatch("/config")
 
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
-    assert "main.model: main-model" in result.message
-    assert "main.first_token_timeout: 60" in result.message
-    assert "worker.model: worker-model" in result.message
-    assert "worker.first_token_timeout: 60" in result.message
-    assert "explore.max_turns: 20" in result.message
+    assert "model.model: main-model" in result.message
+    assert "model.first_token_timeout: 60" in result.message
+    assert "runtime.max_agent_steps: 100" in result.message
 
 
 def test_blackboard_command_is_not_registered(tmp_path):

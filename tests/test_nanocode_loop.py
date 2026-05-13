@@ -2,22 +2,22 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Blackboard, Config, ConfigFile, EXPLORE_MESSAGE_PREFIX, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, VERIFY_MESSAGE_PREFIX
+from nanocode import AgentLoop, Blackboard, Config, ConfigFile, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
-    data = {"main_model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    data = {"model": {"model": model}, "runtime": {"compact_at": compact_at}}
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
 
 
 def test_session_reports_missing_required_config(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    assert session.missing_required_config() == ["api.url", "api.key", "main_model.model"]
+    assert session.missing_required_config() == ["api.url", "api.key", "model.model"]
 
     session.config.api.url = "url"
     session.config.api.key = "key"
-    session.config.main_model.model = "model"
+    session.config.model.model = "model"
 
     assert session.missing_required_config() == []
 
@@ -28,7 +28,7 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     (rules_dir / "user_rules.md").write_text("# User Rules\n\n- Prompt-only changes do not need tests.\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "main_model": {"model": "model"}})
+    session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "model": {"model": "model"}})
 
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
@@ -45,11 +45,9 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert second_path == str(config_path)
     assert second_created is False
     assert config["api"]["url"] == ""
-    assert config["main_model"]["temperature"] == 0.7
-    assert config["main_model"]["timeout"] == 90
-    assert config["main_model"]["first_token_timeout"] == 60
-    assert config["explore_agent"]["max_turns"] == 20
-    assert config["verify_agent"]["max_turns"] == 12
+    assert config["model"]["temperature"] == 0.7
+    assert config["model"]["timeout"] == 90
+    assert config["model"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
 
 
@@ -72,7 +70,7 @@ def test_main_loads_config_argument(tmp_path, monkeypatch):
 url = "https://example.test/v1"
 key = "key"
 
-[main_model]
+[model]
 model = "custom-main"
 
 [paths]
@@ -93,7 +91,7 @@ nanocode_dir = ".custom-nanocode"
     assert result == 0
     assert sessions[0].config.api.url == "https://example.test/v1"
     assert sessions[0].config.api.key == "key"
-    assert sessions[0].config.main_model.model == "custom-main"
+    assert sessions[0].config.model.model == "custom-main"
     assert sessions[0].config.paths.nanocode_dir == ".custom-nanocode"
 
 
@@ -123,13 +121,13 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     session = make_session(tmp_path, model="provider/model")
     session.state.turn_model_calls = 2
     session.state.current_model_call_started_at = 0.4
-    session.state.current_model_call_label = "provider/worker-model"
+    session.state.current_model_call_label = "provider/active-model"
     session.state.current_model_call_reasoning_label = "low"
     bar = StatusBar(session)
 
     text = bar._text(0.0, now=1.0)
 
-    assert "worker-model (low)" in text
+    assert "active-model (low)" in text
     assert "calling(2):0.6s" in text
 
 
@@ -210,58 +208,6 @@ def test_agent_loop_styles_tool_arg_error_report(tmp_path):
     assert all("fail " not in text for _, text in segments)
 
 
-def test_agent_loop_styles_explore_tool_report_with_scope_prefix(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    captured = []
-    loop = AgentLoop(FakeAgent(), output_fn=lambda message: captured.append(message))
-
-    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Read("sample.txt", "0", "1")')
-
-    assert captured == ['[explore]\n  Read("sample.txt", "0", "1")']
-
-
-def test_agent_loop_styles_explore_tool_status_by_color(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    captured = []
-    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
-
-    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")\n[failure] Read("missing.py")')
-
-    assert captured == ['[explore]\n  Search("producer")\n  Read("missing.py")']
-
-
-def test_agent_loop_merges_adjacent_scoped_sections(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    captured = []
-    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
-
-    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("producer")')
-    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Read("producer.py")')
-    loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Git("diff")')
-    loop._print_message(VERIFY_MESSAGE_PREFIX + '[success] Read("sample.txt")')
-    loop._print_message("done")
-    loop._print_message(EXPLORE_MESSAGE_PREFIX + '[success] Search("again")')
-
-    assert captured == [
-        '[explore]\n  Search("producer")',
-        '  Read("producer.py")',
-        '[verify]\n  Git("diff")',
-        '  Read("sample.txt")',
-        "done",
-        '[explore]\n  Search("again")',
-    ]
-    assert '"producer"' in captured[0]
-
-
 def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -296,13 +242,13 @@ def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
 
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
-    set_key_completions = list(completer.get_completions(Document("/set main."), CompleteEvent(completion_requested=True)))
-    set_bool_completions = list(completer.get_completions(Document("/set main.reasoning "), CompleteEvent(completion_requested=True)))
-    set_effort_completions = list(completer.get_completions(Document("/set main.effort h"), CompleteEvent(completion_requested=True)))
+    set_key_completions = list(completer.get_completions(Document("/set model."), CompleteEvent(completion_requested=True)))
+    set_bool_completions = list(completer.get_completions(Document("/set model.reasoning "), CompleteEvent(completion_requested=True)))
+    set_effort_completions = list(completer.get_completions(Document("/set model.effort h"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
-    assert "main.reasoning" in [completion.text for completion in set_key_completions]
+    assert "model.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
 
@@ -397,7 +343,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
     assert any("model (medium)" in output for output in outputs)
-    assert any("main: model reasoning=medium stream=on" in output for output in outputs)
+    assert any("model: model reasoning=medium stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
 

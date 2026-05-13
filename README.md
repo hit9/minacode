@@ -91,11 +91,10 @@ USE AT YOUR OWN RISK.
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
 - API config: `[api]` url and key.
-- Model layers: `[main_model]` and `[worker_model]`.
-- Worker limits: `[explore_agent]` and `[verify_agent]` max_turns.
+- Model config: `[model]`.
 - Runtime config: `[paths]` and `[runtime]`.
 
 ## Status
 
 - Status bar: active model, reasoning, context, tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: main/worker model state, per-model calls/tokens, runtime state, goal, and verification.
+- `/status`: model state, per-model calls/tokens, runtime state, goal, and verification.

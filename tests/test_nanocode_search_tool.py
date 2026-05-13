@@ -305,6 +305,35 @@ def test_search_tool_defaults_path_to_cwd_when_omitted(tmp_path):
     assert tool.target_path == str(tmp_path)
 
 
+def test_search_tool_accepts_context_option_without_path(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("needle\nnearby\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["needle", "context=0"])
+    result = tool.call()
+
+    assert tool.target_path == str(tmp_path)
+    assert tool.context_lines == 0
+    assert "* sample.txt:1: needle" in result
+    assert "nearby" not in result
+
+
+def test_search_tool_accepts_glob_option_without_path(tmp_path, monkeypatch):
+    (tmp_path / "keep.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "skip.txt").write_text("needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["needle", "glob=*.py"])
+    result = tool.call()
+
+    assert tool.target_path == str(tmp_path)
+    assert tool.glob_pattern == "*.py"
+    assert "* keep.py:1: needle" in result
+    assert "skip.txt" not in result
+
+
 def test_search_tool_rejects_empty_pattern(tmp_path):
     session = Session(cwd=str(tmp_path))
 

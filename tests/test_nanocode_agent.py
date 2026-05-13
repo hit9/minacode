@@ -40,21 +40,19 @@ def _session(
     reasoning_effort: str = "",
     yolo: bool = False,
     debug: bool = False,
-    explore_max_turns: int = 12,
 ) -> Session:
-    main_model: dict[str, object] = {"model": model}
+    model: dict[str, object] = {"model": model}
     if stream is not None:
-        main_model["stream"] = stream
+        model["stream"] = stream
     if timeout is not None:
-        main_model["timeout"] = timeout
+        model["timeout"] = timeout
     if first_token_timeout is not None:
-        main_model["first_token_timeout"] = first_token_timeout
+        model["first_token_timeout"] = first_token_timeout
     if reasoning_effort:
-        main_model["reasoning_effort"] = reasoning_effort
+        model["reasoning_effort"] = reasoning_effort
     data = {
         "api": {"url": api_url, "key": api_key},
-        "main_model": main_model,
-        "explore_agent": {"max_turns": explore_max_turns},
+        "model": model,
     }
     return Session(cwd=str(tmp_path), config=nanocode.Config.from_dict(data), settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
 
@@ -112,120 +110,6 @@ def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
     assert agent.tool_runner.latest_executions[0].call.name == "Read"
 
 
-def test_explore_agent_cli_uses_compact_tool_report(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
-                    ]
-                },
-                {
-                    "actions": [
-                        {
-                            "type": "deliver",
-                            "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}],
-                            "known": ["sample.txt contains alpha."],
-                            "issues": [],
-                        }
-                    ]
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
-    explorer.model_client = FakeModelClient()
-    messages = []
-
-    explorer.run(on_message=messages.append)
-
-    assert messages == ["[success] Read sample.txt 0,1"]
-
-
-def test_agent_formats_explore_done_targets_on_separate_lines(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-
-    message = agent._format_explore_done(
-        nanocode.ExploreReport(
-            targets=[
-                {"path": "producer.py", "line_range": "440-460", "area": "pipeline integration"},
-                {"path": "detector.py", "line_range": "186-206", "area": "page type detection"},
-            ],
-            known=[],
-        )
-    )
-
-    assert message == "Explore done: 2 target(s)\n  1. producer.py:440-460 pipeline integration\n  2. detector.py:186-206 page type detection"
-
-
-def test_explore_report_formats_and_briefs_issues():
-    report = nanocode.ExploreReport(
-        targets=[],
-        known=[],
-        issues=["handoff goal asks for analysis, not location"],
-    )
-
-    formatted = report.format()
-
-    assert "issues:" in formatted
-    assert "handoff goal asks for analysis, not location" in formatted
-    assert report.brief() == ["issue: handoff goal asks for analysis, not location"]
-
-
-def test_worker_report_history_uses_worker_reports_heading():
-    history = nanocode.WorkerReportHistory(verify=[nanocode.WorkerReportItem(kind="verify", seq=1, text="Verify Report: passed")], verified=["verify: passed"])
-
-    formatted = history.format()
-
-    assert "Worker Reports:" in formatted
-    assert "Verify Report: passed" in formatted
-    assert "<Agent_Reports>" not in formatted
-
-
-def test_worker_report_history_prunes_old_items():
-    history = nanocode.WorkerReportHistory(
-        explore=[nanocode.WorkerReportItem(kind="explore", seq=index + 1, text=f"explore {index}") for index in range(4)],
-        verify=[nanocode.WorkerReportItem(kind="verify", seq=index + 5, text=f"verify {index}") for index in range(4)],
-        explored=[f"explored {index}" for index in range(4)],
-        verified=[f"verified {index}" for index in range(4)],
-    )
-
-    evicted = history.prune(2)
-
-    assert [item.text for item in evicted] == ["explore 0", "explore 1", "verify 0", "verify 1"]
-    assert [item.text for item in history.explore] == ["explore 2", "explore 3"]
-    assert [item.text for item in history.verify] == ["verify 2", "verify 3"]
-    assert history.explored == ["explored 2", "explored 3"]
-    assert history.verified == ["verified 2", "verified 3"]
-
-
-def test_worker_report_eviction_triggers_observe_until_memory_checkpoint(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    agent.RECENT_WORKER_REPORTS = 1
-
-    agent._append_worker_report("explore", "Explore Report:\ntargets:\n- old target")
-    agent._append_worker_report("explore", "Explore Report:\ntargets:\n- new target")
-
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    prompt = agent.build_user_prompt()
-    assert "old target" in prompt
-    assert "new target" not in prompt
-
-    agent.apply_response({"actions": [{"type": "known", "items": ["old target was retained"]}]})
-
-    assert agent.pending_observation_worker_reports == []
-    assert agent.blackboard.memory_checkpoint_worker_report_counter == 2
-
-
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -280,51 +164,6 @@ def test_agent_merges_adjacent_recall_calls(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.tool_runner.latest_executions[0].call.args == ["tr.1", "tr.2"]
-
-
-def test_worker_reuses_repeated_readonly_tool_results_across_turns(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=["sample.txt"])
-
-    explorer.execute_tool_calls([{"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]}])
-    explorer.execute_tool_calls([{"name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"]}])
-
-    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
-    assert explorer.tool_runner.latest_executions[0].result_key == "tr.1"
-    assert "alpha" in explorer.tool_runner.latest_executions[0].output
-
-
-def test_worker_does_not_reuse_nonconsecutive_readonly_tool_results(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=["sample.txt"])
-
-    explorer.execute_tool_calls([{"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]}])
-    explorer.execute_tool_calls([{"name": "LineCount", "intention": "count lines", "args": ["sample.txt"]}])
-    explorer.execute_tool_calls([{"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]}])
-
-    assert list(explorer.runtime.tool_result_store) == ["tr.1", "tr.2", "tr.3"]
-    assert explorer.tool_runner.latest_executions[0].result_key == "tr.3"
-
-
-def test_worker_prompts_do_not_include_parent_verification_state(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    parent_agent.blackboard.verification.status = VerificationStatus.DONE
-    parent_agent.blackboard.verification.context = "parent verification should stay private"
-
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="inspect sample", scope=[])
-    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=[])
-
-    assert "### Verification State" not in explorer.build_user_prompt()
-    assert "parent verification should stay private" not in explorer.build_user_prompt()
-    assert "### Verification State" not in verifier.build_user_prompt()
-    assert "parent verification should stay private" not in verifier.build_user_prompt()
 
 
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
@@ -467,49 +306,6 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
-
-
-def test_agent_request_uses_worker_model_config_for_explore_activity(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps(
-                {
-                    "choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}],
-                    "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = _session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="main", stream=False)
-    session.config.worker_model = nanocode.ModelConfig(
-        model="worker",
-        temperature=0.2,
-        reasoning=True,
-        reasoning_effort="low",
-        stream=False,
-        timeout=7,
-    )
-
-    response = MainAgent(session).model_client.request("system", "user", activity="explore")
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
-    assert captured["payload"]["model"] == "worker"
-    assert captured["payload"]["temperature"] == 0.2
-    assert captured["payload"]["reasoning"] == {"effort": "low"}
-    assert captured["timeout"] == 7
 
 
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
@@ -1336,22 +1132,22 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     assert agent.blackboard.verification.context == ""
 
     agent.apply_response(
-        {"actions": [{"type": "verify", "kind": "test", "method": "run tests", "criteria": ["tests pass"], "status": "pending", "context": None}]}
+        {"actions": [{"type": "verify", "kind": "test", "method": "run tests", "criteria": ["tests pass"], "status": "passed", "context": "tests pass"}]}
     )
 
     assert agent.blackboard.verification.goal == "new goal"
-    assert agent.blackboard.verification.status == VerificationStatus.REQUIRED
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.verification.kind == "test"
     assert agent.blackboard.verification.method == "run tests"
     assert agent.blackboard.verification.criteria == ["tests pass"]
-    assert agent.blackboard.verification.context == ""
+    assert agent.blackboard.verification.context == "tests pass"
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
 
     assert agent.blackboard.goal_reached is True
 
 
-def test_agent_accepts_combined_pending_verification_kind(tmp_path):
+def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
     agent = MainAgent(Session(cwd=str(tmp_path)))
 
     agent.apply_response(
@@ -1362,13 +1158,14 @@ def test_agent_accepts_combined_pending_verification_kind(tmp_path):
                     "kind": "syntax_check+test",
                     "method": "check edit",
                     "criteria": ["syntax passes", "tests pass"],
-                    "status": "pending",
+                    "status": "passed",
                 }
             ]
         }
     )
 
     assert agent.blackboard.verification.kind == "syntax_check+test"
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
 
     assert (
         agent._pending_verification_error(
@@ -1382,24 +1179,8 @@ def test_agent_accepts_combined_pending_verification_kind(tmp_path):
                 }
             ]
         )
-        == ""
+        == "status=pending is not supported in single-agent mode"
     )
-
-    for kind in ["syntax_check+", "+test", "syntax_check+unknown"]:
-        assert (
-            agent._pending_verification_error(
-                [
-                    {
-                        "type": "verify",
-                        "kind": kind,
-                        "method": "check edit",
-                        "criteria": ["check passes"],
-                        "status": "pending",
-                    }
-                ]
-            )
-            == "missing or invalid kind"
-        )
 
 
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):
@@ -1512,403 +1293,15 @@ def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp
     assert agent.agent_feedback_errors == []
 
 
-def test_main_agent_rejects_search_tool(tmp_path):
+def test_main_agent_accepts_search_tool(tmp_path):
+    (tmp_path / "sample.py").write_text("class Foo:\n    pass\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
 
     latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": ["class Foo"]}])
 
-    assert "tool not allowed for this agent: Search" in latest
-
-
-def test_explore_agent_rejects_edit_tools(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("old\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="find relevant target",
-        scope=["sample.txt"],
-    )
-
-    latest = explorer.execute_tool_calls([{"name": "Edit", "intention": "try edit", "args": ["sample.txt", "old", "new"]}])
-
-    assert "tool not allowed for this agent: Edit" in latest
-    assert path.read_text(encoding="utf-8") == "old\n"
-    assert explorer.session is parent_session
-    assert parent_session.state.tool_result_store == {}
-    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
-
-
-def test_verify_agent_rejects_edit_tools(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("old\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    verifier = nanocode.VerifyAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="verify change",
-        scope=["sample.txt"],
-    )
-
-    latest = verifier.execute_tool_calls([{"name": "Edit", "intention": "try edit", "args": ["sample.txt", "old", "new"]}])
-
-    assert "tool not allowed for this agent: Edit" in latest
-    assert path.read_text(encoding="utf-8") == "old\n"
-    assert verifier.session is parent_session
-    assert parent_session.state.tool_result_store == {}
-    assert list(verifier.runtime.tool_result_store) == ["tr.1"]
-
-
-def test_explore_agent_accepts_known_and_deliver_in_act_turn(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
-
-    explorer.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-
-    assert "Return tool to gather evidence" in explorer.build_system_prompt()
-    assert '"type": "tool"' in explorer.build_system_prompt()
-
-    observed = explorer.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver sample target"}]})
-
-    assert observed.done is False
-    assert explorer.blackboard.known == ["sample.txt contains alpha."]
-    assert explorer.mode == nanocode.AgentMode.ACT
-
-    explorer.execute_tool_calls([{"name": "LineCount", "intention": "count sample lines", "args": ["sample.txt"]}])
-
-    delivered = explorer.handle_response(
-        {
-            "actions": [
-                {"type": "known", "items": ["sample.txt has one line."]},
-                {
-                    "type": "deliver",
-                    "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}],
-                    "issues": [],
-                }
-            ]
-        }
-    )
-
-    assert delivered.done is True
-    assert isinstance(delivered.value, nanocode.ExploreReport)
-    assert delivered.value.known == ["sample.txt contains alpha.", "sample.txt has one line."]
-
-
-def test_explore_agent_accepts_known_only_in_act_turn(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
-
-    result = explorer.handle_response({"actions": [{"type": "known", "items": ["sample fact"], "next": "read sample"}]})
-
-    assert result.done is False
-    assert explorer.blackboard.known == ["sample fact"]
-    assert explorer.agent_feedback_errors == []
-
-
-def test_explore_agent_accepts_deliver_in_act_turn(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
-
-    result = explorer.handle_response(
-        {"actions": [{"type": "deliver", "targets": [{"path": "sample.txt", "area": "line 1", "reason": "found"}], "known": ["sample fact"]}]}
-    )
-
-    assert result.done is True
-    assert isinstance(result.value, nanocode.ExploreReport)
-    assert result.value.known == ["sample fact"]
-
-
-def test_explore_agent_ignores_placeholder_deliver_known(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="find sample", scope=["sample.txt"])
-
-    result = explorer.handle_response({"actions": [{"type": "deliver", "targets": [], "known": ["<fact from latest tool results>"]}]})
-
-    assert result.done is True
-    assert isinstance(result.value, nanocode.ExploreReport)
-    assert result.value.known == []
-
-
-def test_verify_agent_allows_deliver_after_tool_results_without_known(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=["sample.txt"])
-
-    verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-
-    assert "Return tool to gather evidence" in verifier.build_system_prompt()
-    assert '"type": "tool"' in verifier.build_system_prompt()
-
-    delivered = verifier.handle_response(
-        {"actions": [{"type": "deliver", "status": "passed", "method": "read", "summary": "sample has alpha", "evidence": ["alpha"]}]}
-    )
-
-    assert delivered.done is True
-    assert isinstance(delivered.value, nanocode.VerifyReport)
-    assert delivered.value.status == "passed"
-    assert verifier.blackboard.known == []
-    assert verifier.agent_feedback_errors == []
-
-
-def test_verify_agent_accepts_known_after_tool_results(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    verifier = nanocode.VerifyAgent(parent_session=parent_session, parent_blackboard=parent_agent.blackboard, goal="verify sample", scope=["sample.txt"])
-
-    verifier.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-
-    observed = verifier.handle_response({"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver verdict"}]})
-
-    assert observed.done is False
-    assert verifier.blackboard.known == ["sample.txt contains alpha."]
-    assert verifier.mode == nanocode.AgentMode.ACT
-
-    delivered = verifier.handle_response(
-        {
-            "actions": [
-                {
-                    "type": "deliver",
-                    "status": "passed",
-                    "method": "read",
-                    "summary": "sample has alpha",
-                    "evidence": ["alpha"],
-                }
-            ]
-        }
-    )
-
-    assert delivered.done is True
-    assert isinstance(delivered.value, nanocode.VerifyReport)
-    assert verifier.blackboard.known == ["sample.txt contains alpha."]
-
-
-def test_verify_agent_rejects_repeating_failed_process_command(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    verifier = nanocode.VerifyAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="run tests",
-        scope=["kind: test", "target: make test", "expect: exit code 0"],
-    )
-    messages = []
-
-    verifier.execute_tool_calls([{"name": "Bash", "intention": "run tests", "args": ["exit 7"]}], confirm=lambda call, tool: True)
-    result = verifier.handle_response(
-        {"actions": [{"type": "tool", "name": "Bash", "intention": "run tests again", "args": ["exit 7"], "known": ["exit 7 command failed."]}]},
-        confirm=lambda call, tool: True,
-        on_message=messages.append,
-    )
-
-    assert result.done is False
-    assert list(verifier.runtime.tool_result_store) == ["tr.1"]
-    assert any("previous verification command already failed" in error for error in verifier.agent_feedback_errors)
-
-    delivered = verifier.handle_response(
-        {
-            "actions": [
-                {
-                    "type": "deliver",
-                    "status": "failed",
-                    "method": "Bash exit 7",
-                    "summary": "command failed",
-                    "evidence": ["exit_code: 7"],
-                    "issues": ["tests failed"],
-                    "next_steps": [],
-                }
-            ]
-        },
-        on_message=messages.append,
-    )
-
-    assert delivered.done is True
-    assert isinstance(delivered.value, nanocode.VerifyReport)
-    assert delivered.value.status == "failed"
-
-
-def test_explore_agent_keeps_tool_results_local_and_delivers(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-    parent_agent.blackboard.known = ["MainAgent knows sample.txt exists."]
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {
-                    "actions": [
-                        {
-                            "type": "deliver",
-                            "targets": [
-                                {
-                                    "path": "sample.txt",
-                                    "area": "line 1",
-                                    "line_range": "0,1",
-                                    "context": "alpha",
-                                    "reason": "contains alpha",
-                                }
-                            ],
-                            "known": ["sample.txt contains alpha.", "relevant target is sample.txt line 1."],
-                        },
-                    ]
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    explorer = nanocode.ExploreAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="find relevant target",
-        scope=["sample.txt"],
-    )
-    explorer.model_client = FakeModelClient()
-
-    report = explorer.run()
-
-    assert report.targets == [
-        {
-            "path": "sample.txt",
-            "area": "line 1",
-            "line_range": "0,1",
-            "context": "alpha",
-            "reason": "contains alpha",
-        }
-    ]
-    assert report.known == ["sample.txt contains alpha.", "relevant target is sample.txt line 1."]
-    assert explorer.session is parent_session
-    assert parent_session.state.tool_result_store == {}
-    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
-    assert len(explorer.model_client.user_prompts) == 2
-
-
-def test_explore_agent_rejects_repeated_tool_call_and_delivers(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = Session(cwd=str(tmp_path))
-    parent_agent = MainAgent(parent_session)
-
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
-                {"actions": [{"type": "known", "items": ["sample.txt contains alpha."], "next": "deliver or avoid repeat"}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "repeat read", "args": ["sample.txt", "0,1"], "known": ["sample.txt contains alpha."]}]},
-                {
-                    "actions": [
-                        {
-                            "type": "deliver",
-                            "targets": [
-                                {
-                                    "path": "sample.txt",
-                                    "area": "line 1",
-                                    "line_range": "0,1",
-                                    "context": "alpha",
-                                    "reason": "already read",
-                                }
-                            ],
-                            "known": ["sample.txt contains alpha."],
-                        }
-                    ]
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return self.responses.pop(0)
-
-    explorer = nanocode.ExploreAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="find sample",
-        scope=["sample.txt"],
-    )
-    explorer.model_client = FakeModelClient()
-
-    report = explorer.run()
-
-    assert report.targets[0]["path"] == "sample.txt"
-    assert list(explorer.runtime.tool_result_store) == ["tr.1"]
-    assert any("repeated explore tool call" in error for error in explorer.agent_feedback_errors)
-
-
-def test_explore_agent_uses_observe_turn_after_tool_results(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    parent_session = _session(tmp_path, explore_max_turns=2)
-    parent_agent = MainAgent(parent_session)
-
-    class FakeModelClient:
-        def __init__(self):
-            self.system_prompts = []
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
-                {
-                    "actions": [
-                        {
-                            "type": "deliver",
-                            "targets": [
-                                {
-                                    "path": "sample.txt",
-                                    "area": "line 1",
-                                    "line_range": "0,1",
-                                    "context": "alpha",
-                                    "reason": "found before step limit",
-                                }
-                            ],
-                            "known": ["sample.txt contains alpha."],
-                        }
-                    ]
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.system_prompts.append(system_prompt)
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    explorer = nanocode.ExploreAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="find sample",
-        scope=["sample.txt"],
-    )
-    explorer.model_client = FakeModelClient()
-
-    report = explorer.run()
-
-    assert report.targets[0]["path"] == "sample.txt"
-    assert report.known == ["sample.txt contains alpha."]
-    assert len(explorer.model_client.user_prompts) == 2
-
-
-def test_explore_agent_goal_changes_do_not_clear_parent_range_fingerprints(tmp_path):
-    parent_session = Session(cwd=str(tmp_path))
-    parent_session.state.range_fingerprints.remember(filepath=str(tmp_path / "sample.txt"), start=0, end=1, content="alpha\n")
-    parent_agent = MainAgent(parent_session)
-    explorer = nanocode.ExploreAgent(
-        parent_session=parent_session,
-        parent_blackboard=parent_agent.blackboard,
-        goal="find relevant target",
-        scope=["sample.txt"],
-    )
-
-    explorer.apply_response({"actions": [{"type": "goal", "text": "refined target", "complete": False}]})
-
-    assert len(parent_session.state.range_fingerprints) == 1
+    assert '- ok | Search "class Foo"' in latest
+    assert "sample.py" in latest
 
 
 def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
@@ -2020,168 +1413,8 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
     assert messages[-1] == "sample contains alpha"
 
 
-def test_agent_run_executes_explore_and_completes(tmp_path):
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "relevant target", "complete": False},
-                        {
-                            "type": "explore",
-                            "kind": "file",
-                            "goal": "find target",
-                            "scope": ["sample.txt"],
-                            "constraints": ["return exact path and line range"],
-                            "reason": "target uncertain",
-                            "context": "Main saw sample mentioned",
-                        },
-                    ]
-                },
-                {"actions": _final_actions("relevant target")},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    class FakeExploreAgent:
-        def __init__(self, *, goal, scope):
-            self.goal = goal
-            self.scope = scope
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            assert self.scope == ["kind: file", "sample.txt", "constraint: return exact path and line range", "main_context: Main saw sample mentioned"]
-            if on_message is not None:
-                on_message("[success] Read(\"sample.txt\", \"0\", \"1\")")
-            return nanocode.ExploreReport(
-                targets=[{"path": "sample.txt", "area": "line 1", "reason": "target found"}],
-                known=["sample.txt line 1 is the relevant target."],
-            )
-
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "relevant target")
-    agent.model_client = FakeModelClient()
-    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent(goal=goal, scope=scope)
-    messages = []
-
-    response = agent.run("relevant target", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 2
-    assert session.state.tool_result_store == {}
-    assert agent.recent_tool_call_blocks == []
-    assert '[explore] [success] Read("sample.txt", "0", "1")' in messages
-    assert messages[-1] == "done"
-
-
-def test_agent_run_retries_explore_without_kind_or_constraints(tmp_path):
-    class FakeExploreAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            raise AssertionError("invalid explore handoff should not start ExploreAgent")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "relevant target", "complete": False},
-                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
-                    ]
-                },
-                {
-                    "actions": [
-                        {"type": "explore", "goal": "find target", "scope": ["sample.txt"], "reason": "target uncertain"},
-                    ]
-                },
-                {"actions": _final_actions("relevant target")},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "relevant target")
-    agent.model_client = FakeModelClient()
-    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
-    messages = []
-
-    response = agent.run("relevant target", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: explore handoff needs kind and constraints." in messages
-
-
-def test_agent_run_retries_explore_with_generic_goal(tmp_path):
-    class FakeExploreAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            raise AssertionError("generic explore handoff should not start ExploreAgent")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "support lowercase tool names", "complete": False},
-                        {
-                            "type": "explore",
-                            "kind": "symbol",
-                            "goal": "locate concrete code targets only",
-                            "scope": ["tool name"],
-                            "constraints": ["find parser and dispatcher"],
-                            "reason": "target uncertain",
-                        },
-                    ]
-                },
-                {
-                    "actions": [
-                        {
-                            "type": "explore",
-                            "kind": "symbol",
-                            "goal": "locate concrete code targets only",
-                            "scope": ["tool name"],
-                            "constraints": ["find parser and dispatcher"],
-                            "reason": "target uncertain",
-                        },
-                    ]
-                },
-                {"actions": _final_actions("support lowercase tool names")},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "support lowercase tool names")
-    agent.model_client = FakeModelClient()
-    agent._make_explore_agent = lambda *, goal, scope: FakeExploreAgent()
-    messages = []
-
-    assert "too generic" in agent._explore_actions_error(
-        [
-            {
-                "type": "explore",
-                "kind": "symbol",
-                "goal": "locate concrete code targets only",
-                "scope": ["tool name"],
-                "constraints": ["find parser and dispatcher"],
-            }
-        ]
-    )
-
-    response = agent.run("support lowercase tool names", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: explore handoff needs kind and constraints." in messages
-
-
 def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
-    verify_calls = []
 
     class FakeModelClient:
         def __init__(self):
@@ -2199,31 +1432,33 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                     ]
                 },
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect changed sample", "args": ["sample.txt", "0", "1"]}]},
+                {
+                    "actions": [
+                        {"type": "verify", "kind": "change_check", "method": "Read sample.txt", "criteria": ["sample text is new"], "status": "passed", "context": "sample.txt contains new"},
+                        {"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="main"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
-    class FakeVerifyAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            verify_calls.append(True)
-            return nanocode.VerifyReport(status="passed", method="review", summary="edit verified")
-
     session = Session(cwd=str(tmp_path))
     agent = MainAgent(session)
     _seed_plan(agent, "change sample")
     agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
     messages = []
 
     response = agent.run("change sample", confirm=lambda call, tool: True, on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert verify_calls == [True]
     assert any(message.startswith("[success] Edit sample.txt") for message in messages)
-    assert "Verify done: passed | review\n  edit verified" in messages
+    assert any(message.startswith("[success] Read sample.txt") for message in messages)
+    assert any("VERIFY:required" in message for message in messages)
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.verification.context == "sample.txt contains new"
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
     assert messages[-1] == "done"
 
@@ -2373,7 +1608,7 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: create a short plan before tools/workers." in messages
+    assert "Retrying: create a short plan before tools." in messages
     assert len(session.state.tool_result_store) == 1
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
 
@@ -2545,459 +1780,6 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: assistant must set current task's goal." in messages
-
-
-def test_agent_run_enforces_verification_gate_before_completion(tmp_path):
-    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
-    verify_confirm_callbacks = []
-
-    class FakeVerifyAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            verify_confirm_callbacks.append(confirm)
-            if on_message is not None:
-                on_message('[success] Git("diff", "--", "sample.txt")')
-            return nanocode.VerifyReport(status="passed", method="git diff", summary="diff matches goal", evidence=["sample.txt changed"])
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "change file", "complete": False},
-                        {
-                            "type": "tool",
-                            "name": "Edit",
-                            "intention": "edit sample",
-                            "args": ["sample.txt", "old", "new"],
-                        },
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "goal", "text": "change file done", "complete": True, "message_for_complete": "done"},
-                    ],
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "change file")
-    agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
-    messages = []
-
-    response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
-    assert len(verify_confirm_callbacks) == 1
-    assert verify_confirm_callbacks[0] is not None
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
-    assert agent.blackboard.verification.context == "diff matches goal"
-    assert "Verifying: change_syntax_check change file done" in messages
-    assert '[verify] [success] Git("diff", "--", "sample.txt")' in messages
-    assert "Verify done: passed | git diff\n  diff matches goal" in messages
-    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
-
-
-def test_agent_run_feeds_failed_verify_report_into_next_prompt(tmp_path):
-    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
-
-    class FakeVerifyAgent:
-        def __init__(self):
-            self.reports = [
-                nanocode.VerifyReport(status="failed", method="unit", summary="assertion failed", issues=["sample still wrong"]),
-                nanocode.VerifyReport(status="passed", method="unit", summary="tests passed", evidence=["sample fixed"]),
-            ]
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            return self.reports.pop(0)
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "change file", "complete": False},
-                        {
-                            "type": "tool",
-                            "name": "Edit",
-                            "intention": "edit sample badly",
-                            "args": ["sample.txt", "old", "bad"],
-                        },
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {"actions": _observe_actions("unit verification failed: assertion failed.")},
-                {
-                    "actions": [
-                        {
-                            "type": "tool",
-                            "name": "Edit",
-                            "intention": "fix sample",
-                            "args": ["sample.txt", "bad", "new"],
-                        },
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "change file")
-    agent.model_client = FakeModelClient()
-    verifier = FakeVerifyAgent()
-    agent._make_verify_agent = lambda *, goal, scope: verifier
-
-    response = agent.run("change file", confirm=lambda call, tool: True)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 6
-    assert "Worker Reports:" in agent.model_client.user_prompts[2]
-    assert "<Agent_Reports>" not in agent.model_client.user_prompts[2]
-    assert "assertion failed" in agent.model_client.user_prompts[2]
-    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
-
-
-def test_agent_run_does_not_repeat_failed_verification_before_fix(tmp_path):
-    class FakeVerifyAgent:
-        def __init__(self):
-            self.reports = [
-                nanocode.VerifyReport(status="failed", method="unit", summary="assertion failed", issues=["sample still wrong"]),
-                nanocode.VerifyReport(status="passed", method="unit", summary="tests passed", evidence=["sample fixed"]),
-            ]
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            return self.reports.pop(0)
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "change file", "complete": False},
-                        {
-                            "type": "tool",
-                            "name": "Edit",
-                            "intention": "edit sample badly",
-                            "args": ["sample.txt", "old", "bad"],
-                        },
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {
-                    "actions": [
-                        {
-                            "type": "tool",
-                            "name": "Edit",
-                            "intention": "fix sample",
-                            "args": ["sample.txt", "bad", "new"],
-                        },
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "goal", "text": "change file", "complete": True, "message_for_complete": "done"}]},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
-    _seed_plan(agent, "change file")
-    agent.model_client = FakeModelClient()
-    verifier = FakeVerifyAgent()
-    agent._make_verify_agent = lambda *, goal, scope: verifier
-    messages = []
-
-    response = agent.run("change file", confirm=lambda call, tool: True, on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert verifier.reports == []
-    assert "Retrying: verification failed; fix the reported issue first." in messages
-    assert "assertion failed" in agent.model_client.user_prompts[2]
-    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
-
-
-def test_agent_run_hands_pending_verification_to_verify_agent(tmp_path):
-    verifier_calls = []
-
-    class FakeVerifyAgent:
-        def __init__(self, *, goal, scope):
-            self.goal = goal
-            self.scope = scope
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            verifier_calls.append((self.goal, self.scope))
-            return nanocode.VerifyReport(status="passed", method="manual check", summary="checked")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "answer", "complete": False},
-                        {
-                            "type": "verify",
-                            "kind": "change_check",
-                            "method": "manual check",
-                            "criteria": ["answer is correct"],
-                            "status": "pending",
-                            "context": "check answer",
-                        },
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
-                    ],
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent, "answer")
-    agent.blackboard.goal = "answer"
-    agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
-    messages = []
-
-    response = agent.run("answer", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert verifier_calls
-    assert verifier_calls[0][0] == "manual check"
-    assert "kind: change_check" in verifier_calls[0][1]
-    assert "target: manual check" in verifier_calls[0][1]
-    assert "expect: answer is correct" in verifier_calls[0][1]
-    assert "context: check answer" in verifier_calls[0][1]
-    assert "Verifying: change_check manual check" in messages
-    assert len(agent.model_client.user_prompts) == 2
-
-
-def test_agent_run_retries_repeated_pending_verify_after_passed(tmp_path):
-    verifier_calls = []
-
-    class FakeVerifyAgent:
-        def __init__(self, *, goal, scope):
-            self.goal = goal
-            self.scope = scope
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            verifier_calls.append((self.goal, self.scope))
-            return nanocode.VerifyReport(status="passed", method="cmake_build", summary="build passed")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {
-                    "actions": [
-                        {
-                            "type": "verify",
-                            "kind": "build",
-                            "method": "cmake_build",
-                            "criteria": ["build exits 0"],
-                            "status": "pending",
-                            "context": "verify build",
-                        }
-                    ],
-                },
-                {
-                    "actions": [
-                        {
-                            "type": "verify",
-                            "kind": "build",
-                            "method": "cmake_build",
-                            "criteria": ["build exits 0"],
-                            "status": "pending",
-                            "context": "verify build again",
-                        }
-                    ],
-                },
-                {
-                    "actions": [
-                        {
-                            "type": "verify",
-                            "kind": "build",
-                            "method": "cmake_build",
-                            "criteria": ["build exits 0"],
-                            "status": "pending",
-                            "context": "verify build once more",
-                        }
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent, "answer")
-    agent.blackboard.goal = "answer"
-    agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
-    messages = []
-
-    response = agent.run("answer", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(verifier_calls) == 1
-    assert "Retrying: verification already passed; update plan or complete." in messages
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
-
-
-def test_agent_run_treats_verify_scope_check_blocked_as_failed(tmp_path):
-    class FakeVerifyAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            return nanocode.VerifyReport(status="blocked", method="scope_check", summary="missing target")
-
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent, "answer")
-    agent.blackboard.goal = "answer"
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
-    messages = []
-
-    agent.handle_response(
-        {
-            "actions": [
-                {
-                    "type": "verify",
-                    "kind": "change_check",
-                    "method": "manual check",
-                    "criteria": ["answer is correct"],
-                    "status": "pending",
-                }
-            ]
-        },
-        on_message=messages.append,
-    )
-    agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]}, on_message=messages.append)
-    agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]}, on_message=messages.append)
-
-    assert "Verify blocked | scope_check\n  missing target" in messages
-    assert "Retrying: verification failed; fix the reported issue first." in messages
-    assert "done" not in messages
-    assert agent.blackboard.verification.status == VerificationStatus.FAILED
-
-
-def test_agent_run_prioritizes_pending_verify_over_same_response_tools(tmp_path):
-    verifier_calls = []
-    bash_confirmed = []
-
-    class FakeVerifyAgent:
-        def __init__(self, *, goal, scope):
-            self.goal = goal
-            self.scope = scope
-
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            verifier_calls.append((self.goal, self.scope))
-            return nanocode.VerifyReport(status="passed", method="unit", summary="tests passed")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "answer", "complete": False},
-                        {
-                            "type": "verify",
-                            "kind": "test",
-                            "method": "run unit tests",
-                            "criteria": ["tests pass"],
-                            "status": "pending",
-                            "context": "verify answer",
-                        },
-                        {"type": "tool", "name": "Bash", "intention": "run tests", "args": ["python -m pytest -q"]},
-                    ],
-                },
-                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return self.responses.pop(0)
-
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent, "answer")
-    agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent(goal=goal, scope=scope)
-
-    response = agent.run("answer", confirm=lambda call, tool: bash_confirmed.append(call.executed) or True)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(verifier_calls) == 1
-    assert verifier_calls[0][0] == "run unit tests"
-    assert "kind: test" in verifier_calls[0][1]
-    assert bash_confirmed == []
-    assert agent.latest_tool_call_blocks == []
-
-
-def test_agent_run_retries_pending_verify_without_kind_or_criteria(tmp_path):
-    class FakeVerifyAgent:
-        def run(self, *, confirm=None, on_auto_approve=None, on_message=None):
-            raise AssertionError("invalid pending verify should not start VerifyAgent")
-
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {
-                    "actions": [
-                        {"type": "goal", "text": "answer", "complete": False},
-                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "verify", "method": "manual check", "status": "pending", "context": "check answer"},
-                    ],
-                },
-                {
-                    "actions": [
-                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
-                    ],
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="main"):
-            return self.responses.pop(0)
-
-    agent = MainAgent(Session(cwd=str(tmp_path)))
-    agent.model_client = FakeModelClient()
-    agent._make_verify_agent = lambda *, goal, scope: FakeVerifyAgent()
-    messages = []
-
-    response = agent.run("answer", on_message=messages.append)
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: pending verification needs kind and criteria." in messages
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
 
 
 def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
