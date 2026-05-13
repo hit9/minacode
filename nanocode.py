@@ -5212,15 +5212,6 @@ class BaseAgent:
     def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
         return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
 
-    def _requires_observation(self, execution: ToolCallExecution) -> bool:
-        if self._is_tool_call_arg_error(execution):
-            return False
-        return execution.outcome == "success"
-
-    @staticmethod
-    def _is_tool_call_arg_error(execution: ToolCallExecution) -> bool:
-        return execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError)
-
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
             "actions": [],
