@@ -2564,7 +2564,8 @@ MEMORY:
 - Known = durable current-task facts.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
 - Tool results are volatile. Save useful facts into Known before they disappear.
-- Do not store result keys like tr.1 in Goal, Plan, Known, or Stable Knowledge. Store path/range/fact instead.
+- Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
+- If a fact is already in Known, do not restate it.
 
 TASK CODE:
 - Current Task Code is authoritative.
@@ -2610,6 +2611,8 @@ PLANNING:
 - Always replace the full plan when updating it.
 - Do not repeat completed steps.
 - At most one item may be doing.
+- Each plan item must be one concrete outcome, not a bundle of unrelated checks or actions.
+- Done/blocked context must be result evidence, not intent, plan, or expectation.
 - Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
 - Plan item schema:
   {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short evidence"}
@@ -2631,6 +2634,8 @@ TARGET DISCOVERY:
 - Use Read only for known paths/ranges or after search narrowed the target.
 - Read small ranges around likely matches.
 - Do not do broad project surveys.
+- Stop discovering when you have the exact target and next edit/check is clear.
+- Do not repeat equivalent searches; narrow, read, edit, verify, or mark blocked.
 
 VERIFICATION:
 - Verify directly. There is no separate verification agent.
@@ -2644,6 +2649,7 @@ VERIFICATION:
 - Before verification, check User Rules and include required checks.
 - If a verification command fails, record failed and repair before completion.
 - Do not use pending verification status.
+- Passed/blocked verification context must cite concrete recent tool evidence or a concrete blocker.
 
 TOOLS:
 - Prefer dedicated tools over Bash.
@@ -2756,6 +2762,8 @@ Must:
 - Update Plan toward Goal before more work.
 - Use recent tool calls as volatile input; keep only durable facts.
 - Complete only when Goal is done, every Plan item is done/blocked with context, and required verification is satisfied.
+- Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
+- Done/blocked plan context and verify context must cite result evidence or a concrete blocker.
 - If there is nothing useful to retain, return an empty actions array.
 
 Allowed actions:
