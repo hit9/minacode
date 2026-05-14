@@ -499,13 +499,6 @@ class AgentRuntime:
 
 
 @dataclass
-class PromptContext:
-    blackboard: Blackboard
-    runtime: AgentRuntime
-    verification: Verification | None = None
-
-
-@dataclass
 class AgentRunResult:
     done: bool = False
     value: JsonValue = None
@@ -2984,7 +2977,8 @@ class PromptBuilder:
         system_prompt_template: str = AGENT_SYSTEM_PROMPT,
         user_prompt_template: str = AGENT_USER_PROMPT_TEMPLATE,
         allowed_tools: set[str] | None = None,
-        context: PromptContext | None = None,
+        blackboard: Blackboard | None = None,
+        runtime: AgentRuntime | None = None,
         allow_response_language_bootstrap: bool = False,
     ):
         self.session = session
@@ -2992,16 +2986,14 @@ class PromptBuilder:
         self.user_prompt_template = user_prompt_template
         self.allowed_tools = allowed_tools
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
-        self.context = context or PromptContext(
-            blackboard=Blackboard(),
-            runtime=AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter),
-        )
+        self.blackboard = blackboard or Blackboard()
+        self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
 
     def system_prompt(self) -> str:
         return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace("{ __tool_names__ }", self._format_tool_names()).strip()
 
     def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
-        current = self.context.blackboard
+        current = self.blackboard
         conversation = self.session.state.conversation
         response_language = "`" + self.session.state.response_language_tag + "`" if self.session.state.response_language_tag else "(empty)"
         response_language_bootstrap = ""
@@ -3023,7 +3015,7 @@ class PromptBuilder:
             tool_result_store=self._format_tool_result_store(set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            verification_state=self.context.verification.format() if self.context.verification is not None else "(empty)",
+            verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
             user_request=fence + "text\n" + user_request + "\n" + fence,
@@ -3046,8 +3038,8 @@ class PromptBuilder:
         return (tool for tool in TOOL_REGISTRY.values() if self.allowed_tools is None or tool.name() in self.allowed_tools)
 
     def _format_stable_knowledge(self) -> str:
-        knowledge = getattr(self.context.blackboard, "stable_knowledge", {})
-        if not isinstance(knowledge, dict) or not any(knowledge.values()):
+        knowledge = self.blackboard.stable_knowledge
+        if not any(knowledge.values()):
             return "(empty)"
         lines = []
         for category in STABLE_KNOWLEDGE_CATEGORIES:
@@ -3060,11 +3052,11 @@ class PromptBuilder:
         return "\n".join(lines).rstrip()
 
     def _format_tool_result_store(self, visible_result_keys: set[str] | None = None) -> str:
-        if not self.context.runtime.tool_result_store:
+        if not self.runtime.tool_result_store:
             return "(empty)"
         hidden_keys = visible_result_keys or set()
         lines = []
-        for key, item in self.context.runtime.tool_result_store.items():
+        for key, item in self.runtime.tool_result_store.items():
             if key in hidden_keys:
                 continue
             lines.append(item.format(result_key=key, details_hint=True))
@@ -4285,12 +4277,11 @@ class Agent:
         self.session = session
         self.blackboard = Blackboard()
         self.runtime = AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
-        self.activity = "agent"
-        self.prompt_context = PromptContext(blackboard=self.blackboard, runtime=self.runtime, verification=self.blackboard.verification)
         self.prompt_builder = PromptBuilder(
             session,
             allowed_tools=AGENT_ALLOWED_TOOLS,
-            context=self.prompt_context,
+            blackboard=self.blackboard,
+            runtime=self.runtime,
             allow_response_language_bootstrap=True,
         )
         self.model_client = ModelClient(session)
@@ -4506,7 +4497,7 @@ class Agent:
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity=self.activity, on_message=on_message)
+        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="agent", on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -4613,7 +4604,7 @@ class Agent:
         self._report_gate(
             on_message,
             retry_message,
-            self.activity + "_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
+            "agent_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
         )
         return AgentRunResult()
 
