@@ -82,7 +82,7 @@ USE AT YOUR OWN RISK.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
-- Config: `/config`, `/set <key> <value>`.
+- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/yolo`.
 - Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.
 
@@ -90,10 +90,10 @@ USE AT YOUR OWN RISK.
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider]` url, key, model, and model options.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, and model options.
 - Runtime config: `[paths]` and `[runtime]`.
 
 ## Status
 
-- Status bar: active model, reasoning, context, tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: model state, per-model calls/tokens, runtime state, goal, and verification.
+- Status bar: active model, reasoning, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: active provider, model state, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Iterator, Self, Type, TypeAlias
+from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -5181,6 +5181,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
+    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
@@ -5190,7 +5191,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
-    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
 )
 
 
@@ -5614,7 +5614,7 @@ class StatusBar:
         last_tokens = _format_count(session.state.last_total_tokens)
         session_tokens = _format_count(session.state.session_total_tokens)
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok(all):" + tokens]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
@@ -5726,7 +5726,7 @@ class AgentLoop:
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter()),
+            completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter(self.agent.session.config.providers)),
             complete_while_typing=True,
         )
 
@@ -6179,6 +6179,9 @@ def _shorten(text: str, limit: int = 500) -> str:
 
 
 class CommandCompleter(Completer):
+    def __init__(self, providers: Iterable[str] = ()):
+        self.providers = providers
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if text.startswith("/set "):
@@ -6192,6 +6195,12 @@ class CommandCompleter(Completer):
             for value in CONFIG_VALUE_COMPLETIONS.get(key, ()):
                 if value.startswith(value_prefix):
                     yield Completion(value, start_position=-len(value_prefix))
+            return
+        if text.startswith("/provider "):
+            text = text[len("/provider ") :]
+            for provider in self.providers:
+                if provider.startswith(text):
+                    yield Completion(provider, start_position=-len(text))
             return
         if text.startswith("/") and " " not in text:
             for spec in COMMANDS:

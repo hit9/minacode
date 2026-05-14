@@ -111,11 +111,11 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "model (medium)" in text
     assert "ctx:0/9" in text
     assert "tools:3" in text
-    assert "tok(all):last:42 session:1k" in text
+    assert "tok:last:42 session:1k" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok(all):last:42 session:1k"
+    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok:last:42 session:1k"
     assert ">" not in snapshot
 
 
@@ -235,7 +235,7 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
 
 
 def test_agent_loop_command_completer_matches_slash_commands():
-    completer = nanocode.CommandCompleter()
+    completer = nanocode.CommandCompleter([])
 
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
@@ -248,6 +248,19 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
+
+
+def test_agent_loop_command_completer_completes_provider_names():
+    completer = nanocode.CommandCompleter(["qwen", "openai"])
+    event = CompleteEvent(completion_requested=True)
+
+    q_completions = list(completer.get_completions(Document("/provider q"), event))
+    o_completions = list(completer.get_completions(Document("/provider o"), event))
+    all_completions = list(completer.get_completions(Document("/provider "), event))
+
+    assert [c.text for c in q_completions] == ["qwen"]
+    assert [c.text for c in o_completions] == ["openai"]
+    assert {c.text for c in all_completions} == {"qwen", "openai"}
 
 
 def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(tmp_path):
