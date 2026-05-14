@@ -2990,7 +2990,9 @@ class PromptBuilder:
         self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
 
     def system_prompt(self) -> str:
-        return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace("{ __tool_names__ }", self._format_tool_names()).strip()
+        return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace(
+            "{ __tool_names__ }", "|".join(tool.name() for tool in self._allowed_tools())
+        ).strip()
 
     def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
         current = self.blackboard
@@ -3030,9 +3032,6 @@ class PromptBuilder:
             for item in tool.example():
                 lines.append("  - " + item)
         return "\n".join(lines)
-
-    def _format_tool_names(self) -> str:
-        return "|".join(tool.name() for tool in self._allowed_tools())
 
     def _allowed_tools(self) -> Iterator[ToolClass]:
         return (tool for tool in TOOL_REGISTRY.values() if self.allowed_tools is None or tool.name() in self.allowed_tools)
@@ -4178,7 +4177,8 @@ class ConversationCompactor:
             known="\n".join(self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        response = self._request_json(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
+        request_json = self.model_client.request_json if isinstance(self.model_client, ModelClient) else self.model_client.request
+        response = request_json(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
@@ -4186,13 +4186,6 @@ class ConversationCompactor:
         if not known:
             known = list(self.blackboard.known)
         return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
-
-    def _request_json(self, system_prompt: str, user_prompt: str, *, activity: str) -> Json:
-        if isinstance(self.model_client, ModelClient):
-            return self.model_client.request_json(system_prompt, user_prompt, activity=activity)
-        return self.model_client.request(system_prompt, user_prompt, activity=activity)
-
-
 
 ############################
 # Verification
@@ -4295,11 +4288,6 @@ class Agent:
         self.agent_feedback_errors: list[str] = []
         self.gate_report_counts: dict[str, int] = {}
         self.mode = AgentMode.ACT
-
-    def build_system_prompt(self) -> str:
-        if self.mode == AgentMode.OBSERVE:
-            return AGENT_OBSERVE_SYSTEM_PROMPT.strip()
-        return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self) -> str:
         return self.prompt_builder.user_prompt(
@@ -4497,7 +4485,8 @@ class Agent:
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(), activity="agent", on_message=on_message)
+        system_prompt = AGENT_OBSERVE_SYSTEM_PROMPT.strip() if self.mode == AgentMode.OBSERVE else self.prompt_builder.system_prompt()
+        response = self.request(system_prompt, self.build_user_prompt(), activity="agent", on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -5032,10 +5021,7 @@ class CommandSpec:
     name: str
     description: str
     category: str
-    usage: str = ""
-
-    def display_name(self) -> str:
-        return self.usage or self.name
+    usage: str
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
@@ -5137,7 +5123,7 @@ class CommandDispatcher:
             if spec.category != current_category:
                 current_category = spec.category
                 lines.append(current_category + ":")
-            lines.append("  " + spec.display_name() + " - " + spec.description)
+            lines.append("  " + spec.usage + " - " + spec.description)
         lines.append("")
         lines.append("Tip: use @path to autocomplete file paths in prompts.")
         return "\n".join(lines)
