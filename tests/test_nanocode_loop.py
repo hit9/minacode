@@ -2,7 +2,7 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Blackboard, Config, ConfigFile, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
+from nanocode import AgentLoop, Config, ConfigFile, MainBlackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
@@ -325,7 +325,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
-            self.blackboard = Blackboard()
+            self.blackboard = MainBlackboard()
             self.runs = []
 
         def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
