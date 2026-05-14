@@ -302,25 +302,12 @@ class ProviderConfig:
     url: str = ""
     key: str = ""
     model: str = ""
-    temperature: float | None = None
-    reasoning: bool | None = None
-    reasoning_effort: str = ""
-    stream: bool | None = None
-    timeout: int | None = None
-    first_token_timeout: int | None = None
-
-    def resolved(self, fallback: "ProviderConfig") -> "ProviderConfig":
-        return ProviderConfig(
-            url=self.url or fallback.url,
-            key=self.key or fallback.key,
-            model=self.model or fallback.model,
-            temperature=self.temperature if self.temperature is not None else fallback.temperature,
-            reasoning=self.reasoning if self.reasoning is not None else fallback.reasoning,
-            reasoning_effort=self.reasoning_effort or fallback.reasoning_effort,
-            stream=self.stream if self.stream is not None else fallback.stream,
-            timeout=self.timeout if self.timeout is not None else fallback.timeout,
-            first_token_timeout=self.first_token_timeout if self.first_token_timeout is not None else fallback.first_token_timeout,
-        )
+    temperature: float | None = 0.7
+    reasoning: bool | None = True
+    reasoning_effort: str = "medium"
+    stream: bool | None = True
+    timeout: int | None = 90
+    first_token_timeout: int | None = 60
 
 
 @dataclass
@@ -342,16 +329,6 @@ class ModelUsage:
 ############################
 
 
-DEFAULT_PROVIDER_CONFIG = ProviderConfig(
-    temperature=0.7,
-    reasoning=True,
-    reasoning_effort="medium",
-    stream=True,
-    timeout=90,
-    first_token_timeout=60,
-)
-
-
 @dataclass
 class PathsConfig:
     nanocode_dir: str = ".nanocode"
@@ -369,8 +346,8 @@ class RuntimeSettings:
     def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
-            shell_timeout=Config.int_or_default(runtime, "shell_timeout", 60),
-            compact_at=Config.int_or_default(runtime, "compact_at", 50),
+            shell_timeout=Config.int(runtime, "shell_timeout", 60),
+            compact_at=Config.int(runtime, "compact_at", 50),
             max_agent_steps=Config.positive_int(runtime, "max_agent_steps", 100),
             yolo=yolo,
             debug=debug,
@@ -379,15 +356,26 @@ class RuntimeSettings:
 
 @dataclass
 class Config:
-    provider: ProviderConfig = field(default_factory=lambda: DEFAULT_PROVIDER_CONFIG.resolved(ProviderConfig()))
+    provider: ProviderConfig = field(default_factory=ProviderConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
         provider = cls.table(data, "provider")
         paths = cls.table(data, "paths")
+        defaults = ProviderConfig()
         return cls(
-            provider=cls.provider_config(provider, DEFAULT_PROVIDER_CONFIG),
+            provider=ProviderConfig(
+                url=cls.str(provider, "url", defaults.url),
+                key=cls.str(provider, "key", defaults.key),
+                model=cls.str(provider, "model", defaults.model),
+                temperature=cls.float(provider, "temperature", defaults.temperature),
+                reasoning=cls.bool(provider, "reasoning", defaults.reasoning),
+                reasoning_effort=cls.str(provider, "reasoning_effort", defaults.reasoning_effort),
+                stream=cls.bool(provider, "stream", defaults.stream),
+                timeout=cls.int(provider, "timeout", defaults.timeout),
+                first_token_timeout=cls.int(provider, "first_token_timeout", defaults.first_token_timeout),
+            ),
             paths=PathsConfig(nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode")),
         )
 
@@ -429,28 +417,9 @@ class Config:
         return value
 
     @classmethod
-    def int_or_default(cls, config: Json, key: str, default: int) -> int:
-        value = cls.int(config, key, default)
-        return value if value is not None else default
-
-    @classmethod
     def positive_int(cls, config: Json, key: str, default: int) -> int:
         value = cls.int(config, key, default)
         return max(1, value if value is not None else default)
-
-    @classmethod
-    def provider_config(cls, config: Json, defaults: ProviderConfig) -> ProviderConfig:
-        return ProviderConfig(
-            url=cls.str(config, "url", defaults.url),
-            key=cls.str(config, "key", defaults.key),
-            model=cls.str(config, "model", defaults.model),
-            temperature=cls.float(config, "temperature", defaults.temperature),
-            reasoning=cls.bool(config, "reasoning", defaults.reasoning),
-            reasoning_effort=cls.str(config, "reasoning_effort", defaults.reasoning_effort),
-            stream=cls.bool(config, "stream", defaults.stream),
-            timeout=cls.int(config, "timeout", defaults.timeout),
-            first_token_timeout=cls.int(config, "first_token_timeout", defaults.first_token_timeout),
-        )
 
 
 @final
@@ -751,20 +720,8 @@ class Session:
         self.state.user_rules.save(self.user_rules_path())
 
     def missing_required_config(self) -> list[str]:
-        missing = []
-        if not self.config.provider.url:
-            missing.append("provider.url")
-        if not self.config.provider.key:
-            missing.append("provider.key")
-        if not self.config.provider.model:
-            missing.append("provider.model")
-        return missing
-
-    def provider_config(self, override: ProviderConfig | None = None) -> ProviderConfig:
-        config = self.config.provider
-        if override is not None:
-            config = override.resolved(config)
-        return config
+        provider = self.config.provider
+        return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
 
 
 ############################
@@ -812,14 +769,6 @@ class Tool(Protocol):
     @classmethod
     def effect(cls) -> ToolEffect:
         return ToolEffect.OTHER
-
-    @classmethod
-    def is_readonly(cls) -> bool:
-        return cls.effect() == ToolEffect.READONLY
-
-    @classmethod
-    def is_editing(cls) -> bool:
-        return cls.effect() == ToolEffect.EDIT
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -926,21 +875,8 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
-def _format_recent_tool_call_blocks(executions: list[ToolCallExecution], *, include_result: bool = True) -> list[str]:
-    return [_format_recent_tool_call(execution, include_result=include_result) for execution in executions]
-
-
 def _join_tool_call_blocks(blocks: list[str]) -> str:
     return "\n\n".join(blocks)
-
-
-def _result_keys_from_recent_tool_calls(recent_tool_calls: str) -> set[str]:
-    return set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))
-
-
-def _tool_result_counter_from_block(block: str) -> int:
-    match = re.search(r"(?m)^\s*result_key:\s*tr\.(\d+)\b", block)
-    return int(match.group(1)) if match else 0
 
 
 def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bool = True) -> str:
@@ -3094,18 +3030,26 @@ class PromptBuilder:
 
     def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
         current = self.context.blackboard
+        conversation = self.session.state.conversation
+        response_language = "`" + self.session.state.response_language_tag + "`" if self.session.state.response_language_tag else "(empty)"
+        response_language_bootstrap = ""
+        if self.allow_response_language_bootstrap and not self.session.state.response_language_tag:
+            response_language_bootstrap = (
+                "If Response_Language is empty, include response_language in the start action once. "
+                "Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n"
+            )
         return self.user_prompt_template.format(
-            environment=self._format_environment(),
-            conversation_history=self._format_conversation_history(),
-            user_rules=self._format_user_rules(),
-            response_language=self._format_response_language(),
-            response_language_bootstrap=self._format_response_language_bootstrap(),
-            known=self._format_known(),
+            environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
+            conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
+            user_rules=self.session.state.user_rules.format(),
+            response_language=response_language,
+            response_language_bootstrap=response_language_bootstrap,
+            known="\n".join(current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
-            tool_result_store=self._format_tool_result_store(_result_keys_from_recent_tool_calls(recent_tool_calls)),
+            tool_result_store=self._format_tool_result_store(set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))),
             goal=current.goal or "(empty)",
-            plan=self._format_plan(),
-            verification_state=self._format_verification_state(),
+            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            verification_state=self.context.verification.format() if self.context.verification is not None else "(empty)",
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
             user_request=_format_fenced_text(current.user_input or "(empty)"),
@@ -3126,33 +3070,6 @@ class PromptBuilder:
 
     def _allowed_tools(self) -> Iterator[ToolClass]:
         return (tool for tool in TOOL_REGISTRY.values() if self.allowed_tools is None or tool.name() in self.allowed_tools)
-
-    def _format_environment(self) -> str:
-        return "\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd])
-
-    def _format_conversation_history(self) -> str:
-        if not self.session.state.conversation:
-            return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.state.conversation)
-
-    def _format_user_rules(self) -> str:
-        return self.session.state.user_rules.format()
-
-    def _format_response_language(self) -> str:
-        return "`" + self.session.state.response_language_tag + "`" if self.session.state.response_language_tag else "(empty)"
-
-    def _format_response_language_bootstrap(self) -> str:
-        if not self.allow_response_language_bootstrap or self.session.state.response_language_tag:
-            return ""
-        return (
-            "If Response_Language is empty, include response_language in the start action once. "
-            "Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n"
-        )
-
-    def _format_known(self) -> str:
-        if not self.context.blackboard.known:
-            return "(empty)"
-        return "\n".join(self.context.blackboard.known)
 
     def _format_stable_knowledge(self) -> str:
         knowledge = getattr(self.context.blackboard, "stable_knowledge", {})
@@ -3181,16 +3098,6 @@ class PromptBuilder:
             return "(empty; current result keys are already shown in Recent Tool Calls)"
         return "\n".join(lines)
 
-    def _format_plan(self) -> str:
-        if not self.context.blackboard.plan:
-            return "(empty)"
-        return "\n".join(item.format() for item in self.context.blackboard.plan)
-
-    def _format_verification_state(self) -> str:
-        if self.context.verification is None:
-            return "(empty)"
-        return self.context.verification.format()
-
 
 ############################
 # LLM Request (ModelClient)
@@ -3202,15 +3109,11 @@ class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
-    def __init__(self, session: Session, *, provider_config: ProviderConfig | None = None, model: str = "", reasoning_effort: str = ""):
+    def __init__(self, session: Session):
         self.session = session
-        self.provider_config = provider_config or ProviderConfig(model=model, reasoning_effort=reasoning_effort)
 
     def _timeout_handler(self, signum: int, frame: Any) -> None:
         raise ModelRequestTimeout()
-
-    def _request_config(self) -> ProviderConfig:
-        return self.session.provider_config(self.provider_config)
 
     def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "agent") -> Json:
         return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
@@ -3223,7 +3126,7 @@ class ModelClient:
         activity: str = "agent",
         parse_actions: bool = True,
     ) -> Json:
-        config = self._request_config()
+        config = self.session.config.provider
         if not config.url:
             raise LLMError("config provider.url is required")
         if not config.key:
@@ -3247,12 +3150,13 @@ class ModelClient:
             payload["stream_options"] = {"include_usage": True}
         timeout = config.timeout if config.timeout is not None else 90
         first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
-        extra_params = self._reasoning_params(config)
-        payload.update(extra_params)
+        if config.reasoning is not False and "openrouter.ai" in config.url:
+            payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
         self._write_debug_prompt(activity=activity, messages=messages)
+        url = config.url.rstrip("/")
 
         request = urllib.request.Request(
-            url=self._chat_completions_url(config),
+            url=url if url.endswith("/chat/completions") else url + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": "Bearer " + config.key,
@@ -3493,7 +3397,7 @@ class ModelClient:
 
     def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
         guidance = ""
-        if self._looks_like_native_tool_call(content):
+        if self._strip_leaked_think_tags(content.strip()).startswith("<tool_call>"):
             guidance = (
                 " Native tool_call syntax is not supported; return an action frame like "
                 '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0,100"]}\n__END_ACTION__.'
@@ -3503,23 +3407,6 @@ class ModelClient:
             "_format_bad_output": content,
             "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
         }
-
-    def _looks_like_native_tool_call(self, content: str) -> bool:
-        text = self._strip_leaked_think_tags(content.strip())
-        return text.startswith("<tool_call>")
-
-    def _chat_completions_url(self, config: ProviderConfig) -> str:
-        url = config.url.rstrip("/")
-        if url.endswith("/chat/completions"):
-            return url
-        return url + "/chat/completions"
-
-    def _reasoning_params(self, config: ProviderConfig) -> Json:
-        if config.reasoning is False:
-            return {}
-        if "openrouter.ai" in config.url:
-            return {"reasoning": {"effort": config.reasoning_effort or "medium"}}
-        return {}
 
     def _message_content(self, result: JsonValue) -> str | None:
         data = _json_dict(result)
@@ -3656,7 +3543,7 @@ class ToolCallRunner:
                         executions.append(cached)
                         continue
                     tool = self._make_tool(call)
-                requires_verification = tool.is_editing()
+                requires_verification = tool.effect() == ToolEffect.EDIT
                 preview_error = self._preview_error(tool)
                 if preview_error:
                     raise ToolCallError("preview unavailable: " + preview_error)
@@ -3744,13 +3631,13 @@ class ToolCallRunner:
 
     def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or not self._is_tool_allowed(call.name) or not tool_class.is_readonly():
+        if tool_class is None or not self._is_tool_allowed(call.name) or tool_class.effect() != ToolEffect.READONLY:
             return None
         return call.name, tuple(call.args)
 
     @staticmethod
     def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
-        blocks = _format_recent_tool_call_blocks(executions)
+        blocks = [_format_recent_tool_call(execution) for execution in executions]
         return _join_tool_call_blocks(blocks) or "(empty)"
 
     def _call_tool(
@@ -4148,15 +4035,11 @@ class AgentStateUpdater:
 
     def _apply_known(self, actions: list[Json]) -> None:
         for action in actions:
-            for raw in self._known_values(action):
-                fact = self._known_fact_from_json(raw)
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
+            for raw in values:
+                fact = _memory_fact_from_json(raw)
                 if fact is not None:
                     self._add_known_item(fact)
-
-    def _known_values(self, action: Json) -> list[JsonValue]:
-        if _json_str(action.get("type")) == "known":
-            return _json_list(action.get("items"))
-        return _json_list(action.get("known"))
 
     def _apply_user_rules(self, actions: list[Json]) -> None:
         changed = False
@@ -4167,9 +4050,6 @@ class AgentStateUpdater:
             changed = self.session.state.user_rules.add(rule) or changed
         if changed:
             self.session.save_user_rules()
-
-    def _known_fact_from_json(self, value: JsonValue) -> str | None:
-        return _memory_fact_from_json(value)
 
     def _add_known_item(self, fact: str) -> None:
         if fact not in self.blackboard.known:
@@ -4193,29 +4073,23 @@ class AgentStateUpdater:
         self._apply_verification(actions)
         self._bind_verification_goal()
 
-    def _state_heading(self) -> str:
-        return "State Updated | VERIFY:" + self.blackboard.verification.status
-
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
         if not lines:
-            lines.append(self._state_heading())
+            lines.append("State Updated | VERIFY:" + self.blackboard.verification.status)
         lines.append(title)
         lines.extend(rows or [])
 
     def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
-        before = self._decode_extra_state(before_extra_state)
+        try:
+            before = _json_dict(json.loads(before_extra_state))
+        except json.JSONDecodeError:
+            before = {}
         if self.blackboard.stable_knowledge != before.get("stable_knowledge", []):
             self._append_state_section(lines, "  Stable_Knowledge", self._format_stable_knowledge_rows())
         verification = self.blackboard.verification.format()
         if verification == before.get("verification", ""):
             return
         self._append_state_section(lines, "  Verify  " + self._format_verification())
-
-    def _decode_extra_state(self, value: str) -> Json:
-        try:
-            return _json_dict(json.loads(value))
-        except json.JSONDecodeError:
-            return {}
 
     def _format_stable_knowledge_rows(self) -> list[str]:
         knowledge = self.blackboard.stable_knowledge
@@ -4612,9 +4486,9 @@ class Agent:
     def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
             return
-        self._append_recent_tool_call_blocks(_format_recent_tool_call_blocks(self.latest_tool_call_executions, include_result=False))
+        self._append_recent_tool_call_blocks([_format_recent_tool_call(execution, include_result=False) for execution in self.latest_tool_call_executions])
         self.latest_tool_call_executions = list(executions)
-        self.latest_tool_call_blocks = _format_recent_tool_call_blocks(executions)
+        self.latest_tool_call_blocks = [_format_recent_tool_call(execution) for execution in executions]
 
     def _append_recent_tool_call_blocks(self, blocks: list[str]) -> None:
         if not blocks:
@@ -4633,7 +4507,8 @@ class Agent:
 
     def _queue_observation_for_evicted_blocks(self, blocks: list[str]) -> None:
         for block in blocks:
-            counter = _tool_result_counter_from_block(block)
+            match = re.search(r"(?m)^\s*result_key:\s*tr\.(\d+)\b", block)
+            counter = int(match.group(1)) if match else 0
             if counter > self.blackboard.memory_checkpoint_tool_result_counter:
                 self.pending_observation_blocks.append(block)
         if self.pending_observation_blocks:
@@ -4718,7 +4593,8 @@ class Agent:
     def _has_memory_update_action(self, actions: list[Json]) -> bool:
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if self._has_known_facts([action]):
+            values = _json_list(action.get("items")) if action_type == "known" else _json_list(action.get("known"))
+            if any(_memory_fact_from_json(raw) for raw in values):
                 return True
             if action_type == "stable_knowledge" and _json_list(action.get("items")):
                 return True
@@ -4785,16 +4661,6 @@ class Agent:
     def _response_actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
-    def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
-        return [action for action in actions if _json_str(action.get("type")) == "tool"]
-
-    def _has_known_facts(self, actions: list[Json]) -> bool:
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
-            if any(_memory_fact_from_json(raw) for raw in values):
-                return True
-        return False
-
     def _action_types(self, actions: list[Json]) -> set[str]:
         return {action_type for action_type in (_json_str(action.get("type")) for action in actions) if action_type}
 
@@ -4855,12 +4721,6 @@ class Agent:
                 update = _json_str(action.get("text")) or update
         return update
 
-    def _has_goal_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
-
-    def _has_plan_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
-
     def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
         for action in actions:
             action_type = _json_str(action.get("type"))
@@ -4873,44 +4733,11 @@ class Agent:
     def _has_plan_items(self, value: JsonValue) -> bool:
         return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
-    def _has_user_rule_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "user_rule" for action in actions)
-
     def _user_rule_message_from_actions(self, actions: list[Json]) -> str | None:
         for action in actions:
             if _json_str(action.get("type")) == "user_rule":
                 return _json_str(action.get("message")) or "Rule saved."
         return None
-
-    def _format_agent_feedback_verification_error(self) -> str:
-        return 'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
-
-    def _format_agent_feedback_pending_verification_error(self, reason: str) -> str:
-        return (
-            "Error: pending verify is invalid: "
-            + reason
-            + ". Rule: run verification with tool actions directly, then return verify status=\"passed\"|\"failed\"|\"blocked\"."
-        )
-
-    def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
-        return "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
-
-    def _format_agent_feedback_empty_actions_error(self) -> str:
-        return (
-            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful agent action and optional progress field, or final goal action."
-        )
-
-    def _format_agent_feedback_completion_without_message_error(self) -> str:
-        return "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
-
-    def _format_agent_feedback_missing_goal_error(self) -> str:
-        return "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools."
-
-    def _format_agent_feedback_missing_plan_error(self) -> str:
-        return "Error: attempted tool/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step."
-
-    def _format_agent_feedback_stale_plan_error(self) -> str:
-        return 'Error: changed Goal without replacing Plan. Rule: include start.plan or plan mode="replace" with the new goal.'
 
     def _pending_verification_error(self, actions: list[Json]) -> str:
         if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions):
@@ -4919,11 +4746,11 @@ class Agent:
 
     def _build_response_context(self, response: Json) -> ResponseContext:
         actions = self._response_actions(response)
-        tool_calls = self._tool_calls_from_actions(actions)
+        tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
         pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
         progress_messages = self._progress_messages_from_actions(actions)
-        has_goal_action = self._has_goal_action(actions)
-        has_plan_action = self._has_plan_action(actions)
+        has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
+        has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
         return ResponseContext(
             response=response,
@@ -4940,7 +4767,7 @@ class Agent:
             has_goal_action=has_goal_action,
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
-            has_user_rule_action=self._has_user_rule_action(actions),
+            has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
             state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action),
         )
 
@@ -4964,7 +4791,11 @@ class Agent:
             return True
         pending_verification_error = self._pending_verification_error(ctx.actions)
         if pending_verification_error:
-            self._remember_agent_error(self._format_agent_feedback_pending_verification_error(pending_verification_error))
+            self._remember_agent_error(
+                "Error: pending verify is invalid: "
+                + pending_verification_error
+                + ". Rule: run verification with tool actions directly, then return verify status=\"passed\"|\"failed\"|\"blocked\"."
+            )
             self._report_gate(
                 on_message,
                 "Retrying: run verification tools directly.",
@@ -4972,7 +4803,7 @@ class Agent:
             )
             return True
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
-            self._remember_agent_error(self._format_agent_feedback_missing_goal_error())
+            self._remember_agent_error("Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools.")
             self._report_gate(
                 on_message,
                 "Retrying: set goal and plan before tools.",
@@ -4980,7 +4811,7 @@ class Agent:
             )
             return True
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error(self._format_agent_feedback_stale_plan_error())
+            self._remember_agent_error('Error: changed Goal without replacing Plan. Rule: include start.plan or plan mode="replace" with the new goal.')
             self._report_gate(
                 on_message,
                 "Retrying: new goal requires a fresh plan.",
@@ -5005,7 +4836,7 @@ class Agent:
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.plan_was_empty and not self.blackboard.plan and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error(self._format_agent_feedback_missing_plan_error())
+            self._remember_agent_error("Error: attempted tool/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step.")
             self._report_gate(
                 on_message,
                 "Retrying: create a short plan before tools.",
@@ -5018,7 +4849,9 @@ class Agent:
             and not self.blackboard.goal_reached
             and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
         ):
-            self._remember_agent_error(self._format_agent_feedback_verified_but_not_complete_error())
+            self._remember_agent_error(
+                "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
+            )
             self._report_gate(
                 on_message,
                 "Retrying: verification is done but goal is not complete.",
@@ -5108,7 +4941,9 @@ class Agent:
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             self.blackboard.goal_reached = False
-            self._remember_agent_error(self._format_agent_feedback_verification_error())
+            self._remember_agent_error(
+                'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
+            )
             self._report_gate(
                 on_message,
                 "Retrying: verification is required before completion.",
@@ -5125,7 +4960,7 @@ class Agent:
             return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:
             self.blackboard.goal_reached = False
-            self._remember_agent_error(self._format_agent_feedback_completion_without_message_error())
+            self._remember_agent_error("Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete.")
             self._report_gate(
                 on_message,
                 "Retrying: goal is complete but message_for_complete is missing.",
@@ -5140,7 +4975,9 @@ class Agent:
             return AgentRunResult(done=True, value=ctx.response)
         self.blackboard.goal_reached = False
         if not ctx.actions:
-            self._remember_agent_error(self._format_agent_feedback_empty_actions_error())
+            self._remember_agent_error(
+                "Error: returned no actions while the goal is incomplete. Rule: continue with a useful agent action and optional progress field, or final goal action."
+            )
             self._report_gate(
                 on_message,
                 "Continuing: assistant must set current task's goal.",
@@ -5299,27 +5136,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
 
 
 CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
-CONFIG_SET_KEYS: tuple[str, ...] = (
-    "provider.url",
-    "provider.key",
-    "provider.model",
-    "provider.reasoning",
-    "provider.effort",
-    "provider.stream",
-    "provider.temperature",
-    "provider.timeout",
-    "provider.first_token_timeout",
-    "runtime.compact_at",
-    "runtime.shell_timeout",
-    "runtime.max_agent_steps",
-    "runtime.yolo",
-)
-CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
-    "provider.reasoning": ("on", "off"),
-    "provider.effort": CONFIG_EFFORTS,
-    "provider.stream": ("on", "off"),
-    "runtime.yolo": ("on", "off"),
-}
 CONFIG_PROVIDER_ATTRS: dict[str, str] = {
     "provider.url": "url",
     "provider.key": "key",
@@ -5337,8 +5153,16 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.max_agent_steps": "max_agent_steps",
     "runtime.yolo": "yolo",
 }
+CONFIG_SET_KEYS: tuple[str, ...] = tuple(CONFIG_PROVIDER_ATTRS) + tuple(CONFIG_RUNTIME_ATTRS)
+CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
+    "provider.reasoning": ("on", "off"),
+    "provider.effort": CONFIG_EFFORTS,
+    "provider.stream": ("on", "off"),
+    "runtime.yolo": ("on", "off"),
+}
 CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
 CONFIG_INT_KEYS: set[str] = {"provider.timeout", "provider.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
+CONFIG_SET_USAGE = "Usage: /set <key> <value>"
 
 
 @final
@@ -5433,31 +5257,27 @@ class CommandDispatcher:
             return "Usage: /status"
         session = self.agent.session
         blackboard = self.agent.blackboard
+        provider = session.config.provider
+        reasoning = provider.reasoning_effort if provider.reasoning else "off"
+        model_usage = "  (empty)"
+        if session.state.model_usage:
+            model_usage = "\n".join(
+                "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
+                for model, usage in session.state.model_usage.items()
+            )
         verification_status = blackboard.verification.status
         return "\n".join(
             [
-                "model: " + self._format_model_status(session.provider_config()),
+                "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
                 "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
-                self._format_model_usage(),
+                model_usage,
                 "goal: " + (blackboard.goal or "(empty)"),
                 "verification: " + verification_status,
             ]
-        )
-
-    def _format_model_status(self, config: ProviderConfig) -> str:
-        reasoning = config.reasoning_effort if config.reasoning else "off"
-        return (config.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(config.stream)
-
-    def _format_model_usage(self) -> str:
-        if not self.agent.session.state.model_usage:
-            return "  (empty)"
-        return "\n".join(
-            "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
-            for model, usage in self.agent.session.state.model_usage.items()
         )
 
     def _compact(self, args: str) -> str:
@@ -5513,7 +5333,7 @@ class CommandDispatcher:
     def _set(self, args: str) -> str:
         key, value = self._parse_set_args(args)
         if not key:
-            return self._set_usage()
+            return CONFIG_SET_USAGE
         if key not in CONFIG_SET_KEYS:
             return "Unknown config key: " + key
         if value is None:
@@ -5528,16 +5348,8 @@ class CommandDispatcher:
         return "Set " + key + " = " + self._config_value(key) + suffix
 
     def _parse_set_args(self, args: str) -> tuple[str, str | None]:
-        if not args:
-            return "", None
         key, separator, value = args.partition(" ")
-        if not separator:
-            return key.strip(), None
-        stripped = value.strip()
-        return key.strip(), stripped if stripped else None
-
-    def _set_usage(self) -> str:
-        return "Usage: /set <key> <value>"
+        return key.strip(), (value.strip() or None) if separator else None
 
     def _config_value(self, key: str) -> str:
         target, attr = self._config_target(key)
@@ -5553,10 +5365,9 @@ class CommandDispatcher:
     def _apply_config_value(self, key: str, value: str) -> str:
         target, attr = self._config_target(key)
         if key in CONFIG_BOOL_KEYS:
-            parsed = self._parse_on_off(value)
-            if parsed is None:
+            if value not in {"on", "off"}:
                 return "Usage: /set " + key + " [on|off]"
-            setattr(target, attr, parsed)
+            setattr(target, attr, value == "on")
             return ""
         if key == "provider.effort":
             if value not in CONFIG_EFFORTS:
@@ -5564,21 +5375,27 @@ class CommandDispatcher:
             setattr(target, attr, value)
             return ""
         if key == "provider.temperature":
-            parsed_float = self._parse_float(value)
-            if parsed_float is None:
+            try:
+                parsed_float = float(value)
+            except ValueError:
+                return "Usage: /set " + key + " <number>"
+            if parsed_float < 0:
                 return "Usage: /set " + key + " <number>"
             setattr(target, attr, parsed_float)
             return ""
         if key in CONFIG_INT_KEYS:
-            parsed_int = self._parse_positive_int(value)
-            if parsed_int is None:
+            try:
+                parsed_int = int(value)
+            except ValueError:
+                return "Usage: /set " + key + " <positive-number>"
+            if parsed_int <= 0:
                 return "Usage: /set " + key + " <positive-number>"
             setattr(target, attr, parsed_int)
             return ""
         if key in {"provider.url", "provider.key", "provider.model"}:
             setattr(target, attr, value)
             return ""
-        return self._set_usage()
+        return CONFIG_SET_USAGE
 
     def _config_target(self, key: str) -> tuple[object, str]:
         if key in CONFIG_PROVIDER_ATTRS:
@@ -5605,35 +5422,14 @@ class CommandDispatcher:
             msg += f" ({failed} failed)"
         return msg
 
-    def _parse_on_off(self, value: str) -> bool | None:
-        return {"on": True, "off": False}.get(value)
-
-    def _parse_float(self, value: str) -> float | None:
-        try:
-            parsed = float(value)
-        except ValueError:
-            return None
-        return parsed if parsed >= 0 else None
-
-    def _parse_positive_int(self, value: str) -> int | None:
-        try:
-            parsed = int(value)
-        except ValueError:
-            return None
-        return parsed if parsed > 0 else None
-
     def _format_bool(self, value: bool | None) -> str:
-        if value is None:
-            return "(fallback)"
-        return "on" if value else "off"
+        return "(fallback)" if value is None else ("on" if value else "off")
 
     def _format_optional(self, value: object) -> str:
         return str(value) if value is not None else "(fallback)"
 
     def _with_status(self, action: StatusAction) -> str:
-        if self.run_with_status is None:
-            return action()
-        return self.run_with_status(action)
+        return action() if self.run_with_status is None else self.run_with_status(action)
 
 
 def _format_count(value: int) -> str:
@@ -5858,12 +5654,9 @@ class AgentLoop:
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=ReferenceFileCompleter(self.agent.session.cwd, self._command_completer()),
+            completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter()),
             complete_while_typing=True,
         )
-
-    def _command_completer(self) -> Completer:
-        return CommandCompleter()
 
     def _run_agent(self, user_input: str) -> None:
         try:
@@ -6010,7 +5803,7 @@ class AgentLoop:
                 [("ansibrightblack", "  Why     "), ("ansimagenta", call.intention + "\n")],
                 "  Why     " + call.intention,
             )
-        if tool.is_editing():
+        if tool.effect() == ToolEffect.EDIT:
             preview = tool.preview()
             if preview:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
@@ -6238,9 +6031,7 @@ class AgentLoop:
             return "bold ansimagenta"
         if "done" in badge:
             return "bold ansigreen"
-        if "failed" in badge:
-            return "bold ansired"
-        if "blocked" in badge:
+        if "failed" in badge or "blocked" in badge:
             return "bold ansired"
         return "ansibrightblack"
 
@@ -6323,30 +6114,21 @@ class CommandCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if text.startswith("/set "):
-            yield from self._set_completions(text[len("/set ") :])
+            text = text[len("/set ") :]
+            if " " not in text:
+                for key in CONFIG_SET_KEYS:
+                    if key.startswith(text):
+                        yield Completion(key, start_position=-len(text))
+                return
+            key, _, value_prefix = text.partition(" ")
+            for value in CONFIG_VALUE_COMPLETIONS.get(key, ()):
+                if value.startswith(value_prefix):
+                    yield Completion(value, start_position=-len(value_prefix))
             return
         if text.startswith("/") and " " not in text:
-            yield from self._command_completions(text)
-
-    def _command_completions(self, prefix: str) -> Iterator[Completion]:
-        for spec in COMMANDS:
-            if spec.name.startswith(prefix):
-                yield Completion(spec.name, start_position=-len(prefix))
-
-    def _set_completions(self, text: str) -> Iterator[Completion]:
-        if " " not in text:
-            prefix = text
-            for key in CONFIG_SET_KEYS:
-                if key.startswith(prefix):
-                    yield Completion(key, start_position=-len(prefix))
-            return
-        key, _, value_prefix = text.partition(" ")
-        values = CONFIG_VALUE_COMPLETIONS.get(key)
-        if not values:
-            return
-        for value in values:
-            if value.startswith(value_prefix):
-                yield Completion(value, start_position=-len(value_prefix))
+            for spec in COMMANDS:
+                if spec.name.startswith(text):
+                    yield Completion(spec.name, start_position=-len(text))
 
 
 class ReferenceFileCompleter(Completer):

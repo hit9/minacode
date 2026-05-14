@@ -215,8 +215,8 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
         def preview(self):
             return "preview"
 
-        def is_editing(self):
-            return True
+        def effect(self):
+            return nanocode.ToolEffect.EDIT
 
     outputs = []
     loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
@@ -230,13 +230,8 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
     assert any("Preview\npreview" in output for output in outputs)
 
 
-def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
-    completer = loop._command_completer()
+def test_agent_loop_command_completer_matches_slash_commands():
+    completer = nanocode.CommandCompleter()
 
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
