@@ -4222,6 +4222,7 @@ class Agent:
     def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
             return
+        self._queue_observation_blocks(self.latest_tool_call_blocks)
         self._append_recent_tool_call_blocks([_format_recent_tool_call(execution, include_result=False) for execution in self.latest_tool_call_executions])
         self.latest_tool_call_executions = list(executions)
         self.latest_tool_call_blocks = [_format_recent_tool_call(execution) for execution in executions]
@@ -4237,18 +4238,26 @@ class Agent:
         if overflow > 0:
             evicted = self.recent_tool_call_blocks[:overflow]
             del self.recent_tool_call_blocks[:overflow]
-            self._queue_observation_for_evicted_blocks(evicted)
+            self._queue_observation_blocks(evicted)
         while len(_join_tool_call_blocks(self.recent_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS and self.recent_tool_call_blocks:
-            self._queue_observation_for_evicted_blocks([self.recent_tool_call_blocks.pop(0)])
+            self._queue_observation_blocks([self.recent_tool_call_blocks.pop(0)])
 
-    def _queue_observation_for_evicted_blocks(self, blocks: list[str]) -> None:
+    def _queue_observation_blocks(self, blocks: list[str]) -> None:
+        queued_counters = {self._tool_result_counter_from_block(block) for block in self.pending_observation_blocks}
         for block in blocks:
-            match = RESULT_KEY_PATTERN.search(block)
-            counter = int(match.group(1).split(".", 1)[1]) if match else 0
-            if counter > self.blackboard.memory_checkpoint_tool_result_counter:
+            counter = self._tool_result_counter_from_block(block)
+            if counter > self.blackboard.memory_checkpoint_tool_result_counter and counter not in queued_counters:
                 self.pending_observation_blocks.append(block)
+                queued_counters.add(counter)
         if self.pending_observation_blocks:
             self.mode = AgentMode.OBSERVE
+
+    def _tool_result_counter_from_block(self, block: str) -> int:
+        match = RESULT_KEY_PATTERN.search(block)
+        return int(match.group(1).split(".", 1)[1]) if match else 0
+
+    def _max_tool_result_counter(self, blocks: list[str]) -> int:
+        return max((self._tool_result_counter_from_block(block) for block in blocks), default=0)
 
     def _prune_tool_result_store(self) -> None:
         overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
@@ -4319,9 +4328,17 @@ class Agent:
         if self._has_memory_update_action(self._response_actions(response)):
             self._mark_memory_checkpoint()
 
-    def _mark_memory_checkpoint(self) -> None:
-        self.blackboard.memory_checkpoint_tool_result_counter = self.runtime.tool_result_counter
-        self.pending_observation_blocks = []
+    def _mark_memory_checkpoint(self, counter: int = 0) -> None:
+        checkpoint = counter or self._visible_tool_result_counter() or self.runtime.tool_result_counter
+        self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
+        self.pending_observation_blocks = [
+            block for block in self.pending_observation_blocks if self._tool_result_counter_from_block(block) > self.blackboard.memory_checkpoint_tool_result_counter
+        ]
+
+    def _visible_tool_result_counter(self) -> int:
+        if self.mode == AgentMode.OBSERVE and self.pending_observation_blocks:
+            return self._max_tool_result_counter(self.pending_observation_blocks)
+        return self._max_tool_result_counter(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
 
     def _has_memory_update_action(self, actions: list[Json]) -> bool:
         for action in actions:
@@ -4330,8 +4347,6 @@ class Agent:
             if any(_memory_fact_from_json(raw) for raw in values):
                 return True
             if action_type == "stable_knowledge" and _json_list(action.get("items")):
-                return True
-            if action_type == "progress" and (_json_str(action.get("text")) or _json_str(action.get("message")) or _json_str(action.get("progress"))):
                 return True
         return False
 
@@ -4719,13 +4734,22 @@ class Agent:
                 "Verification_Gate: verify status=pending is not allowed while digesting latest results.",
             )
             return AgentRunResult()
+        observed_counter = self._max_tool_result_counter(self.pending_observation_blocks)
         self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
-        self.mode = AgentMode.ACT
-        self._mark_memory_checkpoint()
+        if self._has_observation_checkpoint_action(ctx.actions):
+            self.mode = AgentMode.ACT
+            self._mark_memory_checkpoint(observed_counter)
+        else:
+            self.mode = AgentMode.OBSERVE
         self._promote_required_verification(ctx)
         return self._finish_or_continue(ctx, on_message)
+
+    def _has_observation_checkpoint_action(self, actions: list[Json]) -> bool:
+        if not actions:
+            return True
+        return any(_json_str(action.get("type")) in {"known", "stable_knowledge", "plan", "verify", "goal"} for action in actions)
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:

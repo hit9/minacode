@@ -256,8 +256,59 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert agent.mode == nanocode.AgentMode.OBSERVE
     context = agent._format_recent_tool_call_context()
     assert "one.txt" in context
+    assert "two.txt" in context
+    assert "three.txt" in context
+    assert "four.txt" not in context
+    assert len(agent.pending_observation_blocks) == 3
+
+
+def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+
+    context = agent._format_recent_tool_call_context()
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "one.txt" in context
+    assert "<ReadToolResult>" in context
+    assert "one\n" in context
     assert "two.txt" not in context
-    assert agent.pending_observation_blocks
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
+
+    agent.handle_response({"actions": [{"type": "known", "items": ["one.txt contains one."]}]})
+
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 1
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.pending_observation_blocks == []
+    assert "two.txt" in _blocks_text(agent.latest_tool_call_blocks)
+
+
+def test_observe_progress_does_not_mark_tool_results_digested(tmp_path):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+
+    agent.handle_response({"actions": [{"type": "progress", "text": "checking result"}]})
+
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "one.txt" in _blocks_text(agent.pending_observation_blocks)
+
+
+def test_progress_does_not_mark_memory_checkpoint(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+
+    agent.apply_response({"actions": [{"type": "progress", "text": "reading sample"}]})
+
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
 
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
