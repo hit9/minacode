@@ -741,7 +741,7 @@ def _cli_token(value: str) -> str:
 
 
 class Tool:
-    NAME: ClassVar[str]
+    NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
     SIGNATURE: ClassVar[str]
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
@@ -750,7 +750,7 @@ class Tool:
 
     @classmethod
     def name(cls) -> str:
-        return cls.NAME
+        return cls.NAME or cls.__name__.removesuffix("Tool")
 
     @classmethod
     def description(cls) -> list[str]:
@@ -773,9 +773,7 @@ class Tool:
         return [_cli_token(arg) for arg in args]
 
     def requires_confirmation(self, session: Session) -> bool:
-        if self.REQUIRES_CONFIRMATION is None:
-            raise NotImplementedError
-        return self.REQUIRES_CONFIRMATION
+        return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.effect() == ToolEffect.EDIT
 
     def call_live(self, sink: Callable[[str], None] | None = None) -> str:
         return self.call()
@@ -926,7 +924,6 @@ def _range_fingerprint(content: str) -> str:
 @dataclass
 class ReadTool(Tool):
     MAX_LINES: ClassVar[int] = 600
-    NAME: ClassVar[str] = "Read"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
@@ -1117,7 +1114,6 @@ class ReadTool(Tool):
 @final
 @dataclass
 class LineCountTool(Tool):
-    NAME: ClassVar[str] = "LineCount"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
     SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
@@ -1167,7 +1163,6 @@ class LineCountTool(Tool):
 @final
 @dataclass
 class ListDirTool(Tool):
-    NAME: ClassVar[str] = "ListDir"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "List one directory non-recursively; optional glob filters immediate entry names.",
@@ -1239,7 +1234,6 @@ class SearchTool(Tool):
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 4
     MAX_CONTEXT_LINES: ClassVar[int] = 30
-    NAME: ClassVar[str] = "Search"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives.",
@@ -1627,12 +1621,10 @@ class SearchTool(Tool):
 @final
 @dataclass
 class EditTool(Tool):
-    NAME: ClassVar[str] = "Edit"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",)
     SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
-    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
 
     filepath: str = ""
     find: str = ""
@@ -1708,12 +1700,10 @@ class EditTool(Tool):
 @final
 @dataclass
 class CreateFileTool(Tool):
-    NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist.",)
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
-    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
 
     filepath: str = ""
     content: str = ""
@@ -1769,7 +1759,6 @@ class ReplaceRangeEdit:
 @final
 @dataclass
 class ReplaceRangeTool(Tool):
-    NAME: ClassVar[str] = "ReplaceRange"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one small Read-backed [start,end) range in an existing file.",
@@ -1778,7 +1767,6 @@ class ReplaceRangeTool(Tool):
     )
     SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',)
-    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
 
     filepath: str = ""
     start: int = 0
@@ -1991,12 +1979,10 @@ class ReplaceRangeTool(Tool):
 @final
 @dataclass
 class ApplyPatchTool(Tool):
-    NAME: ClassVar[str] = "ApplyPatch"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file.",)
     SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
-    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
 
     filepath: str = ""
     unified_diff: str = ""
@@ -2244,7 +2230,6 @@ class ApplyPatchTool(Tool):
 @final
 @dataclass
 class BashTool(Tool):
-    NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",)
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
@@ -2388,7 +2373,6 @@ class BashTool(Tool):
 @final
 @dataclass
 class GitTool(Tool):
-    NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run git without a shell for repository state, history, status, diff, and changed files.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
