@@ -101,7 +101,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     bar = StatusBar(session)
 
     fragments = bar._fragments(1.2, now=1.0, show_sweep=True, show_elapsed=True)
-    text = bar._plain(fragments)
+    text = "".join(text for _, text in fragments)
 
     assert ">" not in text
     assert "model (medium)" in text
@@ -123,7 +123,7 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     session.state.current_model_call_reasoning_label = "low"
     bar = StatusBar(session)
 
-    text = bar._plain(bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+    text = "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
     assert "active-model (low)" in text
     assert "calling(2):0.6s" in text

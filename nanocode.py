@@ -750,12 +750,10 @@ class Tool(Protocol):
     @classmethod
     def example(cls) -> list[str]: ...
     @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.OTHER
+    def effect(cls) -> ToolEffect: ...
 
     @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
-        return [_cli_token(arg) for arg in args]
+    def cli_args(cls, args: list[str]) -> list[str]: ...
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
@@ -763,6 +761,46 @@ class Tool(Protocol):
     def requires_confirmation(self, session: Session) -> bool: ...
     def preview(self) -> str: ...
     def call(self) -> str: ...
+
+    def call_live(self, sink: Callable[[str], None] | None = None) -> str: ...
+
+
+class ToolBase:
+    NAME: ClassVar[str]
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ()
+    SIGNATURE: ClassVar[str]
+    EXAMPLE: ClassVar[tuple[str, ...]] = ()
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = None
+
+    @classmethod
+    def name(cls) -> str:
+        return cls.NAME
+
+    @classmethod
+    def description(cls) -> list[str]:
+        return list(cls.DESCRIPTION)
+
+    @classmethod
+    def signature(cls) -> str:
+        return cls.SIGNATURE
+
+    @classmethod
+    def example(cls) -> list[str]:
+        return list(cls.EXAMPLE)
+
+    @classmethod
+    def effect(cls) -> ToolEffect:
+        return cls.EFFECT
+
+    @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(arg) for arg in args]
+
+    def requires_confirmation(self, session: Session) -> bool:
+        if self.REQUIRES_CONFIRMATION is None:
+            raise NotImplementedError
+        return self.REQUIRES_CONFIRMATION
 
     def call_live(self, sink: Callable[[str], None] | None = None) -> str:
         return self.call()
@@ -911,8 +949,19 @@ def _range_fingerprint(content: str) -> str:
 
 @final
 @dataclass
-class ReadTool(Tool):
+class ReadTool(ToolBase):
     MAX_LINES: ClassVar[int] = 600
+    NAME: ClassVar[str] = "Read"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
+        "Each range returns at most 600 lines.",
+    )
+    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, content>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["code.py", "0,80", "160,220"]',
+        'Example args: ["code.py"]',
+    )
 
     filepath: str = ""
     start: int = 0
@@ -921,32 +970,6 @@ class ReadTool(Tool):
     filepaths: list[str] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-
-    @classmethod
-    def name(cls) -> str:
-        return "Read"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.READONLY
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
-            "Each range returns at most 600 lines.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, content>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            'Example args: ["code.py", "0,80", "160,220"]',
-            'Example args: ["code.py"]',
-        ]
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -1118,28 +1141,14 @@ class ReadTool(Tool):
 
 @final
 @dataclass
-class LineCountTool(Tool):
+class LineCountTool(ToolBase):
+    NAME: ClassVar[str] = "LineCount"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
+    SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "other.py"]',)
+
     filepaths: list[str] = field(default_factory=list)
-
-    @classmethod
-    def name(cls) -> str:
-        return "LineCount"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.READONLY
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Count lines for one or more files. Useful before reading large files or deciding Read ranges."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "other.py"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1182,33 +1191,19 @@ class LineCountTool(Tool):
 
 @final
 @dataclass
-class ListDirTool(Tool):
+class ListDirTool(ToolBase):
+    NAME: ClassVar[str] = "ListDir"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "List one directory non-recursively; optional glob filters immediate entry names.",
+        "Batch multiple ListDir actions in one turn when checking several known directories.",
+    )
+    SIGNATURE: ClassVar[str] = "ListDir([dirpath][, glob]) -> ListDirToolResult<entries>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []")
+
     dirpath: str = ""
     glob_pattern: str = ""
     cwd: str = ""
-
-    @classmethod
-    def name(cls) -> str:
-        return "ListDir"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.READONLY
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "List one directory non-recursively; optional glob filters immediate entry names.",
-            "Batch multiple ListDir actions in one turn when checking several known directories.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "ListDir([dirpath][, glob]) -> ListDirToolResult<entries>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []"]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1263,12 +1258,27 @@ class ListDirTool(Tool):
 
 @final
 @dataclass
-class SearchTool(Tool):
+class SearchTool(ToolBase):
     MAX_MATCHES: ClassVar[int] = 100
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 4
     MAX_CONTEXT_LINES: ClassVar[int] = 30
+    NAME: ClassVar[str] = "Search"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Case-insensitive regex search before Read; use A|B|C for alternatives.",
+        "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
+        "Scope with path=FILE_OR_DIR, filter with glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
+        "Batch multiple Search actions in one turn when checking independent patterns.",
+        "Only options are path=, glob=, context=; escape regex symbols for literal text.",
+    )
+    SIGNATURE: ClassVar[str] = "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
+        'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
+        'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
+    )
 
     @dataclass(frozen=True)
     class Match:
@@ -1285,36 +1295,6 @@ class SearchTool(Tool):
     context_lines: int = CONTEXT_LINES
     cwd: str = ""
     gitignore_patterns: list[str] = field(default_factory=list)
-
-    @classmethod
-    def name(cls) -> str:
-        return "Search"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.READONLY
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Case-insensitive regex search before Read; use A|B|C for alternatives.",
-            "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
-            "Scope with path=FILE_OR_DIR, filter with glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
-            "Batch multiple Search actions in one turn when checking independent patterns.",
-            "Only options are path=, glob=, context=; escape regex symbols for literal text.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
-            'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
-            'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
-        ]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -1671,31 +1651,18 @@ class SearchTool(Tool):
 
 @final
 @dataclass
-class EditTool(Tool):
+class EditTool(ToolBase):
+    NAME: ClassVar[str] = "Edit"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",)
+    SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     filepath: str = ""
     find: str = ""
     replace: str = ""
     cwd: str = ""
-
-    @classmethod
-    def name(cls) -> str:
-        return "Edit"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.EDIT
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "old text", "new text"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -1711,9 +1678,6 @@ class EditTool(Tool):
             )
         find = str(args[1])
         return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
 
     def preview(self) -> str:
         label = f'Edit({self.filepath}, find="{self.find}")'
@@ -1768,30 +1732,17 @@ class EditTool(Tool):
 
 @final
 @dataclass
-class CreateFileTool(Tool):
+class CreateFileTool(ToolBase):
+    NAME: ClassVar[str] = "CreateFile"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist.",)
+    SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     filepath: str = ""
     content: str = ""
     cwd: str = ""
-
-    @classmethod
-    def name(cls) -> str:
-        return "CreateFile"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.EDIT
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "CreateFile(filepath, content) -> CreateFileToolResult<path>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["new.py", "minimal content\\n"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -1804,9 +1755,6 @@ class CreateFileTool(Tool):
         if len(args) != 2:
             raise ToolCallArgError('requires exactly 2 args: filepath, content. Example: CreateFile("new.py", "content\\n")')
         return cls(filepath=session.resolve_path(args[0]), content=str(args[1]), cwd=session.cwd)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
 
     def preview(self) -> str:
         label = f"CreateFile({self.filepath})"
@@ -1845,7 +1793,18 @@ class ReplaceRangeEdit:
 
 @final
 @dataclass
-class ReplaceRangeTool(Tool):
+class ReplaceRangeTool(ToolBase):
+    NAME: ClassVar[str] = "ReplaceRange"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Replace one small Read-backed [start,end) range in an existing file.",
+        "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
+        "Content is only the replacement for that range; do not include boundary lines.",
+    )
+    SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     filepath: str = ""
     start: int = 0
     end: int = 0
@@ -1856,30 +1815,6 @@ class ReplaceRangeTool(Tool):
     edits: list[ReplaceRangeEdit] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-
-    @classmethod
-    def name(cls) -> str:
-        return "ReplaceRange"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.EDIT
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Replace one small Read-backed [start,end) range in an existing file.",
-            "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
-            "Content is only the replacement for that range; do not include boundary lines.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -1944,9 +1879,6 @@ class ReplaceRangeTool(Tool):
             cwd=session.cwd,
             range_fingerprints=session.state.range_fingerprints,
         )
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
 
     def preview(self) -> str:
         label = self._label()
@@ -2083,30 +2015,17 @@ class ReplaceRangeTool(Tool):
 
 @final
 @dataclass
-class ApplyPatchTool(Tool):
+class ApplyPatchTool(ToolBase):
+    NAME: ClassVar[str] = "ApplyPatch"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file.",)
+    SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     filepath: str = ""
     unified_diff: str = ""
     cwd: str = ""
-
-    @classmethod
-    def name(cls) -> str:
-        return "ApplyPatch"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.EDIT
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -2120,9 +2039,6 @@ class ApplyPatchTool(Tool):
         if not unified_diff.strip():
             raise ToolCallArgError("unified_diff cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), unified_diff=unified_diff, cwd=session.cwd)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
 
     def preview(self) -> str:
         label = f"ApplyPatch({self.filepath}, unified_diff=...)"
@@ -2352,27 +2268,17 @@ class ApplyPatchTool(Tool):
 
 @final
 @dataclass
-class BashTool(Tool):
+class BashTool(ToolBase):
+    NAME: ClassVar[str] = "Bash"
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",)
+    SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     command: str = ""
     bash_path: str = ""
     cwd: str = ""
     timeout: int = 60
-
-    @classmethod
-    def name(cls) -> str:
-        return "Bash"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]']
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -2393,9 +2299,6 @@ class BashTool(Tool):
         if not session.bash:
             raise ToolCallError("bash not found")
         return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.settings.shell_timeout)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
 
     def preview(self) -> str:
         return f'Bash("{self.command}")'
@@ -2509,30 +2412,23 @@ class BashTool(Tool):
 
 @final
 @dataclass
-class GitTool(Tool):
+class GitTool(ToolBase):
+    NAME: ClassVar[str] = "Git"
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Run git without a shell for repository state, history, status, diff, and changed files.",
+        "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
+    )
+    SIGNATURE: ClassVar[str] = "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["status", "--short"]',
+        'Example args: ["diff", "--", "nanocode.py"]',
+        'Example args: ["cwd=src", "status", "--short"]',
+    )
+
     args: list[str] = field(default_factory=list)
     git_path: str = ""
     cwd: str = ""
     timeout: int = 60
-
-    @classmethod
-    def name(cls) -> str:
-        return "Git"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Run git without a shell for repository state, history, status, diff, and changed files.",
-            "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["status", "--short"]', 'Example args: ["diff", "--", "nanocode.py"]', 'Example args: ["cwd=src", "status", "--short"]']
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2581,39 +2477,23 @@ class GitTool(Tool):
 
 @final
 @dataclass
-class ToolResultTool(Tool):
+class ToolResultTool(ToolBase):
+    NAME: ClassVar[str] = "Recall"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details.",)
+    SIGNATURE: ClassVar[str] = "Recall(key...) -> RecallToolResult<content>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["tr.1"]',
+        'Batch keys: ["tr.1", "tr.2"]',
+    )
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
+
     keys: list[str]
     results: dict[str, ToolResultItem]
 
     @classmethod
-    def name(cls) -> str:
-        return "Recall"
-
-    @classmethod
-    def effect(cls) -> ToolEffect:
-        return ToolEffect.READONLY
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Recall(key...) -> RecallToolResult<content>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            'Example args: ["tr.1"]',
-            'Batch keys: ["tr.1", "tr.2"]',
-        ]
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         return cls(keys=args, results=session.state.tool_result_store)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return False
 
     def preview(self) -> str:
         return "Recall " + ", ".join(self.keys)
@@ -3064,9 +2944,6 @@ class ModelClient:
 
     def _timeout_handler(self, signum: int, frame: Any) -> None:
         raise ModelRequestTimeout()
-
-    def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "agent") -> Json:
-        return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
 
     def request(
         self,
@@ -4153,8 +4030,8 @@ class ConversationCompactor:
             known="\n".join(self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        request_json = self.model_client.request_json if isinstance(self.model_client, ModelClient) else self.model_client.request
-        response = request_json(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
+        kwargs = {"parse_actions": False} if isinstance(self.model_client, ModelClient) else {}
+        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
@@ -4525,9 +4402,6 @@ class Agent:
     def _response_actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
-    def _action_types(self, actions: list[Json]) -> set[str]:
-        return {action_type for action_type in (_json_str(action.get("type")) for action in actions) if action_type}
-
     def _gate_action_types(
         self,
         actions: list[Json],
@@ -4537,7 +4411,7 @@ class Agent:
         retry_message: str,
         feedback_message: str,
     ) -> AgentRunResult | None:
-        invalid = sorted(self._action_types(actions) - allowed)
+        invalid = sorted({action_type for action_type in (_json_str(action.get("type")) for action in actions) if action_type} - allowed)
         if not invalid:
             return None
         self._remember_agent_error(feedback_message + " Invalid action(s): " + ", ".join(invalid) + ".")
@@ -4783,7 +4657,7 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
-        if self._observe_verify_error(ctx.actions):
+        if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
             self._remember_agent_error("Error: cannot request new verification before digesting latest results. Rule: summarize results first.")
             self._report_gate(
                 on_message,
@@ -4798,9 +4672,6 @@ class Agent:
         self._mark_memory_checkpoint()
         self._promote_required_verification(ctx)
         return self._finish_or_continue(ctx, on_message)
-
-    def _observe_verify_error(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
@@ -5339,7 +5210,7 @@ class StatusBar:
         return self.thread is not None
 
     def snapshot(self, turn_elapsed: float = 0.0) -> str:
-        return self._plain(self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
+        return "".join(text for _, text in self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
 
     def resume(self) -> None:
         if self.thread is not None or not sys.stderr.isatty():
@@ -5420,9 +5291,6 @@ class StatusBar:
             blue = round(blue + (255 - blue) * intensity)
             fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
         return fragments
-
-    def _plain(self, fragments: list[tuple[str, str]]) -> str:
-        return "".join(text for _, text in fragments)
 
 @final
 class AgentLoop:
