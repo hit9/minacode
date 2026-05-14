@@ -211,6 +211,19 @@ def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
     assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
 
 
+def test_compact_command_reports_short_history(tmp_path):
+    session = make_session(tmp_path)
+    agent = Agent(session)
+    session.state.conversation = [UserMessage(content="one"), UserMessage(content="two")]
+    dispatcher = CommandDispatcher(agent)
+
+    result = dispatcher.dispatch("/compact")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "Nothing to compact: 2 item(s), keeping recent 5."
+    assert len(session.state.conversation) == 2
+
+
 def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
     session = make_session(tmp_path, compact_at=100)
     agent = Agent(session)

@@ -5404,9 +5404,12 @@ class CommandDispatcher:
         return self._with_status(self._compact_history)
 
     def _compact_history(self) -> str:
+        before = len(self.agent.session.state.conversation)
         count = self.agent.compact_history()
         if count == 0:
-            return "Conversation history is empty"
+            if before == 0:
+                return "Conversation history is empty"
+            return "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
         return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
 
     def _config(self, args: str) -> str:
