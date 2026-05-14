@@ -330,11 +330,6 @@ class ModelUsage:
 
 
 @dataclass
-class PathsConfig:
-    nanocode_dir: str = ".nanocode"
-
-
-@dataclass
 class RuntimeSettings:
     shell_timeout: int = 60
     compact_at: int = 50
@@ -357,7 +352,7 @@ class RuntimeSettings:
 @dataclass
 class Config:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
-    paths: PathsConfig = field(default_factory=PathsConfig)
+    nanocode_dir: str = ".nanocode"
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
@@ -376,7 +371,7 @@ class Config:
                 timeout=cls.int(provider, "timeout", defaults.timeout),
                 first_token_timeout=cls.int(provider, "first_token_timeout", defaults.first_token_timeout),
             ),
-            paths=PathsConfig(nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode")),
+            nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode"),
         )
 
     @classmethod
@@ -698,13 +693,13 @@ class Session:
         self.state.conversation.append(item)
 
     def debug_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "debug"))
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "debug"))
 
     def tool_results_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "tool_results"))
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "tool_results"))
 
     def user_rules_path(self) -> str:
-        return self.resolve_path(os.path.join(self.config.paths.nanocode_dir, "user_rules.md"))
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "user_rules.md"))
 
     def load_user_rules(self) -> None:
         self.state.user_rules = UserRules.load(self.user_rules_path())
@@ -5493,7 +5488,7 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
-        self.history_path = agent.session.resolve_path(os.path.join(agent.session.config.paths.nanocode_dir, "history"))
+        self.history_path = agent.session.resolve_path(os.path.join(agent.session.config.nanocode_dir, "history"))
         self.prompt_session = prompt_session
         self._live_preview_active = False
         self._live_preview_resume_status = False

@@ -90,7 +90,7 @@ nanocode_dir = ".custom-nanocode"
     assert sessions[0].config.provider.url == "https://example.test/v1"
     assert sessions[0].config.provider.key == "key"
     assert sessions[0].config.provider.model == "custom-model"
-    assert sessions[0].config.paths.nanocode_dir == ".custom-nanocode"
+    assert sessions[0].config.nanocode_dir == ".custom-nanocode"
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
