@@ -1212,6 +1212,21 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     assert "State Updated" not in report
 
 
+def test_main_agent_compact_plan_report_shows_changed_rows(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="List files", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="Read config", status=nanocode.PlanStatus.TODO),
+        nanocode.PlanItem(id="p3", text="Update code", status=nanocode.PlanStatus.TODO),
+        nanocode.PlanItem(id="p4", text="Run tests", status=nanocode.PlanStatus.TODO),
+    ]
+
+    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [{"id": "p2", "status": "doing"}]}]})
+
+    report = agent.state_updater.compact_report()
+    assert report == "Plan Updated\n  2. [◔ doing] Read config"
+
+
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -1301,6 +1316,20 @@ def test_agent_treats_plan_without_mode_as_replace(tmp_path):
 
     assert [item.text for item in agent.blackboard.plan] == ["Inspect new file"]
     assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
+
+
+def test_agent_applies_partial_plan_patch(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="Inspect file", status=nanocode.PlanStatus.TODO, context="old"),
+    ]
+
+    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "read file"}]}]})
+
+    assert agent.blackboard.plan == [
+        nanocode.PlanItem(id="p1", text="Inspect file", status=nanocode.PlanStatus.DONE, context="read file"),
+    ]
 
 
 def test_agent_applies_start_action_to_goal_and_plan(tmp_path):

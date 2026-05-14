@@ -2573,7 +2573,8 @@ Choose the first matching action type, then stop.
 PLANNING:
 - Use a plan only for real tasks.
 - Keep plans short: usually 2-5 steps.
-- Always replace the full plan when updating it.
+- Update Plan only when status, text, context, or ordering actually changes.
+- Use patch for small Plan changes; use replace only when restructuring the Plan.
 - Do not repeat completed steps.
 - At most one item may be doing.
 - Each plan item must be one concrete outcome, not a bundle of unrelated checks or actions.
@@ -2640,6 +2641,8 @@ ACTIONS:
 {"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
 
 {"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
 
 {"type":"known","items":["<new durable current-task fact>"]}
 
@@ -2748,6 +2751,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "progress", "text": "<optional short progress>"} __END_ACTION__
 {"type": "plan", "items": [{"id": "<plan id>", "text": "<plan step>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
+{"type": "plan", "mode": "patch", "items": [{"id": "<plan id>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|failed|blocked", "context": null|"<verification result>"} __END_ACTION__
 {"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
 """
@@ -3643,6 +3647,7 @@ class AgentStateUpdater:
         self.session = session
         self.blackboard = blackboard
         self.latest_report = ""
+        self.latest_compact_plan_rows: list[str] = []
 
     def apply(self, response: Json) -> None:
         actions = self._actions(response)
@@ -3683,7 +3688,9 @@ class AgentStateUpdater:
         if current.goal != before_goal:
             self._append_state_section(lines, "  Goal    " + self._compact(current.goal or "(empty)"))
         plan = [item.format() for item in current.plan]
+        self.latest_compact_plan_rows = []
         if plan != before_plan:
+            self.latest_compact_plan_rows = self._compact_changed_plan_rows(before_plan, plan)
             self._append_state_section(lines, "  Plan", self._format_plan_rows())
         known = list(current.known)
         if known != before_known:
@@ -3726,7 +3733,7 @@ class AgentStateUpdater:
             return ""
         lines = [" + ".join(sections) + " Updated"]
         if "Plan" in sections:
-            lines.extend(self._compact_plan_rows())
+            lines.extend(self.latest_compact_plan_rows or self._compact_plan_rows())
         if "Known" in sections:
             lines.extend(self._compact_known_rows())
         return "\n".join(lines)
@@ -3735,11 +3742,22 @@ class AgentStateUpdater:
         items = self.blackboard.plan
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend(
-            "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
-            for index, item in enumerate(items[offset:], start=offset + 1)
-        )
+        rows.extend(self._compact_plan_row(index, item) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
+
+    def _compact_changed_plan_rows(self, before_plan: list[str], plan: list[str]) -> list[str]:
+        if not before_plan:
+            return self._compact_plan_rows()
+        indexes = [index for index in range(max(len(before_plan), len(plan))) if (before_plan[index] if index < len(before_plan) else None) != (plan[index] if index < len(plan) else None)]
+        if not indexes or any(index >= len(self.blackboard.plan) for index in indexes):
+            return self._compact_plan_rows()
+        offset = max(0, len(indexes) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " changed older"] if offset else []
+        rows.extend(self._compact_plan_row(index + 1, self.blackboard.plan[index]) for index in indexes[offset:])
+        return rows
+
+    def _compact_plan_row(self, index: int, item: PlanItem) -> str:
+        return "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
 
     def _compact_known_rows(self) -> list[str]:
         items = self.blackboard.known
@@ -3803,16 +3821,23 @@ class AgentStateUpdater:
                 plan[:] = [item for item in plan if item.id != item_id]
                 changed = changed or len(plan) != before
                 continue
+            existing = next((item for item in plan if item.id == item_id and item.id), None)
+            if existing:
+                text = _json_str(patch.get("text")) if "text" in patch else None
+                status = _json_str(patch.get("status")) if "status" in patch else None
+                context = _json_str(patch.get("context")) if "context" in patch else existing.context
+                updated = (
+                    text or existing.text,
+                    PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status,
+                    context or "",
+                )
+                changed = changed or (existing.text, existing.status, existing.context) != updated
+                existing.text, existing.status, existing.context = updated
+                continue
             plan_item = self._plan_item_from_json(patch)
             if plan_item is None:
                 continue
-            existing = next((item for item in plan if item.id == plan_item.id and item.id), None)
-            if existing:
-                existing.text = plan_item.text
-                existing.status = plan_item.status
-                existing.context = plan_item.context
-            else:
-                plan.append(plan_item)
+            plan.append(plan_item)
             changed = True
         return changed
 
