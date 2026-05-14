@@ -1619,7 +1619,8 @@ class SearchTool(Tool):
 class EditTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",
+        "Replace/delete one unique exact literal text block in an existing file; best for tiny unambiguous edits, not regex.",
+        "If the target text is repeated or line ranges are clearer, use ReplaceRange; for multi-hunk or structural edits, use ApplyPatch.",
     )
     SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
@@ -1756,7 +1757,7 @@ class ReplaceRangeEdit:
 class ReplaceRangeTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace one small Read-backed [start,end) range in an existing file.",
+        "Replace one small Read-backed [start,end) range in an existing file; best when exact line range is known or target text is not unique.",
         "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
@@ -1978,7 +1979,10 @@ class ReplaceRangeTool(Tool):
 @dataclass
 class ApplyPatchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Apply one focused unified diff to one file; best for complex, structural, or multiple-hunk edits.",
+        "Use after Edit/ReplaceRange args keep failing; do not dump or rewrite a whole large file.",
+    )
     SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
 
@@ -2589,10 +2593,9 @@ EDITING:
 - New file: create minimal skeleton first.
 - Existing file: inspect exact target before editing.
 - Never rewrite a large file in one action.
-- Use Edit for tiny unique literal replacements.
-- Use ReplaceRange for exact line ranges.
-- Use ApplyPatch for complex or multiple focused hunks.
-- If an edit tool's args keep failing, switch to ApplyPatch with a focused unified diff.
+- Use Edit when changing one tiny exact literal block that appears once.
+- Use ReplaceRange after Read when replacing a known continuous range, especially if text is repeated.
+- Use ApplyPatch for structural edits, multiple focused hunks, or when Edit/ReplaceRange args keep failing.
 - Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
