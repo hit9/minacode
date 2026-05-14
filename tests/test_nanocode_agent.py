@@ -726,6 +726,25 @@ def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
 
 
+def test_agent_request_accepts_adjacent_unmarked_json_actions(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '{"type":"known","items":["Project is single-file."]}\n'
+        '{"type":"stable_knowledge","items":[{"category":"structure","text":"All runtime code lives in nanocode.py."}]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "known", "items": ["Project is single-file."]},
+            {
+                "type": "stable_knowledge",
+                "items": [{"category": "structure", "text": "All runtime code lives in nanocode.py."}],
+            },
+        ],
+    }
+
+
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -924,9 +943,11 @@ def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
+    agent.blackboard.task_code = nanocode.TaskCode.WORKING
 
     prompt = agent.build_user_prompt()
 
+    assert "Task Code:\nworking\n\nGoal:" in prompt
     assert "Stable Knowledge:\nworkflow:\n- Project test command is make test.\n\nKnown:" in prompt
 
 
@@ -1102,6 +1123,7 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     )
 
     assert agent.blackboard.goal == "change map"
+    assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
     assert agent.blackboard.goal_reached is False
     assert [item.text for item in agent.blackboard.plan] == ["Find map code", "Edit map size"]
     assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
@@ -1109,10 +1131,11 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
-def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches(tmp_path):
+def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_matches(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.goal = "change map"
+    agent.blackboard.task_code = nanocode.TaskCode.WORKING
 
     agent.apply_response(
         {
@@ -1126,7 +1149,7 @@ def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches
         }
     )
 
-    assert "  Goal    change map" in agent.state_updater.latest_report
+    assert "  Goal    change map" not in agent.state_updater.latest_report
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
@@ -1165,6 +1188,17 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
 
     assert agent.blackboard.goal_reached is True
+
+
+def test_agent_task_code_returns_to_working_after_verification_result(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.task_code = nanocode.TaskCode.VERIFYING
+
+    agent.apply_response({"actions": [{"type": "verify", "status": "passed", "context": "checked"}]})
+
+    assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
 def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
@@ -1346,8 +1380,11 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert latest.startswith("- ok")
     assert path.read_text(encoding="utf-8") == "new\n"
     assert agent.blackboard.verification_required is True
+    assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
     assert agent.runtime.recent_edits == ["- sample.txt: edit sample"]
-    assert "Recent Edits:\n- sample.txt: edit sample\n\n--- Current Task ---" in agent.build_user_prompt()
+    prompt = agent.build_user_prompt()
+    assert "Recent Edits:\n- sample.txt: edit sample\n\n--- Current Task ---" in prompt
+    assert "Task Code:\nverifying\n\nGoal:" in prompt
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
@@ -1700,6 +1737,67 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
     assert len(session.state.tool_result_store) == 1
 
 
+def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {
+                            "type": "start",
+                            "goal": "read sample",
+                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                        }
+                    ]
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "start",
+                            "goal": "read sample again",
+                            "plan": [{"id": "p1", "text": "Read sample again", "status": "doing"}],
+                        }
+                    ]
+                },
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": _final_actions("read sample")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("read sample")
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert "Task Code:\nnew\n\nGoal:" in agent.model_client.user_prompts[0]
+    assert "Task Code:\nworking\n\nGoal:" in agent.model_client.user_prompts[1]
+    assert agent.blackboard.goal == "read sample"
+    assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert "repeated start is invalid" in " ".join(agent.agent_feedback_errors)
+
+
+def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.task_code = nanocode.TaskCode.WORKING
+    agent.blackboard.goal = "read sample"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="Read sample", status=nanocode.PlanStatus.DOING)]
+
+    result = agent.handle_response({"actions": [{"type": "goal", "text": "read sample again", "complete": False}]})
+
+    assert result.done is False
+    assert agent.blackboard.goal == "read sample"
+    assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
+    assert "rewriting Goal is invalid" in " ".join(agent.agent_feedback_errors)
+
+
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     class FakeModelClient:
         def __init__(self):
@@ -1747,6 +1845,7 @@ def test_agent_run_stops_after_chat_action(tmp_path):
     assert response["actions"] == [{"type": "chat", "text": "你好"}]
     assert messages == ["你好"]
     assert len(agent.model_client.user_prompts) == 1
+    assert agent.blackboard.task_code == nanocode.TaskCode.DONE
 
 
 def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):

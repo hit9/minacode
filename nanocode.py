@@ -150,6 +150,13 @@ class PlanStatus(StrEnum):
 ALL_PLAN_STATUSES = frozenset(PlanStatus)
 
 
+class TaskCode(StrEnum):
+    NEW = "new"
+    WORKING = "working"
+    VERIFYING = "verifying"
+    DONE = "done"
+
+
 @final
 @dataclass
 class PlanItem(PromptItem):
@@ -287,6 +294,7 @@ class UserRules(PromptItem):
 @dataclass
 class Blackboard:
     user_input: str = ""
+    task_code: TaskCode = TaskCode.DONE
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
@@ -2533,6 +2541,7 @@ PRIORITY:
 3. Current Goal
 4. Plan / Known / Stable Knowledge
 5. Conversation History
+Task Code controls whether Latest User Request still needs alignment.
 
 CORE RULES:
 - Latest User Request overrides stale Goal.
@@ -2549,6 +2558,13 @@ MEMORY:
 - Tool results are volatile. Save useful facts into Known before they disappear.
 - Do not store result keys like tr.1 in Goal, Plan, Known, or Stable Knowledge. Store path/range/fact instead.
 
+TASK CODE:
+- Current Task Code is authoritative.
+- new: latest user request is not aligned yet; output start if it creates or changes the task.
+- working: task has started; do not output start or rewrite Goal. Continue with known, plan, tool, verify, or goal completion.
+- verifying: edits or required checks need verification; do not output start or rewrite Goal. Run/record verification.
+- done: current task is complete; wait for the next user request.
+
 DECISION LOOP:
 Choose the first matching action type, then stop.
 
@@ -2559,7 +2575,7 @@ Choose the first matching action type, then stop.
    Use only if the latest user request explicitly asks to remember future behavior.
 
 3. start
-   Use when the latest user request is new, changed, corrective, or a command.
+   Use only when Current Task Code is new and the latest user request creates or changes the task.
    Set a fresh goal and a short plan.
 
 4. known / plan
@@ -2688,6 +2704,9 @@ Recent Edits:
 {recent_edits}
 
 --- Current Task ---
+
+Task Code:
+{task_code}
 
 Goal:
 {goal}
@@ -2834,6 +2853,7 @@ class PromptBuilder:
             known="\n".join(current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             tool_result_store=self._format_tool_result_store(set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))),
+            task_code=self.blackboard.task_code,
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
             verification_state=current.verification.format(),
@@ -3068,9 +3088,9 @@ class ModelClient:
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
         if not self._has_action_frame_end(text):
-            action, error = self._parse_single_unmarked_action(text)
-            if action is not None:
-                return {"actions": [action]}
+            actions, error = self._parse_unmarked_actions(text)
+            if actions:
+                return {"actions": actions}
             return self._invalid_model_response(content, "expected one JSON action object or action frames ending with " + self.ACTION_FRAME_END + "; " + error)
         actions: list[Json] = []
         frame_errors: list[str] = []
@@ -3137,16 +3157,24 @@ class ModelClient:
             return None, "frame " + str(frame_number) + ": action missing type"
         return value, ""
 
-    def _parse_single_unmarked_action(self, text: str) -> tuple[Json | None, str]:
-        try:
-            value = json.loads(text)
-        except json.JSONDecodeError as error:
-            return None, str(error)
-        if not isinstance(value, dict):
-            return None, "expected JSON object action"
-        if not _json_str(value.get("type")):
-            return None, "action missing type"
-        return value, ""
+    def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
+        actions: list[Json] = []
+        decoder = json.JSONDecoder()
+        index = 0
+        while True:
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index >= len(text):
+                return actions, ""
+            try:
+                value, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError as error:
+                return [], str(error)
+            if not isinstance(value, dict):
+                return [], "expected JSON object action"
+            if not _json_str(value.get("type")):
+                return [], "action missing type"
+            actions.append(value)
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
@@ -3610,14 +3638,13 @@ class AgentStateUpdater:
         self._apply_known(actions)
         self._apply_user_rules(actions)
         self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        force_goal_report = any(_json_str(action.get("type")) == "start" for action in actions)
+        self._apply_task_code(actions)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
             before_user_rules,
             before_extra_state,
-            force_goal_report=force_goal_report,
         )
 
     def _actions(self, response: Json) -> list[Json]:
@@ -3630,12 +3657,10 @@ class AgentStateUpdater:
         before_known: list[str],
         before_user_rules: str,
         before_extra_state: str,
-        *,
-        force_goal_report: bool = False,
     ) -> str:
         current = self.blackboard
         lines = []
-        if force_goal_report or current.goal != before_goal:
+        if current.goal != before_goal:
             self._append_state_section(lines, "  Goal    " + self._compact(current.goal or "(empty)"))
         plan = [item.format() for item in current.plan]
         if plan != before_plan:
@@ -3785,6 +3810,20 @@ class AgentStateUpdater:
         self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         self._apply_verification(actions)
         self._bind_verification_goal()
+
+    def _apply_task_code(self, actions: list[Json]) -> None:
+        action_types = {_json_str(action.get("type")) for action in actions}
+        if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self.blackboard.task_code = TaskCode.VERIFYING
+            return
+        if "verify" in action_types:
+            self.blackboard.task_code = TaskCode.WORKING
+            return
+        if "start" in action_types:
+            self.blackboard.task_code = TaskCode.WORKING
+            return
+        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "progress", "tool")) and not self.blackboard.goal_reached:
+            self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
         if not lines:
@@ -4141,6 +4180,7 @@ class Agent:
             raise
 
     def _finish_current_goal(self) -> None:
+        self.blackboard.task_code = TaskCode.DONE
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
 
@@ -4295,6 +4335,7 @@ class Agent:
             )
         if execution.requires_verification:
             self.blackboard.verification_required = True
+            self.blackboard.task_code = TaskCode.VERIFYING
             self._remember_recent_edit(execution)
 
     def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
@@ -4467,6 +4508,7 @@ class Agent:
     def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.chat_message is None:
             return None
+        self.blackboard.task_code = TaskCode.DONE
         self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
         if on_message is not None:
             on_message(ctx.chat_message)
@@ -4481,6 +4523,26 @@ class Agent:
             feedback_message="Error: this step only accepts agent work actions.",
         )
         if action_gate is not None:
+            return True
+        if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
+            self._remember_agent_error(
+                "Error: repeated start is invalid after the current task is active. Rule: follow Current Task Code and continue with plan/tool/verify/goal."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: current task is already active; continue without start.",
+                "GoalPlan_Gate: repeated start while task code is " + self.blackboard.task_code + ".",
+            )
+            return True
+        if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
+            self._remember_agent_error(
+                "Error: rewriting Goal is invalid after the current task is active. Rule: follow Current Task Code and continue the existing Goal/Plan."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: current task is already active; continue without rewriting goal.",
+                "GoalPlan_Gate: goal rewrite while task code is " + self.blackboard.task_code + ".",
+            )
             return True
         pending_verification_error = self._pending_verification_error(ctx.actions)
         if pending_verification_error:
@@ -4561,6 +4623,7 @@ class Agent:
             return
         if verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.BLOCKED}:
             return
+        self.blackboard.task_code = TaskCode.VERIFYING
         verification.status = VerificationStatus.REQUIRED
         verification.kind = verification.kind or "change_syntax_check"
         verification.method = verification.method or self.blackboard.goal or self.blackboard.user_input
@@ -4709,6 +4772,7 @@ class Agent:
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         self.blackboard.user_input = user_input
+        self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
         self.blackboard.verification.reset()
@@ -4972,6 +5036,7 @@ class CommandDispatcher:
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 model_usage,
+                "task: " + blackboard.task_code,
                 "goal: " + (blackboard.goal or "(empty)"),
                 "verification: " + verification_status,
             ]
