@@ -81,7 +81,7 @@ USE AT YOUR OWN RISK.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
+- Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/yolo`.
 - Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.
