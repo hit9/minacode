@@ -249,23 +249,26 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert "two.txt" in recent
     assert "three.txt" in recent
     assert "<ReadToolResult>" in latest
-    assert "<ReadToolResult>" not in recent
-    assert "out:" in recent
+    assert "<ReadToolResult>" in recent
+    assert "two.txt\n" in recent
+    assert "three.txt\n" in recent
     assert "Recall(" not in recent
     assert len(agent.recent_tool_call_blocks) == 2
     assert agent.mode == nanocode.AgentMode.OBSERVE
     context = agent._format_recent_tool_call_context()
     assert "one.txt" in context
-    assert "two.txt" in context
-    assert "three.txt" in context
+    assert "two.txt" not in context
+    assert "three.txt" not in context
     assert "four.txt" not in context
-    assert len(agent.pending_observation_blocks) == 3
+    assert "<ReadToolResult>" in context
+    assert len(agent.pending_observation_blocks) == 1
 
 
 def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
+    agent.RECENT_TOOL_CALL_CHARS = 300
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
@@ -276,6 +279,9 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert "<ReadToolResult>" in context
     assert "one\n" in context
     assert "two.txt" not in context
+    recent = _blocks_text(agent.recent_tool_call_blocks)
+    assert "recall=tr.1" in recent
+    assert "<ReadToolResult>" not in recent
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
     agent.handle_response({"actions": [{"type": "known", "items": ["one.txt contains one."]}]})
@@ -290,6 +296,7 @@ def test_observe_progress_does_not_mark_tool_results_digested(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
+    agent.RECENT_TOOL_CALL_CHARS = 300
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
@@ -314,15 +321,37 @@ def test_progress_does_not_mark_memory_checkpoint(tmp_path):
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALL_CHARS = 80
+    agent.RECENT_TOOL_CALL_CHARS = 180
 
-    agent._append_recent_tool_call_blocks(["old call " + "x" * 40])
-    agent._append_recent_tool_call_blocks(["new call " + "y" * 40])
+    agent._append_recent_tool_call_blocks(['- ok tool=Read args=["old"] key=tr.1\n  output:\n' + "x" * 200])
+    agent._append_recent_tool_call_blocks(['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew'])
 
     recent = _blocks_text(agent.recent_tool_call_blocks)
-    assert "old call" not in recent
-    assert "new call" in recent
-    assert len(agent.recent_tool_call_blocks) == 1
+    assert "recall=tr.1" in recent
+    assert "x" * 50 not in recent
+    assert 'tool=Read args=["new"] key=tr.2' in recent
+    assert "\n  output:\nnew" in recent
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "x" * 50 in _blocks_text(agent.pending_observation_blocks)
+
+
+def test_agent_recent_tool_call_compact_summaries_have_count_limit(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.RECENT_TOOL_CALL_CHARS = 1
+    agent.RECENT_TOOL_CALL_SUMMARIES = 2
+
+    for index in range(4):
+        agent._append_recent_tool_call_blocks(
+            ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)]
+        )
+
+    recent = _blocks_text(agent.recent_tool_call_blocks)
+    assert "recall=tr.1" not in recent
+    assert "recall=tr.2" not in recent
+    assert "recall=tr.3" in recent
+    assert "recall=tr.4" in recent
+    assert len(agent.recent_tool_call_blocks) == 2
 
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):

@@ -873,7 +873,7 @@ def _format_tool_call_summary(call: ParsedToolCall) -> str:
     return "tool=" + call.name + " args=" + json.dumps(call.args, ensure_ascii=False, separators=(",", ":"))
 
 
-def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bool = True) -> str:
+def _format_recent_tool_call(execution: ToolCallExecution) -> str:
     status = "ok" if execution.outcome == "success" else "fail"
     fields = [status, _format_tool_call_summary(execution.call)]
     if execution.result_key:
@@ -881,21 +881,27 @@ def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bo
     lines = ["- " + " ".join(fields)]
     if execution.call.intention:
         lines.append("  why: " + execution.call.intention)
-    if include_result:
-        lines.extend(["  output:", execution.output])
-    elif execution.output:
-        parts = []
-        line_count = _tool_output_line_count(execution.output)
-        if line_count or execution.output:
-            parts.append(str(line_count) + " lines, " + str(len(execution.output)) + " chars")
-        if execution.result_excerpted:
-            parts.append("excerpt")
-        if execution.result_key and execution.result_excerpted:
-            parts.append("full=" + execution.result_key)
-        elif execution.output and not execution.result_key:
-            parts.append(_shorten(" ".join(execution.output.split()), 220))
-        lines.append("  out: " + ("; ".join(parts) if parts else "ok"))
+    lines.extend(["  output:", execution.output])
     return "\n".join(lines)
+
+
+def _is_full_tool_call_block(block: str) -> bool:
+    return "\n  output:\n" in block
+
+
+def _compact_tool_call_block(block: str) -> str:
+    if not _is_full_tool_call_block(block):
+        return block
+    header, output = block.split("\n  output:\n", 1)
+    match = RESULT_KEY_PATTERN.search(header)
+    parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"] if output else []
+    if "[tool result excerpt]" in output or "excerpted: true" in output:
+        parts.append("excerpt")
+    if match:
+        parts.append("recall=" + match.group(1))
+    elif output:
+        parts.append(_shorten(" ".join(output.split()), 220))
+    return header + "\n  out: " + ("; ".join(parts) if parts else "ok")
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -4146,6 +4152,7 @@ class Agent:
     RECENT_EDITS: ClassVar[int] = 20
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
+    RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 20
 
     def __init__(self, session: Session):
         self.session = session
@@ -4160,7 +4167,6 @@ class Agent:
         self.tool_runner = ToolCallRunner(session, runtime=self.runtime)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
-        self.latest_tool_call_executions: list[ToolCallExecution] = []
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_call_blocks: list[str] = []
         self.pending_observation_blocks: list[str] = []
@@ -4275,10 +4281,9 @@ class Agent:
     def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
             return
-        self._queue_observation_blocks(self.latest_tool_call_blocks)
-        self._append_recent_tool_call_blocks([_format_recent_tool_call(execution, include_result=False) for execution in self.latest_tool_call_executions])
-        self.latest_tool_call_executions = list(executions)
+        self._append_recent_tool_call_blocks(self.latest_tool_call_blocks)
         self.latest_tool_call_blocks = [_format_recent_tool_call(execution) for execution in executions]
+        self._prune_recent_tool_calls()
 
     def _append_recent_tool_call_blocks(self, blocks: list[str]) -> None:
         if not blocks:
@@ -4291,9 +4296,27 @@ class Agent:
         if overflow > 0:
             evicted = self.recent_tool_call_blocks[:overflow]
             del self.recent_tool_call_blocks[:overflow]
-            self._queue_observation_blocks(evicted)
-        while len(_join_tool_call_blocks(self.recent_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS and self.recent_tool_call_blocks:
-            self._queue_observation_blocks([self.recent_tool_call_blocks.pop(0)])
+            self._queue_observation_blocks([block for block in evicted if _is_full_tool_call_block(block)])
+        while len(_join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS:
+            index = next((i for i, block in enumerate(self.recent_tool_call_blocks) if _is_full_tool_call_block(block)), None)
+            if index is None:
+                break
+            block = self.recent_tool_call_blocks[index]
+            self._queue_observation_blocks([block])
+            self.recent_tool_call_blocks[index] = _compact_tool_call_block(block)
+        self._trim_compact_recent_tool_calls()
+
+    def _trim_compact_recent_tool_calls(self) -> None:
+        compact_count = 0
+        kept = []
+        for block in reversed(self.recent_tool_call_blocks):
+            if _is_full_tool_call_block(block):
+                kept.append(block)
+                continue
+            compact_count += 1
+            if compact_count <= self.RECENT_TOOL_CALL_SUMMARIES:
+                kept.append(block)
+        self.recent_tool_call_blocks = list(reversed(kept))
 
     def _queue_observation_blocks(self, blocks: list[str]) -> None:
         queued_counters = {self._tool_result_counter_from_block(block) for block in self.pending_observation_blocks}
