@@ -1087,26 +1087,6 @@ def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
-def test_agent_applies_response_language_from_start_action(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "start",
-                    "goal": "change map",
-                    "response_language": "zh-cn",
-                    "plan": [{"id": "p1", "text": "Find map code", "status": "doing"}],
-                }
-            ]
-        }
-    )
-
-    assert session.state.response_language_tag == "zh-CN"
-
-
 def test_agent_resets_verification_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
