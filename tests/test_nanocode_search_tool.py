@@ -155,7 +155,7 @@ def test_search_tool_retries_rg_with_pcre2_for_lookaround(tmp_path, monkeypatch)
                 "",
                 "regex parse error: look-around, including look-ahead and look-behind, is not supported; enable PCRE2 with --pcre2",
             )
-        output = json_line = nanocode.json.dumps(
+        output = nanocode.json.dumps(
             {
                 "type": "match",
                 "data": {

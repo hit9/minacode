@@ -276,12 +276,7 @@ class UserRules(PromptItem):
         return _format_lines((self.content.strip() or "(empty)").splitlines(), indent)
 
     def _rules(self) -> set[str]:
-        rules = set()
-        for line in self.content.splitlines():
-            rule = self._clean_rule(line)
-            if rule and not rule.startswith("#"):
-                rules.add(rule)
-        return rules
+        return {rule for line in self.content.splitlines() if (rule := self._clean_rule(line)) and not rule.startswith("#")}
 
     @staticmethod
     def _clean_rule(rule: str) -> str:
@@ -408,9 +403,7 @@ class Config:
     @classmethod
     def str(cls, config: Json, key: str, default: str = "") -> str:
         value = config.get(key)
-        if value is None:
-            return default
-        return str(value)
+        return default if value is None else str(value)
 
     @classmethod
     def bool(cls, config: Json, key: str, default: bool | None = None) -> bool | None:
@@ -3124,9 +3117,7 @@ class PromptBuilder:
 
     def _format_tools(self) -> str:
         lines = []
-        for tool in TOOL_REGISTRY.values():
-            if self.allowed_tools is not None and tool.name() not in self.allowed_tools:
-                continue
+        for tool in self._allowed_tools():
             lines.append("- " + tool.signature())
             for item in tool.description():
                 lines.append("  - " + item)
@@ -3135,12 +3126,10 @@ class PromptBuilder:
         return "\n".join(lines)
 
     def _format_tool_names(self) -> str:
-        names = []
-        for tool in TOOL_REGISTRY.values():
-            if self.allowed_tools is not None and tool.name() not in self.allowed_tools:
-                continue
-            names.append(tool.name())
-        return "|".join(names)
+        return "|".join(tool.name() for tool in self._allowed_tools())
+
+    def _allowed_tools(self) -> Iterator[ToolClass]:
+        return (tool for tool in TOOL_REGISTRY.values() if self.allowed_tools is None or tool.name() in self.allowed_tools)
 
     def _format_environment(self) -> str:
         return "\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd])
@@ -3966,6 +3955,11 @@ class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 500
     MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
+    VERIFY_STATUS_ACTIONS: ClassVar[dict[str, VerificationStatus]] = {
+        "passed": VerificationStatus.DONE,
+        "failed": VerificationStatus.FAILED,
+        "blocked": VerificationStatus.BLOCKED,
+    }
 
     def __init__(
         self,
@@ -4001,7 +3995,6 @@ class AgentStateUpdater:
             before_extra_state,
             force_goal_report=force_goal_report,
         )
-
 
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
@@ -4047,28 +4040,18 @@ class AgentStateUpdater:
         current = self.blackboard
         lines = []
         if force_goal_report or current.goal != before_goal:
-            lines.append(self._state_heading())
-            lines.append("  Goal    " + self._compact(current.goal or "(empty)"))
+            self._append_state_section(lines, "  Goal    " + self._compact(current.goal or "(empty)"))
         plan = [item.format() for item in current.plan]
         if plan != before_plan:
-            if not lines:
-                lines.append(self._state_heading())
-            lines.append("  Plan")
-            lines.extend(self._format_plan_rows())
+            self._append_state_section(lines, "  Plan", self._format_plan_rows())
         known = list(current.known)
         if known != before_known:
-            if not lines:
-                lines.append(self._state_heading())
-            lines.append("  Known")
-            lines.extend(self._format_known_rows())
+            self._append_state_section(lines, "  Known", self._format_known_rows())
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
-            if not lines:
-                lines.append(self._state_heading())
-            lines.append("  User_Rules    updated")
+            self._append_state_section(lines, "  User_Rules    updated")
         self._append_extra_state_report(lines, before_extra_state)
         return "\n".join(lines)
-
 
     def _format_plan_rows(self) -> list[str]:
         items = self.blackboard.plan
@@ -4217,26 +4200,26 @@ class AgentStateUpdater:
     def _state_heading(self) -> str:
         return "State Updated | VERIFY:" + self.blackboard.verification.status
 
+    def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
+        if not lines:
+            lines.append(self._state_heading())
+        lines.append(title)
+        lines.extend(rows or [])
+
     def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
         before = self._decode_extra_state(before_extra_state)
         if self.blackboard.stable_knowledge != before.get("stable_knowledge", []):
-            if not lines:
-                lines.append(self._state_heading())
-            lines.append("  Stable_Knowledge")
-            lines.extend(self._format_stable_knowledge_rows())
+            self._append_state_section(lines, "  Stable_Knowledge", self._format_stable_knowledge_rows())
         verification = self.blackboard.verification.format()
         if verification == before.get("verification", ""):
             return
-        if not lines:
-            lines.append(self._state_heading())
-        lines.append("  Verify  " + self._format_verification())
+        self._append_state_section(lines, "  Verify  " + self._format_verification())
 
     def _decode_extra_state(self, value: str) -> Json:
         try:
-            data = json.loads(value)
+            return _json_dict(json.loads(value))
         except json.JSONDecodeError:
-            data = {}
-        return _json_dict(data)
+            return {}
 
     def _format_stable_knowledge_rows(self) -> list[str]:
         knowledge = self.blackboard.stable_knowledge
@@ -4286,14 +4269,16 @@ class AgentStateUpdater:
     def _format_verification(self) -> str:
         verification = self.blackboard.verification
         parts = [verification.status]
-        if verification.kind:
-            parts.append(verification.kind)
-        if verification.method:
-            parts.append(self._compact(verification.method))
-        if verification.criteria:
-            parts.append("criteria: " + self._compact("; ".join(verification.criteria)))
-        if verification.context:
-            parts.append("context: " + self._compact(verification.context))
+        parts.extend(
+            part
+            for part in (
+                verification.kind,
+                self._compact(verification.method) if verification.method else "",
+                "criteria: " + self._compact("; ".join(verification.criteria)) if verification.criteria else "",
+                "context: " + self._compact(verification.context) if verification.context else "",
+            )
+            if part
+        )
         return " | ".join(parts)
 
     def _apply_verification(self, actions: list[Json]) -> None:
@@ -4309,15 +4294,9 @@ class AgentStateUpdater:
                 if method != self.blackboard.verification.method:
                     self.blackboard.verification.context = ""
                 self.blackboard.verification.method = method
-            status = _json_str(data.get("status"))
-            if status == "passed":
-                self.blackboard.verification.status = VerificationStatus.DONE
-                self.blackboard.verification_required = False
-            elif status == "failed":
-                self.blackboard.verification.status = VerificationStatus.FAILED
-                self.blackboard.verification_required = False
-            elif status == "blocked":
-                self.blackboard.verification.status = VerificationStatus.BLOCKED
+            status = self.VERIFY_STATUS_ACTIONS.get(_json_str(data.get("status")) or "")
+            if status is not None:
+                self.blackboard.verification.status = status
                 self.blackboard.verification_required = False
             context = _json_str(data.get("context"))
             if context is not None:
@@ -5343,6 +5322,23 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "model.stream": ("on", "off"),
     "runtime.yolo": ("on", "off"),
 }
+CONFIG_MODEL_ATTRS: dict[str, str] = {
+    "model.model": "model",
+    "model.reasoning": "reasoning",
+    "model.effort": "reasoning_effort",
+    "model.stream": "stream",
+    "model.temperature": "temperature",
+    "model.timeout": "timeout",
+    "model.first_token_timeout": "first_token_timeout",
+}
+CONFIG_RUNTIME_ATTRS: dict[str, str] = {
+    "runtime.compact_at": "compact_at",
+    "runtime.shell_timeout": "shell_timeout",
+    "runtime.max_agent_steps": "max_agent_steps",
+    "runtime.yolo": "yolo",
+}
+CONFIG_BOOL_KEYS: set[str] = {"model.reasoning", "model.stream", "runtime.yolo"}
+CONFIG_INT_KEYS: set[str] = {"model.timeout", "model.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
 
 
 @final
@@ -5459,10 +5455,10 @@ class CommandDispatcher:
     def _format_model_usage(self) -> str:
         if not self.agent.session.state.model_usage:
             return "  (empty)"
-        lines = []
-        for model, usage in self.agent.session.state.model_usage.items():
-            lines.append("  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens))
-        return "\n".join(lines)
+        return "\n".join(
+            "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
+            for model, usage in self.agent.session.state.model_usage.items()
+        )
 
     def _compact(self, args: str) -> str:
         if args:
@@ -5542,95 +5538,48 @@ class CommandDispatcher:
         return "Usage: /set <key> <value>"
 
     def _config_value(self, key: str) -> str:
-        session = self.agent.session
+        target, attr = self._config_target(key)
+        value = getattr(target, attr)
+        if key in CONFIG_BOOL_KEYS:
+            return self._format_bool(value)
         if key == "model.model":
-            return session.config.model.model or "(empty)"
-        if key == "model.reasoning":
-            return self._format_bool(session.config.model.reasoning)
-        if key == "model.effort":
-            return session.config.model.reasoning_effort
-        if key == "model.stream":
-            return self._format_bool(session.config.model.stream)
-        if key == "model.temperature":
-            return str(session.config.model.temperature)
-        if key == "model.timeout":
-            return str(session.config.model.timeout)
-        if key == "model.first_token_timeout":
-            return str(session.config.model.first_token_timeout)
-        if key == "runtime.compact_at":
-            return str(session.settings.compact_at)
-        if key == "runtime.shell_timeout":
-            return str(session.settings.shell_timeout)
-        if key == "runtime.max_agent_steps":
-            return str(session.settings.max_agent_steps)
-        if key == "runtime.yolo":
-            return self._format_bool(session.settings.yolo)
-        return "(unknown)"
+            return value or "(empty)"
+        return str(value)
 
     def _apply_config_value(self, key: str, value: str) -> str:
-        if key.endswith(".reasoning") or key.endswith(".stream") or key == "runtime.yolo":
+        target, attr = self._config_target(key)
+        if key in CONFIG_BOOL_KEYS:
             parsed = self._parse_on_off(value)
             if parsed is None:
                 return "Usage: /set " + key + " [on|off]"
-            self._set_bool_value(key, parsed)
+            setattr(target, attr, parsed)
             return ""
-        if key.endswith(".effort"):
+        if key == "model.effort":
             if value not in CONFIG_EFFORTS:
                 return "Usage: /set " + key + " [" + "|".join(CONFIG_EFFORTS) + "]"
-            self._set_effort_value(key, value)
+            setattr(target, attr, value)
             return ""
-        if key.endswith(".temperature"):
+        if key == "model.temperature":
             parsed_float = self._parse_float(value)
             if parsed_float is None:
                 return "Usage: /set " + key + " <number>"
-            self._set_temperature_value(key, parsed_float)
+            setattr(target, attr, parsed_float)
             return ""
-        if (
-            key.endswith(".timeout")
-            or key.endswith(".first_token_timeout")
-            or key in {"runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
-        ):
+        if key in CONFIG_INT_KEYS:
             parsed_int = self._parse_positive_int(value)
             if parsed_int is None:
                 return "Usage: /set " + key + " <positive-number>"
-            self._set_int_value(key, parsed_int)
+            setattr(target, attr, parsed_int)
             return ""
-        if key.endswith(".model"):
-            self._set_model_value(key, value)
+        if key == "model.model":
+            setattr(target, attr, value)
             return ""
         return self._set_usage()
 
-    def _set_model_value(self, key: str, value: str) -> None:
-        if key == "model.model":
-            self.agent.session.config.model.model = value
-
-    def _set_bool_value(self, key: str, value: bool) -> None:
-        if key == "model.reasoning":
-            self.agent.session.config.model.reasoning = value
-        elif key == "model.stream":
-            self.agent.session.config.model.stream = value
-        elif key == "runtime.yolo":
-            self.agent.session.settings.yolo = value
-
-    def _set_effort_value(self, key: str, value: str) -> None:
-        if key == "model.effort":
-            self.agent.session.config.model.reasoning_effort = value
-
-    def _set_temperature_value(self, key: str, value: float) -> None:
-        if key == "model.temperature":
-            self.agent.session.config.model.temperature = value
-
-    def _set_int_value(self, key: str, value: int) -> None:
-        if key == "model.timeout":
-            self.agent.session.config.model.timeout = value
-        elif key == "model.first_token_timeout":
-            self.agent.session.config.model.first_token_timeout = value
-        elif key == "runtime.compact_at":
-            self.agent.session.settings.compact_at = value
-        elif key == "runtime.shell_timeout":
-            self.agent.session.settings.shell_timeout = value
-        elif key == "runtime.max_agent_steps":
-            self.agent.session.settings.max_agent_steps = value
+    def _config_target(self, key: str) -> tuple[object, str]:
+        if key in CONFIG_MODEL_ATTRS:
+            return self.agent.session.config.model, CONFIG_MODEL_ATTRS[key]
+        return self.agent.session.settings, CONFIG_RUNTIME_ATTRS[key]
 
     def _clean_logs(self, args: str) -> str:
         if args:
@@ -5653,11 +5602,7 @@ class CommandDispatcher:
         return msg
 
     def _parse_on_off(self, value: str) -> bool | None:
-        if value == "on":
-            return True
-        if value == "off":
-            return False
-        return None
+        return {"on": True, "off": False}.get(value)
 
     def _parse_float(self, value: str) -> float | None:
         try:
@@ -5789,8 +5734,8 @@ class StatusBar:
         reasoning = session.state.current_model_call_reasoning_label or (session.config.model.reasoning_effort if session.config.model.reasoning else "off")
         yolo = " | yolo" if session.settings.yolo else ""
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
-        last_tokens = self._format_count(session.state.last_total_tokens)
-        session_tokens = self._format_count(session.state.session_total_tokens)
+        last_tokens = _format_count(session.state.last_total_tokens)
+        session_tokens = _format_count(session.state.session_total_tokens)
         tokens = "last:" + last_tokens + " session:" + session_tokens
         parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok(all):" + tokens]
         if show_elapsed:
@@ -5820,10 +5765,6 @@ class StatusBar:
 
     def _plain(self, fragments: list[tuple[str, str]]) -> str:
         return "".join(text for _, text in fragments)
-
-    def _format_count(self, value: int) -> str:
-        return _format_count(value)
-
 
 @final
 class AgentLoop:
