@@ -4309,7 +4309,10 @@ class Agent:
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
-                    self._remember_agent_error(self._format_agent_feedback_format_error(format_error))
+                    self._remember_agent_error(
+                        self._format_gate_user_message("Error: model returned invalid output", format_error)
+                        + " Rule: return valid JSON action frames only."
+                    )
                     if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                         if on_format_error_limit is not None:
                             return on_format_error_limit(response, format_error)
@@ -4338,10 +4341,6 @@ class Agent:
         except KeyboardInterrupt:
             self.cancel_current_goal()
             raise
-
-    def _clear_agent_feedback(self) -> None:
-        self.agent_feedback_errors = []
-        self.gate_report_counts = {}
 
     def _finish_current_goal(self) -> None:
         self.blackboard.goal_reached = False
@@ -4405,10 +4404,6 @@ class Agent:
         if not self.agent_feedback_errors:
             return ""
         return "\n".join("- " + error for error in self.agent_feedback_errors)
-
-    def _format_agent_feedback_format_error(self, format_error: str) -> str:
-        message = self._format_gate_user_message("Error: model returned invalid output", format_error)
-        return message + " Rule: return valid JSON action frames only."
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is None:
@@ -4497,12 +4492,11 @@ class Agent:
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
-            self._remember_agent_error(self._format_agent_feedback_tool_call_arg_error(execution))
+            self._remember_agent_error(
+                "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
+            )
         if execution.requires_verification:
             self.blackboard.verification_required = True
-
-    def _format_agent_feedback_tool_call_arg_error(self, execution: ToolCallExecution) -> str:
-        return "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
@@ -4865,7 +4859,8 @@ class Agent:
         on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> Json:
-        self._clear_agent_feedback()
+        self.agent_feedback_errors = []
+        self.gate_report_counts = {}
         self._prune_recent_tool_calls()
         self.pending_observation_blocks = []
         self._prune_tool_result_store()
