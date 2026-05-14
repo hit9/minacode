@@ -40,7 +40,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 
-__version__ = "0.3.15"
+__version__ = "0.3.16"
 
 
 JsonValue: TypeAlias = Any
@@ -5138,7 +5138,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
-    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
+    CommandSpec("/knowledge", "Show or update stable knowledge", "Info", "/knowledge [update]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
@@ -5354,11 +5354,18 @@ class CommandDispatcher:
         )
 
     def _knowledge(self, args: str) -> str:
+        if args == "update":
+            question = "Please perform a knowledge update: record stable knowledge about this project."
+            if self.run_agent is not None:
+                self.run_agent(question)
+            else:
+                self.agent.run(question)
+            return ""
         if args:
-            return "Usage: /knowledge"
+            return "Usage: /knowledge [update]"
         knowledge = self.agent.blackboard.stable_knowledge
         if not any(knowledge.values()):
-            return "No stable knowledge stored."
+            return "No stable knowledge. Use /knowledge update to record some."
         lines = ["Stable knowledge:"]
         for category in STABLE_KNOWLEDGE_CATEGORIES:
             items = knowledge.get(category, [])
@@ -6152,6 +6159,15 @@ class CommandCompleter(Completer):
             for provider in self.providers:
                 if provider.startswith(text):
                     yield Completion(provider, start_position=-len(text))
+            return
+        if text.startswith("/knowledge "):
+            text = text[len("/knowledge "):]
+            if not text:
+                yield Completion("update", start_position=0)
+            else:
+                for sub in ("update",):
+                    if sub.startswith(text):
+                        yield Completion(sub, start_position=-len(text))
             return
         if text.startswith("/") and " " not in text:
             for spec in COMMANDS:

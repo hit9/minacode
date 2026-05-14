@@ -249,6 +249,12 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
 
+    knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))
+    knowledge_u_completions = list(completer.get_completions(Document("/knowledge u"), CompleteEvent(completion_requested=True)))
+
+    assert [c.text for c in knowledge_completions] == ["update"]
+    assert [c.text for c in knowledge_u_completions] == ["update"]
+
 
 def test_agent_loop_command_completer_completes_provider_names():
     completer = nanocode.CommandCompleter(["qwen", "openai"])
