@@ -852,7 +852,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
 
 
-RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:result_)?key[:=]\s*(tr\.\d+)\b")
+RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:(?:result_)?key|recall)[:=]\s*(tr\.\d+)\b")
 
 
 def _format_tool_call_summary(call: ParsedToolCall) -> str:
@@ -2786,7 +2786,7 @@ Omit noise:
 - context values unless needed for continuity
 
 Write the shortest complete continuation summary.
-Compress Known to at most 30 concise stable facts.
+Compress Known to concise durable facts.
 
 Output strict JSON only: {"summary": "<summary>", "known": ["<stable fact>"]}
 """
@@ -3426,6 +3426,8 @@ class ToolCallRunner:
             )
             executions.append(execution)
             self._remember_last_readonly_result(call, outcome, result_key)
+            if error_type is Cancellation:
+                break
 
         self.latest_executions = executions
 

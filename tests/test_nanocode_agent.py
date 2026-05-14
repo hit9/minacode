@@ -1105,6 +1105,23 @@ def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
     assert "Stable Knowledge:\nworkflow:\n- Project test command is make test.\n\nKnown:" in prompt
 
 
+def test_main_agent_hides_recall_visible_tool_result_store_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read sample", value="alpha")
+    agent = Agent(session)
+    agent.recent_tool_call_blocks = ['- ok tool=Read args=["sample.txt"]\n  out: recall=tr.1']
+
+    prompt = agent.build_user_prompt()
+
+    assert "Tool Result Store:\n(empty; current result keys are already shown in Recent Tool Calls)" in prompt
+    assert "description: success Read sample" not in prompt
+
+
+def test_compactor_prompt_does_not_prescribe_known_count():
+    assert "at most 30" not in nanocode.SUMMARIZER_AGENT_COMPACT_PROMPT
+    assert "Compress Known to concise durable facts." in nanocode.SUMMARIZER_AGENT_COMPACT_PROMPT
+
+
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -1501,6 +1518,27 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert path.read_text(encoding="utf-8") == "old\n"
     assert session.state.conversation == []
     assert (tmp_path / ".nanocode" / "tool_results").exists()
+
+
+def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls(
+        [
+            {"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]},
+            {"name": "Bash", "intention": "should not run", "args": ["touch should-not-exist"]},
+        ],
+        confirm=lambda call, tool: "use English question",
+    )
+
+    assert "Cancelled: user refused: use English question" in latest
+    assert "Bash" not in latest
+    assert [execution.call.name for execution in agent.tool_runner.latest_executions] == ["Edit"]
+    assert path.read_text(encoding="utf-8") == "old\n"
+    assert not (tmp_path / "should-not-exist").exists()
 
 
 def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp_path):
