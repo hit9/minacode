@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode-cli"
-version = "0.2.9"
+version = "0.3.16"
 description = "A lightweight terminal-based AI coding assistant"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,6 @@ classifiers = [
 dependencies = [
     "json-repair>=0.39",
     "prompt-toolkit>=3.0",
-    "typing-extensions>=4.7",
 ]
 
 [project.urls]

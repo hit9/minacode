@@ -7,88 +7,68 @@ Install: uv tool install nanocode-cli
 """
 
 import argparse
+import difflib
 import fnmatch
 import hashlib
 import itertools
 import json
-import json_repair
 import os
 import platform
 import re
+import selectors
 import shutil
 import signal
 import socket
 import subprocess
-import tempfile
-import threading
-import difflib
 import sys
+import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+
 from datetime import datetime
-from abc import abstractmethod
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, final, Iterator, Protocol, Self, Type, TypeAlias
-from typing_extensions import override
+from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
+
+import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
-from prompt_toolkit.completion import Completer, Completion, WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 
+__version__ = "0.3.16"
+
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
-__version__ = "0.2.9"
+############################
+# Errors
+############################
 
 
 class Error(Exception): ...
 
 
-class ToolCallError(Exception): ...
+class ToolCallError(Error): ...
 
 
-class LLMError(Exception): ...
+class ToolCallArgError(ToolCallError): ...
 
 
-class Cancellation(Exception): ...
+class LLMError(Error): ...
 
 
-class ReferenceFileCompleter(Completer):
-    def __init__(self, cwd: str, command_completer: WordCompleter):
-        self.cwd = cwd
-        self.command_completer = command_completer
-
-    def get_completions(self, document, complete_event):
-        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
-        if match is None:
-            yield from self.command_completer.get_completions(document, complete_event)
-            return
-
-        partial = match.group(1)
-        dirname, prefix = os.path.split(partial)
-        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
-        try:
-            names = sorted(os.listdir(base_dir))
-        except OSError:
-            return
-
-        for name in names:
-            if not name.startswith(prefix):
-                continue
-            full_path = os.path.join(base_dir, name)
-            suffix = "/" if os.path.isdir(full_path) else ""
-            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
-            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
+class ConfigError(Error): ...
 
 
-class PromptItem:
-    @abstractmethod
-    def format(self, indent: str = "") -> str:
-        raise NotImplementedError
+class ModelRequestTimeout(Error): ...
+
+
+class Cancellation(Error): ...
 
 
 ############################
@@ -99,80 +79,43 @@ class PromptItem:
 class Role(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
-    TOOL_CALL = "tool_call"
 
 
 @dataclass
-class ConversationItem(PromptItem):
+class ConversationItem:
     role: Role
     time: datetime = field(default_factory=datetime.now)
 
     def format_ts(self) -> str:
         return self.time.strftime("%Y-%m-%d %H:%M:%S")
 
+    def format_transcript(self, title: str, content: str, indent: str = "") -> str:
+        quoted = ["> " + line if line else ">" for line in content.splitlines()]
+        if not quoted:
+            quoted = [">"]
+        return _format_lines([f"#### {title} {self.format_ts()}", *quoted], indent)
 
-@final
+
 @dataclass
 class UserMessage(ConversationItem):
     role: Role = Role.USER
     content: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
-        lines = [f'<UserMessage at="{self.format_ts()}">', f"{self.content}", "</UserMessage>"]
-        return _format_lines(lines, indent)
+        return self.format_transcript("User", self.content, indent)
 
 
-@final
 @dataclass
 class AssistantMessage(ConversationItem):
     role: Role = Role.ASSISTANT
     content: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
-        lines = [f'<AssistantMessage at="{self.format_ts()}">', self.content, "</AssistantMessage>"]
-        return _format_lines(lines, indent)
-
-
-@final
-@dataclass
-class ToolCallEvent(ConversationItem):
-    role: Role = Role.TOOL_CALL
-    intent: str = ""
-    executed: str = ""
-    outcome: str = ""
-    summary: str = ""
-    result_file: str = ""
-    result_file_lines: int = 0
-    key_details: list[str] = field(default_factory=list)
-    needs_raw_read: bool = False
-
-    @override
-    def format(self, indent: str = "") -> str:
-        lines = [
-            f'<ToolCall at="{self.format_ts()}">',
-            "  <intent>" + self.intent + "</intent>",
-            "  <executed>" + self.executed + "</executed>",
-            "  <outcome>" + self.outcome + "</outcome>",
-            "  <summary>" + self.summary + "</summary>",
-        ]
-        if self.key_details:
-            lines.append("  <key_details>")
-            for detail in self.key_details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </key_details>")
-        if self.needs_raw_read:
-            lines.append("  <needs_raw_read>true</needs_raw_read>")
-        if self.result_file:
-            lines.append("  <result_file>" + self.result_file + "</result_file>")
-            lines.append("  <result_file_lines>" + str(self.result_file_lines) + "</result_file_lines>")
-        lines.append("</ToolCall>")
-        return _format_lines(lines, indent)
+        return self.format_transcript("Assistant", self.content, indent)
 
 
 ############################
-# Current (dataclasses)
+# State Dataclasses
 ############################
 
 
@@ -192,116 +135,374 @@ class PlanStatus(StrEnum):
         return f"{symbols.get(self, '')} {self.value}".strip()
 
 
-@final
+ALL_PLAN_STATUSES = frozenset(PlanStatus)
+
+
+class TaskCode(StrEnum):
+    NEW = "new"
+    WORKING = "working"
+    VERIFYING = "verifying"
+    DONE = "done"
+
+
 @dataclass
-class PlanItem(PromptItem):
+class PlanItem:
     text: str
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
-    evidence: str = ""
+    context: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
-        parts = [f"({self.status})"]
+        text = "- [" + str(self.status) + "] " + self.text
         if self.id:
-            parts.append("id=" + self.id)
-        parts.append(self.text)
-        if self.evidence:
-            parts.append("evidence=" + self.evidence)
-        return indent + "<PlanItem>" + " ".join(parts) + "</PlanItem>"
+            text += " (id=" + self.id + ")"
+        lines = [text]
+        if self.context:
+            lines.append("  context: " + self.context)
+        return _format_lines(lines, indent)
 
 
 class VerificationStatus(StrEnum):
     IDLE = "idle"
-    PLANNED = "planned"
     REQUIRED = "required"
     DONE = "done"
+    FAILED = "failed"
     BLOCKED = "blocked"
 
 
-@final
 @dataclass
-class Verification(PromptItem):
+class Verification:
     goal: str = ""
     status: VerificationStatus = VerificationStatus.IDLE
+    kind: str = ""
     method: str = ""
-    evidence: str = ""
+    criteria: list[str] = field(default_factory=list)
+    context: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
-        lines = [
-            "<Verification>",
-            "  <goal>" + self.goal + "</goal>",
-            "  <status>" + self.status + "</status>",
-            "  <method>" + self.method + "</method>",
-            "  <evidence>" + self.evidence + "</evidence>",
-            "</Verification>",
-        ]
+        lines = ["status: " + self.status]
+        if self.goal:
+            lines.append("goal: " + self.goal)
+        if self.kind:
+            lines.append("kind: " + self.kind)
+        if self.method:
+            lines.append("method: " + self.method)
+        if self.criteria:
+            lines.append("criteria:")
+            lines.extend("- " + item for item in self.criteria)
+        if self.context:
+            lines.append("context: " + self.context)
         return _format_lines(lines, indent)
 
     def reset(self) -> None:
         self.goal = ""
         self.status = VerificationStatus.IDLE
+        self.kind = ""
         self.method = ""
-        self.evidence = ""
+        self.criteria = []
+        self.context = ""
 
     def has_context(self) -> bool:
-        return bool(self.goal or self.method or self.evidence or self.status != VerificationStatus.IDLE)
+        return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.status != VerificationStatus.IDLE)
 
 
-@final
 @dataclass
-class KnownItem(PromptItem):
-    fact: str
-    details: list[str] = field(default_factory=list)
+class ToolResultItem:
+    description: str
+    value: str
+    log_path: str = ""
+    original_lines: int = 0
+    original_chars: int = 0
+    excerpted: bool = False
 
-    @override
-    def format(self, indent: str = "") -> str:
-        lines = ["<KnownItem>", "  <fact>" + self.fact + "</fact>"]
-        if self.details:
-            lines.append("  <details>")
-            for detail in self.details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </details>")
-        lines.append("</KnownItem>")
+    def format(self, indent: str = "", *, result_key: str = "", include_content: bool = False, details_hint: bool = False) -> str:
+        lines = ["- result_key: " + result_key] if result_key else ["- result"]
+        lines.append("  description: " + self.description)
+        if self.log_path:
+            lines.append("  log: " + self.log_path)
+        if self.original_lines or self.original_chars:
+            lines.append("  size: " + str(self.original_lines) + " lines, " + str(self.original_chars) + " chars")
+        if self.excerpted:
+            lines.append("  excerpted: true")
+            if details_hint and result_key:
+                lines.append("  details: full=" + result_key + " if excerpt insufficient")
+        if include_content:
+            lines.append("  content:")
+            lines.append("  <content>")
+            lines.append(self.value)
+            lines.append("  </content>")
         return _format_lines(lines, indent)
 
 
-@final
 @dataclass
-class CurrentContextItem(PromptItem):
-    note: str
-    details: list[str] = field(default_factory=list)
+class UserRules:
+    content: str = ""
 
-    @override
+    @classmethod
+    def load(cls, path: str) -> "UserRules":
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                return cls(file.read().strip())
+        except FileNotFoundError:
+            return cls()
+
+    def add(self, rule: str) -> bool:
+        rule = self._clean_rule(rule)
+        if not rule or rule in self._rules():
+            return False
+        prefix = "# User Rules\n\n" if not self.content.strip() else self.content.rstrip() + "\n"
+        self.content = prefix + "- " + rule
+        return True
+
+    def save(self, path: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file:
+            file.write((self.content.strip() or "# User Rules").rstrip() + "\n")
+
     def format(self, indent: str = "") -> str:
-        lines = ["<CurrentContextItem>", "  <note>" + self.note + "</note>"]
-        if self.details:
-            lines.append("  <details>")
-            for detail in self.details:
-                lines.append("    <detail>" + detail + "</detail>")
-            lines.append("  </details>")
-        lines.append("</CurrentContextItem>")
-        return _format_lines(lines, indent)
+        return _format_lines((self.content.strip() or "(empty)").splitlines(), indent)
+
+    def _rules(self) -> set[str]:
+        return {rule for line in self.content.splitlines() if (rule := self._clean_rule(line)) and not rule.startswith("#")}
+
+    @staticmethod
+    def _clean_rule(rule: str) -> str:
+        rule = " ".join(rule.strip().split())
+        return rule[2:].strip() if rule.startswith("- ") else rule
 
 
-@final
 @dataclass
-class Current:
+class Blackboard:
     user_input: str = ""
+    task_code: TaskCode = TaskCode.DONE
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
-    known: list[KnownItem] = field(default_factory=list)
-    current_context: list[CurrentContextItem] = field(default_factory=list)
+    known: list[str] = field(default_factory=list)
+    memory_checkpoint_tool_result_counter: int = 0
+    stable_knowledge: dict[str, list[str]] = field(default_factory=dict)
+    verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
 
 
-@final
+@dataclass
+class ProviderConfig:
+    url: str = ""
+    key: str = ""
+    model: str = ""
+    temperature: float | None = 0.7
+    reasoning: bool | None = True
+    reasoning_effort: str = "medium"
+    stream: bool | None = True
+    timeout: int | None = 90
+    first_token_timeout: int | None = 60
+
+    @classmethod
+    def from_dict(cls, data: Json) -> "ProviderConfig":
+        defaults = cls()
+        return cls(
+            url=Config.str(data, "url", defaults.url),
+            key=Config.str(data, "key", defaults.key),
+            model=Config.str(data, "model", defaults.model),
+            temperature=Config.float(data, "temperature", defaults.temperature),
+            reasoning=Config.bool(data, "reasoning", defaults.reasoning),
+            reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
+            stream=Config.bool(data, "stream", defaults.stream),
+            timeout=Config.int(data, "timeout", defaults.timeout),
+            first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
+        )
+
+
+@dataclass
+class ModelUsage:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+        self.calls += 1
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
+
+
+############################
+# Config
+############################
+
+
+@dataclass
+class RuntimeSettings:
+    shell_timeout: int = 60
+    compact_at: int = 50
+    max_agent_steps: int = 100
+    yolo: bool = False
+    debug: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
+        runtime = Config.table(data, "runtime")
+        return cls(
+            shell_timeout=Config.int(runtime, "shell_timeout", 60),
+            compact_at=Config.int(runtime, "compact_at", 50),
+            max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
+            yolo=yolo,
+            debug=debug,
+        )
+
+
+@dataclass
+class Config:
+    active_provider: str = "default"
+    providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
+    nanocode_dir: str = ".nanocode"
+
+    @classmethod
+    def from_dict(cls, data: Json) -> "Config":
+        provider_table = cls.table(data, "provider")
+        paths = cls.table(data, "paths")
+        active = cls.str(provider_table, "active", "default")
+        providers = {str(name): ProviderConfig.from_dict(value) for name, value in provider_table.items() if name != "active" and isinstance(value, dict)}
+        if not providers:
+            providers[active] = ProviderConfig()
+        if active not in providers:
+            raise ConfigError("config provider.active must match a [provider.<name>] section")
+        return cls(
+            active_provider=active,
+            providers=providers,
+            nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode"),
+        )
+
+    @property
+    def provider(self) -> ProviderConfig:
+        return self.providers[self.active_provider]
+
+    @classmethod
+    def table(cls, config: Json, name: str) -> Json:
+        value = config.get(name)
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def str(cls, config: Json, key: str, default: str = "") -> str:
+        value = config.get(key)
+        return default if value is None else str(value)
+
+    @classmethod
+    def bool(cls, config: Json, key: str, default: bool | None = None) -> bool | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        raise ConfigError(f"config value `{key}` must be a boolean")
+
+    @classmethod
+    def float(cls, config: Json, key: str, default: float | None = None) -> float | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"config value `{key}` must be a number")
+        return float(value)
+
+    @classmethod
+    def int(cls, config: Json, key: str, default: int | None = None) -> int | None:
+        value = config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"config value `{key}` must be an integer")
+        return value
+
+
+class ConfigFile:
+    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
+# Location: ~/.nanocode/config.toml
+
+[provider]
+active = "default"
+
+[provider.default]
+# OpenAI-compatible chat completions base URL, for example "https://api.openai.com/v1".
+url = ""
+# API key for the configured provider.
+key = ""
+# Default model used by nanocode.
+model = ""
+temperature = 0.7
+reasoning = true
+reasoning_effort = "medium"
+stream = true
+timeout = 90
+# Stream mode only: retry if no first content token arrives within this many seconds.
+first_token_timeout = 60
+
+[paths]
+# Relative paths are resolved from the current project directory.
+nanocode_dir = ".nanocode"
+
+[runtime]
+shell_timeout = 60
+compact_at = 50
+max_agent_steps = 100
+"""
+
+    @classmethod
+    def path(cls) -> str:
+        return os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
+
+    @classmethod
+    def init(cls, path: str | None = None) -> tuple[str, bool]:
+        config_path = os.path.expanduser(path) if path else cls.path()
+        if os.path.exists(config_path):
+            return config_path, False
+        parent = os.path.dirname(config_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as file:
+            file.write(cls.DEFAULT_TEXT)
+        return config_path, True
+
+    @classmethod
+    def load(cls, path: str | None = None) -> Json:
+        config_path = os.path.expanduser(path) if path else cls.path()
+        try:
+            with open(config_path, "rb") as file:
+                data = tomllib.load(file)
+        except FileNotFoundError as error:
+            raise ConfigError(f"Config file not found: {config_path}. Run `nanocode --init-config` to create one.") from error
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigError(f"Invalid config file {config_path}: {error}") from error
+        return data if isinstance(data, dict) else {}
+
+
+############################
+# Agent Runtime (dataclasses)
+############################
+
+
+class AgentMode(StrEnum):
+    ACT = "act"
+    OBSERVE = "observe"
+
+
+@dataclass
+class AgentRuntime:
+    last_readonly_call_key: tuple[str, tuple[str, ...]] | None = None
+    last_readonly_result_key: str = ""
+    recent_edits: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AgentRunResult:
+    done: bool = False
+    value: JsonValue = None
+
+
 class RangeFingerprintStore:
     MAX_ENTRIES: ClassVar[int] = 200
 
-    @final
     @dataclass
     class Entry:
         fingerprint: str
@@ -310,7 +511,6 @@ class RangeFingerprintStore:
         end: int
         content: str
 
-    @final
     @dataclass
     class Resolved:
         start: int
@@ -324,14 +524,7 @@ class RangeFingerprintStore:
     def remember(self, *, filepath: str, start: int, end: int, content: str) -> str:
         fingerprint = _range_fingerprint(content)
         entry = self.Entry(fingerprint=fingerprint, filepath=os.path.realpath(filepath), start=start, end=end, content=content)
-        if not any(
-            existing.fingerprint == entry.fingerprint
-            and existing.filepath == entry.filepath
-            and existing.start == entry.start
-            and existing.end == entry.end
-            and existing.content == entry.content
-            for existing in self._entries
-        ):
+        if entry not in self._entries:
             self._entries.append(entry)
             del self._entries[: max(0, len(self._entries) - self.MAX_ENTRIES)]
         return fingerprint
@@ -381,11 +574,7 @@ class RangeFingerprintStore:
         )
 
     def _find_matches(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> list[tuple[int, int]]:
-        contents = [
-            content
-            for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint)
-            if content
-        ]
+        contents = [content for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint) if content]
 
         matches = []
         for content in contents:
@@ -431,62 +620,49 @@ class RangeFingerprintStore:
         return ranges
 
 
-@final
+@dataclass
+class RuntimeState:
+    debug_prompt_count: int = 0
+    last_prompt_tokens: int = 0
+    last_completion_tokens: int = 0
+    last_total_tokens: int = 0
+    session_prompt_tokens: int = 0
+    session_completion_tokens: int = 0
+    session_total_tokens: int = 0
+    model_usage: dict[str, ModelUsage] = field(default_factory=dict)
+    current_model_call_started_at: float = 0.0
+    current_model_call_label: str = ""
+    current_model_call_reasoning_label: str = ""
+    conversation: list[ConversationItem] = field(default_factory=list)
+    user_rules: UserRules = field(default_factory=UserRules)
+    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
+    tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
+    tool_result_counter: int = 0
+    turn_tool_calls: int = 0
+    session_tool_calls: int = 0
+    turn_model_calls: int = 0
+
+
 @dataclass
 class Session:
-    REQUIRED_ENVS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("NANOCODE_API_URL", "api_url"),
-        ("NANOCODE_API_KEY", "api_key"),
-        ("NANOCODE_MODEL", "model"),
-    )
-
     # ---- system ----
     system: str = field(default_factory=platform.system)
     arch: str = field(default_factory=platform.machine)
     cwd: str = field(default_factory=os.getcwd)
     bash: str = field(default_factory=lambda: shutil.which("bash") or "")
+    config: Config = field(default_factory=Config)
+    settings: RuntimeSettings = field(default_factory=RuntimeSettings)
+    state: RuntimeState = field(default_factory=RuntimeState)
 
-    # ---- env configs ----
-    api_url: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_URL", ""))  # reqiured
-    api_key: str = field(default_factory=lambda: os.environ.get("NANOCODE_API_KEY", ""))  # reqiured
-    model: str = field(default_factory=lambda: os.environ.get("NANOCODE_MODEL", ""))  # reqiured
-    nanocode_dir: str = field(default_factory=lambda: os.environ.get("NANOCODE_DIR", ".nanocode"))
-    temperature: float = field(default_factory=lambda: float(os.environ.get("NANOCODE_TEMPERATURE", "0.7")))
-    reasoning: bool = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING", "on") == "on")
-    reasoning_effort: str = field(default_factory=lambda: os.environ.get("NANOCODE_REASONING_EFFORT", "medium"))
-    stream: bool = field(default_factory=lambda: os.environ.get("NANOCODE_STREAM", "on") == "on")
-    model_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MODEL_TIMEOUT", "60")))
-    shell_timeout: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_SHELL_TIMEOUT", "60")))
-    compact_at: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_COMPACT_AT", "100")))
-    max_agent_steps: int = field(default_factory=lambda: int(os.environ.get("NANOCODE_MAX_AGENT_STEPS", "50")))
-    prompt_price_per_1m_tokens: float = field(
-        default_factory=lambda: float(os.environ.get("NANOCODE_PROMPT_PRICE_PER_1M_TOKENS", "0"))
-    )
-    completion_price_per_1m_tokens: float = field(
-        default_factory=lambda: float(os.environ.get("NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS", "0"))
-    )
+    @classmethod
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
+        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, debug=debug)
 
-    # ---- runtime variables ----
-    yolo: bool = False
-    debug: bool = False
-    debug_prompt_count: int = 0
-
-    # ---- stats ---
-    last_prompt_tokens: int = 0
-    last_completion_tokens: int = 0
-    last_total_tokens: int = 0
-    last_cost_usd: float = 0.0
-    session_prompt_tokens: int = 0
-    session_completion_tokens: int = 0
-    session_total_tokens: int = 0
-    session_cost_usd: float = 0.0
-    current_model_call_started_at: float = 0.0
-
-    # ---- current and conversation ---
-    current: Current = field(default_factory=Current)
-    conversation: list[ConversationItem] = field(default_factory=list)
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-    blackboard: list[str] = field(default_factory=list)
+    @classmethod
+    def from_config_data(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
+        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
+        session.load_user_rules()
+        return session
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -503,59 +679,91 @@ class Session:
             return False
 
     def append_conversation(self, item: ConversationItem) -> None:
-        self.conversation.append(item)
-
-    def tool_results_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, ToolCallRunner.TOOL_RESULTS_DIR))
+        self.state.conversation.append(item)
 
     def debug_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.nanocode_dir, "debug"))
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "debug"))
 
-    def cleanup_old_logs(self, *, days: int = 3, now: float | None = None) -> None:
-        directory = self.tool_results_dir()
-        if not os.path.isdir(directory):
-            return
-        cutoff = (time.time() if now is None else now) - days * 86400
-        for root, _, filenames in os.walk(directory):
-            for filename in filenames:
-                if not filename.endswith(".log"):
-                    continue
-                filepath = os.path.join(root, filename)
-                try:
-                    if os.path.getmtime(filepath) < cutoff:
-                        os.remove(filepath)
-                except OSError:
-                    pass
+    def tool_results_dir(self) -> str:
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "tool_results"))
 
-    def missing_required_envs(self) -> list[str]:
-        return [env_name for env_name, attr_name in self.REQUIRED_ENVS if not getattr(self, attr_name)]
+    def user_rules_path(self) -> str:
+        return self.resolve_path(os.path.join(self.config.nanocode_dir, "user_rules.md"))
+
+    def load_user_rules(self) -> None:
+        self.state.user_rules = UserRules.load(self.user_rules_path())
+
+    def save_user_rules(self) -> None:
+        self.state.user_rules.save(self.user_rules_path())
+
+    def missing_required_config(self) -> list[str]:
+        provider = self.config.provider
+        return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
 
 
-###########
+############################
 # Tools
-###########
+############################
 
 
-class Tool(Protocol):
+class ToolEffect(StrEnum):
+    READONLY = "readonly"
+    EDIT = "edit"
+    OTHER = "other"
+
+
+MAX_TOOL_OUTPUT_CHARS = 12_000
+
+
+def _cli_content_summary(value: str) -> str:
+    line_count = _tool_output_line_count(value)
+    if line_count > 1:
+        return "<" + str(line_count) + " lines>"
+    return "<" + str(len(value)) + " chars>"
+
+
+def _cli_token(value: str) -> str:
+    text = str(value)
+    if "\n" in text:
+        return _cli_content_summary(text)
+    text = _shorten(text, 100)
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9_./:@=,+%~*{}-]+", text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
+class Tool:
+    NAME: ClassVar[str] = ""
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ()
+    SIGNATURE: ClassVar[str]
+    EXAMPLE: ClassVar[tuple[str, ...]] = ()
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = None
+
     @classmethod
-    def name(cls) -> str: ...
+    def name(cls) -> str:
+        return cls.NAME or cls.__name__.removesuffix("Tool")
+
     @classmethod
-    def description(cls) -> list[str]: ...
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(arg) for arg in args]
+
     @classmethod
-    def signature(cls) -> str: ...
-    @classmethod
-    def example(cls) -> list[str]: ...
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self: ...
-    def requires_confirmation(self, session: Session) -> bool: ...
-    def display(self) -> str: ...
-    def call(self) -> str: ...
+    def effect(cls) -> ToolEffect:
+        return cls.EFFECT
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.effect() == ToolEffect.EDIT
+
+    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
+        return self.call()
 
 
 ToolClass: TypeAlias = Type[Tool]
 
 
-@final
 @dataclass
 class ParsedToolCall:
     name: str
@@ -567,242 +775,387 @@ class ParsedToolCall:
         return self.name + "(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in self.args) + ")"
 
 
-@final
 @dataclass
 class ToolCallExecution:
     call: ParsedToolCall
     outcome: str
     output: str
-    result_file: str
-    result_file_lines: int
-    log_written: bool = True
+    error_type: Type[Exception] | None = None
+    result_key: str = ""
+    result_excerpted: bool = False
+    requires_verification: bool = False
+
+
+@dataclass
+class PreparedToolCall:
+    call: ParsedToolCall
+    tool: Tool
+
+
+@dataclass
+class BoundedToolOutput:
+    value: str
+    excerpted: bool
+    original_lines: int
+    original_chars: int
+
+
+def _tool_output_line_count(output: str) -> int:
+    if not output:
+        return 0
+    return output.count("\n") + (0 if output.endswith("\n") else 1)
+
+
+def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> BoundedToolOutput:
+    original_chars = len(output)
+    original_lines = _tool_output_line_count(output)
+    if original_chars <= max_chars:
+        return BoundedToolOutput(output, False, original_lines, original_chars)
+
+    header = (
+        "[tool result excerpt]\n"
+        "excerpted: true\n"
+        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + ("\nfull_log: " + log_path if log_path else "") + "\n"
+    )
+    labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
+    body_budget = max_chars - len(header) - sum(len(label) for label in labels)
+    if body_budget <= 0:
+        return BoundedToolOutput(header[:max_chars], True, original_lines, original_chars)
+
+    head_size = body_budget // 3
+    middle_size = body_budget // 3
+    tail_size = body_budget - head_size - middle_size
+    middle_start = max(0, original_chars // 2 - middle_size // 2)
+    value = header + labels[0] + output[:head_size] + labels[1] + output[middle_start : middle_start + middle_size] + labels[2] + output[-tail_size:]
+    return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
+
+
+RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:(?:result_)?key|recall)[:=]\s*(tr\.\d+)\b")
+
+
+def _format_tool_call_summary(call: ParsedToolCall) -> str:
+    return "tool=" + call.name + " args=" + json.dumps(call.args, ensure_ascii=False, separators=(",", ":"))
+
+
+def _format_recent_tool_call(execution: ToolCallExecution) -> str:
+    status = "ok" if execution.outcome == "success" else "fail"
+    fields = [status, _format_tool_call_summary(execution.call)]
+    if execution.result_key:
+        fields.append("key=" + execution.result_key)
+    lines = ["- " + " ".join(fields)]
+    if execution.call.intention:
+        lines.append("  why: " + execution.call.intention)
+    lines.extend(["  output:", execution.output])
+    return "\n".join(lines)
+
+
+def _is_full_tool_call_block(block: str) -> bool:
+    return "\n  output:\n" in block
+
+
+def _compact_tool_call_block(block: str) -> str:
+    if not _is_full_tool_call_block(block):
+        return block
+    header, output = block.split("\n  output:\n", 1)
+    match = RESULT_KEY_PATTERN.search(header)
+    parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"] if output else []
+    if "[tool result excerpt]" in output or "excerpted: true" in output:
+        parts.append("excerpt")
+    if match:
+        parts.append("recall=" + match.group(1))
+    elif output:
+        parts.append(_shorten(" ".join(output.split()), 220))
+    return header + "\n  out: " + ("; ".join(parts) if parts else "ok")
 
 
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
+ToolLiveOutputCallback: TypeAlias = Callable[[ParsedToolCall, str], None]
+ToolLiveDoneCallback: TypeAlias = Callable[[ParsedToolCall], None]
 MessageCallback: TypeAlias = Callable[[str], None]
-ActionCallback: TypeAlias = Callable[[Json], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
 
-####################
-# Tools Helpers
-####################
+############################
+# Tool Helpers
+############################
 
 
 def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     try:
         start = max(0, int(start_arg))
     except (ValueError, TypeError):
-        raise ToolCallError("invalid start: should be an integer")
+        raise ToolCallArgError("invalid start: should be an integer")
     try:
         end = max(0, int(end_arg))
     except (ValueError, TypeError):
-        raise ToolCallError("invalid end: should be an integer")
+        raise ToolCallArgError("invalid end: should be an integer")
     if end:
         end = max(end, start)
     return start, end
-
-
-def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
-    lines = content.splitlines(keepends=True)
-    if content and has_following_line and not content.endswith("\n"):
-        lines[-1] += "\n"
-    return lines
 
 
 def _range_fingerprint(content: str) -> str:
     return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
 
 
-####################
-# Tools Impl
-####################
+############################
+# Tool Implementations
+############################
 
 
-@final
 @dataclass
 class ReadTool(Tool):
-    MAX_LINES: ClassVar[int] = 1000
+    MAX_LINES: ClassVar[int] = 600
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
+        "Each range returns at most 600 lines.",
+    )
+    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, content>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["code.py", "0,80", "160,220"]',
+        'Example args: ["code.py"]',
+    )
 
     filepath: str = ""
     start: int = 0
     end: int = 0
+    ranges: list[tuple[int, int]] = field(default_factory=list)
+    filepaths: list[str] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
-    def name(cls) -> str:
-        return "Read"
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if not args:
+            return []
+        tokens = [_cli_token(args[0])]
+        if len(args) == 3 and args[1].isdigit() and args[2].isdigit():
+            return tokens + [args[1] + ":" + args[2]]
+        return tokens + [str(arg) for arg in args[1:]]
 
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Read exact file lines with a fingerprint.",
-            "Optional range is 0-based [start,end); end=0 means EOF.",
-            "Returns at most 1000 lines; truncated results include total lines and next-step guidance.",
-            "Prefer Search before Read for large or unknown files; use bounded reads when exact context is needed.",
-            "For ReplaceRange, non-empty subranges may use a wider cached Read fingerprint that covers them; empty insert ranges require an exact empty-range Read.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Read(filepath, start?: 0-N, end?: 0-N) -> ReadToolResult<fingerprint, content>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example: ["code.py", "0", "120"]', 'Example: ["code.py"]']
+    @staticmethod
+    def _parse_line_range_token(value: str) -> tuple[int, int]:
+        match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
+        if match is None:
+            raise ToolCallArgError("invalid range: use a comma token like 0,120")
+        return _parse_line_range(match.group(1), match.group(2))
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in {1, 3}:
-            raise ToolCallError("requires 1 or 3 args: filepath[, start, end]")
+        if len(args) == 0:
+            raise ToolCallArgError(
+                'Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().'
+            )
         filepath = session.resolve_path(args[0])
-        start, end = (0, 0) if len(args) == 1 else _parse_line_range(args[1], args[2])
-        return cls(filepath=filepath, start=start, end=end, cwd=session.cwd, range_fingerprints=session.range_fingerprints)
+        if len(args) == 1:
+            ranges = [(0, 0)]
+        elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
+            ranges = [cls._parse_line_range_token(arg) for arg in args[1:]]
+        elif len(args) == 3 and cls._is_integer_token(args[1]) and cls._is_integer_token(args[2]):
+            ranges = [_parse_line_range(args[1], args[2])]
+        elif cls._all_args_are_existing_files(session, args):
+            filepaths = [session.resolve_path(arg) for arg in args]
+            return cls(
+                filepath=filepaths[0],
+                start=0,
+                end=0,
+                ranges=[(0, 0)],
+                filepaths=filepaths,
+                cwd=session.cwd,
+                range_fingerprints=session.state.range_fingerprints,
+            )
+        elif len(args) == 3:
+            ranges = [_parse_line_range(args[1], args[2])]
+        elif len(args) == 2:
+            raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
+        else:
+            raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
+        start, end = ranges[0]
+        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
+
+    @staticmethod
+    def _all_args_are_existing_files(session: Session, args: list[str]) -> bool:
+        if len(args) < 2:
+            return False
+        return all(os.path.isfile(session.resolve_path(arg)) for arg in args)
+
+    @staticmethod
+    def _is_integer_token(value: str) -> bool:
+        return re.fullmatch(r"\s*-?\d+\s*", str(value)) is not None
 
     def requires_confirmation(self, session: Session) -> bool:
-        return not session.is_path_in_cwd(self.filepath)
+        return any(not session.is_path_in_cwd(filepath) for filepath in self._target_filepaths())
 
-    def display(self) -> str:
+    def preview(self) -> str:
+        if self.filepaths:
+            return "Read(" + ", ".join(self.filepaths) + ")"
+        if len(self.ranges) > 1:
+            ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
+            return f"Read({self.filepath}, {ranges})"
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
+        if self.filepaths:
+            lines = ["<ReadToolResult>", "  <file_count>" + str(len(self.filepaths)) + "</file_count>"]
+            for filepath in self.filepaths:
+                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(0, 0, filepath=filepath)
+                lines.append("  <ReadFile>")
+                lines.append("    <path>" + filepath + "</path>")
+                lines.extend(self._format_range_result(0, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
+                lines.append("  </ReadFile>")
+            lines.append("</ReadToolResult>")
+            return "\n".join(lines)
+
+        if len(self.ranges) > 1:
+            lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
+            for start, end in self.ranges:
+                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(start, end)
+                lines.append("  <ReadRange>")
+                lines.extend(self._format_range_result(start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
+                lines.append("  </ReadRange>")
+            lines.append("</ReadToolResult>")
+            return "\n".join(lines)
+
+        content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(self.start, self.end)
+        lines = ["<ReadToolResult>"]
+        lines.extend(self._format_range_result(self.start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="  "))
+        lines.append("</ReadToolResult>")
+        return "\n".join(lines)
+
+    def _target_filepaths(self) -> list[str]:
+        return self.filepaths or [self.filepath]
+
+    def _read_range(self, start: int, end: int, *, filepath: str | None = None) -> tuple[str, int, int, str, bool, int]:
+        target_filepath = filepath or self.filepath
         total_lines = 0
         selected_lines = []
         truncated = False
-        bounded_read_lines = self.end - self.start if self.end else 0
-        if self.end and bounded_read_lines <= self.MAX_LINES:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                selected_lines = list(itertools.islice(f, self.start, self.end))
+        bounded_read_lines = end - start if end else 0
+        if end and bounded_read_lines <= self.MAX_LINES:
+            with open(target_filepath, "r", encoding="utf-8") as f:
+                selected_lines = list(itertools.islice(f, start, end))
         else:
-            with open(self.filepath, "r", encoding="utf-8") as f:
+            with open(target_filepath, "r", encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     total_lines = index + 1
-                    if index < self.start:
+                    if index < start:
                         continue
-                    if self.end and index >= self.end:
+                    if end and index >= end:
                         continue
                     if len(selected_lines) < self.MAX_LINES:
                         selected_lines.append(line)
                         continue
                     truncated = True
         content = "".join(selected_lines)
-        returned_end = self.start + len(selected_lines)
-        fingerprint_end = returned_end if truncated else self.end
+        returned_end = start + len(selected_lines)
+        fingerprint_end = returned_end if truncated else end
         fingerprint = self.range_fingerprints.remember(
-            filepath=self.filepath,
-            start=self.start,
+            filepath=target_filepath,
+            start=start,
             end=fingerprint_end,
             content=content,
         )
+        return content, returned_end, fingerprint_end, fingerprint, truncated, total_lines
+
+    def _format_range_result(
+        self,
+        start: int,
+        returned_end: int,
+        fingerprint_end: int,
+        fingerprint: str,
+        truncated: bool,
+        total_lines: int,
+        content: str,
+        *,
+        indent: str,
+    ) -> list[str]:
         lines = [
-            "<ReadToolResult>",
-            "  <range>" + str(self.start) + ":" + str(fingerprint_end) + "</range>",
-            "  <fingerprint>" + fingerprint + "</fingerprint>",
+            indent + "<range>" + str(start) + ":" + str(fingerprint_end) + "</range>",
+            indent + "<fingerprint>" + fingerprint + "</fingerprint>",
         ]
         if truncated:
+            note = (
+                f"Read returned {returned_end - start} lines from {start}:{returned_end} of {total_lines} total lines. "
+                "Use Search to locate relevant text or Read smaller ranges in batches."
+            )
             lines.extend(
                 [
-                    "  <truncated>true</truncated>",
-                    "  <total_lines>" + str(total_lines) + "</total_lines>",
-                    "  <note>Read returned "
-                    + str(len(selected_lines))
-                    + " lines from "
-                    + str(self.start)
-                    + ":"
-                    + str(returned_end)
-                    + " of "
-                    + str(total_lines)
-                    + " total lines. Use Search to locate relevant text or Read smaller ranges in batches.</note>",
+                    indent + "<truncated>true</truncated>",
+                    indent + "<total_lines>" + str(total_lines) + "</total_lines>",
+                    indent + "<note>" + note + "</note>",
                 ]
             )
-        lines.extend(
-            [
-                "  <content no-indention>",
-                content,
-                "  </content>",
-                "</ReadToolResult>",
-            ]
-        )
-        return "\n".join(lines)
+        lines.extend([indent + "<content no-indention>", content, indent + "</content>"])
+        return lines
 
 
-@final
 @dataclass
 class LineCountTool(Tool):
-    filepath: str = ""
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
+    SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "other.py"]',)
 
-    @classmethod
-    def name(cls) -> str:
-        return "LineCount"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Count file lines before choosing a Read range."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "LineCount(filepath) -> LineCountToolResult<lines>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py"]']
+    filepaths: list[str] = field(default_factory=list)
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 1:
-            raise ToolCallError("requires exactly one arg: filepath")
-        return cls(filepath=session.resolve_path(args[0]))
+        if not args:
+            raise ToolCallArgError("requires at least one arg: filepath")
+        return cls(filepaths=[session.resolve_path(p) for p in args])
 
     def requires_confirmation(self, session: Session) -> bool:
-        return not session.is_path_in_cwd(self.filepath)
+        return any(not session.is_path_in_cwd(fp) for fp in self.filepaths)
 
-    def display(self) -> str:
-        return f"LineCount({self.filepath})"
+    def preview(self) -> str:
+        n = len(self.filepaths)
+        sample = ", ".join(self.filepaths[:2]) if n > 2 else ", ".join(self.filepaths)
+        suffix = f"+{n - 2} more" if n > 2 else ""
+        return f"LineCount([{sample}{suffix}])"
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            return "<LineCountToolResult>" + str(sum(1 for _ in f)) + "</LineCountToolResult>"
+        wc_path = shutil.which("wc") or ""
+        if wc_path:
+            result = subprocess.run([wc_path, "-l", *self.filepaths], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                raise ToolCallError((result.stderr or "wc failed").strip())
+            lines = result.stdout.strip().splitlines()
+            total = int(lines[-1].split()[0]) if lines else 0
+            return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
+        total = 0
+        for filepath in self.filepaths:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as file:
+                total += sum(1 for _ in file)
+        return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
 
 
-@final
 @dataclass
 class ListDirTool(Tool):
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "List one directory non-recursively; optional glob filters immediate entry names.",
+        "Batch multiple ListDir actions in one turn when checking several known directories.",
+    )
+    SIGNATURE: ClassVar[str] = "ListDir([dirpath][, glob]) -> ListDirToolResult<entries>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []")
+
     dirpath: str = ""
     glob_pattern: str = ""
     cwd: str = ""
 
     @classmethod
-    def name(cls) -> str:
-        return "ListDir"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "List immediate directory entries, optionally filtered by entry-name glob.",
-            "Returns entries sorted by type then name.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return 'ListDir(dir_path?: "."[, glob_pattern]) -> ListDirToolResult<entries>'
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ["Example args: []", 'Example args: ["."]', 'Example args: ["src", "*.py"]']
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) not in (0, 1, 2):
-            raise ToolCallError("requires 0 to 2 args: [dir_path][, glob_pattern]")
+            raise ToolCallArgError("requires 0 to 2 args: [dirpath][, glob]")
         dir_path = str(args[0]) if args else "."
         glob_pattern = str(args[1]) if len(args) == 2 else ""
         return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         if self.glob_pattern:
             return f'ListDir({self.dirpath}, "{self.glob_pattern}")'
         return f"ListDir({self.dirpath})"
@@ -845,7 +1198,6 @@ class ListDirTool(Tool):
         return "\n".join(lines)
 
 
-@final
 @dataclass
 class SearchTool(Tool):
     MAX_MATCHES: ClassVar[int] = 100
@@ -853,6 +1205,20 @@ class SearchTool(Tool):
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 4
     MAX_CONTEXT_LINES: ClassVar[int] = 30
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Case-insensitive regex search before Read; use A|B|C for alternatives.",
+        "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
+        "Scope with path=FILE_OR_DIR, filter with glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
+        "Batch multiple Search actions in one turn when checking independent patterns.",
+        "Only options are path=, glob=, context=; escape regex symbols for literal text.",
+    )
+    SIGNATURE: ClassVar[str] = "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
+        'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
+        'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
+    )
 
     @dataclass(frozen=True)
     class Match:
@@ -862,8 +1228,6 @@ class SearchTool(Tool):
         context: list[tuple[int, str]]
 
     pattern: str = ""
-    patterns: list[str] = field(default_factory=list)
-    regex: bool = False
     target_path: str = ""
     glob_pattern: str = ""
     context_lines: int = CONTEXT_LINES
@@ -871,86 +1235,122 @@ class SearchTool(Tool):
     gitignore_patterns: list[str] = field(default_factory=list)
 
     @classmethod
-    def name(cls) -> str:
-        return "Search"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Search files or directories before Read; default is fixed text.",
-            "Prefix pattern with re: for regex search.",
-            "Search is line-oriented; regex patterns must not contain newlines.",
-            "Use A|B|C for literal OR search in fixed mode.",
-            "Optional context=N or N sets nearby context lines, from 0 to 30.",
-            "Optional glob matches file basename or path relative to cwd.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Search(pattern[, path][, option...]) -> SearchToolResult<matches>; option is context=N|N (0..30) or glob_pattern"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            'Example args: ["TODO"]',
-            'Example args: ["class Foo", "code.py"]',
-            'Example args: ["TODO", ".", "*.py"]',
-            'Example args: ["class Bar|def main", "nanocode.py", "context=6"]',
-            'Example args: ["TODO", ".", "*.py", "8"]',
-            'Example args: ["re:def __init__\\([^)]*,[^)]*\\)", ".", "*.py"]',
-        ]
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) < 1 or len(args) > 20:
+            raise ToolCallArgError("requires 1 to 20 args: pattern[, path=path][, glob=pattern][, context=N]")
+        if any(str(arg).startswith("ignore_case") or str(arg).startswith("case_sensitive") for arg in args[1:]):
+            raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
+        args = cls._normalize_multi_pattern_args(session, args)
         if len(args) not in (1, 2, 3, 4):
-            raise ToolCallError("requires 1 to 4 args: pattern[, path][, glob_pattern][, context=N]")
+            raise ToolCallArgError("requires 1 to 4 args after normalization: pattern[, path=path][, glob=pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
-            raise ToolCallError("pattern cannot be empty")
-        regex = raw_pattern.startswith("re:")
-        pattern = raw_pattern[3:] if regex else raw_pattern
+            raise ToolCallArgError("pattern cannot be empty")
+        pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
         if not pattern:
-            raise ToolCallError("pattern cannot be empty")
-        if regex and "\n" in pattern:
-            raise ToolCallError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
-        target_path_arg = str(args[1]) if len(args) >= 2 else "."
-        if not target_path_arg:
-            target_path_arg = "."
+            raise ToolCallArgError("pattern cannot be empty")
+        if "\n" in pattern:
+            raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
+        target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
-        for raw_option in args[2:]:
+        positional_path_seen = False
+        for raw_option in args[1:]:
             option = str(raw_option)
+            if option.startswith("ignore_case") or option.startswith("case_sensitive"):
+                raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
+            if option.startswith("path="):
+                if positional_path_seen and target_path_arg != ".":
+                    raise ToolCallArgError("path option cannot be combined with positional path")
+                target_path_arg = option.split("=", 1)[1] or "."
+                positional_path_seen = True
+                continue
             if option.startswith("context=") or option.isdigit():
                 try:
                     context_lines = cls._parse_context_arg(option)
                 except ValueError:
-                    raise ToolCallError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
+                    raise ToolCallArgError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
                 continue
+            named_glob = option.startswith("glob=") or option.startswith("glob_pattern=")
             if option.startswith("glob=") or option.startswith("glob_pattern="):
                 option = option.split("=", 1)[1]
                 if not option:
-                    raise ToolCallError("glob option cannot be empty")
+                    raise ToolCallArgError("glob option cannot be empty")
             if glob_pattern:
-                raise ToolCallError("unexpected search option: " + option)
-            glob_pattern = option
-        patterns = [pattern] if regex else [part for part in pattern.split("|") if part]
-        if not patterns:
-            raise ToolCallError("no valid search patterns")
-        if regex:
-            try:
-                re.compile(pattern)
-            except re.error as error:
-                raise ToolCallError("invalid regex: " + str(error))
+                raise ToolCallArgError("unexpected search option: " + option)
+            if positional_path_seen:
+                glob_pattern = option
+                continue
+            if not option:
+                target_path_arg = "."
+                positional_path_seen = True
+                continue
+            if named_glob or cls._search_option_kind(option) == "glob":
+                glob_pattern = option
+                continue
+            target_path_arg = option
+            positional_path_seen = True
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ToolCallArgError("invalid regex: " + str(error))
         return cls(
-            pattern=raw_pattern,
-            patterns=patterns,
-            regex=regex,
+            pattern=pattern,
             target_path=session.resolve_path(target_path_arg),
             glob_pattern=glob_pattern,
             context_lines=context_lines,
             cwd=session.cwd,
             gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
         )
+
+    @classmethod
+    def _normalize_multi_pattern_args(cls, session: Session, args: list[str]) -> list[str]:
+        values = [str(arg) for arg in args]
+        if len(values) < 3 or values[0].startswith("re:"):
+            return values
+        positional, options, has_glob_option, has_path_option = cls._split_search_positionals_and_options(values)
+        if has_path_option and len(positional) >= 2:
+            return ["|".join(positional), "."] + options
+        if len(positional) < 3:
+            return values
+        if has_glob_option and len(positional) == 2:
+            return values
+        if any(not item for item in positional):
+            return values
+        final = positional[-1]
+        if os.path.exists(session.resolve_path(final)):
+            pattern_parts = positional[:-1]
+            target_path_arg = final
+        else:
+            pattern_parts = positional
+            target_path_arg = "."
+        return ["|".join(pattern_parts), target_path_arg] + options
+
+    @classmethod
+    def _split_search_positionals_and_options(cls, values: list[str]) -> tuple[list[str], list[str], bool, bool]:
+        option_start = len(values)
+        has_glob_option = False
+        has_path_option = False
+        while option_start > 1:
+            option_kind = cls._search_option_kind(values[option_start - 1])
+            if option_kind is None:
+                break
+            has_glob_option = has_glob_option or option_kind == "glob"
+            has_path_option = has_path_option or option_kind == "path"
+            option_start -= 1
+        return values[:option_start], values[option_start:], has_glob_option, has_path_option
+
+    @classmethod
+    def _search_option_kind(cls, value: str) -> str | None:
+        if value.startswith("path="):
+            return "path"
+        if value.startswith("context=") or value.isdigit():
+            return "context"
+        if value.startswith("glob=") or value.startswith("glob_pattern="):
+            return "glob"
+        if any(marker in value for marker in ("*", "?", "[", "]")):
+            return "glob"
+        return None
 
     @classmethod
     def _parse_context_arg(cls, value: str) -> int:
@@ -963,7 +1363,7 @@ class SearchTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.target_path)
 
-    def display(self) -> str:
+    def preview(self) -> str:
         if self.glob_pattern:
             return f'Search("{self.pattern}", {self.target_path}, "{self.glob_pattern}")'
         return f'Search("{self.pattern}", {self.target_path})'
@@ -1075,25 +1475,34 @@ class SearchTool(Tool):
         lines.append("</SearchToolResult>")
         return "\n".join(lines)
 
-    def _call_rg(self, rg: str) -> str:
+    def _rg_command(self, rg: str, *, pcre2: bool = False) -> list[str]:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
-        if not self.regex:
-            cmd.append("--fixed-strings")
+        if pcre2:
+            cmd.append("--pcre2")
+        cmd.append("-i")
         if self.glob_pattern:
             cmd.extend(["--glob", self.glob_pattern])
-        for pattern in self.patterns:
-            cmd.extend(["-e", pattern])
+        cmd.extend(["-e", self.pattern])
         cmd.extend(["--", self.target_path])
+        return cmd
 
+    def _call_rg(self, rg: str) -> str:
+        pcre2 = False
         try:
-            proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            proc = subprocess.run(self._rg_command(rg), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         except subprocess.TimeoutExpired:
             raise ToolCallError("rg timed out")
+        if proc.returncode not in (0, 1) and self._should_retry_rg_with_pcre2(proc.stderr):
+            pcre2 = True
+            try:
+                proc = subprocess.run(self._rg_command(rg, pcre2=True), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            except subprocess.TimeoutExpired:
+                raise ToolCallError("rg timed out")
         if proc.returncode not in (0, 1):
             raise ToolCallError(proc.stderr.strip() or "rg failed")
 
         matches = []
-        truncated = False
+        engine = "rg-pcre2" if pcre2 else "rg-regex"
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -1114,14 +1523,15 @@ class SearchTool(Tool):
                 text = ""
             matches.append(self._make_match(path, int(data.get("line_number", 0)), text.rstrip("\n")))
             if len(matches) >= self.MAX_MATCHES:
-                truncated = True
-                break
-        engine = "rg-regex" if self.regex else "rg"
-        return self._format_result(engine, matches, truncated)
+                return self._format_result(engine, matches, True)
+        return self._format_result(engine, matches, False)
+
+    def _should_retry_rg_with_pcre2(self, stderr: str) -> bool:
+        text = stderr.lower()
+        return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
     def _call_python(self) -> str:
         matches = []
-        truncated = False
         for path in self._iter_files():
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
@@ -1133,20 +1543,17 @@ class SearchTool(Tool):
                             continue
                         matches.append(self._make_match(path, lineno, text))
                         if len(matches) >= self.MAX_MATCHES:
-                            truncated = True
-                            return self._format_result("python", matches, truncated)
+                            return self._format_result("python", matches, True)
             except OSError:
                 continue
 
-        return self._format_result("python", matches, truncated)
+        return self._format_result("python", matches, False)
 
     def _line_matches(self, text: str) -> bool:
-        if not self.regex:
-            return any(pattern in text for pattern in self.patterns)
         try:
-            return re.search(self.patterns[0], text) is not None
+            return re.search(self.pattern, text, re.IGNORECASE) is not None
         except re.error as error:
-            raise ToolCallError("invalid regex: " + str(error))
+            raise ToolCallArgError("invalid regex: " + str(error))
 
     def call(self) -> str:
         if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
@@ -1162,131 +1569,254 @@ class SearchTool(Tool):
         return self._call_python()
 
 
-@final
 @dataclass
 class EditTool(Tool):
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Replace/delete one unique exact literal text block in an existing file; best for tiny unambiguous edits, not regex.",
+        "If the target text is repeated or line ranges are clearer, use ReplaceRange; for multi-hunk or structural edits, use ApplyPatch.",
+    )
+    SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
+
     filepath: str = ""
     find: str = ""
     replace: str = ""
     cwd: str = ""
 
     @classmethod
-    def name(cls) -> str:
-        return "Edit"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Replace the first exact text block in a file."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "old text", "new text"]']
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(args[0])] if args else []
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 3:
-            raise ToolCallError("requires exactly 3 args: filepath, find, replace")
+            raise ToolCallArgError(
+                "Edit args error: got "
+                + str(len(args))
+                + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().'
+            )
         find = str(args[1])
-        if not find:
-            raise ToolCallError("find text cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
 
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
-
-    def display(self) -> str:
+    def preview(self) -> str:
         label = f'Edit({self.filepath}, find="{self.find}")'
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 content = f.read()
-        except OSError:
-            return label
+        except FileNotFoundError:
+            if self.find == "":
+                return _make_unified_diff("", self.replace, self.filepath) or label
+            return label + "\n# preview unavailable: file does not exist; use empty find to create"
+        except OSError as error:
+            return label + "\n# preview unavailable: " + str(error)
+        if self.find == "":
+            return label + "\n# preview unavailable: empty find creates missing files only"
         if self.find not in content:
             return label
+        if content.count(self.find) != 1:
+            return label + "\n# preview unavailable: target `find` text matched multiple times; use ReplaceRange or a larger unique find block"
         return _make_unified_diff(content, content.replace(self.find, self.replace, 1), self.filepath) or label
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            content = f.read()
+        created = False
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            if self.find != "":
+                raise ToolCallError("file does not exist; use empty find to create")
+            content = ""
+            created = True
+        if self.find == "" and not created:
+            raise ToolCallError("empty find creates missing files only")
         if self.find not in content:
             raise ToolCallError("target `find` text not found")
+        if content.count(self.find) != 1:
+            raise ToolCallError("target `find` text matched multiple times; use ReplaceRange or a larger unique find block")
 
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(content.replace(self.find, self.replace, 1))
 
+        lines = [
+            "<EditToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+        ]
+        if created:
+            lines.append("* created: true")
+        else:
+            lines.append("* replacements: 1")
+        lines.append("</EditToolResult>")
+        return "\n".join(lines)
+
+
+@dataclass
+class CreateFileTool(Tool):
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist.",)
+    SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
+
+    filepath: str = ""
+    content: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) < 2:
+            return [_cli_token(arg) for arg in args]
+        return [_cli_token(args[0]), _cli_content_summary(args[1])]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 2:
+            raise ToolCallArgError('requires exactly 2 args: filepath, content. Example: CreateFile("new.py", "content\\n")')
+        return cls(filepath=session.resolve_path(args[0]), content=str(args[1]), cwd=session.cwd)
+
+    def preview(self) -> str:
+        label = f"CreateFile({self.filepath})"
+        if os.path.exists(self.filepath):
+            return label + "\n# preview unavailable: file already exists"
+        return _make_unified_diff("", self.content, self.filepath) or label
+
+    def call(self) -> str:
+        try:
+            with open(self.filepath, "x", encoding="utf-8") as f:
+                f.write(self.content)
+        except FileExistsError:
+            raise ToolCallError("file already exists")
+        except OSError as error:
+            raise ToolCallError(str(error))
         return "\n".join(
             [
-                "<EditToolResult>",
+                "<CreateFileToolResult>",
                 f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                "* replacements: 1",
-                "</EditToolResult>",
+                "* created: true",
+                "</CreateFileToolResult>",
             ]
         )
 
 
-@final
+@dataclass
+class ReplaceRangeEdit:
+    start: int
+    end: int
+    fingerprint: str
+    before_context: str
+    after_context: str
+    content: str
+
+
 @dataclass
 class ReplaceRangeTool(Tool):
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Replace one small Read-backed [start,end) range in an existing file; best when exact line range is known or target text is not unique.",
+        "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
+        "Content is only the replacement for that range; do not include boundary lines.",
+    )
+    SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',)
+
     filepath: str = ""
     start: int = 0
     end: int = 0
     fingerprint: str = ""
+    before_context: str = ""
+    after_context: str = ""
     content: str = ""
+    edits: list[ReplaceRangeEdit] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
-    def name(cls) -> str:
-        return "ReplaceRange"
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) < 3:
+            return [_cli_token(arg) for arg in args]
+        return [_cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
 
     @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Replace one 0-based line range when its fingerprint comes from Read(filepath, ...).",
-            "If a wider cached Read range covers this target range, the tool may slice and validate the narrower range automatically; otherwise Read the exact target range and retry once.",
-            "If earlier edits shifted lines, a cached Read fingerprint for the same original range can relocate only when old content still matches exactly once.",
-        ]
+    def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
+        if len(call.args) != 7:
+            return None
+        return (call.args[0],)
 
     @classmethod
-    def signature(cls) -> str:
-        return "ReplaceRange(filepath, start: 0-N, end: 0-N, fingerprint, content) -> ReplaceRangeToolResult<path, range>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "10", "12", "a1b2c3", "new text\\n"]']
+    def merge_calls(cls, session: Session, calls: list[ParsedToolCall]) -> PreparedToolCall | None:
+        if len(calls) < 2:
+            return None
+        filepath = calls[0].args[0]
+        edits = []
+        intentions = []
+        for call in calls:
+            try:
+                start, end = _parse_line_range(call.args[1], call.args[2])
+            except ToolCallArgError:
+                return None
+            fingerprint = call.args[3]
+            if not fingerprint:
+                return None
+            edits.append(
+                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=call.args[4], after_context=call.args[5], content=call.args[6])
+            )
+            if call.intention:
+                intentions.append(call.intention)
+        tool = cls._from_edits(session, filepath=filepath, edits=edits)
+        call = ParsedToolCall(name=cls.name(), intention="; ".join(intentions), args=list(calls[0].args))
+        return PreparedToolCall(call=call, tool=tool)
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 5:
-            raise ToolCallError("requires exactly 5 args: filepath, start, end, fingerprint, content")
+        if len(args) != 7:
+            raise ToolCallArgError("requires exactly 7 args: filepath, start, end, fingerprint, before_context, after_context, content")
         start, end = _parse_line_range(args[1], args[2])
         fingerprint = str(args[3])
-        if not fingerprint:
-            raise ToolCallError("fingerprint cannot be empty")
-        return cls(
-            filepath=session.resolve_path(args[0]),
-            start=start,
-            end=end,
-            fingerprint=fingerprint,
-            content=str(args[4]),
-            cwd=session.cwd,
-            range_fingerprints=session.range_fingerprints,
+        if not fingerprint and (start != 0 or end != 0):
+            raise ToolCallArgError("fingerprint cannot be empty")
+        return cls._from_edits(
+            session,
+            filepath=args[0],
+            edits=[
+                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[4]), after_context=str(args[5]), content=str(args[6]))
+            ],
         )
 
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
+    @classmethod
+    def _from_edits(cls, session: Session, *, filepath: str, edits: list[ReplaceRangeEdit]) -> Self:
+        first = edits[0]
+        return cls(
+            filepath=session.resolve_path(filepath),
+            start=first.start,
+            end=first.end,
+            fingerprint=first.fingerprint,
+            before_context=first.before_context,
+            after_context=first.after_context,
+            content=first.content,
+            edits=edits,
+            cwd=session.cwd,
+            range_fingerprints=session.state.range_fingerprints,
+        )
 
-    def display(self) -> str:
-        label = f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
+    def preview(self) -> str:
+        label = self._label()
         try:
-            original, new_content, _, _ = self._preview()
+            original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
+        warning = self._preview_warning()
+        diff = _make_unified_diff(original, new_content, self.filepath) or label
+        return (warning + "\n" if warning else "") + diff
+
+    def _preview_warning(self) -> str:
+        if len(self.edits) != 1:
+            return ""
+        if self.start == 0 and self.end == 0 and not os.path.exists(self.filepath):
+            return ""
+        if self.end == 0:
+            return "# warning: broad range replacement; prefer smaller semantic ranges"
+        if self.end - self.start > 20:
+            return "# warning: broad range replacement; prefer smaller semantic ranges"
+        return ""
 
     def preview_error(self) -> str:
         try:
@@ -1296,216 +1826,141 @@ class ReplaceRangeTool(Tool):
         return ""
 
     def call(self) -> str:
-        original, new_content, resolved, _ = self._preview()
+        created = not os.path.exists(self.filepath)
+        original, new_content, replacements = self._preview()
         if new_content == original:
             raise ToolCallError("range replacement produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 
+        relpath = os.path.relpath(self.filepath, self.cwd)
+        if len(replacements) == 1:
+            resolved, _ = replacements[0]
+            lines = [
+                "<ReplaceRangeToolResult>",
+                f"* path: {relpath}",
+                f"* range: {resolved.start}:{resolved.end}",
+                f"* fingerprint: {resolved.fingerprint}",
+            ]
+            if created:
+                lines.append("* created: true")
+            if resolved.relocated_from:
+                old_start, old_end = resolved.relocated_from
+                lines.append(f"* relocated_from: {old_start}:{old_end}")
+            lines.append("</ReplaceRangeToolResult>")
+            return "\n".join(lines)
+
         lines = [
             "<ReplaceRangeToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-            f"* range: {resolved.start}:{resolved.end}",
-            f"* fingerprint: {resolved.fingerprint}",
+            f"* path: {relpath}",
+            f"* replacements: {len(replacements)}",
         ]
-        if resolved.relocated_from:
-            old_start, old_end = resolved.relocated_from
-            lines.append(f"* relocated_from: {old_start}:{old_end}")
+        for index, (resolved, _) in enumerate(replacements, start=1):
+            lines.append(f"* range[{index}]: {resolved.start}:{resolved.end}")
+            lines.append(f"* fingerprint[{index}]: {resolved.fingerprint}")
+            if resolved.relocated_from:
+                old_start, old_end = resolved.relocated_from
+                lines.append(f"* relocated_from[{index}]: {old_start}:{old_end}")
         lines.append("</ReplaceRangeToolResult>")
         return "\n".join(lines)
 
-    def _preview(self) -> tuple[str, str, RangeFingerprintStore.Resolved, list[str]]:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
-        lines = original.splitlines(keepends=True)
-        resolved = self.range_fingerprints.resolve(
-            lines,
-            filepath=self.filepath,
-            start=self.start,
-            end=self.end,
-            fingerprint=self.fingerprint,
-        )
-        replacement = _replacement_lines(self.content, has_following_line=resolved.end < len(lines))
-        new_lines = lines[: resolved.start] + replacement + lines[resolved.end :]
-        return original, "".join(new_lines), resolved, replacement
-
-
-@final
-@dataclass
-class BatchReplaceRangesTool(Tool):
-    @final
-    @dataclass
-    class Edit:
-        start: int
-        end: int
-        fingerprint: str
-        content: str
-
-    filepath: str = ""
-    edits: list[Edit] = field(default_factory=list)
-    cwd: str = ""
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
-
-    @classmethod
-    def name(cls) -> str:
-        return "BatchReplaceRanges"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Replace multiple 0-based line ranges in one file against one snapshot.",
-            "Use this for multiple edits in the same file; earlier edits in this call do not shift later ranges.",
-            "Each edit fingerprint must come from Read(filepath, ...); if a wider cached range covers the target range, it may be sliced and validated automatically.",
-            "Same-range cached fingerprints can relocate shifted old content.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "BatchReplaceRanges(filepath, edits_json) -> BatchReplaceRangesToolResult<path, edits>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "[{\\"start\\":10,\\"end\\":12,\\"fingerprint\\":\\"a1b2c3\\",\\"content\\":\\"new text\\\\n\\"}]"]']
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 2:
-            raise ToolCallError("requires exactly 2 args: filepath, edits_json")
-        try:
-            raw_edits = json.loads(str(args[1]))
-        except json.JSONDecodeError as error:
-            raise ToolCallError("invalid edits_json: " + str(error))
-        if not isinstance(raw_edits, list) or not raw_edits:
-            raise ToolCallError("edits_json must be a non-empty JSON array")
-        edits = [cls._edit_from_json(raw) for raw in raw_edits]
-        return cls(
-            filepath=session.resolve_path(args[0]),
-            edits=edits,
-            cwd=session.cwd,
-            range_fingerprints=session.range_fingerprints,
-        )
-
-    @classmethod
-    def _edit_from_json(cls, raw: JsonValue) -> Edit:
-        if not isinstance(raw, dict):
-            raise ToolCallError("each edit must be a JSON object")
-        start, end = _parse_line_range(str(raw.get("start", "")), str(raw.get("end", "")))
-        fingerprint = str(raw.get("fingerprint", ""))
-        if not fingerprint:
-            raise ToolCallError("edit fingerprint cannot be empty")
-        content = raw.get("content")
-        if not isinstance(content, str):
-            raise ToolCallError("edit content must be a string")
-        return cls.Edit(start=start, end=end, fingerprint=fingerprint, content=content)
-
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
-
-    def display(self) -> str:
-        label = f"BatchReplaceRanges({self.filepath}, edits={len(self.edits)})"
-        try:
-            original, new_content, _ = self._preview()
-        except (OSError, ToolCallError) as error:
-            return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
-
-    def preview_error(self) -> str:
-        try:
-            self._preview()
-        except (OSError, ToolCallError) as error:
-            return str(error)
-        return ""
-
-    def call(self) -> str:
-        original, new_content, resolved_edits = self._preview()
-        if new_content == original:
-            raise ToolCallError("range replacements produced no changes")
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        lines = [
-            "<BatchReplaceRangesToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-            f"* edits: {len(resolved_edits)}",
-        ]
-        for index, (resolved, _) in enumerate(resolved_edits, start=1):
-            line = f"* range {index}: {resolved.start}:{resolved.end}"
-            if resolved.relocated_from:
-                old_start, old_end = resolved.relocated_from
-                line += f" relocated_from={old_start}:{old_end}"
-            lines.append(line)
-        lines.append("</BatchReplaceRangesToolResult>")
-        return "\n".join(lines)
-
     def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
+        file_missing = False
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                original = f.read()
+        except FileNotFoundError:
+            file_missing = True
+            original = ""
         lines = original.splitlines(keepends=True)
-        resolved_edits = []
+        replacements = []
         for edit in self.edits:
-            resolved = self.range_fingerprints.resolve(
-                lines,
-                filepath=self.filepath,
-                start=edit.start,
-                end=edit.end,
-                fingerprint=edit.fingerprint,
-            )
-            resolved_edits.append((resolved, _replacement_lines(edit.content, has_following_line=resolved.end < len(lines))))
-        self._ensure_non_overlapping(resolved_edits)
-
+            if file_missing:
+                if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint or edit.before_context or edit.after_context:
+                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, "0", "0", "", "", "", content) to create')
+                resolved = RangeFingerprintStore.Resolved(start=0, end=0, fingerprint=_range_fingerprint(""))
+            else:
+                resolved = self.range_fingerprints.resolve(
+                    lines,
+                    filepath=self.filepath,
+                    start=edit.start,
+                    end=edit.end,
+                    fingerprint=edit.fingerprint,
+                )
+            replacement = self._replacement_lines(edit.content, has_following_line=resolved.end < len(lines))
+            self._validate_boundary_context(lines, resolved, edit, replacement)
+            replacements.append((resolved, replacement))
+        self._reject_overlapping_ranges(replacements)
         new_lines = list(lines)
-        for resolved, replacement in sorted(resolved_edits, key=lambda item: item[0].start, reverse=True):
+        for resolved, replacement in sorted(replacements, key=lambda item: item[0].start, reverse=True):
             new_lines[resolved.start : resolved.end] = replacement
-        return original, "".join(new_lines), resolved_edits
+        return original, "".join(new_lines), replacements
 
-    def _ensure_non_overlapping(self, resolved_edits: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
-        last_end = -1
-        for resolved, _ in sorted(resolved_edits, key=lambda item: (item[0].start, item[0].end)):
-            if resolved.start < last_end:
-                raise ToolCallError("resolved ranges overlap")
-            last_end = max(last_end, resolved.end)
+    def _label(self) -> str:
+        if len(self.edits) <= 1:
+            return f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
+        return f"ReplaceRange({self.filepath}, {len(self.edits)} ranges)"
+
+    @staticmethod
+    def _reject_overlapping_ranges(replacements: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
+        previous: RangeFingerprintStore.Resolved | None = None
+        for resolved, _ in sorted(replacements, key=lambda item: item[0].start):
+            if previous is not None and resolved.start < previous.end:
+                raise ToolCallError(f"range replacements overlap: {previous.start}:{previous.end} and {resolved.start}:{resolved.end}")
+            previous = resolved
+
+    @staticmethod
+    def _validate_boundary_context(lines: list[str], resolved: RangeFingerprintStore.Resolved, edit: ReplaceRangeEdit, replacement: list[str]) -> None:
+        before_context = "" if resolved.start == 0 else lines[resolved.start - 1]
+        after_context = "" if resolved.end >= len(lines) else lines[resolved.end]
+        if edit.before_context != before_context:
+            raise ToolCallError("before_context mismatch; Read the target range with one line before and retry")
+        if edit.after_context != after_context:
+            raise ToolCallError("after_context mismatch; Read the target range with one line after and retry")
+        if before_context and replacement and replacement[0] == before_context:
+            raise ToolCallError("content includes before_context; expand start or remove the boundary line from content")
+        if after_context and replacement and replacement[-1] == after_context:
+            raise ToolCallError("content includes after_context; expand end or remove the boundary line from content")
+
+    @staticmethod
+    def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
+        lines = content.splitlines(keepends=True)
+        if content and has_following_line and not content.endswith("\n"):
+            lines[-1] += "\n"
+        return lines
 
 
-@final
 @dataclass
 class ApplyPatchTool(Tool):
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Apply one focused unified diff to one file; best for complex, structural, or multiple-hunk edits.",
+        "Use after Edit/ReplaceRange args keep failing; do not dump or rewrite a whole large file.",
+    )
+    SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
+
     filepath: str = ""
     unified_diff: str = ""
     cwd: str = ""
 
     @classmethod
-    def name(cls) -> str:
-        return "ApplyPatch"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Apply a simple single-file unified diff."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old\\n+new\\n"]']
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(args[0])] if args else []
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
-            raise ToolCallError("requires exactly 2 args: filepath, unified_diff")
+            raise ToolCallArgError("requires exactly 2 args: filepath, unified_diff")
         unified_diff = str(args[1])
         if not unified_diff.strip():
-            raise ToolCallError("unified_diff cannot be empty")
+            raise ToolCallArgError("unified_diff cannot be empty")
         return cls(filepath=session.resolve_path(args[0]), unified_diff=unified_diff, cwd=session.cwd)
 
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
-
-    def display(self) -> str:
+    def preview(self) -> str:
         label = f"ApplyPatch({self.filepath}, unified_diff=...)"
         try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                original = f.read()
+            original = self._read_existing_or_empty()
             unified_diff, allow_compatible = self._normalized_unified_diff()
             new_content, _ = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         except (OSError, ToolCallError) as error:
@@ -1513,8 +1968,8 @@ class ApplyPatchTool(Tool):
         return _make_unified_diff(original, new_content, self.filepath) or label
 
     def call(self) -> str:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
+        created = not os.path.exists(self.filepath)
+        original = self._read_existing_or_empty()
         unified_diff, allow_compatible = self._normalized_unified_diff()
         new_content, hunks = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
         if new_content == original:
@@ -1522,14 +1977,22 @@ class ApplyPatchTool(Tool):
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        return "\n".join(
-            [
-                "<ApplyPatchToolResult>",
-                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                f"* hunks: {hunks}",
-                "</ApplyPatchToolResult>",
-            ]
-        )
+        lines = [
+            "<ApplyPatchToolResult>",
+            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+            f"* hunks: {hunks}",
+        ]
+        if created:
+            lines.append("* created: true")
+        lines.append("</ApplyPatchToolResult>")
+        return "\n".join(lines)
+
+    def _read_existing_or_empty(self) -> str:
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
 
     def _normalized_unified_diff(self) -> tuple[str, bool]:
         lines = self.unified_diff.splitlines(keepends=True)
@@ -1549,12 +2012,21 @@ class ApplyPatchTool(Tool):
                 break
             if stripped.startswith("*** Update File: "):
                 if update_seen:
-                    raise ToolCallError("ApplyPatch supports one Update File per call")
+                    raise ToolCallError("ApplyPatch supports one file per call")
                 self._validate_codex_patch_path(stripped[len("*** Update File: ") :].strip())
                 update_seen = True
                 continue
+            if stripped.startswith("*** Add File: "):
+                if update_seen:
+                    raise ToolCallError("ApplyPatch supports one file per call")
+                if os.path.exists(self.filepath):
+                    raise ToolCallError("Add File patch target already exists")
+                self._validate_codex_patch_path(stripped[len("*** Add File: ") :].strip())
+                update_seen = True
+                hunk_lines.append("@@ -0,0 +1,1 @@\n")
+                continue
             if stripped.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
-                raise ToolCallError("ApplyPatch supports only Update File patches")
+                raise ToolCallError("ApplyPatch supports only Update File or Add File patches")
             if stripped == "*** End of File":
                 continue
             if not update_seen:
@@ -1563,17 +2035,17 @@ class ApplyPatchTool(Tool):
                 continue
             hunk_lines.append(self._normalize_codex_hunk_header(line))
         if not update_seen:
-            raise ToolCallError("ApplyPatch wrapper missing Update File")
+            raise ToolCallArgError("ApplyPatch wrapper missing Update File")
         if not end_seen:
-            raise ToolCallError("ApplyPatch wrapper missing End Patch")
+            raise ToolCallArgError("ApplyPatch wrapper missing End Patch")
         return "".join(hunk_lines)
 
     def _validate_codex_patch_path(self, patch_path: str) -> None:
         if not patch_path:
-            raise ToolCallError("ApplyPatch wrapper missing Update File path")
+            raise ToolCallArgError("ApplyPatch wrapper missing Update File path")
         candidate = patch_path if os.path.isabs(patch_path) else os.path.join(self.cwd, patch_path)
         if os.path.realpath(candidate) != os.path.realpath(self.filepath):
-            raise ToolCallError("patch target does not match filepath: " + patch_path)
+            raise ToolCallArgError("patch target does not match filepath: " + patch_path)
 
     @staticmethod
     def _normalize_codex_hunk_header(line: str) -> str:
@@ -1601,13 +2073,13 @@ class ApplyPatchTool(Tool):
                 fuzzy = False
                 parts = header.split()
                 if len(parts) < 3 or not parts[1].startswith("-"):
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
                 try:
                     old_start = int(parts[1][1:].split(",", 1)[0])
                 except ValueError:
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
             elif header.startswith("@@"):
-                raise ToolCallError("invalid hunk header")
+                raise ToolCallArgError("invalid hunk header")
             else:
                 i += 1
                 continue
@@ -1620,7 +2092,7 @@ class ApplyPatchTool(Tool):
                 if next_header == "@@" or next_header.startswith("@@ "):
                     break
                 if next_header.startswith("@@"):
-                    raise ToolCallError("invalid hunk header")
+                    raise ToolCallArgError("invalid hunk header")
                 hunk_lines.append(patch_lines[i])
                 i += 1
 
@@ -1641,7 +2113,7 @@ class ApplyPatchTool(Tool):
                 elif marker == "+":
                     replacement.append(text)
                 else:
-                    raise ToolCallError("invalid hunk line")
+                    raise ToolCallArgError("invalid hunk line")
 
             target = -1 if fuzzy else max(old_start - 1, 0) + offset
             try:
@@ -1658,7 +2130,7 @@ class ApplyPatchTool(Tool):
             hunks += 1
 
         if hunks == 0:
-            raise ToolCallError("patch has no hunks")
+            raise ToolCallArgError("patch has no hunks")
         return "".join(lines), hunks
 
     @staticmethod
@@ -1711,108 +2183,172 @@ class ApplyPatchTool(Tool):
         return matches[0]
 
 
-@final
 @dataclass
 class BashTool(Tool):
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",
+    )
+    SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
+
     command: str = ""
     bash_path: str = ""
     cwd: str = ""
     timeout: int = 60
 
     @classmethod
-    def name(cls) -> str:
-        return "Bash"
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if not args:
+            return []
+        return [cls._cli_command_arg(args[0])]
 
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Run a shell command with bash -lc."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["python3 -m py_compile nanocode.py"]']
+    @staticmethod
+    def _cli_command_arg(value: str) -> str:
+        if "\n" in value:
+            return _cli_content_summary(value)
+        return _shorten(" ".join(value.split()), 120)
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 1:
-            raise ToolCallError("requires exactly one arg: command")
+            raise ToolCallArgError("requires exactly one arg: command")
         if not session.bash:
             raise ToolCallError("bash not found")
-        return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.shell_timeout)
+        return cls(command=str(args[0]), bash_path=session.bash, cwd=session.cwd, timeout=session.settings.shell_timeout)
 
-    def requires_confirmation(self, session: Session) -> bool:
-        return True
-
-    def display(self) -> str:
+    def preview(self) -> str:
         return f'Bash("{self.command}")'
 
     def call(self) -> str:
-        stdout = tempfile.TemporaryFile("w+", encoding="utf-8")
-        stderr = tempfile.TemporaryFile("w+", encoding="utf-8")
+        return self.call_live()
+
+    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        selector = selectors.DefaultSelector()
         try:
             proc = subprocess.Popen(
                 [self.bash_path, "-lc", self.command],
                 cwd=self.cwd,
-                text=True,
                 stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 start_new_session=True,
             )
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+            timed_out = False
+            deadline = time.monotonic() + self.timeout
             try:
-                proc.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except OSError:
-                    proc.kill()
-                proc.wait()
-                stderr_text = self._read_temp_file(stderr)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        self._kill_process_group(proc)
+                        proc.wait()
+                        self._drain_selector(selector, stdout_parts, stderr_parts, sink)
+                        break
+                    events = selector.select(min(0.2, remaining))
+                    if not events:
+                        continue
+                    for key, _ in events:
+                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink)
+                if proc.returncode is None:
+                    proc.wait()
+            except BaseException:
+                if proc.returncode is None:
+                    self._kill_process_group(proc)
+                    proc.wait()
+                raise
+            finally:
+                selector.close()
+
+            stdout_text = "".join(stdout_parts)
+            stderr_text = "".join(stderr_parts)
+            if timed_out:
                 if stderr_text:
                     stderr_text += "\n"
-                return _format_process_result("BashToolResult", -1, self._read_temp_file(stdout), stderr_text + "timeout")
-            return _format_process_result("BashToolResult", proc.returncode, self._read_temp_file(stdout), self._read_temp_file(stderr))
-        finally:
-            stdout.close()
-            stderr.close()
+                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + "timeout")
+            return _format_process_result("BashToolResult", proc.returncode, stdout_text, stderr_text)
+        except OSError as error:
+            raise ToolCallError(str(error))
 
     @staticmethod
-    def _read_temp_file(file) -> str:
-        file.seek(0)
-        return file.read()
+    def _kill_process_group(proc: subprocess.Popen) -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+
+    @classmethod
+    def _drain_selector(
+        cls,
+        selector: selectors.BaseSelector,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+        sink: Callable[[str], None] | None,
+    ) -> None:
+        for key in list(selector.get_map().values()):
+            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink):
+                pass
+
+    @staticmethod
+    def _read_stream_chunk(
+        selector: selectors.BaseSelector,
+        key: selectors.SelectorKey,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+        sink: Callable[[str], None] | None,
+    ) -> bool:
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        if not data:
+            try:
+                selector.unregister(key.fileobj)
+            except Exception:
+                pass
+            try:
+                key.fileobj.close()
+            except Exception:
+                pass
+            return False
+        text = data.decode("utf-8", errors="replace")
+        if key.data == "stdout":
+            stdout_parts.append(text)
+        else:
+            stderr_parts.append(text)
+        if sink is not None:
+            sink(text)
+        return True
 
 
-@final
 @dataclass
 class GitTool(Tool):
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Run git without a shell for repository state, history, status, diff, and changed files.",
+        "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
+    )
+    SIGNATURE: ClassVar[str] = "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["status", "--short"]',
+        'Example args: ["diff", "--", "nanocode.py"]',
+        'Example args: ["cwd=src", "status", "--short"]',
+    )
+
     args: list[str] = field(default_factory=list)
     git_path: str = ""
     cwd: str = ""
     timeout: int = 60
 
     @classmethod
-    def name(cls) -> str:
-        return "Git"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return ["Run git without a shell; pass each argument separately."]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Git(args...[, cwd=path]) -> GitToolResult<exit_code, stdout, stderr>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return ['Example args: ["status", "--short"]', 'Example args: ["diff", "--", "nanocode.py"]']
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if not args:
-            raise ToolCallError("requires at least one git arg")
+            raise ToolCallArgError("requires at least one git arg")
         git_path = shutil.which("git")
         if not git_path:
             raise ToolCallError("git not found")
@@ -1822,21 +2358,21 @@ class GitTool(Tool):
         if git_args[0].startswith("cwd="):
             cwd_arg = git_args.pop(0)[len("cwd=") :]
             if not cwd_arg:
-                raise ToolCallError("cwd= requires a path")
+                raise ToolCallArgError("cwd= requires a path")
             cwd = session.resolve_path(cwd_arg)
             if not session.is_path_in_cwd(cwd):
                 raise ToolCallError(f"path outside cwd: {cwd_arg}")
             if not os.path.isdir(cwd):
                 raise ToolCallError(f"cwd is not a directory: {cwd_arg}")
         if not git_args:
-            raise ToolCallError("requires at least one git arg")
-        return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.shell_timeout)
+            raise ToolCallArgError("requires at least one git arg")
+        return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.settings.shell_timeout)
 
     def requires_confirmation(self, session: Session) -> bool:
         readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
         return not self.args or self.args[0] not in readonly
 
-    def display(self) -> str:
+    def preview(self) -> str:
         return "Git(" + " ".join(self.args) + ")"
 
     def call(self) -> str:
@@ -1854,65 +2390,45 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
-@final
 @dataclass
-class BlackboardTool(Tool):
-    action: str
-    content: str
-    blackboard: list[str]
+class ToolResultTool(Tool):
+    NAME: ClassVar[str] = "Recall"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details.",)
+    SIGNATURE: ClassVar[str] = "Recall(key...) -> RecallToolResult<content>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["tr.1"]',
+        'Batch keys: ["tr.1", "tr.2"]',
+    )
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
 
-    @classmethod
-    def name(cls) -> str:
-        return "Blackboard"
-
-    @classmethod
-    def description(cls) -> list[str]:
-        return [
-            "Scratchpad for hypotheses, intermediate analysis, or task state.",
-            "Stores temporary data outside main context; cleared when the session ends. Actions: read, append, clear.",
-        ]
-
-    @classmethod
-    def signature(cls) -> str:
-        return "Blackboard(action[, content]) -> BlackboardToolResult<content>"
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return [
-            '{"name": "Blackboard", "intention": "Record progress", "args": ["append", "Step 1 done"]}',
-            '{"name": "Blackboard", "intention": "Clear it", "args": ["clear"]}',
-        ]
+    keys: list[str]
+    results: dict[str, ToolResultItem]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        action = args[0] if args else "read"
-        content = args[1] if len(args) > 1 else ""
-        return cls(action=action, content=content, blackboard=session.blackboard)
+        return cls(keys=args, results=session.state.tool_result_store)
 
-    def requires_confirmation(self, session: Session) -> bool:
-        return False
-
-    def display(self) -> str:
-        if self.action == "append":
-            preview = self.content.replace("\n", " ")[:80]
-            return f"Blackboard append: {preview}"
-        return f"Blackboard {self.action}"
+    def preview(self) -> str:
+        return "Recall " + ", ".join(self.keys)
 
     def call(self) -> str:
-        if self.action == "read":
-            content = "\n".join(self.blackboard)
-            return f"<BlackboardToolResult>\n{content}\n</BlackboardToolResult>"
+        if not self.keys:
+            raise ToolCallArgError("Recall requires at least one key")
+        lines = ["RecallToolResult:"]
+        for key in self.keys:
+            if key not in self.results:
+                lines.append("- result_key: " + key)
+                lines.append("  status: missing")
+                continue
+            lines.append(self.results[key].format(result_key=key, include_content=True))
+        result = "\n".join(lines)
+        return _bound_tool_output(result).value
 
-        if self.action == "append":
-            if self.content:
-                self.blackboard.append(self.content.rstrip())
-            return "<BlackboardToolResult>appended</BlackboardToolResult>"
 
-        if self.action == "clear":
-            self.blackboard.clear()
-            return "<BlackboardToolResult>cleared</BlackboardToolResult>"
-
-        raise ToolCallError("Blackboard action must be one of: read, append, clear")
+############################
+# Tool Registry
+############################
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
@@ -1920,149 +2436,292 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     LineCountTool.name(): LineCountTool,
     ListDirTool.name(): ListDirTool,
     SearchTool.name(): SearchTool,
+    CreateFileTool.name(): CreateFileTool,
     EditTool.name(): EditTool,
     ReplaceRangeTool.name(): ReplaceRangeTool,
-    BatchReplaceRangesTool.name(): BatchReplaceRangesTool,
     ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
-    BlackboardTool.name(): BlackboardTool,
+    ToolResultTool.name(): ToolResultTool,
 }
 
 
-#######################
-# Prompt
+############################
+# Agent Prompt
+############################
 
-#######################
-MAIN_AGENT_SYSTEM_PROMPT = """You are nanocode, a minimal coding agent.
+AGENT_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
 
-Core:
-- First determine the current Goal.
-- KEEP GOAL UNLESS IT IS DONE, CLEARLY WRONG, OR THE USER CHANGED IT.
-- Never guess without evidence.
-- Prefer the smallest correct change.
-- Define success criteria (verification). Loop until verified.
-- Plan before action.
-- Follow the plan, but revise it when facts require it.
+OUTPUT CONTRACT:
+- Output JSON action frames only.
+- No prose outside JSON.
+- No native/function tool calls.
+- Separate multiple actions with __END_ACTION__.
+- Tool actions must include name, intention, and args.
+- Valid action types are chat, start, goal, plan, known, stable_knowledge, progress, user_rule, tool, verify.
+- Tool names like Read, Search, Edit, Git, and Recall are values for tool.name, not action types.
 
-Tools:
-- MUST use tool actions. Do not use native <tool_call>Tool(args...) syntax.
-- Keep each tool batch small: never more than 10 tool actions unless the user explicitly asked for broad parallel work.
-- Use multiple tool calls in one turn only when they are independent and do not require seeing another tool's result first.
-- If you need discovery (ListDir/Search/Read/LineCount), do only the necessary discovery batch, then stop and wait for results before editing, patching, testing, or cleanup.
-- Do not queue speculative follow-up tools whose arguments depend on unread files, unknown search results, or unverified command output.
-- Prefer specific tools first; use Bash only when no provided tool fits.
-- Prefer Search before Read when locating code or facts; Read only known small ranges or exact files needed for editing.
-- Read returns at most 1000 lines; if truncated, use Search or smaller Read ranges in batches.
-- ReplaceRange/BatchReplaceRanges may use a wider cached Read fingerprint for a non-empty subrange that it covers. Empty insert ranges require an exact empty-range Read. If fingerprint mismatch happens, immediately Read the exact target range and retry once.
-- Summarize every latest tool result with tool_summary actions; raw results are shown once only, so include key_evidence when paths, lines, errors, or decisions matter later.
-- Latest tool results are already shown in Latest_Tool_Call_Results; use result_file logs only as a fallback when needed.
-- If an older tool result lacks detail that is needed for the task, prefer re-running a targeted source tool; Read result_file logs only when that is the cheapest accurate source.
-- known actions are stable memory; context actions are task-local memory.
-- tool action intention must state the question to answer, not just the action.
+LANGUAGE:
+- Use the latest user language for user-facing text.
+- User-facing text must be plain, concise, direct, and non-Markdown unless requested.
+
+PRIORITY:
+1. Latest User Request
+2. User Rules
+3. Current Goal
+4. Plan / Known / Stable Knowledge
+5. Conversation History
+Task Code controls whether Latest User Request still needs alignment.
+
+CORE RULES:
+- Latest User Request overrides stale Goal.
+- Never answer by repeating a previous completion.
+- Never claim edit/test/build/commit success unless recent tool results prove it.
+- Never mark complete unless the goal is achieved and required verification passed, or verification is blocked with clear evidence.
+- Never mark complete while a Plan item is todo/doing or missing context evidence.
+- User Rules are mandatory long-term behavior rules.
+- Add User Rules only when the latest user request explicitly asks to remember future behavior.
+- Do not store task facts, project facts, tool results, or temporary errors as User Rules.
+
+MEMORY:
+- Known = durable current-task facts.
+- Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
+- Tool results are volatile. Save useful facts into Known before they disappear.
+- Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
+- If a fact is already in Known, do not restate it.
+
+TASK CODE:
+- Current Task Code is authoritative.
+- new: latest user request is not aligned yet; output start if it creates or changes the task.
+- working: task has started; do not output start or rewrite Goal. Continue with known, plan, tool, verify, or goal completion.
+- verifying: edits or required checks need verification; do not output start or rewrite Goal. Run/record verification.
+- done: current task is complete; wait for the next user request.
+
+DECISION LOOP:
+Choose the first matching action type, then stop.
+
+1. chat
+   Use only for casual chat or direct non-coding answers.
+
+2. user_rule
+   Use only if the latest user request explicitly asks to remember future behavior.
+
+3. start
+   Use only when Current Task Code is new and the latest user request creates or changes the task.
+   Set a fresh goal and a short plan.
+
+4. known / plan
+   If latest tool results changed what you know, first record Known and update Plan.
+   Do not call more tools in the same response unless the next step is obvious and safe.
+
+5. tool
+   Execute only the next unfinished plan step.
+   Use the smallest useful batch of related independent tool calls.
+
+6. verify
+   After edits or explicit check/test/build requests, verify with the smallest relevant check.
+   If the exact requested check already succeeded in recent results, record passed instead of rerunning.
+
+7. tool / plan
+   If verification failed, fix only the reported issue.
+
+8. goal
+   Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked with clear context.
+
+PLANNING:
+- Use a plan only for real tasks.
+- Keep plans short: usually 2-5 steps.
+- Update Plan only when status, text, context, or ordering actually changes.
+- Use patch for small Plan changes; use replace only when restructuring the Plan.
+- Do not repeat completed steps.
+- At most one item may be doing.
+- Each plan item must be one concrete outcome, not a bundle of unrelated checks or actions.
+- Done/blocked context must be result evidence, not intent, plan, or expectation.
+- Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
+- Plan item schema:
+  {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short evidence"}
+
+EDITING:
+- Edit incrementally.
+- One edit = one small coherent change.
+- New file: create minimal skeleton first.
+- Existing file: inspect exact target before editing.
+- Never rewrite a large file in one action.
+- Use Edit when changing one tiny exact literal block that appears once.
+- Use ReplaceRange after Read when replacing a known continuous range, especially if text is repeated.
+- Use ApplyPatch for structural edits, multiple focused hunks, or when Edit/ReplaceRange args keep failing.
+- Before ReplaceRange, Read the exact target range plus one boundary line before and after.
+
+TARGET DISCOVERY:
+- If exact file/path/symbol/range is unknown, use Search/ListDir/LineCount first.
+- Use Read only for known paths/ranges or after search narrowed the target.
+- Read small ranges around likely matches.
+- Do not do broad project surveys.
+- Stop discovering when you have the exact target and next edit/check is clear.
+- Do not repeat equivalent searches; narrow, read, edit, verify, or mark blocked.
+
+VERIFICATION:
+- Verify directly. There is no separate verification agent.
+- Use the smallest relevant tool call.
+- Verify action must include:
+  - kind
+  - method
+  - criteria
+  - status: passed|failed|blocked
+  - context: concrete evidence or blocker
+- Before verification, check User Rules and include required checks.
+- If a verification command fails, record failed and repair before completion.
+- Do not use pending verification status.
+- Passed/blocked verification context must cite concrete recent tool evidence or a concrete blocker.
+
+TOOLS:
+- Prefer dedicated tools over Bash.
+- Bash is only for explicit shell commands or when no dedicated tool exists.
+- Git is for status, diff, history, and changed files.
+- Use tool action with name Recall for stored result keys; batch distinct keys and recall each needed key at most once.
+- Search/ListDir/LineCount locate unknown targets.
+- Read inspects known paths/ranges.
+- Batch independent related tool calls.
+
+TOOL INTENTION:
+- Every tool action must include a clear intention.
+- Intention must state the question being answered or the concrete outcome needed.
+- Bad: "read file"
+- Good: "inspect the existing router setup before adding the new route"
+
+ACTIONS:
+
+{"type":"chat","text":"<reply>"}
+
+{"type":"start","goal":"<current task goal>","plan":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null}]}
+
+{"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
+
+{"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+
+{"type":"known","items":["<new durable current-task fact>"]}
+
+{"type":"stable_knowledge","items":[{"category":"stack|structure|workflow|convention|gotcha","text":"<rare reusable codebase fact>"}]}
+
+{"type":"progress","text":"<short progress update>"}
+
+{"type":"user_rule","text":"<long-term user behavior rule>","message":"<short acknowledgement>"}
+
+{"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
+
+{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","context":null|"<evidence or blocker>"}
+
+TOOL SPECS:
+{ __tools__ }
+"""
+
+AGENT_USER_PROMPT_TEMPLATE = """
+--- Context ---
+
+Environment:
+{environment}
+
+User Rules:
+{user_rules}
+
+Conversation History:
+{conversation_history}
+
+--- Recent Work ---
+
+Errors:
+{errors}
+
+Tool Result Store:
+{tool_result_store}
+
+Recent Tool Calls:
+{recent_tool_calls}
+
+Recent Edits:
+{recent_edits}
+
+--- Current Task ---
+
+Task Code:
+{task_code}
+
+Goal:
+{goal}
+
+Stable Knowledge:
+{stable_knowledge}
+
+Known:
+{known}
+
+Plan:
+{plan}
 
 Verification:
-- Verification_State belongs only to its <goal>.
-- If the user changed the goal, replace goal/plan and verify the new goal.
-
-Available tools:
-
-{ __tools__ }
-
-Input:
-- Conversation_History: summarized recent events
-- Known: stable facts
-- Current_Context: task-local facts that may expire
-- Goal: current objective
-- Plan: ordered plan
-- Agent_Feedback: latest retry/gate warning for you; follow it before continuing
-- Latest_Tool_Call_Results: latest raw tool call results
-- Latest_User_Input: latest user message
-- Tools: available tool specs
-
-Output format is mandatory:
-- Output action frames only.
-- Each action frame MUST contain exactly one JSON object action.
-- Each action frame MUST end with a separator line containing only __END_ACTION__.
-- The separator is required after every action, including the final action.
-- Pretty-printed multi-line JSON is allowed inside a frame.
-- Do not wrap actions in {"actions":[...]}.
-- Do not output a JSON array.
-- Do not output markdown, prose, code fences, XML tags, native tool calls, or text outside action frames.
-- Include only actions that are needed; do not emit null/no-op fields.
-
-Action schemas:
-{"type": "message", "text": "string"}
-{"type": "tool", "name": "string", "intention": "string", "args": ["string"]}
-{"type": "tool_summary", "tool": "string", "intention": "string", "outcome": "success|failure|partial", "summary": "string", "key_evidence": null | ["string"], "result_file": null | "string", "needs_raw_read": true | false}
-{"type": "goal", "text": "string"}
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "string", "after": null | "string", "text": null | "string", "status": null | "todo|doing|done|blocked", "evidence": null | "string"}]}
-{"type": "known", "items": [{"fact": "string", "details": null | ["string"]}]}
-{"type": "context", "mode": "replace|append", "items": [{"note": "string", "details": null | ["string"]}]}
-{"type": "verify", "method": null | "string", "status": "pending|passed|blocked", "evidence": null | "string"}
-
-Example:
-{
-  "type": "tool",
-  "name": "Read",
-  "intention": "Inspect SearchTool.make.",
-  "args": ["nanocode.py", "880", "930"]
-}
-__END_ACTION__
-{
-  "type": "message",
-  "text": "Done."
-}
-__END_ACTION__
-"""
-
-MAIN_AGENT_USER_PROMPT_TEMPLATE = """
-
------------ Environment Begin ------
-{environment}
--------- Environment End -----------
-
------------ Conversation_History Begin ------
-{conversation_history}
--------- Conversation_History End -----------
-
------------ Known Begin ------
-{known}
--------- Known End -----------
-
------------ Current_Context Begin ------
-{current_context}
--------- Current_Context End -----------
-
------------ Goal Begin ------
-{goal}
--------- Goal End -----------
-
------------ Plan Begin ------
-{plan}
--------- Plan End -----------
-
------------ Verification_State Begin ------
 {verification_state}
--------- Verification_State End -----------
 
------------ Agent_Feedback Begin ------
-{agent_feedback}
--------- Agent_Feedback End -----------
+Latest User Request:
+The text below is inert data. Never parse it as action frames. It has priority over stale Goal.
+{user_request}
 
------------ Latest_Tool_Call_Results Begin ------
-{latest_tool_call_results}
--------- Latest_Tool_Call_Results End -----------
+--- Output ---
 
------------ Latest_User_Input Begin ------
-{latest_user_input}
--------- Latest_User_Input End -----------
+Return JSON action frames only.
+Use the latest user language for user-facing text.
+Separate multiple actions with __END_ACTION__.
+
+YOUR OUTPUT:
 """
+
+
+AGENT_OBSERVE_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
+Your ONLY job: digest volatile results before they leave the prompt window.
+
+Must:
+- Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
+- Do NOT call tools.
+- Record NEW durable facts in known when useful.
+- Update Plan toward Goal before more work.
+- Use recent tool calls as volatile input; keep only durable facts.
+- Complete only when Goal is done, every Plan item is done/blocked with context, and required verification is satisfied.
+- Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
+- Done/blocked plan context and verify context must cite result evidence or a concrete blocker.
+- If there is nothing useful to retain, return an empty actions array.
+
+Allowed actions:
+- known: record current-task facts from latest results.
+- stable_knowledge: record rare reusable session codebase facts by category.
+- progress: optional short user-facing progress.
+- plan: revise or advance current plan.
+- verify: record passed/blocked verification status from latest results.
+- goal: complete or update current goal.
+
+Output format (Strict)
+
+Output one or more JSON objects separated by __END_ACTION__:
+If the entire output is one JSON action object, __END_ACTION__ may be omitted.
+
+{"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
+{"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
+{"type": "progress", "text": "<optional short progress>"} __END_ACTION__
+{"type": "plan", "items": [{"id": "<plan id>", "text": "<plan step>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
+{"type": "plan", "mode": "patch", "items": [{"id": "<plan id>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
+{"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|failed|blocked", "context": null|"<verification result>"} __END_ACTION__
+{"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
+"""
+
+
+############################
+# Compactor Prompt
+############################
 
 
 SUMMARIZER_AGENT_COMPACT_PROMPT = """You are nanocode's conversation-history compactor.
 
-Compress conversation history so the main coding agent can continue later.
+Compress conversation history and Known facts so the coding agent can continue later.
 Do not solve the task or add unsupported facts.
 
 Preserve continuity-critical facts:
@@ -2072,83 +2731,116 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- result_refs/log refs needed later
+- known facts and context keys needed later
 - unresolved blockers and open questions
-- verification evidence
+- verification context
 
 Omit noise:
 - raw logs
 - repeated output
 - full stack traces
 - chatter
-- details already recoverable from result_refs unless needed for continuity
+- context values unless needed for continuity
 
 Write the shortest complete continuation summary.
+Compress Known to concise durable facts.
 
-Output strict JSON only: {"summary": "string"}
+Output strict JSON only: {"summary": "<summary>", "known": ["<stable fact>"]}
 """
 
 
 COMPACT_USER_PROMPT_TEMPLATE = """
+----------- Known_To_Compact Begin ------------
+{known}
+--------- Known_To_Compact End ----------------
+
 ----------- Conversation_To_Compact Begin ------
 {conversation}
 -------- Conversation_To_Compact End -----------
 """
 
 
-@final
 class PromptBuilder:
-    def __init__(self, session: Session):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        system_prompt_template: str = AGENT_SYSTEM_PROMPT,
+        user_prompt_template: str = AGENT_USER_PROMPT_TEMPLATE,
+        blackboard: Blackboard | None = None,
+        runtime: AgentRuntime | None = None,
+    ):
         self.session = session
+        self.system_prompt_template = system_prompt_template
+        self.user_prompt_template = user_prompt_template
+        self.blackboard = blackboard or Blackboard()
+        self.runtime = runtime or AgentRuntime()
 
     def system_prompt(self) -> str:
-        return MAIN_AGENT_SYSTEM_PROMPT.replace("{ __tools__ }", self._format_tools()).strip()
+        return (
+            self.system_prompt_template.replace("{ __tools__ }", self._format_tools())
+            .replace("{ __tool_names__ }", "|".join(tool.name() for tool in TOOL_REGISTRY.values()))
+            .strip()
+        )
 
-    def user_prompt(self, latest_tool_call_results: str, agent_feedback: str) -> str:
-        current = self.session.current
-        return MAIN_AGENT_USER_PROMPT_TEMPLATE.format(
-            environment=self._format_environment(),
-            conversation_history=self._format_conversation_history(),
-            known=self._format_known(),
-            current_context=self._format_current_context(),
+    def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
+        current = self.blackboard
+        conversation = self.session.state.conversation
+        user_request = current.user_input or "(empty)"
+        fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
+        return self.user_prompt_template.format(
+            environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
+            conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
+            user_rules=self.session.state.user_rules.format(),
+            known="\n".join(current.known) if current.known else "(empty)",
+            stable_knowledge=self._format_stable_knowledge(),
+            tool_result_store=self._format_tool_result_store(set(RESULT_KEY_PATTERN.findall(recent_tool_calls))),
+            task_code=self.blackboard.task_code,
             goal=current.goal or "(empty)",
-            plan=self._format_plan(),
+            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
             verification_state=current.verification.format(),
-            agent_feedback=agent_feedback or "(empty)",
-            latest_tool_call_results=latest_tool_call_results or "(empty)",
-            latest_user_input=current.user_input or "(empty)",
+            errors=errors or "(empty)",
+            recent_tool_calls=recent_tool_calls or "(empty)",
+            recent_edits="\n".join(self.runtime.recent_edits) if self.runtime.recent_edits else "(empty)",
+            user_request=fence + "text\n" + user_request + "\n" + fence,
         ).strip()
 
     def _format_tools(self) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
-            lines.append("- " + tool.signature())
-            for item in tool.description():
+            lines.append("- " + tool.SIGNATURE)
+            for item in tool.DESCRIPTION:
+                lines.append("  - " + item)
+            for item in tool.EXAMPLE:
                 lines.append("  - " + item)
         return "\n".join(lines)
 
-    def _format_environment(self) -> str:
-        return "\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd])
-
-    def _format_conversation_history(self) -> str:
-        if not self.session.conversation:
+    def _format_stable_knowledge(self) -> str:
+        knowledge = self.blackboard.stable_knowledge
+        if not any(knowledge.values()):
             return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.conversation)
+        lines = []
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = [item for item in knowledge.get(category, []) if item]
+            if not items:
+                continue
+            lines.append(category + ":")
+            lines.extend("- " + item for item in items)
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
-    def _format_known(self) -> str:
-        if not self.session.current.known:
+    def _format_tool_result_store(self, visible_result_keys: set[str] | None = None) -> str:
+        if not self.session.state.tool_result_store:
             return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.current.known)
-
-    def _format_current_context(self) -> str:
-        if not self.session.current.current_context:
-            return "(empty)"
-        return "\n\n".join(item.format() for item in self.session.current.current_context)
-
-    def _format_plan(self) -> str:
-        if not self.session.current.plan:
-            return "(empty)"
-        return "\n".join(item.format() for item in self.session.current.plan)
+        hidden_keys = visible_result_keys or set()
+        lines = []
+        for key, item in self.session.state.tool_result_store.items():
+            if key in hidden_keys:
+                continue
+            lines.append(item.format(result_key=key, details_hint=True))
+        if not lines:
+            return "(empty; current result keys are already shown in Recent Tool Calls)"
+        return "\n".join(lines)
 
 
 ############################
@@ -2156,84 +2848,120 @@ class PromptBuilder:
 ############################
 
 
-@final
 class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
-    ACTION_FRAME_END_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\s*\**_*\s*END[\s_-]*ACTION\s*_*\**\s*$", re.IGNORECASE)
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
     def __init__(self, session: Session):
         self.session = session
 
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
-        if not self.session.api_url:
-            raise LLMError("NANOCODE_API_URL is required")
-        if not self.session.api_key:
-            raise LLMError("NANOCODE_API_KEY is required")
-        if not self.session.model:
-            raise LLMError("NANOCODE_MODEL is required")
+    def _timeout_handler(self, signum: int, frame: Any) -> None:
+        raise ModelRequestTimeout()
+
+    def request(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        activity: str = "agent",
+        parse_actions: bool = True,
+    ) -> Json:
+        config = self.session.config.provider
+        if not config.url:
+            raise LLMError("config provider.url is required")
+        if not config.key:
+            raise LLMError("config provider.key is required")
+        model = config.model
+        if not model:
+            raise LLMError("config provider.model is required")
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         payload: Json = {
-            "model": self.session.model,
+            "model": model,
             "messages": messages,
-            "temperature": self.session.temperature,
+            "temperature": config.temperature if config.temperature is not None else 0.7,
         }
-        if self.session.stream:
+        stream = config.stream is not False
+        if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
-        extra_params = self._reasoning_params()
-        payload.update(extra_params)
+        timeout = config.timeout if config.timeout is not None else 90
+        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
+        if config.reasoning is not False and "openrouter.ai" in config.url:
+            payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
         self._write_debug_prompt(activity=activity, messages=messages)
+        url = config.url.rstrip("/")
 
         request = urllib.request.Request(
-            url=self._chat_completions_url(),
+            url=url if url.endswith("/chat/completions") else url + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": "Bearer " + self.session.api_key,
+                "Authorization": "Bearer " + config.key,
                 "Content-Type": "application/json",
             },
         )
         try:
-            self.session.current_model_call_started_at = time.monotonic()
+            self.session.state.current_model_call_started_at = time.monotonic()
+            self.session.state.current_model_call_label = model
+            self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+            request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, self._timeout_handler)
+            signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
             try:
-                with urllib.request.urlopen(request, timeout=self.session.model_timeout) as response:
-                    if self.session.stream:
-                        content, usage = self._read_streaming_content(response, on_action=on_action)
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    if stream:
+                        content, usage = self._read_streaming_content(
+                            response,
+                            request_deadline=request_deadline,
+                            first_token_timeout=first_token_timeout,
+                        )
                         result: Json = {"usage": usage}
                     else:
                         body = response.read().decode("utf-8")
             finally:
-                self.session.current_model_call_started_at = 0.0
-        except socket.timeout:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous_handler)
+                self.session.state.current_model_call_started_at = 0.0
+                self.session.state.current_model_call_label = ""
+                self.session.state.current_model_call_reasoning_label = ""
+        except ModelRequestTimeout:
+            raise LLMError("request model timeout")
+        except (socket.timeout, TimeoutError):
             raise LLMError("request model timeout")
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
             raise LLMError("API request failed: HTTP " + str(error.code) + ": " + _shorten(body))
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, (socket.timeout, TimeoutError)):
+                raise LLMError("request model timeout")
+            raise LLMError(str(error))
         except Exception as error:
             raise LLMError(str(error))
 
-        if not self.session.stream:
+        if not stream:
             try:
                 result = json.loads(body)
             except json.JSONDecodeError:
                 raise LLMError("API response is not JSON: " + _shorten(body))
 
-        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None))
-        if not self.session.stream:
+        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config)
+        if not stream:
             content = self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
+        if not parse_actions:
+            return self._parse_json_content(content)
         return self._parse_model_content(content)
 
-    def _read_streaming_content(self, response: Any, *, on_action: ActionCallback | None = None) -> tuple[str, Json]:
+    def _read_streaming_content(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
-        buffer = ""
-        frame_number = 0
+        first_content_seen = False
+        self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=False, first_token_timeout=first_token_timeout)
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -2254,27 +2982,30 @@ class ModelClient:
                 continue
             delta = _json_dict(_json_dict(choices[0]).get("delta"))
             content = delta.get("content")
-            if not isinstance(content, str):
+            if not isinstance(content, str) or not content:
                 continue
+            if not first_content_seen:
+                first_content_seen = True
+                self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
             parts.append(content)
-            if on_action is not None:
-                buffer += content
-                frames, buffer = self._completed_action_frames(buffer)
-                for frame in frames:
-                    frame_number += 1
-                    action, _error = self._parse_action_frame(frame, frame_number)
-                    if action is not None:
-                        on_action(action)
         return "".join(parts), usage
 
+    def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModelRequestTimeout()
+        if not first_content_seen and first_token_timeout is not None and first_token_timeout > 0:
+            remaining = min(remaining, first_token_timeout)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
-        if not self.session.debug:
+        if not self.session.settings.debug:
             return ""
-        self.session.debug_prompt_count += 1
+        self.session.state.debug_prompt_count += 1
         directory = self.session.debug_dir()
         os.makedirs(directory, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        filepath = os.path.join(directory, f"{timestamp}-{self.session.debug_prompt_count:04d}-{activity or 'request'}.txt")
+        filepath = os.path.join(directory, f"{timestamp}-{self.session.state.debug_prompt_count:04d}-{activity or 'request'}.txt")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(self._format_debug_prompt(messages=messages))
         return filepath
@@ -2297,6 +3028,11 @@ class ModelClient:
         text = self._strip_leaked_think_tags(text)
         text = self._strip_json_fence(text)
         text = self._strip_leaked_think_tags(text)
+        if not self._has_action_frame_end(text):
+            actions, error = self._parse_unmarked_actions(text)
+            if actions:
+                return {"actions": actions}
+            return self._invalid_model_response(content, "expected one JSON action object or action frames ending with " + self.ACTION_FRAME_END + "; " + error)
         actions: list[Json] = []
         frame_errors: list[str] = []
         for frame_number, frame in enumerate(self._action_frames(text), start=1):
@@ -2315,6 +3051,19 @@ class ModelClient:
         if frame_errors:
             response["_format_frame_errors"] = frame_errors
         return response
+
+    def _parse_json_content(self, content: str) -> Json:
+        text = content.strip()
+        text = self._strip_leaked_think_tags(text)
+        text = self._strip_json_fence(text)
+        text = self._strip_leaked_think_tags(text)
+        try:
+            value = json_repair.loads(text)
+        except Exception as error:
+            raise LLMError("model returned invalid JSON: " + str(error))
+        if not isinstance(value, dict):
+            raise LLMError("model returned JSON that is not an object")
+        return value
 
     def _action_frames(self, text: str) -> list[str]:
         frames: list[str] = []
@@ -2335,22 +3084,6 @@ class ModelClient:
             frames.append(trailing)
         return frames
 
-    def _completed_action_frames(self, text: str) -> tuple[list[str], str]:
-        frames: list[str] = []
-        current: list[str] = []
-        for line in text.splitlines(keepends=True):
-            if not self._has_action_frame_end(line):
-                current.append(line)
-                continue
-            parts = self.ACTION_FRAME_END_SPLIT_PATTERN.split(line)
-            for index, part in enumerate(parts):
-                if part:
-                    current.append(part)
-                if index < len(parts) - 1:
-                    frames.append("".join(current).strip())
-                    current = []
-        return frames, "".join(current)
-
     def _parse_action_frame(self, frame: str, frame_number: int) -> tuple[Json | None, str]:
         frame = frame.strip()
         if not frame:
@@ -2365,11 +3098,75 @@ class ModelClient:
             return None, "frame " + str(frame_number) + ": action missing type"
         return value, ""
 
+    def _actions_from_json_value(self, value: JsonValue) -> tuple[list[Json], str]:
+        if isinstance(value, dict):
+            if not _json_str(value.get("type")):
+                return [], "action missing type"
+            return [value], ""
+        if isinstance(value, list):
+            actions = []
+            for index, raw in enumerate(value, start=1):
+                action = _json_dict(raw)
+                if not action:
+                    return [], "array item " + str(index) + ": expected JSON object action"
+                if not _json_str(action.get("type")):
+                    return [], "array item " + str(index) + ": action missing type"
+                actions.append(action)
+            return actions, ""
+        return [], "expected JSON object action"
+
+    def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
+        actions: list[Json] = []
+        decoder = json.JSONDecoder()
+        index = 0
+        while index < len(text) and text[index].isspace():
+            index += 1
+        prefix = ""
+        if index < len(text) and text[index] != "{":
+            if text[index] == "[":
+                try:
+                    value, index = decoder.raw_decode(text, index)
+                except json.JSONDecodeError as error:
+                    return [], str(error)
+                parsed, error = self._actions_from_json_value(value)
+                if error:
+                    return [], error
+                while index < len(text) and text[index].isspace():
+                    index += 1
+                if index < len(text):
+                    return [], "unexpected text after JSON action array"
+                return parsed, ""
+            action_start = text.find("{", index)
+            if action_start < 0:
+                try:
+                    decoder.raw_decode(text, index)
+                except json.JSONDecodeError as error:
+                    return [], str(error)
+                return [], "expected JSON object action"
+            prefix = _shorten(" ".join(text[:action_start].split()), 500)
+            index = action_start
+        while True:
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index >= len(text):
+                if prefix and actions:
+                    actions.insert(0, {"type": "progress", "text": prefix})
+                return actions, ""
+            try:
+                value, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError as error:
+                return [], str(error)
+            parsed, error = self._actions_from_json_value(value)
+            if error:
+                return [], error
+            actions.extend(parsed)
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index < len(text) and text[index] == ",":
+                index += 1
+
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
-
-    def _is_action_frame_end(self, line: str) -> bool:
-        return self.ACTION_FRAME_END_PATTERN.match(line) is not None
 
     def _strip_json_fence(self, text: str) -> str:
         if not text.startswith("```"):
@@ -2396,37 +3193,16 @@ class ModelClient:
 
     def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
         guidance = ""
-        if self._looks_like_native_tool_call(content):
+        if self._strip_leaked_think_tags(content.strip()).startswith("<tool_call>"):
             guidance = (
                 " Native tool_call syntax is not supported; return an action frame like "
-                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0","100"]}\n__END_ACTION__.'
+                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0,100"]}\n__END_ACTION__.'
             )
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": "Invalid model output: "
-            + reason
-            + ". Return action frames only. Bad output: "
-            + _shorten(content)
-            + guidance,
+            "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
         }
-
-    def _looks_like_native_tool_call(self, content: str) -> bool:
-        text = self._strip_leaked_think_tags(content.strip())
-        return text.startswith("<tool_call>")
-
-    def _chat_completions_url(self) -> str:
-        url = self.session.api_url.rstrip("/")
-        if url.endswith("/chat/completions"):
-            return url
-        return url + "/chat/completions"
-
-    def _reasoning_params(self) -> Json:
-        if not self.session.reasoning:
-            return {}
-        if "openrouter.ai" in self.session.api_url:
-            return {"reasoning": {"effort": self.session.reasoning_effort}}
-        return {}
 
     def _message_content(self, result: JsonValue) -> str | None:
         data = _json_dict(result)
@@ -2448,21 +3224,25 @@ class ModelClient:
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
-    def _record_usage(self, usage: Json) -> None:
-        prompt_tokens = _json_int(usage.get("prompt_tokens"))
-        completion_tokens = _json_int(usage.get("completion_tokens"))
-        total_tokens = _json_int(usage.get("total_tokens"))
-        prompt_cost = prompt_tokens * self.session.prompt_price_per_1m_tokens / 1_000_000
-        completion_cost = completion_tokens * self.session.completion_price_per_1m_tokens / 1_000_000
-        total_cost = prompt_cost + completion_cost
-        self.session.last_prompt_tokens = prompt_tokens
-        self.session.last_completion_tokens = completion_tokens
-        self.session.last_total_tokens = total_tokens
-        self.session.last_cost_usd = total_cost
-        self.session.session_prompt_tokens += prompt_tokens
-        self.session.session_completion_tokens += completion_tokens
-        self.session.session_total_tokens += total_tokens
-        self.session.session_cost_usd += total_cost
+    def _record_usage(self, usage: Json, config: ProviderConfig) -> None:
+        prompt_tokens = self._json_int(usage.get("prompt_tokens"))
+        completion_tokens = self._json_int(usage.get("completion_tokens"))
+        total_tokens = self._json_int(usage.get("total_tokens"))
+        self.session.state.last_prompt_tokens = prompt_tokens
+        self.session.state.last_completion_tokens = completion_tokens
+        self.session.state.last_total_tokens = total_tokens
+        self.session.state.session_prompt_tokens += prompt_tokens
+        self.session.state.session_completion_tokens += completion_tokens
+        self.session.state.session_total_tokens += total_tokens
+        self.session.state.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+
+    @staticmethod
+    def _json_int(value: JsonValue) -> int:
+        return value if isinstance(value, int) else 0
 
 
 ############################
@@ -2470,14 +3250,56 @@ class ModelClient:
 ############################
 
 
-@final
-class ToolCallRunner:
-    TOOL_RESULTS_DIR: ClassVar[str] = "tool_results"
+class ToolCallDisplayFormatter:
     DISPLAY_LIMIT: ClassVar[int] = 5
 
-    def __init__(self, session: Session):
+    @classmethod
+    def latest_report(cls, executions: list[ToolCallExecution]) -> str:
+        if not executions:
+            return ""
+        offset = max(0, len(executions) - cls.DISPLAY_LIMIT)
+        visible = executions[offset:]
+        lines = []
+        if offset:
+            lines.append("  ... " + str(offset) + " older")
+        for execution in visible:
+            lines.append(cls._format_execution(execution))
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_execution(cls, execution: ToolCallExecution) -> str:
+        marker = "[success]" if execution.outcome == "success" else "[failure]"
+        text = marker + " " + cls._format_call(execution.call)
+        if execution.outcome != "success":
+            error = cls._compact_tool_error(execution.output)
+            if error:
+                text += " | " + error
+        elif execution.result_excerpted:
+            text += " | excerpt"
+        return text
+
+    @classmethod
+    def _format_call(cls, call: ParsedToolCall) -> str:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        tokens = tool_class.cli_args(call.args) if tool_class is not None else [_cli_token(arg) for arg in call.args]
+        return " ".join([call.name] + tokens)
+
+    @staticmethod
+    def _compact_tool_error(output: str) -> str:
+        text = " ".join(output.split())
+        prefix = "ToolCallError: "
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+        return _shorten(text, 180)
+
+
+class ToolCallRunner:
+    MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
+
+    def __init__(self, session: Session, runtime: AgentRuntime, *, reuse_readonly_results: bool = False):
         self.session = session
-        self.latest_events: list[ToolCallEvent] = []
+        self.runtime = runtime
+        self.reuse_readonly_results = reuse_readonly_results
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -2486,21 +3308,37 @@ class ToolCallRunner:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-    ) -> str:
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
+    ) -> None:
         executions = []
-        events = []
-        for item in tool_calls:
+        for item in self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls)):
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
+            error_type: Type[Exception] | None = None
+            requires_confirmation = False
+            requires_verification = False
             try:
-                call = self.parse_tool_call(item)
-                tool = self._make_tool(call)
-                preview_error = self._preview_error(tool)
-                if preview_error:
-                    raise ToolCallError("preview unavailable: " + preview_error)
-                if tool.requires_confirmation(self.session):
-                    if self.session.yolo:
+                if isinstance(item, PreparedToolCall):
+                    call = item.call
+                    tool = item.tool
+                else:
+                    call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
+                    cached = self._cached_readonly_execution(call)
+                    if cached is not None:
+                        executions.append(cached)
+                        continue
+                    tool = self._make_tool(call)
+                requires_verification = tool.effect() == ToolEffect.EDIT
+                preview_error = getattr(tool, "preview_error", None)
+                if callable(preview_error):
+                    preview_error_text = str(preview_error())
+                    if preview_error_text:
+                        raise ToolCallError("preview unavailable: " + preview_error_text)
+                requires_confirmation = tool.requires_confirmation(self.session)
+                if requires_confirmation:
+                    if self.session.settings.yolo:
                         if on_auto_approve is not None:
                             on_auto_approve(call, tool)
                     elif confirm is None:
@@ -2512,369 +3350,455 @@ class ToolCallRunner:
                             if reason:
                                 raise Cancellation("user refused: " + reason)
                             raise Cancellation("user refused")
-                output = tool.call()
+                output = self._call_tool(tool, call, on_live_output=on_live_output, on_live_done=on_live_done)
+                exit_match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
+                if exit_match and int(exit_match.group(1)) != 0:
+                    outcome = "failure"
             except Cancellation as error:
                 outcome = "failure"
                 output = "Cancelled: " + str(error)
+                error_type = type(error)
             except Exception as error:
                 outcome = "failure"
                 output = "ToolCallError: " + str(error)
+                error_type = type(error)
             if call is None:
                 call = self._invalid_tool_call(item)
+            result_key = ""
+            result_excerpted = False
+            if call.name != ToolResultTool.name():
+                result_key = self._store_tool_result(call, outcome, output)
+                item = self.session.state.tool_result_store[result_key]
+                output = item.value
+                result_excerpted = item.excerpted
 
-            log_written = not self._is_tool_result_file_read(call)
-            if log_written:
-                result_file, result_file_lines = self._write_tool_result_log(call, outcome, output)
-            else:
-                result_file = os.path.relpath(self.session.resolve_path(call.args[0]), self.session.cwd)
-                result_file_lines = len(output.splitlines())
             execution = ToolCallExecution(
                 call=call,
                 outcome=outcome,
                 output=output,
-                result_file=result_file,
-                result_file_lines=result_file_lines,
-                log_written=log_written,
+                error_type=error_type,
+                result_key=result_key,
+                result_excerpted=result_excerpted,
+                requires_verification=outcome == "success" and requires_verification,
             )
-            if log_written:
-                event = ToolCallEvent(
-                    intent=call.intention,
-                    executed=call.executed,
-                    outcome=outcome,
-                    summary="",
-                    result_file=result_file,
-                    result_file_lines=result_file_lines,
-                )
-                self.session.append_conversation(event)
-                events.append(event)
             executions.append(execution)
+            self._remember_last_readonly_result(call, outcome, result_key)
+            if error_type is Cancellation:
+                break
 
-        self.latest_events = events
         self.latest_executions = executions
-        return self._format_latest_tool_call_results(executions)
 
-    def format_latest_report(self) -> str:
-        if not self.latest_executions:
-            return ""
-        offset = max(0, len(self.latest_executions) - self.DISPLAY_LIMIT)
-        visible = self.latest_executions[offset:]
-        lines = ["Tool Calls"]
-        if offset:
-            lines.append("  ... " + str(offset) + " older")
-        for index, execution in enumerate(visible, start=offset + 1):
-            lines.append("  " + str(index) + ". [" + execution.outcome + "] " + execution.call.executed)
-            if execution.call.intention:
-                lines.append("     why: " + execution.call.intention)
-            label = "log" if execution.log_written else "source"
-            lines.append("     " + label + ": " + execution.result_file + " (" + str(execution.result_file_lines) + " lines)")
-        return "\n".join(lines)
+    def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
+        if not self.reuse_readonly_results:
+            return None
+        key = self._readonly_result_cache_key(call)
+        if key is None:
+            return None
+        if self.runtime.last_readonly_call_key != key or not self.runtime.last_readonly_result_key:
+            return None
+        result_key = self.runtime.last_readonly_result_key
+        item = self.session.state.tool_result_store.get(result_key)
+        if item is None or not item.description.startswith("success "):
+            return None
+        return ToolCallExecution(call=call, outcome="success", output=item.value, result_key=result_key, result_excerpted=item.excerpted)
+
+    def _remember_last_readonly_result(self, call: ParsedToolCall, outcome: str, result_key: str) -> None:
+        if not self.reuse_readonly_results:
+            return
+        key = self._readonly_result_cache_key(call)
+        if key is not None and outcome == "success" and result_key:
+            self.runtime.last_readonly_call_key = key
+            self.runtime.last_readonly_result_key = result_key
+            return
+        self.runtime.last_readonly_call_key = None
+        self.runtime.last_readonly_result_key = ""
+
+    def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
+            return None
+        return call.name, tuple(call.args)
+
+    def _call_tool(
+        self,
+        tool: Tool,
+        call: ParsedToolCall,
+        *,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+    ) -> str:
+        live_started = False
+
+        def sink(chunk: str) -> None:
+            nonlocal live_started
+            if not chunk:
+                return
+            live_started = True
+            if on_live_output is not None:
+                on_live_output(call, chunk)
+
+        try:
+            return tool.call_live(sink if on_live_output is not None else None)
+        finally:
+            if live_started and on_live_done is not None:
+                on_live_done(call)
+
+    def _dedupe_readonly_tool_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue | ParsedToolCall]:
+        filtered: list[JsonValue | ParsedToolCall] = []
+        for item in tool_calls:
+            try:
+                call = self.parse_tool_call(item)
+            except ToolCallArgError:
+                filtered.append(item)
+                continue
+            key = self._readonly_result_cache_key(call)
+            if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_result_cache_key(filtered[-1]) == key:
+                filtered[-1] = call
+                continue
+            if call.name == ToolResultTool.name() and filtered and isinstance(filtered[-1], ParsedToolCall) and filtered[-1].name == call.name:
+                merged_args = list(filtered[-1].args)
+                merged_args.extend(arg for arg in call.args if arg not in merged_args)
+                filtered[-1] = ParsedToolCall(name=call.name, intention=call.intention, args=merged_args)
+                continue
+            filtered.append(call)
+        return filtered
+
+    def _merge_adjacent_tool_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
+        merged: list[JsonValue | ParsedToolCall | PreparedToolCall] = []
+        index = 0
+        while index < len(tool_calls):
+            item = tool_calls[index]
+            merge_key = self._merge_key(item)
+            if merge_key is None:
+                merged.append(item)
+                index += 1
+                continue
+
+            group = [item]
+            index += 1
+            while index < len(tool_calls):
+                next_item = tool_calls[index]
+                if self._merge_key(next_item) != merge_key:
+                    break
+                group.append(next_item)
+                index += 1
+
+            if len(group) == 1:
+                merged.append(item)
+                continue
+
+            prepared = self._merge_calls(group)
+            if prepared is None:
+                merged.extend(group)
+            else:
+                merged.append(prepared)
+        return merged
+
+    def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
+        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.name():
+            return None
+        key = ReplaceRangeTool.merge_key(item)
+        if key is None:
+            return None
+        return (item.name, key)
+
+    def _merge_calls(self, group: list[JsonValue | ParsedToolCall]) -> PreparedToolCall | None:
+        parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
+        if len(parsed_group) != len(group):
+            return None
+        if parsed_group[0].name != ReplaceRangeTool.name():
+            return None
+        return ReplaceRangeTool.merge_calls(self.session, parsed_group)
+
+    def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
+        self.session.state.tool_result_counter += 1
+        key = "tr." + str(self.session.state.tool_result_counter)
+        description = outcome + " " + ToolCallDisplayFormatter._format_call(call)
+        if call.intention:
+            description += " - " + call.intention
+        log_path = self._write_tool_result_log(key, output)
+        bounded = _bound_tool_output(output, log_path=log_path)
+        self.session.state.tool_result_store[key] = ToolResultItem(
+            description=description,
+            value=bounded.value,
+            log_path=log_path,
+            original_lines=bounded.original_lines,
+            original_chars=bounded.original_chars,
+            excerpted=bounded.excerpted,
+        )
+        self._trim_tool_result_store()
+        return key
+
+    def _write_tool_result_log(self, key: str, output: str) -> str:
+        directory = self.session.tool_results_dir()
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        pid = os.getpid()
+        for attempt in range(3):
+            suffix = "" if attempt == 0 else f"-{attempt}"
+            filepath = os.path.join(directory, f"{timestamp}-{pid}-{key}{suffix}.log")
+            try:
+                with open(filepath, "x", encoding="utf-8") as fp:
+                    fp.write(output)
+                return os.path.relpath(filepath, self.session.cwd)
+            except FileExistsError:
+                continue
+        return ""
+
+    def _trim_tool_result_store(self) -> None:
+        overflow = len(self.session.state.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
+        if overflow <= 0:
+            return
+        for old_key in list(self.session.state.tool_result_store)[:overflow]:
+            self.session.state.tool_result_store.pop(old_key)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
         if not name:
-            raise ToolCallError("tool call missing name")
+            raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
+        if name not in TOOL_REGISTRY and name == name.lower():
+            name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == name), name)
         intention = _json_str(item.get("intention")) or ""
         args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
-        try:
-            raw = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            raw = repr(value)
-        return ParsedToolCall(name="InvalidToolCall", intention="parse malformed tool call", args=[_shorten(raw, 300)])
+        item = _json_dict(value)
+        summary = "invalid tool action"
+        if _json_str(item.get("type")) == "tool" and not _json_str(item.get("name")):
+            summary += ": missing required field name"
+        return ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
 
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            raise ToolCallError("tool not found: " + call.name)
+            raise ToolCallArgError("tool not found: " + call.name)
+        if tool_class is ToolResultTool:
+            return ToolResultTool(keys=call.args, results=self.session.state.tool_result_store)
         return tool_class.make(self.session, call.args)
 
-    def _preview_error(self, tool: Tool) -> str:
-        preview_error = getattr(tool, "preview_error", None)
-        if not callable(preview_error):
-            return ""
-        return str(preview_error())
-
-    def _is_tool_result_file_read(self, call: ParsedToolCall) -> bool:
-        if call.name != ReadTool.name() or not call.args:
-            return False
-        tool_results_dir = os.path.realpath(self.session.tool_results_dir())
-        path = os.path.realpath(self.session.resolve_path(call.args[0]))
-        try:
-            return os.path.commonpath([tool_results_dir, path]) == tool_results_dir
-        except ValueError:
-            return False
-
-    def _write_tool_result_log(self, call: ParsedToolCall, outcome: str, output: str) -> tuple[str, int]:
-        directory = self.session.tool_results_dir()
-        os.makedirs(directory, exist_ok=True)
-        filepath = os.path.join(directory, datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
-        content = "\n".join(
-            [
-                "<Tool_Call_Result_Log>",
-                "  <tool>" + call.name + "</tool>",
-                "  <intention>" + call.intention + "</intention>",
-                "  <executed>" + call.executed + "</executed>",
-                "  <outcome>" + outcome + "</outcome>",
-                "  <raw_result>",
-                output,
-                "  </raw_result>",
-                "</Tool_Call_Result_Log>",
-            ]
-        )
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        return os.path.relpath(filepath, self.session.cwd), len(content.splitlines())
-
-    def _format_latest_tool_call_results(self, executions: list[ToolCallExecution]) -> str:
-        if not executions:
-            return "(empty)"
-        blocks = []
-        for execution in executions:
-            blocks.append(
-                "\n".join(
-                    [
-                        "<Latest_Tool_Call_Result>",
-                        "  <tool>" + execution.call.name + "</tool>",
-                        "  <intention>" + execution.call.intention + "</intention>",
-                        "  <executed>" + execution.call.executed + "</executed>",
-                        "  <outcome>" + execution.outcome + "</outcome>",
-                        "  <result_file>" + execution.result_file + "</result_file>",
-                        "  <raw_result>",
-                        execution.output,
-                        "  </raw_result>",
-                        "</Latest_Tool_Call_Result>",
-                    ]
-                )
-            )
-        return "\n\n".join(blocks)
-
 
 ############################
-# AgentStateUpdater
+# Agent State
 ############################
 
 
-@final
+STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow", "convention", "gotcha")
+
+
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
-    CURRENT_CONTEXT_LIMIT: ClassVar[int] = 50
+    COMPACT_DISPLAY_LIMIT: ClassVar[int] = 3
+    MAX_KNOWN_ITEMS: ClassVar[int] = 500
+    MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
+    VERIFY_STATUS_ACTIONS: ClassVar[dict[str, VerificationStatus]] = {
+        "passed": VerificationStatus.DONE,
+        "failed": VerificationStatus.FAILED,
+        "blocked": VerificationStatus.BLOCKED,
+    }
 
-    def __init__(self, session: Session, tool_runner: ToolCallRunner):
+    def __init__(
+        self,
+        session: Session,
+        blackboard: Blackboard,
+    ):
         self.session = session
-        self.tool_runner = tool_runner
+        self.blackboard = blackboard
         self.latest_report = ""
+        self.latest_compact_plan_rows: list[str] = []
 
     def apply(self, response: Json) -> None:
-        before_goal = self.session.current.goal
-        before_plan = [item.format() for item in self.session.current.plan]
-        before_known = [item.format() for item in self.session.current.known]
-        before_context = [item.format() for item in self.session.current.current_context]
-        before_verification = self.session.current.verification.format()
-        goal_changed = self._apply_goal(response)
-        plan_replaced = self._apply_plan(response)
-        self._reset_stale_verification(response, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        if goal_changed:
-            self.session.current.current_context = []
-            self.session.range_fingerprints.clear()
-        self._apply_known(response)
-        self._apply_current_context(response)
-        self._apply_verification(response)
-        self._bind_verification_goal()
-        self._apply_tool_call_summaries(response)
+        actions = self._actions(response)
+        before_goal = self.blackboard.goal
+        before_plan = [item.format() for item in self.blackboard.plan]
+        before_known = list(self.blackboard.known)
+        before_user_rules = self.session.state.user_rules.format()
+        before_extra_state = self._before_extra_state()
+        goal_changed = self._apply_goal(actions)
+        plan_replaced = self._apply_plan(actions)
+        if goal_changed and not plan_replaced:
+            self.blackboard.plan = []
+        self._apply_known(actions)
+        self._apply_user_rules(actions)
+        self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_task_code(actions)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
             before_known,
-            before_context,
-            before_verification,
+            before_user_rules,
+            before_extra_state,
         )
 
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
-
-    def apply_tool_call_summaries(self, response: Json) -> None:
-        self._apply_tool_call_summaries(response)
 
     def _format_state_report(
         self,
         before_goal: str,
         before_plan: list[str],
         before_known: list[str],
-        before_context: list[str],
-        before_verification: str,
+        before_user_rules: str,
+        before_extra_state: str,
     ) -> str:
-        current = self.session.current
+        current = self.blackboard
         lines = []
         if current.goal != before_goal:
-            lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Goal    " + self._compact(current.goal or "(empty)"))
+            self._append_state_section(lines, "  Goal    " + self._compact(current.goal or "(empty)"))
         plan = [item.format() for item in current.plan]
+        self.latest_compact_plan_rows = []
         if plan != before_plan:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Plan")
-            lines.extend(self._format_plan_rows())
-        known = [item.format() for item in current.known]
+            self.latest_compact_plan_rows = self._compact_changed_plan_rows(before_plan, plan)
+            self._append_state_section(lines, "  Plan", self._format_plan_rows())
+        known = list(current.known)
         if known != before_known:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Known")
-            lines.extend(self._format_known_rows())
-        current_context = [item.format() for item in current.current_context]
-        if current_context != before_context:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Context")
-            lines.extend(self._format_context_rows())
-        verification = current.verification.format()
-        if verification != before_verification:
-            if not lines:
-                lines.append("State Updated | " + self._verification_badge())
-            lines.append("  Verify  " + self._format_verification())
+            self._append_state_section(lines, "  Known", self._format_known_rows())
+        user_rules = self.session.state.user_rules.format()
+        if user_rules != before_user_rules:
+            self._append_state_section(lines, "  User_Rules    updated")
+        self._append_extra_state_report(lines, before_extra_state)
         return "\n".join(lines)
 
     def _format_plan_rows(self) -> list[str]:
-        items = self.session.current.plan
+        items = self.blackboard.plan
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text))
-            if item.evidence:
-                rows.append("       evidence: " + self._compact(item.evidence))
+            if item.context:
+                rows.append("       context: " + self._compact(item.context))
         return rows
 
     def _format_known_rows(self) -> list[str]:
-        items = self.session.current.known
+        items = self.blackboard.known
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
-            text = self._compact(item.fact)
-            if item.details:
-                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
-            rows.append("    " + str(index) + ". " + text)
+            rows.append("    " + str(index) + ". " + self._compact(item))
         return rows
 
-    def _format_context_rows(self) -> list[str]:
-        items = self.session.current.current_context
-        if not items:
-            return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            text = self._compact(item.note)
-            if item.details:
-                text += " | " + "; ".join(self._compact(detail) for detail in item.details)
-            rows.append("    " + str(index) + ". " + text)
+    def compact_report(self) -> str:
+        sections = []
+        if "  Plan" in self.latest_report and self.blackboard.plan:
+            sections.append("Plan")
+        if "  Known" in self.latest_report and self.blackboard.known:
+            sections.append("Known")
+        if not sections:
+            return ""
+        lines = [" + ".join(sections) + " Updated"]
+        if "Plan" in sections:
+            lines.extend(self.latest_compact_plan_rows or self._compact_plan_rows())
+        if "Known" in sections:
+            lines.extend(self._compact_known_rows())
+        return "\n".join(lines)
+
+    def _compact_plan_rows(self) -> list[str]:
+        items = self.blackboard.plan
+        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " older"] if offset else []
+        rows.extend(self._compact_plan_row(index, item) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
 
-    def _format_verification(self) -> str:
-        verification = self.session.current.verification
-        parts = [verification.status]
-        if verification.method:
-            parts.append(self._compact(verification.method))
-        if verification.evidence:
-            parts.append("evidence: " + self._compact(verification.evidence))
-        return " | ".join(parts)
+    def _compact_changed_plan_rows(self, before_plan: list[str], plan: list[str]) -> list[str]:
+        if not before_plan:
+            return self._compact_plan_rows()
+        indexes = [index for index in range(max(len(before_plan), len(plan))) if (before_plan[index] if index < len(before_plan) else None) != (plan[index] if index < len(plan) else None)]
+        if not indexes or any(index >= len(self.blackboard.plan) for index in indexes):
+            return self._compact_plan_rows()
+        offset = max(0, len(indexes) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " changed older"] if offset else []
+        rows.extend(self._compact_plan_row(index + 1, self.blackboard.plan[index]) for index in indexes[offset:])
+        return rows
 
-    def _verification_badge(self) -> str:
-        return "VERIFY:" + self.session.current.verification.status
+    def _compact_plan_row(self, index: int, item: PlanItem) -> str:
+        return "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
+
+    def _compact_known_rows(self) -> list[str]:
+        items = self.blackboard.known
+        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " older"] if offset else []
+        rows.extend("  " + str(index) + ". " + self._compact(item, 100) for index, item in enumerate(items[offset:], start=offset + 1))
+        return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
         text = " ".join(text.split())
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    def _apply_tool_call_summaries(self, response: Json) -> None:
-        summaries = [action for action in self._actions(response) if _json_str(action.get("type")) == "tool_summary"]
-        if not summaries:
-            return
-        pending = [event for event in self.tool_runner.latest_events if not event.summary]
-        for raw_summary in summaries:
-            summary = _json_dict(raw_summary)
-            if not summary:
-                continue
-            event = self._find_summary_event(summary, pending)
-            if event is None:
-                continue
-            event.summary = self._format_tool_call_summary(summary)
-            event.key_details = self._key_details_from_summary(summary)
-            event.needs_raw_read = summary.get("needs_raw_read") is True
-            if event in pending:
-                pending.remove(event)
-
-    def _find_summary_event(self, summary: Json, pending: list[ToolCallEvent]) -> ToolCallEvent | None:
-        result_file = _json_str(summary.get("result_file"))
-        if result_file:
-            for event in self.tool_runner.latest_events:
-                if event.result_file == result_file:
-                    return event
-        tool = _json_str(summary.get("tool"))
-        intention = _json_str(summary.get("intention"))
-        if tool or intention:
-            for event in pending:
-                if (not tool or event.executed.startswith(tool + "(")) and (not intention or event.intent == intention):
-                    return event
-        return pending[0] if pending else None
-
-    def _format_tool_call_summary(self, summary: Json) -> str:
-        parts = []
-        outcome = _json_str(summary.get("outcome"))
-        text = _json_str(summary.get("summary"))
-        if outcome:
-            parts.append("outcome: " + outcome)
-        if text:
-            parts.append("summary: " + text)
-        if summary.get("needs_raw_read") is True:
-            parts.append("needs_raw_read: true")
-        return "\n".join(parts)
-
-    def _key_details_from_summary(self, summary: Json) -> list[str]:
-        details = [_json_str(item) or "" for item in _json_list(summary.get("key_evidence"))]
-        return [detail for detail in details if detail]
-
-    def _apply_goal(self, response: Json) -> bool:
+    def _apply_goal(self, actions: list[Json]) -> bool:
         changed = False
-        for action in self._actions(response):
+        for action in actions:
             action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                update = _json_str(action.get("goal"))
+                if update:
+                    goal_changed = update != self.blackboard.goal
+                    changed = changed or goal_changed
+                    self.blackboard.goal = update
+                    self.blackboard.goal_reached = False
             if action_type == "goal":
                 update = _json_str(action.get("text"))
+                complete = action.get("complete")
                 if update is not None:
-                    changed = changed or update != self.session.current.goal
-                    self.session.current.goal = update
+                    goal_changed = update != self.blackboard.goal
+                    changed = changed or (goal_changed and complete is not True)
+                    self.blackboard.goal = update
+                if isinstance(complete, bool):
+                    self.blackboard.goal_reached = complete
         return changed
 
-    def _apply_plan(self, response: Json) -> bool:
+    def _apply_plan(self, actions: list[Json]) -> bool:
         replaced = False
-        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "plan"]:
+        for start in [action for action in actions if _json_str(action.get("type")) == "start"]:
+            items = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(start.get("plan"))) if item]
+            if items:
+                self.blackboard.plan = items
+                replaced = True
+        for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
-            if update.get("mode") == "replace":
-                self.session.current.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+            if update.get("mode") != "patch":
+                if not items:
+                    continue
+                self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
                 replaced = True
                 continue
-            for raw in items:
-                patch = _json_dict(raw)
-                op = _json_str(patch.get("op")) or "add"
-                item_id = _json_str(patch.get("id")) or ""
-                if op == "remove":
-                    self.session.current.plan = [item for item in self.session.current.plan if item.id != item_id]
-                    continue
-                plan_item = self._plan_item_from_json(patch)
-                if plan_item is None:
-                    continue
-                existing = next((item for item in self.session.current.plan if item.id == plan_item.id and item.id), None)
-                if existing:
-                    existing.text = plan_item.text
-                    existing.status = plan_item.status
-                    existing.evidence = plan_item.evidence
-                else:
-                    self.session.current.plan.append(plan_item)
+            self._apply_plan_patches(self.blackboard.plan, items)
         return replaced
+
+    def _apply_plan_patches(self, plan: list[PlanItem], value: JsonValue) -> bool:
+        changed = False
+        for raw in _json_list(value):
+            patch = _json_dict(raw)
+            op = _json_str(patch.get("op")) or "add"
+            item_id = _json_str(patch.get("id")) or ""
+            if op == "remove":
+                before = len(plan)
+                plan[:] = [item for item in plan if item.id != item_id]
+                changed = changed or len(plan) != before
+                continue
+            existing = next((item for item in plan if item.id == item_id and item.id), None)
+            if existing:
+                text = _json_str(patch.get("text")) if "text" in patch else None
+                status = _json_str(patch.get("status")) if "status" in patch else None
+                context = _json_str(patch.get("context")) if "context" in patch else existing.context
+                updated = (
+                    text or existing.text,
+                    PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status,
+                    context or "",
+                )
+                changed = changed or (existing.text, existing.status, existing.context) != updated
+                existing.text, existing.status, existing.context = updated
+                continue
+            plan_item = self._plan_item_from_json(patch)
+            if plan_item is None:
+                continue
+            plan.append(plan_item)
+            changed = True
+        return changed
 
     def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
         item = _json_dict(value)
@@ -2882,93 +3806,211 @@ class AgentStateUpdater:
         if not text:
             return None
         status = _json_str(item.get("status")) or PlanStatus.TODO
-        if status not in {PlanStatus.TODO, PlanStatus.DOING, PlanStatus.DONE, PlanStatus.BLOCKED}:
+        if status not in ALL_PLAN_STATUSES:
             status = PlanStatus.TODO
         return PlanItem(
             text=text,
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
-            evidence=_json_str(item.get("evidence")) or "",
+            context=_json_str(item.get("context")) or "",
         )
 
-    def _apply_known(self, response: Json) -> None:
-        for action in [action for action in self._actions(response) if _json_str(action.get("type")) == "known"]:
-            for raw in _json_list(action.get("items")):
-                item = _json_dict(raw)
-                fact = _json_str(item.get("fact")) if item else _json_str(raw)
-                if not fact:
-                    continue
-                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-                details = [detail for detail in details if detail]
-                if not any(known.fact == fact for known in self.session.current.known):
-                    self.session.current.known.append(KnownItem(fact=fact, details=details))
+    def _apply_known(self, actions: list[Json]) -> None:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
+            for raw in values:
+                fact = _memory_fact_from_json(raw)
+                if fact is not None:
+                    self._add_known_item(fact)
 
-    def _apply_current_context(self, response: Json) -> None:
-        for update in [action for action in self._actions(response) if _json_str(action.get("type")) == "context"]:
-            if update.get("mode") == "replace":
-                self.session.current.current_context = []
-            for raw in _json_list(update.get("items")):
-                item = _json_dict(raw)
-                note = _json_str(item.get("note")) if item else _json_str(raw)
-                if not note:
-                    continue
-                details = [_json_str(detail) or "" for detail in _json_list(item.get("details") if item else None)]
-                details = [detail for detail in details if detail]
-                existing = next((context for context in self.session.current.current_context if context.note == note), None)
-                if existing:
-                    existing.details = details
-                else:
-                    self.session.current.current_context.append(CurrentContextItem(note=note, details=details))
-        if len(self.session.current.current_context) > self.CURRENT_CONTEXT_LIMIT:
-            self.session.current.current_context = self.session.current.current_context[-self.CURRENT_CONTEXT_LIMIT :]
+    def _apply_user_rules(self, actions: list[Json]) -> None:
+        changed = False
+        for action in actions:
+            if _json_str(action.get("type")) != "user_rule":
+                continue
+            rule = (_json_str(action.get("text")) or "").strip()
+            changed = self.session.state.user_rules.add(rule) or changed
+        if changed:
+            self.session.save_user_rules()
 
-    def _apply_verification(self, response: Json) -> None:
-        for data in [action for action in self._actions(response) if _json_str(action.get("type")) == "verify"]:
+    def _add_known_item(self, fact: str) -> None:
+        fact = _shorten(" ".join(fact.split()))
+        for index, existing in enumerate(self.blackboard.known):
+            if self._known_facts_overlap(existing, fact):
+                if len(fact) > len(existing):
+                    self.blackboard.known[index] = fact
+                return
+        self.blackboard.known.append(fact)
+        del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
+
+    def _known_facts_overlap(self, left: str, right: str) -> bool:
+        left_key = self._known_fact_key(left)
+        right_key = self._known_fact_key(right)
+        if left_key == right_key:
+            return True
+        return min(len(left_key), len(right_key)) >= 32 and (left_key in right_key or right_key in left_key)
+
+    def _known_fact_key(self, fact: str) -> str:
+        return re.sub(r"\s+", " ", fact).strip(" \t\r\n。.;；").lower()
+
+    def _before_extra_state(self) -> str:
+        return json.dumps(
+            {
+                "verification": self.blackboard.verification.format(),
+                "stable_knowledge": self.blackboard.stable_knowledge,
+            },
+            ensure_ascii=False,
+        )
+
+    def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        self._apply_stable_knowledge(actions)
+        if goal_changed:
+            self.blackboard.verification_required = False
+        self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_verification(actions)
+        self._bind_verification_goal()
+
+    def _apply_task_code(self, actions: list[Json]) -> None:
+        action_types = {_json_str(action.get("type")) for action in actions}
+        if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self.blackboard.task_code = TaskCode.VERIFYING
+            return
+        if "verify" in action_types:
+            self.blackboard.task_code = TaskCode.WORKING
+            return
+        if "start" in action_types:
+            self.blackboard.task_code = TaskCode.WORKING
+            return
+        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "progress", "tool")) and not self.blackboard.goal_reached:
+            self.blackboard.task_code = TaskCode.WORKING
+
+    def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
+        if not lines:
+            lines.append("State Updated | VERIFY:" + self.blackboard.verification.status)
+        lines.append(title)
+        lines.extend(rows or [])
+
+    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
+        try:
+            before = _json_dict(json.loads(before_extra_state))
+        except json.JSONDecodeError:
+            before = {}
+        if self.blackboard.stable_knowledge != before.get("stable_knowledge", []):
+            self._append_state_section(lines, "  Stable_Knowledge", self._format_stable_knowledge_rows())
+        verification = self.blackboard.verification.format()
+        if verification == before.get("verification", ""):
+            return
+        self._append_state_section(lines, "  Verify  " + self._format_verification())
+
+    def _format_stable_knowledge_rows(self) -> list[str]:
+        knowledge = self.blackboard.stable_knowledge
+        if not any(knowledge.values()):
+            return ["    (empty)"]
+        rows = []
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = knowledge.get(category, [])
+            if not items:
+                continue
+            rows.append("    " + category)
+            offset = max(0, len(items) - self.DISPLAY_LIMIT)
+            if offset:
+                rows.append("      ... " + str(offset) + " older")
+            for index, item in enumerate(items[offset:], start=offset + 1):
+                rows.append("      " + str(index) + ". " + self._compact(item))
+        return rows
+
+    def _apply_stable_knowledge(self, actions: list[Json]) -> None:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else _json_list(action.get("stable_knowledge"))
+            for raw in values:
+                category, fact = self._stable_knowledge_item_from_json(raw)
+                if fact:
+                    self._add_stable_knowledge_item(category, fact)
+
+    def _stable_knowledge_item_from_json(self, value: JsonValue) -> tuple[str, str]:
+        item = _json_dict(value)
+        if item:
+            category = _json_str(item.get("category")) or "gotcha"
+            fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
+        else:
+            category = "gotcha"
+            fact = (_json_str(value) or "").strip()
+        if category not in STABLE_KNOWLEDGE_CATEGORIES:
+            category = "gotcha"
+        return category, fact
+
+    def _add_stable_knowledge_item(self, category: str, fact: str) -> None:
+        knowledge = self.blackboard.stable_knowledge
+        items = knowledge.setdefault(category, [])
+        if fact in items:
+            return
+        items.append(fact)
+        del items[: max(0, len(items) - self.MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY)]
+
+    def _format_verification(self) -> str:
+        verification = self.blackboard.verification
+        parts = [verification.status]
+        parts.extend(
+            part
+            for part in (
+                verification.kind,
+                self._compact(verification.method) if verification.method else "",
+                "criteria: " + self._compact("; ".join(verification.criteria)) if verification.criteria else "",
+                "context: " + self._compact(verification.context) if verification.context else "",
+            )
+            if part
+        )
+        return " | ".join(parts)
+
+    def _apply_verification(self, actions: list[Json]) -> None:
+        for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
+            kind = _json_str(data.get("kind"))
+            if kind is not None:
+                self.blackboard.verification.kind = kind if kind and all(part in VALID_VERIFICATION_KINDS for part in kind.split("+")) else ""
+            criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
+            if "criteria" in data:
+                self.blackboard.verification.criteria = criteria
             method = _json_str(data.get("method"))
             if method is not None:
-                if method != self.session.current.verification.method:
-                    self.session.current.verification.evidence = ""
-                self.session.current.verification.method = method
-            status = _json_str(data.get("status"))
-            if status == "pending":
-                self.session.current.verification.status = VerificationStatus.REQUIRED
-                if "evidence" not in data:
-                    self.session.current.verification.evidence = ""
-            elif status == "passed":
-                self.session.current.verification.status = VerificationStatus.DONE
-            elif status == "blocked":
-                self.session.current.verification.status = VerificationStatus.BLOCKED
-            evidence = _json_str(data.get("evidence"))
-            if evidence is not None:
-                self.session.current.verification.evidence = evidence
+                if method != self.blackboard.verification.method:
+                    self.blackboard.verification.context = ""
+                self.blackboard.verification.method = method
+            status = self.VERIFY_STATUS_ACTIONS.get(_json_str(data.get("status")) or "")
+            if status is not None:
+                self.blackboard.verification.status = status
+                self.blackboard.verification_required = False
+            context = _json_str(data.get("context"))
+            if context is not None:
+                self.blackboard.verification.context = context
 
-    def _reset_stale_verification(self, response: Json, *, goal_changed: bool, plan_replaced: bool) -> None:
-        verification = self.session.current.verification
+    def _reset_stale_verification(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        verification = self.blackboard.verification
         if goal_changed:
             verification.reset()
             return
-        if verification.goal and verification.goal != self.session.current.goal:
+        if verification.goal and verification.goal != self.blackboard.goal:
             verification.reset()
             return
         if (
             plan_replaced
-            and not any(_json_str(action.get("type")) == "verify" for action in self._actions(response))
+            and not any(_json_str(action.get("type")) == "verify" for action in actions)
             and verification.status
             in {
                 VerificationStatus.REQUIRED,
                 VerificationStatus.DONE,
+                VerificationStatus.FAILED,
                 VerificationStatus.BLOCKED,
             }
         ):
             verification.reset()
 
     def _bind_verification_goal(self) -> None:
-        verification = self.session.current.verification
+        verification = self.blackboard.verification
         if not verification.has_context():
             verification.goal = ""
             return
-        if self.session.current.goal:
-            verification.goal = self.session.current.goal
+        if self.blackboard.goal:
+            verification.goal = self.blackboard.goal
 
 
 ############################
@@ -2976,38 +4018,55 @@ class AgentStateUpdater:
 ############################
 
 
-@final
 class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
+    MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 150
 
-    def __init__(self, session: Session, model_client: ModelClient):
+    def __init__(self, session: Session, model_client: ModelClient, blackboard: Blackboard):
         self.session = session
         self.model_client = model_client
+        self.blackboard = blackboard
 
     def compact(self) -> int:
-        count = len(self.session.conversation)
+        count = len(self.session.state.conversation)
         if count <= self.KEEP_RECENT:
             return 0
-        old_items = self.session.conversation[: -self.KEEP_RECENT]
-        keep_items = self.session.conversation[-self.KEEP_RECENT :]
-        summary = self._summarize(old_items)
-        self.session.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
+        old_items = self.session.state.conversation[: -self.KEEP_RECENT]
+        keep_items = self.session.state.conversation[-self.KEEP_RECENT :]
+        summary, known = self._summarize(old_items)
+        self.session.state.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
+        self.blackboard.known = known
         return count
 
     def maybe_compact(self) -> bool:
-        if self.session.compact_at <= 0:
+        if self.session.settings.compact_at <= 0:
             return False
-        if len(self.session.conversation) <= self.session.compact_at:
+        if len(self.session.state.conversation) <= self.session.settings.compact_at:
             return False
         return self.compact() > 0
 
-    def _summarize(self, items: list[ConversationItem]) -> str:
-        user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(conversation="\n\n".join(item.format() for item in items)).strip()
-        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact")
+    def _summarize(self, items: list[ConversationItem]) -> tuple[str, list[str]]:
+        user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(
+            known="\n".join(self.blackboard.known) or "(empty)",
+            conversation="\n\n".join(item.format() for item in items),
+        ).strip()
+        kwargs = {"parse_actions": False} if isinstance(self.model_client, ModelClient) else {}
+        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
-        return summary
+        known = [fact for fact in (_json_str(item) for item in _json_list(response.get("known"))) if fact]
+        if not known:
+            known = list(self.blackboard.known)
+        return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
+
+
+############################
+# Verification
+############################
+
+
+VALID_VERIFICATION_KINDS: set[str] = {"syntax_check", "change_syntax_check", "lint", "test", "build", "change_check", "other"}
 
 
 ############################
@@ -3015,134 +4074,268 @@ class ConversationCompactor:
 ############################
 
 
-@final
+@dataclass(frozen=True)
+class ResponseContext:
+    response: Json
+    actions: list[Json]
+    goal_was_empty: bool
+    plan_was_empty: bool
+    goal_will_change: bool
+    chat_message: str | None
+    tool_calls: list[JsonValue]
+    pending_verify_requested: bool
+    progress_messages: list[str]
+    user_rule_message: str | None
+    completion_message: str
+    has_goal_action: bool
+    has_plan_action: bool
+    has_fresh_plan_action: bool
+    has_user_rule_action: bool
+    state_or_work_requested: bool
+
+
+############################
+# Agent Runtime
+############################
+
+
 class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
+    MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
+    MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
+    MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
+    blackboard: Blackboard
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {
+        "chat",
+        "start",
+        "goal",
+        "plan",
+        "known",
+        "stable_knowledge",
+        "progress",
+        "tool",
+        "verify",
+        "user_rule",
+    }
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal"}
+    COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
+    MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
+    RECENT_EDITS: ClassVar[int] = 20
+    RECENT_TOOL_CALLS: ClassVar[int] = 50
+    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
+    RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 20
 
     def __init__(self, session: Session):
         self.session = session
-        self.prompt_builder = PromptBuilder(session)
+        self.blackboard = Blackboard()
+        self.runtime = AgentRuntime()
+        self.prompt_builder = PromptBuilder(
+            session,
+            blackboard=self.blackboard,
+            runtime=self.runtime,
+        )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session)
-        self.state_updater = AgentStateUpdater(session, self.tool_runner)
-        self.compactor = ConversationCompactor(session, self.model_client)
-        self.latest_tool_call_results = ""
-        self.latest_agent_feedback = ""
+        self.tool_runner = ToolCallRunner(session, runtime=self.runtime)
+        self.state_updater = AgentStateUpdater(session, self.blackboard)
+        self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
+        self.latest_tool_call_blocks: list[str] = []
+        self.recent_tool_call_blocks: list[str] = []
+        self.pending_observation_blocks: list[str] = []
+        self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
+        self.failed_tool_call_count = 0
+        self.agent_feedback_errors: list[str] = []
+        self.mode = AgentMode.ACT
 
-    @property
-    def latest_tool_call_events(self) -> list[ToolCallEvent]:
-        return self.tool_runner.latest_events
+    def build_user_prompt(self) -> str:
+        return self.prompt_builder.user_prompt(
+            self._format_recent_tool_call_context(),
+            self._format_agent_feedback(),
+        )
 
-    def build_system_prompt(self) -> str:
-        return self.prompt_builder.system_prompt()
-
-    def build_user_prompt(self, *, consume_latest_tool_results: bool = True) -> str:
-        prompt = self.prompt_builder.user_prompt(self.latest_tool_call_results, self.latest_agent_feedback)
-        if consume_latest_tool_results:
-            self.latest_tool_call_results = ""
-            self.latest_agent_feedback = ""
-        return prompt
-
-    def request(self, system_prompt: str, user_prompt: str, *, activity: str = "main", on_action: ActionCallback | None = None) -> Json:
-        if isinstance(self.model_client, ModelClient):
-            return self.model_client.request(system_prompt, user_prompt, activity=activity, on_action=on_action)
-        return self.model_client.request(system_prompt, user_prompt, activity=activity)
+    def request(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        activity: str = "agent",
+        on_message: MessageCallback | None = None,
+    ) -> Json:
+        for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
+            try:
+                self.session.state.turn_model_calls += 1
+                return self.model_client.request(system_prompt, user_prompt, activity=activity)
+            except LLMError as error:
+                if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
+                    raise
+                delay = self.MODEL_TIMEOUT_RETRY_DELAYS[attempt]
+                if on_message is not None and self.session.settings.debug:
+                    on_message(
+                        "Retrying: request model timeout; retry "
+                        + str(attempt + 1)
+                        + "/"
+                        + str(len(self.MODEL_TIMEOUT_RETRY_DELAYS))
+                        + " in "
+                        + str(delay)
+                        + "s."
+                    )
+                time.sleep(delay)
+        raise LLMError("request model timeout")
 
     def compact_history(self) -> int:
         return self.compactor.compact()
 
-    def maybe_auto_compact(self) -> bool:
-        return self.compactor.maybe_compact()
+    def cancel_current_goal(self) -> None:
+        self._finish_current_goal()
 
-    def run(
+    def run_loop(
         self,
-        user_input: str,
         *,
-        confirm: ConfirmCallback | None = None,
-        on_auto_approve: ToolDisplayCallback | None = None,
+        max_steps: int,
         on_message: MessageCallback | None = None,
-    ) -> Json:
-        self.latest_tool_call_results = ""
-        self.latest_agent_feedback = ""
-        self.session.current.user_input = user_input
-        self.session.current.goal_reached = False
-        self.maybe_auto_compact()
-        self.session.append_conversation(UserMessage(content=user_input))
+        on_step: Callable[[Json], AgentRunResult],
+        on_step_limit: Callable[[], JsonValue],
+        on_before_step: Callable[[int, int], None] | None = None,
+        on_format_error_limit: Callable[[Json, str], JsonValue] | None = None,
+    ) -> JsonValue:
         consecutive_format_errors = 0
-
-        for _ in range(self.session.max_agent_steps):
-            response = self.step(on_action=self._stream_action_preview_callback(on_message) if on_message is not None else None)
-            format_error = _json_str(response.get("_format_error"))
-            if format_error:
-                consecutive_format_errors += 1
-                self.latest_agent_feedback = format_error
-                if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+        try:
+            for index in range(max_steps):
+                if on_before_step is not None:
+                    on_before_step(index, max_steps)
+                response = self.step(on_message=on_message)
+                format_error = _json_str(response.get("_format_error"))
+                if format_error:
+                    consecutive_format_errors += 1
+                    self._remember_agent_error(
+                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: return valid JSON action frames only."
+                    )
+                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+                        if on_format_error_limit is not None:
+                            return on_format_error_limit(response, format_error)
+                        self._report_gate(
+                            on_message,
+                            "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
+                            "Format_Gate: stopped after "
+                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                            + " consecutive invalid model outputs. "
+                            + self._format_gate_debug_details(response, format_error),
+                        )
+                        raise LLMError(
+                            "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
+                        )
                     self._report_gate(
                         on_message,
-                        "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
-                        "Format_Gate: stopped after "
-                        + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                        + " consecutive invalid model outputs. "
-                        + self._format_gate_debug_details(response, format_error),
+                        self._format_gate_user_message("Retrying: model returned invalid output", format_error),
+                        "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
                     )
-                    raise LLMError(
-                        "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
-                    )
-                self._report_gate(
-                    on_message,
-                    self._format_gate_user_message("Retrying: model returned invalid output", format_error),
-                    "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
-                )
+                    continue
+                consecutive_format_errors = 0
+                result = on_step(response)
+                if result.done:
+                    return result.value
+            return on_step_limit()
+        except KeyboardInterrupt:
+            self.cancel_current_goal()
+            raise
+
+    def _finish_current_goal(self) -> None:
+        self.blackboard.task_code = TaskCode.DONE
+        self.blackboard.goal_reached = False
+        self.blackboard.verification_required = False
+
+    def _format_recent_tool_call_context(self) -> str:
+        if self.mode == AgentMode.OBSERVE and self.pending_observation_blocks:
+            return "\n\n".join(self.pending_observation_blocks)
+        return "\n\n".join(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
+
+    def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
+        if not executions:
+            return
+        self._append_recent_tool_call_blocks(self.latest_tool_call_blocks)
+        self.latest_tool_call_blocks = [_format_recent_tool_call(execution) for execution in executions]
+        self._prune_recent_tool_calls()
+
+    def _append_recent_tool_call_blocks(self, blocks: list[str]) -> None:
+        if not blocks:
+            return
+        self.recent_tool_call_blocks.extend(blocks)
+        self._prune_recent_tool_calls()
+
+    def _prune_recent_tool_calls(self) -> None:
+        overflow = len(self.recent_tool_call_blocks) - self.RECENT_TOOL_CALLS
+        if overflow > 0:
+            evicted = self.recent_tool_call_blocks[:overflow]
+            del self.recent_tool_call_blocks[:overflow]
+            self._queue_observation_blocks([block for block in evicted if _is_full_tool_call_block(block)])
+        while len("\n\n".join(self.recent_tool_call_blocks + self.latest_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS:
+            index = next((i for i, block in enumerate(self.recent_tool_call_blocks) if _is_full_tool_call_block(block)), None)
+            if index is None:
+                break
+            block = self.recent_tool_call_blocks[index]
+            self._queue_observation_blocks([block])
+            self.recent_tool_call_blocks[index] = _compact_tool_call_block(block)
+        self._trim_compact_recent_tool_calls()
+
+    def _trim_compact_recent_tool_calls(self) -> None:
+        compact_count = 0
+        kept = []
+        for block in reversed(self.recent_tool_call_blocks):
+            if _is_full_tool_call_block(block):
+                kept.append(block)
                 continue
-            consecutive_format_errors = 0
-            actions = self._response_actions(response)
-            tool_calls = self._tool_calls_from_actions(actions)
-            messages = self._messages_from_actions(actions)
-            if self.session.debug and on_message is not None:
-                frame_error_report = self._format_frame_error_report(response)
-                if frame_error_report:
-                    on_message(frame_error_report)
-            self.apply_response(response)
-            if on_message is not None and self.state_updater.latest_report:
-                on_message(self.state_updater.latest_report)
-            for message in messages:
-                self.session.append_conversation(AssistantMessage(content=message))
-                if on_message is not None:
-                    on_message(message)
-            if tool_calls:
-                self.execute_tool_calls(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-                if on_message is not None:
-                    report = self.tool_runner.format_latest_report()
-                    if report:
-                        on_message(report)
-                self.maybe_auto_compact()
-                continue
-            if self.session.current.verification.status == VerificationStatus.REQUIRED:
-                self.session.current.goal_reached = False
-                self.latest_agent_feedback = self._format_verification_gate()
-                self._report_gate(
-                    on_message,
-                    "Retrying: verification is required before completion.",
-                    "Verification_Gate: retrying until verification is passed or blocked.",
-                )
-                continue
-            if messages:
-                self.session.current.goal_reached = True
-                return response
-            if not messages:
-                self.latest_agent_feedback = self._format_continuation_hint()
-                self._report_gate(
-                    on_message,
-                    "Continuing: goal is not complete yet.",
-                    "Continuation_Gate: goal not reached; retrying next useful action.",
-                )
-                continue
-            return response
-        raise LLMError("agent step limit reached")
+            compact_count += 1
+            if compact_count <= self.RECENT_TOOL_CALL_SUMMARIES:
+                kept.append(block)
+        self.recent_tool_call_blocks = list(reversed(kept))
+
+    def _queue_observation_blocks(self, blocks: list[str]) -> None:
+        queued_counters = {self._tool_result_counter_from_block(block) for block in self.pending_observation_blocks}
+        for block in blocks:
+            counter = self._tool_result_counter_from_block(block)
+            if counter > self.blackboard.memory_checkpoint_tool_result_counter and counter not in queued_counters:
+                self.pending_observation_blocks.append(block)
+                queued_counters.add(counter)
+        if self.pending_observation_blocks:
+            self.mode = AgentMode.OBSERVE
+
+    def _tool_result_counter_from_block(self, block: str) -> int:
+        match = RESULT_KEY_PATTERN.search(block)
+        return int(match.group(1).split(".", 1)[1]) if match else 0
+
+    def _max_tool_result_counter(self, blocks: list[str]) -> int:
+        return max((self._tool_result_counter_from_block(block) for block in blocks), default=0)
+
+    def _prune_tool_result_store(self) -> None:
+        overflow = len(self.session.state.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
+        if overflow <= 0:
+            return
+        for key in list(self.session.state.tool_result_store)[:overflow]:
+            self.session.state.tool_result_store.pop(key)
+
+    def _remember_agent_error(self, text: str) -> None:
+        text = " ".join(text.split())
+        if not text:
+            return
+        text = _shorten(text, self.MAX_AGENT_FEEDBACK_ERROR_LEN)
+        if text in self.agent_feedback_errors:
+            return
+        self.agent_feedback_errors.append(text)
+        if len(self.agent_feedback_errors) > self.MAX_AGENT_FEEDBACK_ERRORS:
+            self.agent_feedback_errors = self.agent_feedback_errors[-self.MAX_AGENT_FEEDBACK_ERRORS :]
+
+    def _format_agent_feedback(self) -> str:
+        if not self.agent_feedback_errors:
+            return ""
+        return "\n".join("- " + error for error in self.agent_feedback_errors)
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
-        if on_message is not None:
-            on_message(debug_message if self.session.debug else message)
+        if on_message is None:
+            return
+        if self.session.settings.debug:
+            on_message(debug_message)
+            return
+        if not message.startswith(("Retrying:", "Continuing:")):
+            on_message(message)
 
     def _format_gate_user_message(self, prefix: str, format_error: str) -> str:
         detail = format_error
@@ -3160,69 +4353,42 @@ class Agent:
             return _shorten(format_error, 180)
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
-    def _compact_gate_report(self, gate: str) -> str:
-        lines = gate.splitlines()
-        headline = lines[0] if lines else "Gate"
-        details = [line for line in lines[1:] if line.startswith("- ")]
-        if details:
-            return headline + ": " + _shorten("; ".join(details[:3]), 220)
-        return headline
-
-    def step(self, *, on_action: ActionCallback | None = None) -> Json:
-        response = self.request(self.build_system_prompt(), self.build_user_prompt(consume_latest_tool_results=False), activity="main", on_action=on_action)
+    def step(self, *, on_message: MessageCallback | None = None) -> Json:
+        system_prompt = AGENT_OBSERVE_SYSTEM_PROMPT.strip() if self.mode == AgentMode.OBSERVE else self.prompt_builder.system_prompt()
+        response = self.request(system_prompt, self.build_user_prompt(), activity="agent", on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
         if invalid_response is not None:
             return invalid_response
-        self.latest_tool_call_results = ""
-        self.latest_agent_feedback = ""
-        self.state_updater.apply_tool_call_summaries(response)
         return response
 
     def apply_response(self, response: Json) -> None:
         self.state_updater.apply(response)
+        if self._has_memory_update_action(self._response_actions(response)):
+            self._mark_memory_checkpoint()
 
-    def _stream_action_preview_callback(self, on_message: MessageCallback | None) -> ActionCallback:
-        def preview(action: Json) -> None:
-            if on_message is None:
-                return
-            report = self._format_stream_action_preview(action)
-            if report:
-                on_message(report)
+    def _mark_memory_checkpoint(self, counter: int = 0) -> None:
+        checkpoint = counter or self._visible_tool_result_counter() or self.session.state.tool_result_counter
+        self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
+        self.pending_observation_blocks = [
+            block for block in self.pending_observation_blocks if self._tool_result_counter_from_block(block) > self.blackboard.memory_checkpoint_tool_result_counter
+        ]
 
-        return preview
+    def _visible_tool_result_counter(self) -> int:
+        if self.mode == AgentMode.OBSERVE and self.pending_observation_blocks:
+            return self._max_tool_result_counter(self.pending_observation_blocks)
+        return self._max_tool_result_counter(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
 
-    def _format_stream_action_preview(self, action: Json) -> str:
-        if _json_str(action.get("type")) != "tool":
-            return ""
-        try:
-            call = self.tool_runner.parse_tool_call(action)
-        except ToolCallError:
-            return ""
-        label = "Queued: " + self._format_stream_tool_label(call)
-        if call.intention:
-            label += " - " + _shorten(call.intention, 80)
-        return label
-
-    def _format_stream_tool_label(self, call: ParsedToolCall) -> str:
-        args = call.args
-        if call.name == "Bash":
-            return "Bash"
-        if call.name in {"Read", "ReplaceRange"} and args:
-            return self._format_stream_path_range_label(call.name, args)
-        if call.name == "Search":
-            path = args[1] if len(args) >= 2 and args[1] else ""
-            return "Search" + ((" " + _shorten(path, 48)) if path else "")
-        if args:
-            return call.name + " " + _shorten(args[0], 48)
-        return call.name
-
-    def _format_stream_path_range_label(self, name: str, args: list[str]) -> str:
-        label = name + " " + _shorten(args[0], 48)
-        if len(args) >= 3:
-            label += ":" + args[1] + "-" + args[2]
-        return label
+    def _has_memory_update_action(self, actions: list[Json]) -> bool:
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            values = _json_list(action.get("items")) if action_type == "known" else _json_list(action.get("known"))
+            if any(_memory_fact_from_json(raw) for raw in values):
+                return True
+            if action_type == "stable_knowledge" and _json_list(action.get("items")):
+                return True
+        return False
 
     def execute_tool_calls(
         self,
@@ -3230,67 +4396,97 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
     ) -> str:
-        self.latest_tool_call_results = self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        return self.latest_tool_call_results
-
-    def _format_verification_gate(self) -> str:
-        verification = self.session.current.verification
-        method = verification.method or "Pick the cheapest relevant compile, lint, smoke test, targeted command, or prompt/file inspection."
-        return "\n".join(
-            [
-                "Verification_Gate: required before completion.",
-                "Method: " + method,
-                'Next_Action: run a relevant tool action, or return a verify action with status="passed" or "blocked" and evidence if verification is already resolved.',
-            ]
+        self.tool_runner.execute(
+            tool_calls,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
         )
+        self._append_latest_tool_call_blocks(self.tool_runner.latest_executions)
+        self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
+        self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
+        for execution in self.tool_runner.latest_executions:
+            self._after_tool_execution(execution)
+        return "\n\n".join(self.latest_tool_call_blocks)
 
-    def _format_continuation_hint(self) -> str:
-        return "No tool actions and no message action. Continue with the next useful action."
+    def _after_tool_execution(self, execution: ToolCallExecution) -> None:
+        self._remember_tool_failure(execution)
+        if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+            detail = self._format_tool_arg_error(execution)
+            rule = "Rule: use the tool signature exactly."
+            if execution.call.name in {EditTool.name(), ReplaceRangeTool.name(), ApplyPatchTool.name()}:
+                rule = "Rule: switch to ApplyPatch if edit args keep failing; otherwise use the tool signature exactly."
+            self._remember_agent_error(
+                "Error: tool call args invalid: "
+                + _format_tool_call_summary(execution.call)
+                + " -> "
+                + detail
+                + ". "
+                + rule
+                + ((" Tool output: " + execution.output) if detail != execution.output else "")
+            )
+        if execution.requires_verification:
+            self.blackboard.verification_required = True
+            self.blackboard.task_code = TaskCode.VERIFYING
+            self._remember_recent_edit(execution)
 
-    def _missing_tool_summaries(self) -> list[ToolCallEvent]:
-        return [event for event in self.tool_runner.latest_events if not event.summary]
+    def _remember_tool_failure(self, execution: ToolCallExecution) -> None:
+        if execution.outcome != "failure":
+            self.failed_tool_call_key = None
+            self.failed_tool_call_count = 0
+            return
+        key = (execution.call.name, tuple(execution.call.args))
+        if key == self.failed_tool_call_key:
+            self.failed_tool_call_count += 1
+        else:
+            self.failed_tool_call_key = key
+            self.failed_tool_call_count = 1
+        if self.failed_tool_call_count >= 2:
+            self._remember_agent_error(
+                "Error: repeated same failed tool call: "
+                + _format_tool_call_summary(execution.call)
+                + ". Rule: do not retry the same tool with identical args; correct the args or switch tools."
+            )
 
-    def _format_tool_summary_gate(self, tool_calls: list[JsonValue]) -> str:
-        missing = self._missing_tool_summaries()
-        needs_read = []
-        for event in self.tool_runner.latest_events:
-            if not event.summary:
-                continue
-            is_reading_result_file = self._has_read_result_file_call(tool_calls, event.result_file)
-            if event.needs_raw_read:
-                if not is_reading_result_file:
-                    needs_read.append(event)
-                continue
-        if not missing and not needs_read:
-            return ""
+    def _format_tool_arg_error(self, execution: ToolCallExecution) -> str:
+        call = execution.call
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            return execution.output
+        params = self._exact_signature_params(tool_class.SIGNATURE)
+        if not params or len(call.args) == len(params):
+            return execution.output
+        detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
+        if len(call.args) < len(params):
+            detail += ", missing: " + ", ".join(params[len(call.args) :])
+        else:
+            detail += ", extra: " + str(len(call.args) - len(params))
+        return detail
 
-        lines = ["Tool_Summary_Gate: summarize latest tool results before continuing.", "Raw tool results are visible only once."]
-        if missing:
-            lines.append("Missing summaries:")
-        for event in missing:
-            lines.append("- " + event.executed + " -> " + event.result_file)
-        if needs_read:
-            lines.append("Needs raw read:")
-        for event in needs_read:
-            lines.append("- Read(" + event.result_file + ") before continuing")
-        lines.append(
-            "Next_Action: return tool_summary actions for missing results, read result_file with a tool action only when it is the cheapest accurate fallback, or continue with source tools such as Search/ListDir."
-        )
-        return "\n".join(lines)
+    def _exact_signature_params(self, signature: str) -> list[str]:
+        match = re.search(r"\(([^)]*)\)", signature)
+        if not match:
+            return []
+        value = match.group(1)
+        if "[" in value or "]" in value or "*" in value or "..." in value:
+            return []
+        return [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
 
-    def _has_read_result_file_call(self, tool_calls: list[JsonValue], result_file: str) -> bool:
-        if not result_file:
-            return False
-        expected = self.session.resolve_path(result_file)
-        for raw_call in tool_calls:
-            call = _json_dict(raw_call)
-            if _json_str(call.get("name")) != ReadTool.name():
-                continue
-            args = [_json_str(arg) or "" for arg in _json_list(call.get("args"))]
-            if args and self.session.resolve_path(args[0]) == expected:
-                return True
-        return False
+    def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
+        if not execution.call.args:
+            return
+        filepath = self.session.resolve_path(execution.call.args[0])
+        try:
+            path = os.path.relpath(filepath, self.session.cwd)
+        except ValueError:
+            path = filepath
+        intention = " ".join(execution.call.intention.split()) or execution.call.name
+        self.runtime.recent_edits.append("- " + path + ": " + _shorten(intention, 160))
+        self.runtime.recent_edits = self.runtime.recent_edits[-self.RECENT_EDITS :]
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
@@ -3317,13 +4513,600 @@ class Agent:
         return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
-        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+        return [self._normalize_action_alias(action) for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
-    def _tool_calls_from_actions(self, actions: list[Json]) -> list[JsonValue]:
-        return [action for action in actions if _json_str(action.get("type")) == "tool"]
+    def _normalize_action_alias(self, action: Json) -> Json:
+        alias_name = self._tool_name_for_action_alias(action)
+        if not alias_name:
+            return action
+        normalized = dict(action)
+        normalized["type"] = "tool"
+        normalized["name"] = alias_name
+        if "args" not in normalized:
+            keys = _json_list(normalized.get("keys"))
+            key = _json_str(normalized.get("key"))
+            normalized["args"] = keys if keys else ([key] if key else [])
+        normalized["intention"] = _json_str(normalized.get("intention")) or ("recall stored tool result" if alias_name == ToolResultTool.name() else "run " + alias_name)
+        return normalized
 
-    def _messages_from_actions(self, actions: list[Json]) -> list[str]:
-        return [message for message in (_json_str(action.get("text")) for action in actions if _json_str(action.get("type")) == "message") if message]
+    def _tool_name_for_action_alias(self, action: Json) -> str:
+        action_type = _json_str(action.get("type")) or ""
+        name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == action_type.lower()), "")
+        if not name:
+            return ""
+        if name == ToolResultTool.name() or "args" in action:
+            return name
+        return ""
+
+    def _gate_action_types(
+        self,
+        actions: list[Json],
+        *,
+        allowed: set[str],
+        on_message: MessageCallback | None,
+        retry_message: str,
+        feedback_message: str,
+    ) -> AgentRunResult | None:
+        invalid = sorted({action_type for action_type in (_json_str(action.get("type")) for action in actions) if action_type} - allowed)
+        if not invalid:
+            return None
+        self._remember_agent_error(feedback_message + " Invalid action(s): " + ", ".join(invalid) + ".")
+        self._report_gate(
+            on_message,
+            retry_message,
+            "ActionType_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
+        )
+        return AgentRunResult()
+
+    def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "chat":
+                return _json_str(action.get("text")) or ""
+            return None
+        return None
+
+    def _progress_messages_from_actions(self, actions: list[Json]) -> list[str]:
+        messages = []
+        for action in actions:
+            if _json_str(action.get("type")) == "progress":
+                message = _json_str(action.get("text")) or _json_str(action.get("message")) or ""
+            else:
+                message = _json_str(action.get("progress")) or ""
+            if message:
+                messages.append(message)
+        return messages
+
+    def _completion_message_from_actions(self, actions: list[Json]) -> str:
+        for action in reversed(actions):
+            if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
+                return _json_str(action.get("message_for_complete")) or ""
+        return ""
+
+    def _incomplete_goal_update_from_actions(self, actions: list[Json]) -> str:
+        update = ""
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                update = _json_str(action.get("goal")) or update
+            elif action_type == "goal" and action.get("complete") is not True:
+                update = _json_str(action.get("text")) or update
+        return update
+
+    def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start" and self._has_plan_items(action.get("plan")):
+                return True
+            if action_type == "plan" and action.get("mode") != "patch" and self._has_plan_items(action.get("items")):
+                return True
+        return False
+
+    def _has_plan_items(self, value: JsonValue) -> bool:
+        return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
+
+    def _completion_plan_error(self, ctx: ResponseContext) -> str:
+        if not self.blackboard.goal_reached:
+            return ""
+        if not self.blackboard.plan:
+            return "plan was removed before completion" if not ctx.plan_was_empty and ctx.has_plan_action else ""
+        unfinished = [item for item in self.blackboard.plan if item.status not in self.COMPLETED_PLAN_STATUSES]
+        if unfinished:
+            return "unfinished plan items: " + self._format_plan_gate_items(unfinished)
+        missing_context = [item for item in self.blackboard.plan if not item.context.strip()]
+        if missing_context:
+            return "plan items missing context: " + self._format_plan_gate_items(missing_context)
+        return ""
+
+    def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
+        rendered = []
+        for item in items[:3]:
+            label = item.id or item.text
+            rendered.append(str(item.status) + " " + _shorten(" ".join(label.split()), 80))
+        if len(items) > 3:
+            rendered.append("+" + str(len(items) - 3) + " more")
+        return "; ".join(rendered)
+
+    def _user_rule_message_from_actions(self, actions: list[Json]) -> str | None:
+        for action in actions:
+            if _json_str(action.get("type")) == "user_rule":
+                return _json_str(action.get("message")) or "Rule saved."
+        return None
+
+    def _pending_verification_error(self, actions: list[Json]) -> str:
+        if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions):
+            return "status=pending is not supported in single-agent mode"
+        return ""
+
+    def _plan_shape_error(self, actions: list[Json]) -> str:
+        plan = [PlanItem(text=item.text, status=item.status, id=item.id, context=item.context) for item in self.blackboard.plan]
+        changed = False
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                items = self._plan_items_from_json(action.get("plan"))
+                if items:
+                    plan = items
+                    changed = True
+            elif action_type == "plan":
+                items = self._plan_items_from_json(action.get("items"))
+                if action.get("mode") != "patch":
+                    if items:
+                        plan = items
+                        changed = True
+                    continue
+                changed = self.state_updater._apply_plan_patches(plan, action.get("items")) or changed
+        doing = [item for item in plan if item.status == PlanStatus.DOING]
+        if changed and len(doing) > 1:
+            return "multiple doing plan items: " + self._format_plan_gate_items(doing)
+        return ""
+
+    def _plan_items_from_json(self, value: JsonValue) -> list[PlanItem]:
+        return [item for item in (self.state_updater._plan_item_from_json(raw) for raw in _json_list(value)) if item]
+
+    def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
+        if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
+            return ""
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                continue
+            if (call.name, tuple(call.args)) == self.failed_tool_call_key:
+                return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
+        return ""
+
+    def _build_response_context(self, response: Json) -> ResponseContext:
+        actions = self._response_actions(response)
+        tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
+        pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
+        progress_messages = self._progress_messages_from_actions(actions)
+        has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
+        has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
+        goal_update = self._incomplete_goal_update_from_actions(actions)
+        return ResponseContext(
+            response=response,
+            actions=actions,
+            goal_was_empty=not self.blackboard.goal,
+            plan_was_empty=not self.blackboard.plan,
+            goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
+            chat_message=self._chat_message_from_actions(actions),
+            tool_calls=tool_calls,
+            pending_verify_requested=pending_verify_requested,
+            progress_messages=progress_messages,
+            user_rule_message=self._user_rule_message_from_actions(actions),
+            completion_message=self._completion_message_from_actions(actions),
+            has_goal_action=has_goal_action,
+            has_plan_action=has_plan_action,
+            has_fresh_plan_action=self._has_fresh_plan_action(actions),
+            has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
+            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action),
+        )
+
+    def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+        if ctx.chat_message is None:
+            return None
+        self.blackboard.task_code = TaskCode.DONE
+        self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
+        if on_message is not None:
+            on_message(ctx.chat_message)
+        return AgentRunResult(done=True, value=ctx.response)
+
+    def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
+        action_gate = self._gate_action_types(
+            ctx.actions,
+            allowed=self.ACT_ACTION_TYPES,
+            on_message=on_message,
+            retry_message="Retrying: use a valid agent action.",
+            feedback_message="Error: this step only accepts agent work actions.",
+        )
+        if action_gate is not None:
+            return True
+        plan_shape_error = self._plan_shape_error(ctx.actions)
+        if plan_shape_error:
+            self._remember_agent_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
+            self._report_gate(
+                on_message,
+                "Retrying: keep only one plan item doing.",
+                "Plan_Gate: " + plan_shape_error + ".",
+            )
+            return True
+        repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
+        if repeated_tool_retry_error:
+            self._remember_agent_error(
+                "Error: repeated failed tool call is blocked: "
+                + repeated_tool_retry_error
+                + ". Rule: correct the args or switch tools; for edit failures, prefer ApplyPatch."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: change the failed tool call instead of repeating it.",
+                "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
+            )
+            return True
+        if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
+            self._remember_agent_error(
+                "Error: repeated start is invalid after the current task is active. Rule: follow Current Task Code and continue with plan/tool/verify/goal."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: current task is already active; continue without start.",
+                "GoalPlan_Gate: repeated start while task code is " + self.blackboard.task_code + ".",
+            )
+            return True
+        if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
+            self._remember_agent_error(
+                "Error: rewriting Goal is invalid after the current task is active. Rule: follow Current Task Code and continue the existing Goal/Plan."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: current task is already active; continue without rewriting goal.",
+                "GoalPlan_Gate: goal rewrite while task code is " + self.blackboard.task_code + ".",
+            )
+            return True
+        pending_verification_error = self._pending_verification_error(ctx.actions)
+        if pending_verification_error:
+            self._remember_agent_error(
+                "Error: pending verify is invalid: "
+                + pending_verification_error
+                + '. Rule: run verification with tool actions directly, then return verify status="passed"|"failed"|"blocked".'
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: run verification tools directly.",
+                "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
+            )
+            return True
+        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
+            self._remember_agent_error(
+                "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: set goal and plan before tools.",
+                "GoalPlan_Gate: Goal is empty before task state/work.",
+            )
+            return True
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
+            self._remember_agent_error("Error: changed Goal without replacing Plan. Rule: include start.plan or a full plan action with the new goal.")
+            self._report_gate(
+                on_message,
+                "Retrying: new goal requires a fresh plan.",
+                "GoalPlan_Gate: Goal changed without replacing Plan.",
+            )
+            return True
+        return False
+
+    def _emit_debug_frame_errors(self, response: Json, on_message: MessageCallback | None) -> None:
+        if not self.session.settings.debug or on_message is None:
+            return
+        frame_error_report = self._format_frame_error_report(response)
+        if frame_error_report:
+            on_message(frame_error_report)
+
+    def _emit_state_and_progress(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
+        if on_message is not None and self.state_updater.latest_report:
+            report = self.state_updater.latest_report if self.session.settings.debug else self.state_updater.compact_report()
+            if report:
+                on_message(report)
+        if on_message is not None:
+            for message in ctx.progress_messages:
+                on_message(message)
+
+    def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.tool_calls or ctx.pending_verify_requested):
+            self._remember_agent_error("Error: attempted tool/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step.")
+            self._report_gate(
+                on_message,
+                "Retrying: create a short plan before tools.",
+                "GoalPlan_Gate: Plan is empty before tool/verify.",
+            )
+            return AgentRunResult()
+
+        if (
+            not ctx.tool_calls
+            and not self.blackboard.goal_reached
+            and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+        ):
+            self._remember_agent_error(
+                "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: verification is done but goal is not complete.",
+                "Completion_Gate: verification is done but goal.complete is not true.",
+            )
+            return AgentRunResult()
+        return None
+
+    def _promote_required_verification(self, ctx: ResponseContext) -> None:
+        verification = self.blackboard.verification
+        if not self.blackboard.verification_required or not self.blackboard.goal_reached:
+            return
+        if verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.BLOCKED}:
+            return
+        self.blackboard.task_code = TaskCode.VERIFYING
+        verification.status = VerificationStatus.REQUIRED
+        verification.kind = verification.kind or "change_syntax_check"
+        verification.method = verification.method or self.blackboard.goal or self.blackboard.user_input
+        if not verification.criteria:
+            verification.criteria = ["changed files pass the smallest relevant syntax or compile check"]
+        verification.context = verification.context or ctx.completion_message or self.blackboard.goal
+
+    def _run_tool_actions(
+        self,
+        ctx: ResponseContext,
+        *,
+        confirm: ConfirmCallback | None,
+        on_auto_approve: ToolDisplayCallback | None,
+        on_live_output: ToolLiveOutputCallback | None,
+        on_live_done: ToolLiveDoneCallback | None,
+        on_message: MessageCallback | None,
+    ) -> bool:
+        if not ctx.tool_calls:
+            return False
+        self.execute_tool_calls(
+            ctx.tool_calls,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+        )
+        if on_message is not None:
+            report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
+            if report:
+                on_message(report)
+        self.compactor.maybe_compact()
+        return True
+
+    def _handle_observe_response(
+        self,
+        ctx: ResponseContext,
+        response: Json,
+        *,
+        on_message: MessageCallback | None,
+    ) -> AgentRunResult:
+        repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
+        if repeated_tool_retry_error:
+            self._remember_agent_error(
+                "Error: repeated failed tool call is blocked: "
+                + repeated_tool_retry_error
+                + ". Rule: first digest latest results, then correct the args or switch tools."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: change the failed tool call instead of repeating it.",
+                "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
+            )
+            return AgentRunResult()
+        gate_result = self._gate_action_types(
+            ctx.actions,
+            allowed=self.OBSERVE_ACTION_TYPES,
+            on_message=on_message,
+            retry_message="Retrying: observe latest results.",
+            feedback_message="Error: latest results must be digested before more work.",
+        )
+        if gate_result is not None:
+            return gate_result
+        plan_shape_error = self._plan_shape_error(ctx.actions)
+        if plan_shape_error:
+            self._remember_agent_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
+            self._report_gate(
+                on_message,
+                "Retrying: keep only one plan item doing.",
+                "Plan_Gate: " + plan_shape_error + ".",
+            )
+            return AgentRunResult()
+        if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
+            self._remember_agent_error("Error: cannot request new verification before digesting latest results. Rule: summarize results first.")
+            self._report_gate(
+                on_message,
+                "Retrying: observe latest results before new verification.",
+                "Verification_Gate: verify status=pending is not allowed while digesting latest results.",
+            )
+            return AgentRunResult()
+        observed_counter = self._max_tool_result_counter(self.pending_observation_blocks)
+        self._emit_debug_frame_errors(response, on_message)
+        self.apply_response(response)
+        self._emit_state_and_progress(ctx, on_message)
+        if self._has_observation_checkpoint_action(ctx.actions):
+            self.mode = AgentMode.ACT
+            self._mark_memory_checkpoint(observed_counter)
+        else:
+            self.mode = AgentMode.OBSERVE
+        self._promote_required_verification(ctx)
+        return self._finish_or_continue(ctx, on_message)
+
+    def _has_observation_checkpoint_action(self, actions: list[Json]) -> bool:
+        if not actions:
+            return True
+        return any(_json_str(action.get("type")) in {"known", "stable_knowledge", "plan", "verify", "goal"} for action in actions)
+
+    def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
+        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self.blackboard.goal_reached = False
+            if self.blackboard.verification_required:
+                self._remember_agent_error(
+                    'Error: edited files must be verified before completion. Rule: run the smallest relevant check, then return verify status="passed"|"blocked" with context before goal complete=true.'
+                )
+                retry_message = "Retrying: verify edited files before completion."
+                debug_message = "Verification_Gate: edit completion requires verification."
+            else:
+                self._remember_agent_error(
+                    'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
+                )
+                retry_message = "Retrying: verification is required before completion."
+                debug_message = "Verification_Gate: retrying until verification is passed or blocked."
+            self._report_gate(
+                on_message,
+                retry_message,
+                debug_message,
+            )
+            return AgentRunResult()
+        if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
+            self.blackboard.goal_reached = False
+            self._report_gate(
+                on_message,
+                "Retrying: verification failed; fix the reported issue first.",
+                "Verification_Gate: verification failed; fix before completion.",
+            )
+            return AgentRunResult()
+        completion_plan_error = self._completion_plan_error(ctx)
+        if completion_plan_error:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(
+                "Error: returned goal.complete=true before Plan was complete. Rule: every existing Plan item must be done or blocked with context evidence before completion."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: finish the plan before completing.",
+                "Completion_Gate: " + completion_plan_error + ".",
+            )
+            return AgentRunResult()
+        if self.blackboard.goal_reached and not ctx.completion_message:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(
+                "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: goal is complete but message_for_complete is missing.",
+                "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
+            )
+            return AgentRunResult()
+        if self.blackboard.goal_reached:
+            self.session.append_conversation(AssistantMessage(content=ctx.completion_message))
+            if on_message is not None:
+                on_message(ctx.completion_message)
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=ctx.response)
+        self.blackboard.goal_reached = False
+        if not ctx.actions:
+            self._remember_agent_error(
+                "Error: returned no actions while the goal is incomplete. Rule: continue with a useful agent action and optional progress field, or final goal action."
+            )
+            self._report_gate(
+                on_message,
+                "Continuing: assistant must set current task's goal.",
+                "GoalPlan_Gate: goal not reached; retrying next useful action.",
+            )
+        return AgentRunResult()
+
+    def run(
+        self,
+        user_input: str,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> Json:
+        self.agent_feedback_errors = []
+        self.failed_tool_call_key = None
+        self.failed_tool_call_count = 0
+        self._prune_recent_tool_calls()
+        self.pending_observation_blocks = []
+        self._prune_tool_result_store()
+        # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
+        self.session.state.range_fingerprints.clear()
+        self.mode = AgentMode.ACT
+        self.session.state.turn_tool_calls = 0
+        self.session.state.turn_model_calls = 0
+        self.blackboard.user_input = user_input
+        self.blackboard.task_code = TaskCode.NEW
+        self.blackboard.goal_reached = False
+        self.blackboard.verification_required = False
+        self.blackboard.verification.reset()
+        self.compactor.maybe_compact()
+        self.session.append_conversation(UserMessage(content=user_input))
+
+        return self.run_loop(
+            max_steps=self.session.settings.max_agent_steps,
+            on_message=on_message,
+            on_step=lambda response: self.handle_response(
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            ),
+            on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
+        )
+
+    def handle_response(
+        self,
+        response: Json,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> AgentRunResult:
+        ctx = self._build_response_context(response)
+        if self.mode == AgentMode.OBSERVE:
+            return self._handle_observe_response(
+                ctx,
+                response,
+                on_message=on_message,
+            )
+
+        chat_result = self._handle_chat_response(ctx, on_message)
+        if chat_result is not None:
+            return chat_result
+
+        if self._gate_before_apply(ctx, on_message):
+            return AgentRunResult()
+
+        self._emit_debug_frame_errors(response, on_message)
+        self.apply_response(response)
+        self._emit_state_and_progress(ctx, on_message)
+        if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
+            message = ctx.user_rule_message or "Rule saved."
+            self.session.append_conversation(AssistantMessage(content=message))
+            if on_message is not None:
+                on_message(message)
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=response)
+
+        gate_result = self._gate_after_apply(ctx, on_message)
+        if gate_result is not None:
+            return gate_result
+
+        self._promote_required_verification(ctx)
+        if self._run_tool_actions(
+            ctx,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        ):
+            return AgentRunResult()
+
+        return self._finish_or_continue(ctx, on_message)
 
 
 ############################
@@ -3337,45 +5120,73 @@ class CommandStatus(StrEnum):
     UNHANDLED = "unhandled"
 
 
-@final
 @dataclass(frozen=True)
 class CommandResult:
     status: CommandStatus
     message: str = ""
 
 
-@final
 @dataclass(frozen=True)
 class CommandSpec:
     name: str
     description: str
     category: str
-    usage: str = ""
-
-    def display_name(self) -> str:
-        return self.usage or self.name
+    usage: str
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
+    CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
+    CommandSpec("/knowledge", "Show or update stable knowledge", "Info", "/knowledge [update]"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
-    CommandSpec("/model", "Show or set the model", "Config", "/model [name]"),
-    CommandSpec("/compact-at", "Show or set auto-compact threshold", "Config", "/compact-at [number]"),
-    CommandSpec("/reason", "Show or toggle reasoning", "Config", "/reason [on|off|status]"),
-    CommandSpec("/reason_effort", "Show or set reasoning effort", "Config", "/reason_effort [minimal|low|medium|high|xhigh]"),
-    CommandSpec("/stream", "Show or toggle streaming responses", "Config", "/stream [on|off|status]"),
-    CommandSpec("/yolo", "Show or toggle confirmation bypass", "Config", "/yolo [on|off|status]"),
+    CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
+    CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
+    CommandSpec("/model", "Show or set model", "Config", "/model [model_name]"),
+    CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
+    CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
+    CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
-    CommandSpec("/blackboard", "View or clear the blackboard", "Control", "/blackboard [status|clear]"),
 )
 
 
-@final
-class CommandDispatcher:
-    EFFORTS: ClassVar[set[str]] = {"minimal", "low", "medium", "high", "xhigh"}
+############################
+# Runtime Config Keys
+############################
 
+
+CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+CONFIG_PROVIDER_ATTRS: dict[str, str] = {
+    "provider.url": "url",
+    "provider.key": "key",
+    "provider.model": "model",
+    "provider.reasoning": "reasoning",
+    "provider.effort": "reasoning_effort",
+    "provider.stream": "stream",
+    "provider.temperature": "temperature",
+    "provider.timeout": "timeout",
+    "provider.first_token_timeout": "first_token_timeout",
+}
+CONFIG_RUNTIME_ATTRS: dict[str, str] = {
+    "runtime.compact_at": "compact_at",
+    "runtime.shell_timeout": "shell_timeout",
+    "runtime.max_agent_steps": "max_agent_steps",
+    "runtime.yolo": "yolo",
+}
+CONFIG_SET_KEYS: tuple[str, ...] = tuple(CONFIG_PROVIDER_ATTRS) + tuple(CONFIG_RUNTIME_ATTRS)
+CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
+    "provider.reasoning": ("on", "off"),
+    "provider.effort": CONFIG_EFFORTS,
+    "provider.stream": ("on", "off"),
+    "runtime.yolo": ("on", "off"),
+}
+CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
+CONFIG_INT_KEYS: set[str] = {"provider.timeout", "provider.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
+CONFIG_SET_USAGE = "Usage: /set <key> <value>"
+
+
+class CommandDispatcher:
     def __init__(
         self,
         agent: Agent,
@@ -3385,32 +5196,29 @@ class CommandDispatcher:
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
-        self.blackboard = agent.session.blackboard
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
+            "/rules": self._rules,
             "/compact": self._compact,
+            "/config": self._config,
+            "/set": self._set,
+            "/clean-logs": self._clean_logs,
             "/model": self._model,
-            "/compact-at": self._compact_at,
-            "/reason": self._reason,
-            "/reason_effort": self._reason_effort,
-            "/stream": self._stream,
+            "/provider": self._provider,
             "/yolo": self._yolo,
-            "/blackboard": self._blackboard,
+            "/knowledge": self._knowledge,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
-        command, args = self._parse(user_input)
+        command, _, args = user_input.strip().partition(" ")
+        args = args.strip()
         if command in {"/exit", "/quit", "exit", "quit"}:
             return CommandResult(CommandStatus.EXIT, "Exit")
         handler = self.handlers.get(command)
         if handler is None:
             return CommandResult(CommandStatus.UNHANDLED, "")
         return CommandResult(CommandStatus.HANDLED, handler(args))
-
-    def _parse(self, user_input: str) -> tuple[str, str]:
-        command, _, args = user_input.strip().partition(" ")
-        return command, args.strip()
 
     def _help(self, args: str) -> str:
         if args:
@@ -3426,7 +5234,7 @@ class CommandDispatcher:
             if spec.category != current_category:
                 current_category = spec.category
                 lines.append(current_category + ":")
-            lines.append("  " + spec.display_name() + " - " + spec.description)
+            lines.append("  " + spec.usage + " - " + spec.description)
         lines.append("")
         lines.append("Tip: use @path to autocomplete file paths in prompts.")
         return "\n".join(lines)
@@ -3448,25 +5256,62 @@ class CommandDispatcher:
             ]
         )
 
+    def _model(self, args: str) -> str:
+        return self._set("provider.model " + args)
+
+    def _provider(self, args: str) -> str:
+        name = args.strip()
+        config = self.agent.session.config
+        providers = ", ".join(sorted(config.providers))
+        if not name:
+            return "provider: " + config.active_provider + "\nproviders: " + providers
+        if " " in name:
+            return "Usage: /provider [name]"
+        if name not in config.providers:
+            return "Unknown provider: " + name + "\nproviders: " + providers
+        config.active_provider = name
+        return "Set provider = " + name
+
+    def _yolo(self, args: str) -> str:
+        if not args.strip():
+            current = self.agent.session.settings.yolo
+            return self._set("runtime.yolo " + ("off" if current else "on"))
+        return self._set("runtime.yolo " + args)
+
+    def _rules(self, args: str) -> str:
+        if args:
+            return "Usage: /rules"
+        return self.agent.session.state.user_rules.format()
+
     def _status(self, args: str) -> str:
         if args:
             return "Usage: /status"
         session = self.agent.session
-        reasoning = session.reasoning_effort if session.reasoning else "off"
-        stream = "on" if session.stream else "off"
-        yolo = "on" if session.yolo else "off"
+        blackboard = self.agent.blackboard
+        provider = session.config.provider
+        reasoning = provider.reasoning_effort if provider.reasoning else "off"
+        model_usage = (
+            "\n".join(
+                "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
+                for model, usage in session.state.model_usage.items()
+            )
+            if session.state.model_usage
+            else "  (empty)"
+        )
+        verification_status = blackboard.verification.status
         return "\n".join(
             [
-                "model: " + (session.model or "(empty)"),
-                "reasoning: " + reasoning,
-                "stream: " + stream,
-                "yolo: " + yolo,
-                "conversation: " + str(len(session.conversation)) + "/" + str(session.compact_at),
-                "tokens: last=" + _format_count(session.last_total_tokens) + " session=" + _format_count(session.session_total_tokens),
-                "cost(usd): last=" + _format_cost(session.last_cost_usd) + " session=" + _format_cost(session.session_cost_usd),
-                "blackboard: " + str(len(session.blackboard)) + " items",
-                "goal: " + (session.current.goal or "(empty)"),
-                "verification: " + session.current.verification.status,
+                "provider: " + session.config.active_provider,
+                "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
+                "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
+                "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
+                "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
+                "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
+                "models:",
+                model_usage,
+                "task: " + blackboard.task_code,
+                "goal: " + (blackboard.goal or "(empty)"),
+                "verification: " + verification_status,
             ]
         )
 
@@ -3476,87 +5321,158 @@ class CommandDispatcher:
         return self._with_status(self._compact_history)
 
     def _compact_history(self) -> str:
+        before = len(self.agent.session.state.conversation)
         count = self.agent.compact_history()
-        if count == 0:
-            return "Conversation history is empty"
-        return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.conversation)) + " item(s)"
+        if count:
+            return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
+        return "Conversation history is empty" if before == 0 else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
 
-    def _model(self, args: str) -> str:
-        if not args:
-            return "Current model: " + (self.agent.session.model or "(empty)")
-        self.agent.session.model = args
-        return "Model set to: " + args
+    def _config(self, args: str) -> str:
+        if args:
+            return "Usage: /config"
+        session = self.agent.session
+        provider_config = session.config.provider
+        return "\n".join(
+            [
+                "config: " + ConfigFile.path(),
+                "provider.active: " + session.config.active_provider,
+                "provider.available: " + ", ".join(sorted(session.config.providers)),
+                "provider.url: " + (provider_config.url or "(empty)"),
+                "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
+                "provider.model: " + (provider_config.model or "(empty)"),
+                "provider.reasoning: " + self._format_bool(provider_config.reasoning),
+                "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
+                "provider.stream: " + self._format_bool(provider_config.stream),
+                "provider.temperature: " + self._format_optional(provider_config.temperature),
+                "provider.timeout: " + self._format_optional(provider_config.timeout),
+                "provider.first_token_timeout: " + self._format_optional(provider_config.first_token_timeout),
+                "runtime.compact_at: " + str(session.settings.compact_at),
+                "runtime.shell_timeout: " + str(session.settings.shell_timeout),
+                "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
+                "runtime.yolo: " + self._format_bool(session.settings.yolo),
+            ]
+        )
 
-    def _compact_at(self, args: str) -> str:
-        if not args:
-            return "Current auto-compact threshold: " + str(self.agent.session.compact_at)
-        try:
-            value = int(args)
-        except ValueError:
-            return "Usage: /compact-at [number]"
-        if value <= 0:
-            return "Usage: /compact-at [number] (must be positive)"
-        self.agent.session.compact_at = value
-        compacted = self._with_status(lambda: "yes" if self.agent.maybe_auto_compact() else "") == "yes"
-        suffix = " and compacted history" if compacted else ""
-        return "Auto-compact threshold set to: " + str(value) + suffix
+    def _knowledge(self, args: str) -> str:
+        if args == "update":
+            question = "Please perform a knowledge update: record stable knowledge about this project."
+            if self.run_agent is not None:
+                self.run_agent(question)
+            else:
+                self.agent.run(question)
+            return ""
+        if args:
+            return "Usage: /knowledge [update]"
+        knowledge = self.agent.blackboard.stable_knowledge
+        if not any(knowledge.values()):
+            return "No stable knowledge. Use /knowledge update to record some."
+        lines = ["Stable knowledge:"]
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = knowledge.get(category, [])
+            if not items:
+                continue
+            lines.append(category + ":")
+            lines.extend("- " + item for item in items)
+        return "\n".join(lines)
+
+    def _set(self, args: str) -> str:
+        key, value = self._parse_set_args(args)
+        if not key:
+            return CONFIG_SET_USAGE
+        if key not in CONFIG_SET_KEYS:
+            return "Unknown config key: " + key
+        if value is None:
+            return "Current " + key + " is " + self._config_value(key)
+        error = self._apply_config_value(key, value)
+        if error:
+            return error
+        suffix = ""
+        if key == "runtime.compact_at":
+            compacted = self._with_status(lambda: "yes" if self.agent.compactor.maybe_compact() else "") == "yes"
+            suffix = " and compacted history" if compacted else ""
+        return "Set " + key + " = " + self._config_value(key) + suffix
+
+    def _parse_set_args(self, args: str) -> tuple[str, str | None]:
+        key, separator, value = args.partition(" ")
+        return key.strip(), (value.strip() or None) if separator else None
+
+    def _config_value(self, key: str) -> str:
+        target, attr = self._config_target(key)
+        value = getattr(target, attr)
+        if key in CONFIG_BOOL_KEYS:
+            return self._format_bool(value)
+        if key == "provider.key":
+            return "(set)" if value else "(empty)"
+        if key in {"provider.url", "provider.model"}:
+            return value or "(empty)"
+        return str(value)
+
+    def _apply_config_value(self, key: str, value: str) -> str:
+        target, attr = self._config_target(key)
+        if key in CONFIG_BOOL_KEYS:
+            if value not in {"on", "off"}:
+                return "Usage: /set " + key + " [on|off]"
+            setattr(target, attr, value == "on")
+            return ""
+        if key == "provider.effort":
+            if value not in CONFIG_EFFORTS:
+                return "Usage: /set " + key + " [" + "|".join(CONFIG_EFFORTS) + "]"
+            setattr(target, attr, value)
+            return ""
+        if key == "provider.temperature":
+            try:
+                parsed_float = float(value)
+            except ValueError:
+                return "Usage: /set " + key + " <number>"
+            if parsed_float < 0:
+                return "Usage: /set " + key + " <number>"
+            setattr(target, attr, parsed_float)
+            return ""
+        if key in CONFIG_INT_KEYS:
+            try:
+                parsed_int = int(value)
+            except ValueError:
+                return "Usage: /set " + key + " <positive-number>"
+            if parsed_int <= 0:
+                return "Usage: /set " + key + " <positive-number>"
+            setattr(target, attr, parsed_int)
+            return ""
+        setattr(target, attr, value)
+        return ""
+
+    def _config_target(self, key: str) -> tuple[object, str]:
+        if key in CONFIG_PROVIDER_ATTRS:
+            return self.agent.session.config.provider, CONFIG_PROVIDER_ATTRS[key]
+        return self.agent.session.settings, CONFIG_RUNTIME_ATTRS[key]
+
+    def _clean_logs(self, args: str) -> str:
+        if args:
+            return "Usage: /clean-logs"
+        tool_results_dir = self.agent.session.tool_results_dir()
+        if not os.path.isdir(tool_results_dir):
+            return f"No tool_results directory found at {tool_results_dir}"
+        count = 0
+        failed = 0
+        for name in os.listdir(tool_results_dir):
+            if name.endswith(".log"):
+                try:
+                    os.remove(os.path.join(tool_results_dir, name))
+                    count += 1
+                except OSError:
+                    failed += 1
+        msg = f"Cleaned {count} log file(s) from {tool_results_dir}"
+        if failed:
+            msg += f" ({failed} failed)"
+        return msg
+
+    def _format_bool(self, value: bool | None) -> str:
+        return "(fallback)" if value is None else ("on" if value else "off")
+
+    def _format_optional(self, value: object) -> str:
+        return str(value) if value is not None else "(fallback)"
 
     def _with_status(self, action: StatusAction) -> str:
-        if self.run_with_status is None:
-            return action()
-        return self.run_with_status(action)
-
-    def _reason(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.reasoning = True
-            return "Reasoning enabled"
-        if args == "off":
-            self.agent.session.reasoning = False
-            return "Reasoning disabled"
-        if args in {"", "status"}:
-            return "Reasoning is " + ("on" if self.agent.session.reasoning else "off")
-        return "Usage: /reason [on|off|status]"
-
-    def _reason_effort(self, args: str) -> str:
-        if not args:
-            return "Current reasoning effort: " + self.agent.session.reasoning_effort
-        if args not in self.EFFORTS:
-            return "Usage: /reason_effort [minimal|low|medium|high|xhigh]"
-        self.agent.session.reasoning_effort = args
-        return "Reasoning effort set to: " + args
-
-    def _stream(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.stream = True
-            return "Streaming enabled"
-        if args == "off":
-            self.agent.session.stream = False
-            return "Streaming disabled"
-        if args in {"", "status"}:
-            return "Streaming is " + ("on" if self.agent.session.stream else "off")
-        return "Usage: /stream [on|off|status]"
-
-    def _yolo(self, args: str) -> str:
-        if args == "on":
-            self.agent.session.yolo = True
-            return "YOLO enabled"
-        if args == "off":
-            self.agent.session.yolo = False
-            return "YOLO disabled"
-        if args in {"", "status"}:
-            return "YOLO is " + ("on" if self.agent.session.yolo else "off")
-        return "Usage: /yolo [on|off|status]"
-
-    def _blackboard(self, args: str) -> str:
-        if args == "clear":
-            self.blackboard.clear()
-            return "Blackboard cleared"
-        if args in {"", "status"}:
-            content = "\n".join(self.blackboard)
-            if content:
-                return "Blackboard:\n" + content
-            return "Blackboard is empty"
-        return "Usage: /blackboard [status|clear]"
+        return action() if self.run_with_status is None else self.run_with_status(action)
 
 
 def _format_count(value: int) -> str:
@@ -3569,18 +5485,11 @@ def _format_count(value: int) -> str:
     return str(value)
 
 
-def _format_cost(value: float) -> str:
-    if value <= 0:
-        return "-"
-    return "$" + f"{value:.6f}"
-
-
 ############################
 # Interactive Loop
 ############################
 
 
-@final
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
 
@@ -3613,11 +5522,7 @@ class StatusBar:
         return self.thread is not None
 
     def snapshot(self, turn_elapsed: float = 0.0) -> str:
-        return self._plain(self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
-
-    def toolbar(self):
-        elapsed = self.elapsed() if self.is_running() else self.last_elapsed
-        return FormattedText(self._fragments(elapsed, now=time.monotonic(), show_sweep=True, show_elapsed=self.is_running()))
+        return "".join(text for _, text in self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
 
     def resume(self) -> None:
         if self.thread is not None or not sys.stderr.isatty():
@@ -3654,9 +5559,6 @@ class StatusBar:
         self.output.flush()
         self.rendered = False
 
-    def _text(self, turn_elapsed: float, *, now: float) -> str:
-        return self._plain(self._fragments(turn_elapsed, now=now, show_sweep=True, show_elapsed=True))
-
     def _fragments(self, turn_elapsed: float, *, now: float, show_sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         text = self._format_line(turn_elapsed, now=now, show_elapsed=show_elapsed)
         columns = shutil.get_terminal_size((120, 20)).columns
@@ -3666,25 +5568,21 @@ class StatusBar:
 
     def _format_line(self, turn_elapsed: float, *, now: float, show_elapsed: bool) -> str:
         session = self.session
-        model = session.model.rsplit("/", 1)[-1] or session.model or "(no model)"
-        reasoning = session.reasoning_effort if session.reasoning else "off"
-        yolo = " | yolo" if session.yolo else ""
-        context = str(len(session.conversation)) + "/" + str(session.compact_at)
-        last_tokens = self._format_count(session.last_total_tokens)
-        last_cost = _format_cost(session.last_cost_usd)
-        if last_cost != "-":
-            last_tokens += "/" + last_cost
-        session_tokens = self._format_count(session.session_total_tokens)
-        session_cost = _format_cost(session.session_cost_usd)
-        if session_cost != "-":
-            session_tokens += "/" + session_cost
+        active_model = session.state.current_model_call_label or session.config.provider.model
+        model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
+        reasoning = session.state.current_model_call_reasoning_label or (
+            session.config.provider.reasoning_effort if session.config.provider.reasoning else "off"
+        )
+        yolo = " | yolo" if session.settings.yolo else ""
+        context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
+        last_tokens = _format_count(session.state.last_total_tokens)
+        session_tokens = _format_count(session.state.session_total_tokens)
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        blackboard = "bb:" + str(len(session.blackboard))
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tok:" + tokens, blackboard]
+        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
-        if session.current_model_call_started_at > 0:
-            parts.append("calling:" + f"{max(0.0, now - session.current_model_call_started_at):.1f}s")
+        if session.state.current_model_call_started_at > 0:
+            parts.append("calling(" + str(session.state.turn_model_calls) + "):" + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s")
         return " | ".join(parts)
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
@@ -3706,15 +5604,12 @@ class StatusBar:
             fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
         return fragments
 
-    def _plain(self, fragments: list[tuple[str, str]]) -> str:
-        return "".join(text for _, text in fragments)
 
-    def _format_count(self, value: int) -> str:
-        return _format_count(value)
-
-
-@final
 class AgentLoop:
+    LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
+    LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
+    LIVE_PREVIEW_REFRESH_INTERVAL: ClassVar[float] = 0.12
+
     def __init__(
         self,
         agent: Agent,
@@ -3727,8 +5622,13 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
-        self.history_path = agent.session.resolve_path(os.path.join(agent.session.nanocode_dir, "history"))
+        self.history_path = agent.session.resolve_path(os.path.join(agent.session.config.nanocode_dir, "history"))
         self.prompt_session = prompt_session
+        self._live_preview_active = False
+        self._live_preview_resume_status = False
+        self._live_preview_text = ""
+        self._live_preview_rendered_lines = 0
+        self._live_preview_last_render = 0.0
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
 
@@ -3761,7 +5661,7 @@ class AgentLoop:
                 self._run_agent(user_input)
 
     def _prompt(self) -> str:
-        return "[yolo] > " if self.agent.session.yolo else "> "
+        return "[yolo] > " if self.agent.session.settings.yolo else "> "
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:
@@ -3774,16 +5674,25 @@ class AgentLoop:
                 refresh_interval=StatusBar.INTERVAL,
             )
 
+    def _discard_pending_tty_input(self) -> None:
+        if not sys.stdin.isatty():
+            return
+        try:
+            import termios
+        except ImportError:
+            return
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except (AttributeError, OSError, termios.error):
+            pass
+
     def _make_prompt_session(self):
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=ReferenceFileCompleter(self.agent.session.cwd, self._command_completer()),
+            completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter(self.agent.session.config.providers)),
             complete_while_typing=True,
         )
-
-    def _command_completer(self) -> WordCompleter:
-        return WordCompleter([spec.name for spec in COMMANDS], ignore_case=False, WORD=True)
 
     def _run_agent(self, user_input: str) -> None:
         try:
@@ -3793,16 +5702,89 @@ class AgentLoop:
                 user_input,
                 confirm=self._confirm_tool_call,
                 on_auto_approve=self._show_auto_tool_call,
+                **self._live_preview_callbacks(),
                 on_message=self._emit,
             )
         except KeyboardInterrupt:
+            self.agent.cancel_current_goal()
             self._emit("Cancelled")
         except Cancellation as error:
+            self.agent.cancel_current_goal()
             self._emit("Cancelled: " + str(error))
         except Exception as error:
             self._emit("Error: " + str(error))
         finally:
+            self._finish_live_tool_output()
             self.status_bar.pause()
+
+    def _live_preview_callbacks(self) -> dict[str, ToolLiveOutputCallback | ToolLiveDoneCallback]:
+        if not self._live_preview_enabled():
+            return {}
+        return {"on_live_output": self._show_live_tool_output, "on_live_done": self._finish_live_tool_output}
+
+    def _live_preview_enabled(self) -> bool:
+        return self.output_fn is print and sys.stderr.isatty()
+
+    def _show_live_tool_output(self, call: ParsedToolCall, chunk: str) -> None:
+        if not self._live_preview_enabled() or not chunk:
+            return
+        if not self._live_preview_active:
+            self._start_live_tool_output()
+        self._live_preview_text = (self._live_preview_text + chunk)[-self.LIVE_PREVIEW_MAX_CHARS :]
+        self._render_live_tool_output(throttled=True)
+
+    def _start_live_tool_output(self) -> None:
+        self._live_preview_active = True
+        self._live_preview_text = ""
+        self._live_preview_rendered_lines = 0
+        self._live_preview_last_render = 0.0
+        self._live_preview_resume_status = self.status_bar.is_running()
+        if self._live_preview_resume_status:
+            self.status_bar.pause()
+
+    def _finish_live_tool_output(self, call: ParsedToolCall | None = None) -> None:
+        if not self._live_preview_active:
+            return
+        self._render_live_tool_output(throttled=False)
+        # Keep the final live preview in terminal history instead of treating it
+        # as an active redraw region.
+        self._live_preview_rendered_lines = 0
+        self._live_preview_active = False
+        self._live_preview_text = ""
+        if self._live_preview_resume_status:
+            self._live_preview_resume_status = False
+            self.status_bar.resume()
+
+    def _render_live_tool_output(self, *, throttled: bool) -> None:
+        lines = self._live_preview_lines()
+        if not any(line.strip() for line in lines):
+            return
+        now = time.monotonic()
+        if throttled and now - self._live_preview_last_render < self.LIVE_PREVIEW_REFRESH_INTERVAL:
+            return
+        self._live_preview_last_render = now
+        self._clear_live_tool_output()
+        segments: list[tuple[str, str]] = []
+        for line in lines:
+            segments.extend([("ansibrightblack", "  "), ("ansibrightblack", line + "\n")])
+        print_formatted_text(FormattedText(segments), output=self.status_bar.output, end="", flush=True)
+        self._live_preview_rendered_lines = len(lines)
+
+    def _clear_live_tool_output(self) -> None:
+        if self._live_preview_rendered_lines <= 0:
+            return
+        self.status_bar.output.cursor_up(self._live_preview_rendered_lines)
+        self.status_bar.output.erase_down()
+        self.status_bar.output.flush()
+        self._live_preview_rendered_lines = 0
+
+    def _live_preview_lines(self) -> list[str]:
+        text = self._live_preview_text.replace("\r", "\n")
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+        lines = [line for line in text.splitlines() if line.strip()][-self.LIVE_PREVIEW_MAX_LINES :]
+        width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
+        return [_shorten(line, width) for line in lines]
 
     def _run_with_status(self, action: StatusAction) -> str:
         self.status_bar.reset_timer()
@@ -3813,22 +5795,21 @@ class AgentLoop:
             self.status_bar.pause()
 
     def _confirm_tool_call(self, call: ParsedToolCall, tool: Tool) -> ConfirmationResult:
-        was_running = self.status_bar.is_running()
-        if was_running:
-            self.status_bar.pause()
-        try:
+        def action() -> ConfirmationResult:
             self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
             return self._wait_confirm("Proceed?", default=True)
-        finally:
-            if was_running:
-                self.status_bar.resume()
+
+        return self._with_status_paused(action)
 
     def _show_auto_tool_call(self, call: ParsedToolCall, tool: Tool) -> None:
+        self._with_status_paused(lambda: self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue"))
+
+    def _with_status_paused(self, action: Callable[[], JsonValue]) -> JsonValue:
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.pause()
         try:
-            self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")
+            return action()
         finally:
             if was_running:
                 self.status_bar.resume()
@@ -3857,19 +5838,13 @@ class AgentLoop:
                 [("ansibrightblack", "  Why     "), ("ansimagenta", call.intention + "\n")],
                 "  Why     " + call.intention,
             )
-        preview = tool.display()
-        if preview:
-            self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
+        if tool.effect() == ToolEffect.EDIT:
+            preview = tool.preview()
+            if preview:
+                self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
     def _emit(self, message: str) -> None:
-        was_running = self.status_bar.is_running()
-        if was_running:
-            self.status_bar.pause()
-        try:
-            self._print_message(message)
-        finally:
-            if was_running:
-                self.status_bar.resume()
+        self._with_status_paused(lambda: self._print_message(message))
 
     def _print_welcome(self) -> None:
         self._emit_segments([("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")], "nanocode - AI coding assistant")
@@ -3887,6 +5862,7 @@ class AgentLoop:
         )
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
+        self._discard_pending_tty_input()
         suffix = "[Y/n/reason]" if default else "[y/N/reason]"
         while True:
             raw_answer = self._read_input(prompt + " " + suffix + " ").strip()
@@ -3907,52 +5883,118 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
-        if message.startswith("Tool Calls"):
-            self._emit_segments(self._tool_segments(message), message)
+        if message.startswith(("Plan Updated", "Known Updated", "Plan + Known Updated")):
+            self._emit_segments(self._compact_state_segments(message), message)
             return
-        if message.startswith("Queued:"):
-            self._emit_segments(self._queued_segments(message), message)
+        if self._is_tool_report(message):
+            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")
+            return
+        if message.startswith("Retrying:"):
+            self._emit_segments([("ansibrightblack", message + "\n")], message)
             return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
             return
         if message.startswith("Cancelled"):
-            self._emit_segments([("ansiyellow", message + "\n")], message)
+            tip = "Context is kept; send a follow-up to continue."
+            self._emit_segments(
+                [("ansiyellow", message + "\n"), ("ansibrightblack", "  " + tip + "\n")],
+                message + "\n  " + tip,
+            )
             return
         self._emit_segments([("ansicyan", message + "\n")], message)
 
-    def _emit_segments(self, segments: list[tuple[str, str]], plain: str) -> None:
+    def _tool_plain(self, message: str, *, indent: str) -> str:
+        return "\n".join(indent + line.replace("[success] ", "").replace("[failure] ", "") for line in message.splitlines())
+
+    def _is_tool_report(self, message: str) -> bool:
+        lines = message.splitlines()
+        if not lines:
+            return False
+        first = lines[0]
+        return first.startswith("  ...") or self._is_tool_call_line(first)
+
+    def _is_tool_call_line(self, line: str) -> bool:
+        return line.startswith("[success] ") or line.startswith("[failure] ")
+
+    def _emit_segments(self, segments: list[tuple[str, str]], plain: str, *, end: str = "\n") -> None:
         if self.output_fn is print:
-            print_formatted_text(FormattedText(segments), flush=True)
+            print_formatted_text(FormattedText(segments), end=end, flush=True)
         else:
             self.output_fn(plain)
 
     def _preview_segments(self, preview: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = [("ansibrightblack", "  Preview\n")]
-        if self._looks_like_unified_diff(preview):
-            return segments + self._indent_segments(self._diff_segments(preview), "    ")
-        return segments + self._indented_text_segments(preview, indent="    ", style="ansicyan")
+        content_indent = "  "
+        diff_start = self._unified_diff_start(preview)
+        if diff_start >= 0:
+            prefix = "\n".join(preview.splitlines()[:diff_start])
+            diff = "\n".join(preview.splitlines()[diff_start:])
+            if prefix:
+                segments += self._indented_text_segments(prefix, indent=content_indent, style="ansiyellow")
+            return segments + self._indent_segments(self._diff_segments(diff), content_indent)
+        return segments + self._indented_text_segments(preview, indent=content_indent, style="ansicyan")
 
-    def _looks_like_unified_diff(self, text: str) -> bool:
-        return text.startswith("--- ") and "\n+++ " in text and "\n@@ " in text
+    def _unified_diff_start(self, text: str) -> int:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            body = "\n".join(lines[index:])
+            if line.startswith("--- ") and "\n+++ " in body and "\n@@ " in body:
+                return index
+        return -1
 
     def _diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         lines = text.splitlines()
+        old_line: int | None = None
+        new_line: int | None = None
+
+        def parse_hunk_start(part: str, prefix: str) -> int | None:
+            if not part.startswith(prefix):
+                return None
+            value = part[1:].split(",", 1)[0]
+            try:
+                return int(value)
+            except ValueError:
+                return None
+
+        def add_line_number(old_number: int | None, new_number: int | None) -> None:
+            old_text = "" if old_number is None else str(old_number)
+            new_text = "" if new_number is None else str(new_number)
+            segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} │ "))
+
         for index, line in enumerate(lines):
+            suffix = "\n" if index < len(lines) - 1 else ""
             if line.startswith("@@"):
-                style = "ansicyan"
+                parts = line.split()
+                if len(parts) >= 3:
+                    old_line = parse_hunk_start(parts[1], "-")
+                    new_line = parse_hunk_start(parts[2], "+")
+                add_line_number(None, None)
+                segments.append(("ansicyan", line + suffix))
             elif line.startswith(("---", "+++")):
-                style = "ansibrightblack"
+                add_line_number(None, None)
+                segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
-                style = "ansigreen"
+                add_line_number(None, new_line)
+                segments.append(("ansigreen", line + suffix))
+                if new_line is not None:
+                    new_line += 1
             elif line.startswith("-"):
-                style = "ansired"
+                add_line_number(old_line, None)
+                segments.append(("ansired", line + suffix))
+                if old_line is not None:
+                    old_line += 1
+            elif line.startswith(" "):
+                add_line_number(old_line, new_line)
+                segments.append(("ansiwhite", line + suffix))
+                if old_line is not None:
+                    old_line += 1
+                if new_line is not None:
+                    new_line += 1
             else:
-                style = "ansiwhite"
-            if index < len(lines) - 1:
-                line += "\n"
-            segments.append((style, line))
+                add_line_number(None, None)
+                segments.append(("ansiwhite", line + suffix))
         return segments
 
     def _indented_text_segments(self, text: str, *, indent: str, style: str) -> list[tuple[str, str]]:
@@ -3986,8 +6028,6 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Context"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):
                 status = line[10:].strip().split(" ", 1)[0]
                 segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])
@@ -3999,30 +6039,27 @@ class AgentLoop:
                 segments.extend([("ansiwhite", line + "\n")])
         return segments
 
-    def _tool_segments(self, message: str) -> list[tuple[str, str]]:
-        lines = message.splitlines()
-        segments: list[tuple[str, str]] = [("ansibrightblack", "-" * 48 + "\n")]
-        for index, line in enumerate(lines):
-            if index == 0:
-                segments.extend([("bold ansiblue", line), ("", "\n")])
-            elif line.startswith("  ") and ". [" in line:
-                style = "ansigreen" if "[success]" in line else "ansired"
-                segments.extend([("ansibrightblack", line[:5]), (style, line[5:] + "\n")])
-            elif line.startswith("     why:"):
-                segments.extend([("ansibrightblack", "     why: "), ("ansimagenta", line[10:] + "\n")])
-            elif line.startswith("     log:"):
-                segments.extend([("ansibrightblack", "     log: "), ("ansiblue", line[10:] + "\n")])
+    def _compact_state_segments(self, message: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        for line in message.splitlines():
+            if line.endswith("Updated"):
+                segments.append(("bold ansicyan", line + "\n"))
+            elif line.startswith("  ..."):
+                segments.append(("ansibrightblack", line + "\n"))
             else:
-                segments.extend([("ansibrightblack", line + "\n")])
+                segments.append(("ansiwhite", line + "\n"))
         return segments
 
-    def _queued_segments(self, message: str) -> list[tuple[str, str]]:
-        body = message[len("Queued:") :].strip()
-        target, separator, reason = body.partition(" - ")
-        segments: list[tuple[str, str]] = [("ansibrightblack", "Queued: "), ("ansicyan", target)]
-        if separator:
-            segments.extend([("ansibrightblack", " - "), ("ansimagenta", reason)])
-        segments.append(("", "\n"))
+    def _tool_segments(self, message: str) -> list[tuple[str, str]]:
+        lines = message.splitlines()
+        segments: list[tuple[str, str]] = []
+        for line in lines:
+            if self._is_tool_call_line(line):
+                marker, _, tail = line.partition(" ")
+                status_style = "ansigreen" if marker == "[success]" else "ansired"
+                segments.append((status_style, tail + "\n"))
+            else:
+                segments.extend([("ansibrightblack", line + "\n")])
         return segments
 
     def _verify_style(self, badge: str) -> str:
@@ -4030,18 +6067,18 @@ class AgentLoop:
             return "bold ansimagenta"
         if "done" in badge:
             return "bold ansigreen"
-        if "blocked" in badge:
+        if "failed" in badge or "blocked" in badge:
             return "bold ansired"
         return "ansibrightblack"
 
 
-###################
+############################
 # Helpers
-###################
+############################
 
 
 def _format_lines(lines: list[str], indent: str) -> str:
-    return "\n".join([(indent + line) for line in lines])
+    return "\n".join(indent + line for line in lines)
 
 
 def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str:
@@ -4081,17 +6118,94 @@ def _json_str(value: JsonValue) -> str | None:
     return str(value)
 
 
-def _json_int(value: JsonValue) -> int:
-    return value if isinstance(value, int) else 0
+def _memory_fact_from_json(value: JsonValue) -> str | None:
+    fact = (_json_str(value) or "").strip()
+    if not fact:
+        item = _json_dict(value)
+        fact = (_json_str(item.get("fact")) or "").strip()
+    if not fact:
+        return None
+    if fact.startswith("<") and fact.endswith(">"):
+        inner = fact[1:-1].strip().lower()
+        if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "evidence", "result", "context", "message", "goal")):
+            return None
+    return fact
 
 
 def _shorten(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-##############
+class CommandCompleter(Completer):
+    def __init__(self, providers: Iterable[str] = ()):
+        self.providers = providers
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if text.startswith("/set "):
+            text = text[len("/set ") :]
+            if " " not in text:
+                for key in CONFIG_SET_KEYS:
+                    if key.startswith(text):
+                        yield Completion(key, start_position=-len(text))
+                return
+            key, _, value_prefix = text.partition(" ")
+            for value in CONFIG_VALUE_COMPLETIONS.get(key, ()):
+                if value.startswith(value_prefix):
+                    yield Completion(value, start_position=-len(value_prefix))
+            return
+        if text.startswith("/provider "):
+            text = text[len("/provider ") :]
+            for provider in self.providers:
+                if provider.startswith(text):
+                    yield Completion(provider, start_position=-len(text))
+            return
+        if text.startswith("/knowledge "):
+            text = text[len("/knowledge "):]
+            if not text:
+                yield Completion("update", start_position=0)
+            else:
+                for sub in ("update",):
+                    if sub.startswith(text):
+                        yield Completion(sub, start_position=-len(text))
+            return
+        if text.startswith("/") and " " not in text:
+            for spec in COMMANDS:
+                if spec.name.startswith(text):
+                    yield Completion(spec.name, start_position=-len(text))
+
+
+class ReferenceFileCompleter(Completer):
+    def __init__(self, cwd: str, command_completer: Completer):
+        self.cwd = cwd
+        self.command_completer = command_completer
+
+    def get_completions(self, document, complete_event):
+        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
+        if match is None:
+            yield from self.command_completer.get_completions(document, complete_event)
+            return
+
+        partial = match.group(1)
+        dirname, prefix = os.path.split(partial)
+        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
+        try:
+            names = sorted(os.listdir(base_dir))
+        except OSError:
+            return
+
+        for name in names:
+            if not name.startswith(prefix):
+                continue
+            full_path = os.path.join(base_dir, name)
+            suffix = "/" if os.path.isdir(full_path) else ""
+            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
+            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
+
+
+############################
 # Entrypoint
-##############
+############################
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4100,14 +6214,23 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
         parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
+        parser.add_argument("--config", default=None, help="Path to config file (default: ~/.nanocode/config.toml)")
+        parser.add_argument("--init-config", action="store_true", help="Create a default config file at --config or ~/.nanocode/config.toml")
         args = parser.parse_args(argv)
-        session = Session(yolo=args.yolo, debug=args.debug)
-        session.cleanup_old_logs(days=3)
-        missing = session.missing_required_envs()
+        if args.init_config:
+            config_path, created = ConfigFile.init(args.config)
+            print(("Created config: " if created else "Config already exists: ") + config_path)
+            return 0
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
+        missing = session.missing_required_config()
         if missing:
-            print("Missing env: " + ", ".join(missing), file=sys.stderr)
+            print("Missing config: " + ", ".join(missing), file=sys.stderr)
+            print("Edit " + (os.path.expanduser(args.config) if args.config else ConfigFile.path()) + " or run `nanocode --init-config`.", file=sys.stderr)
             return 2
         return AgentLoop(Agent(session)).run()
+    except ConfigError as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("Cancelled", file=sys.stderr)
         return 130

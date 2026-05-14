@@ -36,6 +36,96 @@ def test_search_tool_python_backend_finds_or_patterns_and_applies_glob(tmp_path,
     assert "hidden.txt" not in result
 
 
+def test_search_tool_treats_plain_extra_args_as_or_terms_when_final_path_is_missing(tmp_path, monkeypatch):
+    (tmp_path / "sample.py").write_text(
+        "class EditTool:\nclass BashTool:\nclass SearchTool:\nclass ReadTool:\nclass ApplyPatchTool:\n",
+        encoding="utf-8",
+    )
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ApplyPatch"])
+    result = tool.call()
+
+    assert tool.pattern == "class Edit|class Bash|class Search|class Read|class ApplyPatch"
+    assert tool.target_path == str(tmp_path)
+    assert "* sample.py:1: class EditTool:" in result
+    assert "* sample.py:2: class BashTool:" in result
+    assert "* sample.py:3: class SearchTool:" in result
+    assert "* sample.py:4: class ReadTool:" in result
+    assert "* sample.py:5: class ApplyPatchTool:" in result
+
+
+def test_search_tool_treats_existing_final_plain_arg_as_path(tmp_path):
+    path = tmp_path / "sample.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "class Bash", "sample.py"])
+
+    assert tool.pattern == "class Edit|class Bash"
+    assert tool.target_path == str(path)
+
+
+def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_path, monkeypatch):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["class .*Tool", "path=nanocode.py", "context=0"])
+    result = tool.call()
+
+    assert tool.target_path == str(path)
+    assert tool.context_lines == 0
+    assert "* nanocode.py:1: class EditTool:" in result
+    assert "* nanocode.py:2: class BashTool:" in result
+
+
+def test_search_tool_accepts_explicit_path_option_as_second_arg(tmp_path):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "path=nanocode.py"])
+
+    assert tool.target_path == str(path)
+    assert tool.context_lines == SearchTool.CONTEXT_LINES
+
+
+def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
+    path = tmp_path / "nanocode.py"
+    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class Edit", "class Bash", "path=nanocode.py"])
+
+    assert tool.pattern == "class Edit|class Bash"
+    assert tool.target_path == str(path)
+
+
+def test_search_tool_rejects_ignore_case_option(tmp_path):
+    (tmp_path / "sample.py").write_text("Needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    with pytest.raises(ToolCallError, match="ignore_case is not supported"):
+        SearchTool.make(session, ["needle", "ignore_case=true"])
+    with pytest.raises(ToolCallError, match="ignore_case is not supported"):
+        SearchTool.make(session, ["needle", "path=sample.py", "ignore_case=true"])
+
+
+def test_search_tool_uses_pipe_as_regex_or(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["alpha|beta", "sample.txt"])
+    result = tool.call()
+
+    assert "* sample.txt:1: alpha" in result
+    assert "* sample.txt:2: beta" in result
+
+
 def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("needle\n", encoding="utf-8")
@@ -46,6 +136,44 @@ def test_search_tool_prefers_rg_backend(tmp_path, monkeypatch):
     monkeypatch.setattr(SearchTool, "_call_rg", lambda self, rg: f"rg:{rg}")
 
     assert tool.call() == "rg:/fake/rg"
+
+
+def test_search_tool_retries_rg_with_pcre2_for_lookaround(tmp_path, monkeypatch):
+    path = tmp_path / "sample.py"
+    path.write_text("Session()\nPromptSession()\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    calls = []
+
+    def fake_run(cmd, text, stdout, stderr, timeout):
+        calls.append(cmd)
+        if "--pcre2" not in cmd:
+            return nanocode.subprocess.CompletedProcess(
+                cmd,
+                2,
+                "",
+                "regex parse error: look-around, including look-ahead and look-behind, is not supported; enable PCRE2 with --pcre2",
+            )
+        output = nanocode.json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": str(path)},
+                    "lines": {"text": "Session()\n"},
+                    "line_number": 1,
+                },
+            }
+        )
+        return nanocode.subprocess.CompletedProcess(cmd, 0, output + "\n", "")
+
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/rg" if name == "rg" else "")
+    monkeypatch.setattr(nanocode.subprocess, "run", fake_run)
+
+    result = SearchTool.make(session, [r"(?<!Prompt)Session\(", "sample.py"]).call()
+
+    assert "--pcre2" not in calls[0]
+    assert "--pcre2" in calls[1]
+    assert "* engine: rg-pcre2" in result
+    assert "* sample.py:1: Session()" in result
 
 
 def test_search_tool_uses_python_when_rg_is_missing(tmp_path, monkeypatch):
@@ -92,7 +220,7 @@ def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
-    result = SearchTool.make(session, [r"re:def __init__\([^)]*,[^)]*\)", "sample.py"]).call()
+    result = SearchTool.make(session, [r"def __init__\([^)]*,[^)]*\)", "sample.py"]).call()
 
     assert "* engine: python" in result
     assert "* sample.py:5:     def __init__(self, name):" in result
@@ -175,6 +303,35 @@ def test_search_tool_defaults_path_to_cwd_when_omitted(tmp_path):
     assert tool.target_path == str(tmp_path)
 
 
+def test_search_tool_accepts_context_option_without_path(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("needle\nnearby\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["needle", "context=0"])
+    result = tool.call()
+
+    assert tool.target_path == str(tmp_path)
+    assert tool.context_lines == 0
+    assert "* sample.txt:1: needle" in result
+    assert "nearby" not in result
+
+
+def test_search_tool_accepts_glob_option_without_path(tmp_path, monkeypatch):
+    (tmp_path / "keep.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "skip.txt").write_text("needle\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(session, ["needle", "glob=*.py"])
+    result = tool.call()
+
+    assert tool.target_path == str(tmp_path)
+    assert tool.glob_pattern == "*.py"
+    assert "* keep.py:1: needle" in result
+    assert "skip.txt" not in result
+
+
 def test_search_tool_rejects_empty_pattern(tmp_path):
     session = Session(cwd=str(tmp_path))
 
@@ -195,14 +352,24 @@ def test_search_tool_rejects_invalid_regex(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="invalid regex"):
-        SearchTool.make(session, ["re:[", "."])
+        SearchTool.make(session, ["[", "."])
+
+
+def test_search_tool_defaults_to_regex(tmp_path):
+    (tmp_path / "sample.py").write_text("class SearchTool:\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["class.*Tool", "sample.py"])
+    result = tool.call()
+
+    assert "* sample.py:1: class SearchTool:" in result
 
 
 def test_search_tool_rejects_multiline_regex(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="multiline regex is not supported"):
-        SearchTool.make(session, ["re:^@dataclass\nclass Session", "nanocode.py", "context=2"])
+        SearchTool.make(session, ["^@dataclass\nclass Session", "nanocode.py", "context=2"])
 
 
 def test_search_tool_rejects_invalid_context(tmp_path):
@@ -218,6 +385,14 @@ def test_search_tool_rejects_missing_target(tmp_path):
 
     with pytest.raises(ToolCallError, match="not a file or directory"):
         tool.call()
+
+
+def test_search_tool_keeps_plain_second_arg_as_path_when_only_two_args(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool = SearchTool.make(session, ["needle", "TOOLS"])
+
+    assert tool.pattern == "needle"
+    assert tool.target_path == str(tmp_path / "TOOLS")
 
 
 def test_search_tool_rejects_placeholder_path_with_guidance(tmp_path):
@@ -271,3 +446,31 @@ def test_search_tool_python_backend_honors_gitignore_glob(tmp_path, monkeypatch)
 
     assert "keep.txt" in result
     assert "skip.log" not in result
+
+
+def test_search_tool_python_fallback_case_insensitive_normal(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    (tmp_path / "test.txt").write_text("Hello World\n", encoding="utf-8")
+
+    tool = SearchTool.make(session, ["hello", "."])
+    assert tool._line_matches("Hello World") is True
+    assert tool._line_matches("hello world") is True
+    assert tool._line_matches("HELLO WORLD") is True
+
+
+def test_search_tool_python_fallback_case_insensitive_regex(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    (tmp_path / "test.txt").write_text("Hello World\n", encoding="utf-8")
+
+    tool = SearchTool.make(session, ["[h]ello", "."])
+    assert tool._line_matches("Hello World") is True
+    assert tool._line_matches("hello world") is True
+    assert tool._line_matches("HELLO WORLD") is True
+
+
+def test_search_tool_rg_backend_is_case_insensitive(tmp_path):
+    session = Session(cwd=str(tmp_path))
+
+    tool = SearchTool.make(session, ["hello", "."])
+
+    assert "-i" in tool._rg_command("rg")

@@ -15,7 +15,7 @@ nanocode is used to help building itself, including features such as `@file` pat
 - **Constrained Output**: Force model replies into auditable action frames.
 - **Verified Edits**: Reject stale range edits before they touch files.
 - **Autonomous Loop**: Chain reading, editing, running, and verification.
-- **Live Telemetry**: Stream tool intent, token use, cost, and status.
+- **Live Telemetry**: Stream tool intent, token use, and status.
 
 ## Install
 
@@ -56,6 +56,14 @@ Ask a source-aware question about nanocode itself:
 /help how does compact work?
 ```
 
+CLI arguments:
+
+- `--yolo`: Skip tool execution confirmations.
+- `--debug`: Write request prompts to `.nanocode/debug`.
+- `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
+- `--init-config`: Create a default config file.
+- `-v`, `--version`: Show program version.
+
 ## Safety
 
 nanocode does NOT provide sandbox protection. It can run shell commands and edit files in the environment where you start it.
@@ -67,28 +75,25 @@ USE AT YOUR OWN RISK.
 ## Tools
 
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
-- Edit: `Edit`, `ReplaceRange`, `BatchReplaceRanges`, `ApplyPatch`.
+- Edit: `Edit`, `ReplaceRange`, `ApplyPatch`.
 - Shell: `Bash`, `Git`.
-- Memory: `Blackboard`.
+- Memory: `Recall` reads stored tool results by key.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`.
-- Session: `/compact`, `/blackboard [status|clear]`.
-- Config: `/model`, `/compact-at`, `/reason`, `/reason_effort`, `/stream`, `/yolo`.
+- Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
+- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/yolo`.
+- Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.
 
 ## Configuration
 
-- Required: `NANOCODE_API_URL`, `NANOCODE_API_KEY`, `NANOCODE_MODEL`.
-- Runtime: `NANOCODE_DIR`, `NANOCODE_TEMPERATURE`, `NANOCODE_STREAM`.
-- Reasoning: `NANOCODE_REASONING`, `NANOCODE_REASONING_EFFORT`.
-- Limits: `NANOCODE_MODEL_TIMEOUT`, `NANOCODE_SHELL_TIMEOUT`, `NANOCODE_COMPACT_AT`, `NANOCODE_MAX_AGENT_STEPS`.
-- Cost: `NANOCODE_PROMPT_PRICE_PER_1M_TOKENS`, `NANOCODE_COMPLETION_PRICE_PER_1M_TOKENS`.
+Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
+
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, and model options.
+- Runtime config: `[paths]` and `[runtime]`.
 
 ## Status
 
-- Status bar: model, reasoning, context, tokens/cost, blackboard, elapsed time, and active model-call time.
-- `/status`: model, reasoning, stream, yolo, conversation, tokens/cost, blackboard, goal, and verification.
-
-
+- Status bar: active model, reasoning, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: active provider, model state, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.
