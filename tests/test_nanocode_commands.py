@@ -16,9 +16,10 @@ class FakeModelClient:
 
 
 def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
-    data = {"provider": {"model": model}, "runtime": {"compact_at": compact_at}}
+    provider: dict[str, object] = {"model": model}
     if stream is not None:
-        data["provider"]["stream"] = stream
+        provider["stream"] = stream
+    data = {"provider": {"active": "default", "default": provider}, "runtime": {"compact_at": compact_at}}
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
 
 
@@ -110,9 +111,37 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
+    assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
     assert "runtime.max_agent_steps: 100" in result.message
+
+
+def test_provider_command_switches_current_provider(tmp_path):
+    data = {
+        "provider": {
+            "active": "one",
+            "one": {"model": "model-one"},
+            "two": {"model": "model-two", "stream": False},
+        }
+    }
+    session = Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
+    dispatcher = CommandDispatcher(Agent(session))
+
+    show_result = dispatcher.dispatch("/provider")
+    switch_result = dispatcher.dispatch("/provider two")
+    model_result = dispatcher.dispatch("/model")
+    set_model_result = dispatcher.dispatch("/model model-two-new")
+    bad_result = dispatcher.dispatch("/provider missing")
+
+    assert show_result.message == "provider: one\nproviders: one, two"
+    assert switch_result.message == "Set provider = two"
+    assert session.config.active_provider == "two"
+    assert model_result.message == "Current provider.model is model-two"
+    assert set_model_result.message == "Set provider.model = model-two-new"
+    assert session.config.providers["one"].model == "model-one"
+    assert session.config.providers["two"].model == "model-two-new"
+    assert bad_result.message == "Unknown provider: missing\nproviders: one, two"
 
 
 def test_blackboard_command_is_not_registered(tmp_path):

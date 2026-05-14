@@ -50,7 +50,7 @@ def _session(
         provider["first_token_timeout"] = first_token_timeout
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
-    data = {"provider": provider}
+    data = {"provider": {"active": "default", "default": provider}}
     return Session(cwd=str(tmp_path), config=nanocode.Config.from_dict(data), settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
 
 

@@ -317,6 +317,21 @@ class ProviderConfig:
     timeout: int | None = 90
     first_token_timeout: int | None = 60
 
+    @classmethod
+    def from_dict(cls, data: Json) -> "ProviderConfig":
+        defaults = cls()
+        return cls(
+            url=Config.str(data, "url", defaults.url),
+            key=Config.str(data, "key", defaults.key),
+            model=Config.str(data, "model", defaults.model),
+            temperature=Config.float(data, "temperature", defaults.temperature),
+            reasoning=Config.bool(data, "reasoning", defaults.reasoning),
+            reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
+            stream=Config.bool(data, "stream", defaults.stream),
+            timeout=Config.int(data, "timeout", defaults.timeout),
+            first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
+        )
+
 
 @dataclass
 class ModelUsage:
@@ -359,28 +374,29 @@ class RuntimeSettings:
 
 @dataclass
 class Config:
-    provider: ProviderConfig = field(default_factory=ProviderConfig)
+    active_provider: str = "default"
+    providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
     nanocode_dir: str = ".nanocode"
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
-        provider = cls.table(data, "provider")
+        provider_table = cls.table(data, "provider")
         paths = cls.table(data, "paths")
-        defaults = ProviderConfig()
+        active = cls.str(provider_table, "active", "default")
+        providers = {str(name): ProviderConfig.from_dict(value) for name, value in provider_table.items() if name != "active" and isinstance(value, dict)}
+        if not providers:
+            providers[active] = ProviderConfig()
+        if active not in providers:
+            raise ConfigError("config provider.active must match a [provider.<name>] section")
         return cls(
-            provider=ProviderConfig(
-                url=cls.str(provider, "url", defaults.url),
-                key=cls.str(provider, "key", defaults.key),
-                model=cls.str(provider, "model", defaults.model),
-                temperature=cls.float(provider, "temperature", defaults.temperature),
-                reasoning=cls.bool(provider, "reasoning", defaults.reasoning),
-                reasoning_effort=cls.str(provider, "reasoning_effort", defaults.reasoning_effort),
-                stream=cls.bool(provider, "stream", defaults.stream),
-                timeout=cls.int(provider, "timeout", defaults.timeout),
-                first_token_timeout=cls.int(provider, "first_token_timeout", defaults.first_token_timeout),
-            ),
+            active_provider=active,
+            providers=providers,
             nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode"),
         )
+
+    @property
+    def provider(self) -> ProviderConfig:
+        return self.providers[self.active_provider]
 
     @classmethod
     def table(cls, config: Json, name: str) -> Json:
@@ -426,6 +442,9 @@ class ConfigFile:
 # Location: ~/.nanocode/config.toml
 
 [provider]
+active = "default"
+
+[provider.default]
 # OpenAI-compatible chat completions base URL, for example "https://api.openai.com/v1".
 url = ""
 # API key for the configured provider.
@@ -5242,6 +5261,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/model", "Show or set model", "Config", "/model [model_name]"),
+    CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
     CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
@@ -5305,6 +5325,7 @@ class CommandDispatcher:
             "/set": self._set,
             "/clean-logs": self._clean_logs,
             "/model": self._model,
+            "/provider": self._provider,
             "/yolo": self._yolo,
             "/knowledge": self._knowledge,
         }
@@ -5358,6 +5379,18 @@ class CommandDispatcher:
     def _model(self, args: str) -> str:
         return self._set("provider.model " + args)
 
+    def _provider(self, args: str) -> str:
+        name = args.strip()
+        config = self.agent.session.config
+        if not name:
+            return "provider: " + config.active_provider + "\nproviders: " + ", ".join(sorted(config.providers))
+        if " " in name:
+            return "Usage: /provider [name]"
+        if name not in config.providers:
+            return "Unknown provider: " + name + "\nproviders: " + ", ".join(sorted(config.providers))
+        config.active_provider = name
+        return "Set provider = " + name
+
     def _yolo(self, args: str) -> str:
         if not args.strip():
             current = self.agent.session.settings.yolo
@@ -5385,6 +5418,7 @@ class CommandDispatcher:
         verification_status = blackboard.verification.status
         return "\n".join(
             [
+                "provider: " + session.config.active_provider,
                 "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
                 "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
@@ -5420,6 +5454,8 @@ class CommandDispatcher:
         return "\n".join(
             [
                 "config: " + ConfigFile.path(),
+                "provider.active: " + session.config.active_provider,
+                "provider.available: " + ", ".join(sorted(session.config.providers)),
                 "provider.url: " + (provider_config.url or "(empty)"),
                 "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
                 "provider.model: " + (provider_config.model or "(empty)"),

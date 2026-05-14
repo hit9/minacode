@@ -6,7 +6,7 @@ from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, 
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
-    data = {"provider": {"model": model}, "runtime": {"compact_at": compact_at}}
+    data = {"provider": {"active": "default", "default": {"model": model}}, "runtime": {"compact_at": compact_at}}
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
 
 
@@ -28,7 +28,7 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     (rules_dir / "user_rules.md").write_text("# User Rules\n\n- Prompt-only changes do not need tests.\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    session = Session.from_config_data({"provider": {"url": "url", "key": "key", "model": "model"}})
+    session = Session.from_config_data({"provider": {"active": "default", "default": {"url": "url", "key": "key", "model": "model"}}})
 
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
@@ -44,10 +44,11 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert created is True
     assert second_path == str(config_path)
     assert second_created is False
-    assert config["provider"]["url"] == ""
-    assert config["provider"]["temperature"] == 0.7
-    assert config["provider"]["timeout"] == 90
-    assert config["provider"]["first_token_timeout"] == 60
+    assert config["provider"]["active"] == "default"
+    assert config["provider"]["default"]["url"] == ""
+    assert config["provider"]["default"]["temperature"] == 0.7
+    assert config["provider"]["default"]["timeout"] == 90
+    assert config["provider"]["default"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
 
 
@@ -67,6 +68,9 @@ def test_main_loads_config_argument(tmp_path, monkeypatch):
     config_path.write_text(
         """
 [provider]
+active = "custom"
+
+[provider.custom]
 url = "https://example.test/v1"
 key = "key"
 model = "custom-model"
