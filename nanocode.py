@@ -6042,17 +6042,13 @@ def _memory_fact_from_json(value: JsonValue) -> str | None:
     if not fact:
         item = _json_dict(value)
         fact = (_json_str(item.get("fact")) or "").strip()
-    if not fact or _is_schema_placeholder(fact):
+    if not fact:
         return None
+    if fact.startswith("<") and fact.endswith(">"):
+        inner = fact[1:-1].strip().lower()
+        if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "evidence", "result", "context", "message", "goal")):
+            return None
     return fact
-
-
-def _is_schema_placeholder(text: str) -> bool:
-    stripped = text.strip()
-    if not (stripped.startswith("<") and stripped.endswith(">")):
-        return False
-    inner = stripped[1:-1].strip().lower()
-    return bool(inner) and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "evidence", "result", "context", "message", "goal"))
 
 
 def _shorten(text: str, limit: int = 500) -> str:
