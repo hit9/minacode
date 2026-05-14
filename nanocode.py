@@ -2966,7 +2966,6 @@ class PromptBuilder:
         *,
         system_prompt_template: str = AGENT_SYSTEM_PROMPT,
         user_prompt_template: str = AGENT_USER_PROMPT_TEMPLATE,
-        allowed_tools: set[str] | None = None,
         blackboard: Blackboard | None = None,
         runtime: AgentRuntime | None = None,
         allow_response_language_bootstrap: bool = False,
@@ -2974,14 +2973,13 @@ class PromptBuilder:
         self.session = session
         self.system_prompt_template = system_prompt_template
         self.user_prompt_template = user_prompt_template
-        self.allowed_tools = allowed_tools
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
         self.blackboard = blackboard or Blackboard()
         self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
 
     def system_prompt(self) -> str:
         return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace(
-            "{ __tool_names__ }", "|".join(tool.name() for tool in self._allowed_tools())
+            "{ __tool_names__ }", "|".join(tool.name() for tool in TOOL_REGISTRY.values())
         ).strip()
 
     def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
@@ -3015,16 +3013,13 @@ class PromptBuilder:
 
     def _format_tools(self) -> str:
         lines = []
-        for tool in self._allowed_tools():
+        for tool in TOOL_REGISTRY.values():
             lines.append("- " + tool.signature())
             for item in tool.description():
                 lines.append("  - " + item)
             for item in tool.example():
                 lines.append("  - " + item)
         return "\n".join(lines)
-
-    def _allowed_tools(self) -> Iterator[ToolClass]:
-        return (tool for tool in TOOL_REGISTRY.values() if self.allowed_tools is None or tool.name() in self.allowed_tools)
 
     def _format_stable_knowledge(self) -> str:
         knowledge = self.blackboard.stable_knowledge
@@ -3457,10 +3452,9 @@ class ToolCallDisplayFormatter:
 class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
-    def __init__(self, session: Session, runtime: AgentRuntime, allowed_tools: set[str] | None = None, *, reuse_readonly_results: bool = False):
+    def __init__(self, session: Session, runtime: AgentRuntime, *, reuse_readonly_results: bool = False):
         self.session = session
         self.runtime = runtime
-        self.allowed_tools = allowed_tools
         self.reuse_readonly_results = reuse_readonly_results
         self.latest_executions: list[ToolCallExecution] = []
 
@@ -3579,7 +3573,7 @@ class ToolCallRunner:
 
     def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or not self._is_tool_allowed(call.name) or tool_class.effect() != ToolEffect.READONLY:
+        if tool_class is None or tool_class.effect() != ToolEffect.READONLY:
             return None
         return call.name, tuple(call.args)
 
@@ -3659,7 +3653,7 @@ class ToolCallRunner:
         return merged
 
     def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
-        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.name() or not self._is_tool_allowed(item.name):
+        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.name():
             return None
         key = ReplaceRangeTool.merge_key(item)
         if key is None:
@@ -3670,7 +3664,7 @@ class ToolCallRunner:
         parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
         if len(parsed_group) != len(group):
             return None
-        if parsed_group[0].name != ReplaceRangeTool.name() or not self._is_tool_allowed(parsed_group[0].name):
+        if parsed_group[0].name != ReplaceRangeTool.name():
             return None
         return ReplaceRangeTool.merge_calls(self.session, parsed_group)
 
@@ -3740,14 +3734,9 @@ class ToolCallRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
-        if not self._is_tool_allowed(call.name):
-            raise ToolCallArgError("tool not allowed for this agent: " + call.name)
         if tool_class is ToolResultTool:
             return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
         return tool_class.make(self.session, call.args)
-
-    def _is_tool_allowed(self, name: str) -> bool:
-        return self.allowed_tools is None or name in self.allowed_tools
 
 ############################
 # Agent State
@@ -4208,21 +4197,6 @@ class ResponseContext:
     state_or_work_requested: bool
 
 
-AGENT_ALLOWED_TOOLS: set[str] = {
-    ReadTool.name(),
-    LineCountTool.name(),
-    ListDirTool.name(),
-    SearchTool.name(),
-    CreateFileTool.name(),
-    EditTool.name(),
-    ReplaceRangeTool.name(),
-    ApplyPatchTool.name(),
-    BashTool.name(),
-    GitTool.name(),
-    ToolResultTool.name(),
-}
-
-
 ############################
 # Agent Runtime
 ############################
@@ -4259,13 +4233,12 @@ class Agent:
         self.runtime = AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
         self.prompt_builder = PromptBuilder(
             session,
-            allowed_tools=AGENT_ALLOWED_TOOLS,
             blackboard=self.blackboard,
             runtime=self.runtime,
             allow_response_language_bootstrap=True,
         )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=AGENT_ALLOWED_TOOLS)
+        self.tool_runner = ToolCallRunner(session, runtime=self.runtime)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.latest_tool_call_executions: list[ToolCallExecution] = []
