@@ -29,6 +29,15 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
     assert "status: missing" in result
 
 
+def test_tool_result_item_details_hint_avoids_recall_call_syntax():
+    item = ToolResultItem(description="Read sample.", value="line", excerpted=True)
+
+    result = item.format(result_key="tr.1", details_hint=True)
+
+    assert "details: full=tr.1 if excerpt insufficient" in result
+    assert "Recall(" not in result
+
+
 def test_known_action_accepts_string_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)

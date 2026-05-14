@@ -244,7 +244,7 @@ class ToolResultItem(PromptItem):
         if self.excerpted:
             lines.append("  excerpted: true")
             if details_hint and result_key:
-                lines.append('  details: use tool action Recall("' + result_key + '") only if the visible excerpt is insufficient')
+                lines.append("  details: full=" + result_key + " if excerpt insufficient")
         if include_content:
             lines.append("  content:")
             lines.append("  <content>")
@@ -866,14 +866,21 @@ def _join_tool_call_blocks(blocks: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
+RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:result_)?key[:=]\s*(tr\.\d+)\b")
+
+
+def _format_tool_call_summary(call: ParsedToolCall) -> str:
+    return "tool=" + call.name + " args=" + json.dumps(call.args, ensure_ascii=False, separators=(",", ":"))
+
+
 def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bool = True) -> str:
     status = "ok" if execution.outcome == "success" else "fail"
-    call = ToolCallDisplayFormatter._format_call(execution.call)
-    lines = ["- " + status + " | " + call]
+    fields = [status, _format_tool_call_summary(execution.call)]
+    if execution.result_key:
+        fields.append("key=" + execution.result_key)
+    lines = ["- " + " ".join(fields)]
     if execution.call.intention:
         lines.append("  why: " + execution.call.intention)
-    if execution.result_key:
-        lines.append("  result_key: " + execution.result_key)
     if include_result:
         lines.extend(["  output:", execution.output])
     elif execution.output:
@@ -884,10 +891,10 @@ def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bo
         if execution.result_excerpted:
             parts.append("excerpt")
         if execution.result_key and execution.result_excerpted:
-            parts.append("use tool action Recall(result_key) only if the excerpt is insufficient")
+            parts.append("full=" + execution.result_key)
         elif execution.output and not execution.result_key:
             parts.append(_shorten(" ".join(execution.output.split()), 220))
-        lines.append("  output_summary: " + ("; ".join(parts) if parts else "ok"))
+        lines.append("  out: " + ("; ".join(parts) if parts else "ok"))
     return "\n".join(lines)
 
 
@@ -2852,7 +2859,7 @@ class PromptBuilder:
             user_rules=self.session.state.user_rules.format(),
             known="\n".join(current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
-            tool_result_store=self._format_tool_result_store(set(re.findall(r"(?m)^\s*result_key:\s*(tr\.\d+)\b", recent_tool_calls))),
+            tool_result_store=self._format_tool_result_store(set(RESULT_KEY_PATTERN.findall(recent_tool_calls))),
             task_code=self.blackboard.task_code,
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
@@ -4236,8 +4243,8 @@ class Agent:
 
     def _queue_observation_for_evicted_blocks(self, blocks: list[str]) -> None:
         for block in blocks:
-            match = re.search(r"(?m)^\s*result_key:\s*tr\.(\d+)\b", block)
-            counter = int(match.group(1)) if match else 0
+            match = RESULT_KEY_PATTERN.search(block)
+            counter = int(match.group(1).split(".", 1)[1]) if match else 0
             if counter > self.blackboard.memory_checkpoint_tool_result_counter:
                 self.pending_observation_blocks.append(block)
         if self.pending_observation_blocks:
@@ -4354,7 +4361,11 @@ class Agent:
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             self._remember_agent_error(
-                "Error: tool call args invalid: " + execution.call.executed + " -> " + execution.output + ". Rule: use the tool signature exactly."
+                "Error: tool call args invalid: "
+                + _format_tool_call_summary(execution.call)
+                + " -> "
+                + execution.output
+                + ". Rule: use the tool signature exactly."
             )
         if execution.requires_verification:
             self.blackboard.verification_required = True

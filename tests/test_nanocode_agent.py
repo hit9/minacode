@@ -71,9 +71,8 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     )
 
     assert "alpha" in latest
-    assert "- ok | Read sample.txt 0:1" in latest
+    assert '- ok tool=Read args=["sample.txt","0","1"] key=tr.1' in latest
     assert "why: read sample" in latest
-    assert "result_key: tr.1" in latest
     assert "output:\n<ReadToolResult>" in latest
     assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.state.tool_result_store["tr.1"].value
@@ -103,7 +102,7 @@ def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
     )
 
     assert "alpha" in latest
-    assert "- ok | Read sample.txt 0:1" in latest
+    assert '- ok tool=Read args=["sample.txt","0","1"] key=tr.1' in latest
     assert agent.tool_runner.latest_executions[0].call.name == "Read"
 
 
@@ -251,7 +250,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert "three.txt" in recent
     assert "<ReadToolResult>" in latest
     assert "<ReadToolResult>" not in recent
-    assert "output_summary:" in recent
+    assert "out:" in recent
     assert "Recall(" not in recent
     assert len(agent.recent_tool_call_blocks) == 2
     assert agent.mode == nanocode.AgentMode.OBSERVE
@@ -1338,7 +1337,7 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
 
     assert "ToolCallError: invalid start: should be an integer" in latest
     assert agent.agent_feedback_errors == [
-        'Error: tool call args invalid: Read("sample.txt", "bad", "1") -> ToolCallError: invalid start: should be an integer. Rule: use the tool signature exactly.'
+        'Error: tool call args invalid: tool=Read args=["sample.txt","bad","1"] -> ToolCallError: invalid start: should be an integer. Rule: use the tool signature exactly.'
     ]
 
 
@@ -1358,7 +1357,7 @@ def test_agent_marks_nonzero_bash_exit_as_failed_tool_call(tmp_path):
     latest = agent.execute_tool_calls([{"name": "Bash", "intention": "run failing command", "args": ["exit 7"]}], confirm=lambda call, tool: True)
 
     assert agent.tool_runner.latest_executions[0].outcome == "failure"
-    assert "fail | Bash exit 7" in latest
+    assert 'fail tool=Bash args=["exit 7"] key=tr.1' in latest
     assert "* exit_code: 7" in agent.tool_runner.latest_executions[0].output
 
 
@@ -1379,7 +1378,7 @@ def test_main_agent_accepts_search_tool(tmp_path):
 
     latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": ["class Foo"]}])
 
-    assert '- ok | Search "class Foo"' in latest
+    assert '- ok tool=Search args=["class Foo"] key=tr.1' in latest
     assert "sample.py" in latest
 
 
@@ -1456,7 +1455,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "log: .nanocode/tool_results/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
-    assert "Read sample.txt 0:1" in _blocks_text(agent.latest_tool_call_blocks)
+    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.latest_tool_call_blocks)
     assert agent.recent_tool_call_blocks == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
@@ -1587,7 +1586,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Read sample.txt 0:1" in _blocks_text(agent.latest_tool_call_blocks)
+    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.latest_tool_call_blocks)
     assert agent.recent_tool_call_blocks == []
 
 
