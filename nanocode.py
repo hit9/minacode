@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Iterator, Protocol, Self, Type, TypeAlias, final
+from typing import Any, Callable, ClassVar, Iterator, Self, Type, TypeAlias, final
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -740,32 +740,7 @@ def _cli_token(value: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
-class Tool(Protocol):
-    @classmethod
-    def name(cls) -> str: ...
-    @classmethod
-    def description(cls) -> list[str]: ...
-    @classmethod
-    def signature(cls) -> str: ...
-    @classmethod
-    def example(cls) -> list[str]: ...
-    @classmethod
-    def effect(cls) -> ToolEffect: ...
-
-    @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]: ...
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self: ...
-
-    def requires_confirmation(self, session: Session) -> bool: ...
-    def preview(self) -> str: ...
-    def call(self) -> str: ...
-
-    def call_live(self, sink: Callable[[str], None] | None = None) -> str: ...
-
-
-class ToolBase:
+class Tool:
     NAME: ClassVar[str]
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
     SIGNATURE: ClassVar[str]
@@ -949,7 +924,7 @@ def _range_fingerprint(content: str) -> str:
 
 @final
 @dataclass
-class ReadTool(ToolBase):
+class ReadTool(Tool):
     MAX_LINES: ClassVar[int] = 600
     NAME: ClassVar[str] = "Read"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
@@ -1141,7 +1116,7 @@ class ReadTool(ToolBase):
 
 @final
 @dataclass
-class LineCountTool(ToolBase):
+class LineCountTool(Tool):
     NAME: ClassVar[str] = "LineCount"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
@@ -1191,7 +1166,7 @@ class LineCountTool(ToolBase):
 
 @final
 @dataclass
-class ListDirTool(ToolBase):
+class ListDirTool(Tool):
     NAME: ClassVar[str] = "ListDir"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -1258,7 +1233,7 @@ class ListDirTool(ToolBase):
 
 @final
 @dataclass
-class SearchTool(ToolBase):
+class SearchTool(Tool):
     MAX_MATCHES: ClassVar[int] = 100
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
@@ -1651,7 +1626,7 @@ class SearchTool(ToolBase):
 
 @final
 @dataclass
-class EditTool(ToolBase):
+class EditTool(Tool):
     NAME: ClassVar[str] = "Edit"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",)
@@ -1732,7 +1707,7 @@ class EditTool(ToolBase):
 
 @final
 @dataclass
-class CreateFileTool(ToolBase):
+class CreateFileTool(Tool):
     NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist.",)
@@ -1793,7 +1768,7 @@ class ReplaceRangeEdit:
 
 @final
 @dataclass
-class ReplaceRangeTool(ToolBase):
+class ReplaceRangeTool(Tool):
     NAME: ClassVar[str] = "ReplaceRange"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -2015,7 +1990,7 @@ class ReplaceRangeTool(ToolBase):
 
 @final
 @dataclass
-class ApplyPatchTool(ToolBase):
+class ApplyPatchTool(Tool):
     NAME: ClassVar[str] = "ApplyPatch"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Apply one unified diff to one existing file; use for focused hunks, not dumping a whole large file.",)
@@ -2268,7 +2243,7 @@ class ApplyPatchTool(ToolBase):
 
 @final
 @dataclass
-class BashTool(ToolBase):
+class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",)
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
@@ -2412,7 +2387,7 @@ class BashTool(ToolBase):
 
 @final
 @dataclass
-class GitTool(ToolBase):
+class GitTool(Tool):
     NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run git without a shell for repository state, history, status, diff, and changed files.",
@@ -2477,7 +2452,7 @@ class GitTool(ToolBase):
 
 @final
 @dataclass
-class ToolResultTool(ToolBase):
+class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details.",)
