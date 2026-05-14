@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Iterator, Self, Type, TypeAlias, final
+from typing import Any, Callable, ClassVar, Iterator, Self, Type, TypeAlias
 
 import json_repair
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -104,7 +104,6 @@ class ConversationItem(PromptItem):
         return _format_lines([f"#### {title} {self.format_ts()}", *quoted], indent)
 
 
-@final
 @dataclass
 class UserMessage(ConversationItem):
     role: Role = Role.USER
@@ -115,7 +114,6 @@ class UserMessage(ConversationItem):
         return self.format_transcript("User", self.content, indent)
 
 
-@final
 @dataclass
 class AssistantMessage(ConversationItem):
     role: Role = Role.ASSISTANT
@@ -157,7 +155,6 @@ class TaskCode(StrEnum):
     DONE = "done"
 
 
-@final
 @dataclass
 class PlanItem(PromptItem):
     text: str
@@ -185,7 +182,6 @@ class VerificationStatus(StrEnum):
     BLOCKED = "blocked"
 
 
-@final
 @dataclass
 class Verification(PromptItem):
     goal: str = ""
@@ -223,7 +219,6 @@ class Verification(PromptItem):
         return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.status != VerificationStatus.IDLE)
 
 
-@final
 @dataclass
 class ToolResultItem(PromptItem):
     description: str
@@ -436,7 +431,6 @@ class Config:
         return value
 
 
-@final
 class ConfigFile:
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
 # Location: ~/.nanocode/config.toml
@@ -510,8 +504,6 @@ class AgentMode(StrEnum):
 
 @dataclass
 class AgentRuntime:
-    tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
-    tool_result_counter: int = 0
     last_readonly_call_key: tuple[str, tuple[str, ...]] | None = None
     last_readonly_result_key: str = ""
     recent_edits: list[str] = field(default_factory=list)
@@ -523,11 +515,9 @@ class AgentRunResult:
     value: JsonValue = None
 
 
-@final
 class RangeFingerprintStore:
     MAX_ENTRIES: ClassVar[int] = 200
 
-    @final
     @dataclass
     class Entry:
         fingerprint: str
@@ -536,7 +526,6 @@ class RangeFingerprintStore:
         end: int
         content: str
 
-    @final
     @dataclass
     class Resolved:
         start: int
@@ -676,7 +665,6 @@ class RuntimeState:
     turn_model_calls: int = 0
 
 
-@final
 @dataclass
 class Session:
     # ---- system ----
@@ -781,24 +769,12 @@ class Tool:
         return cls.NAME or cls.__name__.removesuffix("Tool")
 
     @classmethod
-    def description(cls) -> list[str]:
-        return list(cls.DESCRIPTION)
-
-    @classmethod
-    def signature(cls) -> str:
-        return cls.SIGNATURE
-
-    @classmethod
-    def example(cls) -> list[str]:
-        return list(cls.EXAMPLE)
+    def cli_args(cls, args: list[str]) -> list[str]:
+        return [_cli_token(arg) for arg in args]
 
     @classmethod
     def effect(cls) -> ToolEffect:
         return cls.EFFECT
-
-    @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
-        return [_cli_token(arg) for arg in args]
 
     def requires_confirmation(self, session: Session) -> bool:
         return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.effect() == ToolEffect.EDIT
@@ -810,7 +786,6 @@ class Tool:
 ToolClass: TypeAlias = Type[Tool]
 
 
-@final
 @dataclass
 class ParsedToolCall:
     name: str
@@ -822,7 +797,6 @@ class ParsedToolCall:
         return self.name + "(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in self.args) + ")"
 
 
-@final
 @dataclass
 class ToolCallExecution:
     call: ParsedToolCall
@@ -831,18 +805,15 @@ class ToolCallExecution:
     error_type: Type[Exception] | None = None
     result_key: str = ""
     result_excerpted: bool = False
-    requires_confirmation: bool = False
     requires_verification: bool = False
 
 
-@final
 @dataclass
 class PreparedToolCall:
     call: ParsedToolCall
     tool: Tool
 
 
-@final
 @dataclass
 class BoundedToolOutput:
     value: str
@@ -879,10 +850,6 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     middle_start = max(0, original_chars // 2 - middle_size // 2)
     value = header + labels[0] + output[:head_size] + labels[1] + output[middle_start : middle_start + middle_size] + labels[2] + output[-tail_size:]
     return BoundedToolOutput(value[:max_chars], True, original_lines, original_chars)
-
-
-def _join_tool_call_blocks(blocks: list[str]) -> str:
-    return "\n\n".join(blocks)
 
 
 RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:result_)?key[:=]\s*(tr\.\d+)\b")
@@ -961,7 +928,6 @@ def _range_fingerprint(content: str) -> str:
 ############################
 
 
-@final
 @dataclass
 class ReadTool(Tool):
     MAX_LINES: ClassVar[int] = 600
@@ -1134,33 +1100,21 @@ class ReadTool(Tool):
             indent + "<fingerprint>" + fingerprint + "</fingerprint>",
         ]
         if truncated:
+            note = (
+                f"Read returned {returned_end - start} lines from {start}:{returned_end} of {total_lines} total lines. "
+                "Use Search to locate relevant text or Read smaller ranges in batches."
+            )
             lines.extend(
                 [
                     indent + "<truncated>true</truncated>",
                     indent + "<total_lines>" + str(total_lines) + "</total_lines>",
-                    indent
-                    + "<note>Read returned "
-                    + str(returned_end - start)
-                    + " lines from "
-                    + str(start)
-                    + ":"
-                    + str(returned_end)
-                    + " of "
-                    + str(total_lines)
-                    + " total lines. Use Search to locate relevant text or Read smaller ranges in batches.</note>",
+                    indent + "<note>" + note + "</note>",
                 ]
             )
-        lines.extend(
-            [
-                indent + "<content no-indention>",
-                content,
-                indent + "</content>",
-            ]
-        )
+        lines.extend([indent + "<content no-indention>", content, indent + "</content>"])
         return lines
 
 
-@final
 @dataclass
 class LineCountTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
@@ -1209,7 +1163,6 @@ class LineCountTool(Tool):
         return cls._wc_path
 
 
-@final
 @dataclass
 class ListDirTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
@@ -1275,7 +1228,6 @@ class ListDirTool(Tool):
         return "\n".join(lines)
 
 
-@final
 @dataclass
 class SearchTool(Tool):
     MAX_MATCHES: ClassVar[int] = 100
@@ -1592,7 +1544,7 @@ class SearchTool(Tool):
             raise ToolCallError(proc.stderr.strip() or "rg failed")
 
         matches = []
-        truncated = False
+        engine = "rg-pcre2" if pcre2 else ("rg-regex" if self.regex else "rg")
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -1613,10 +1565,8 @@ class SearchTool(Tool):
                 text = ""
             matches.append(self._make_match(path, int(data.get("line_number", 0)), text.rstrip("\n")))
             if len(matches) >= self.MAX_MATCHES:
-                truncated = True
-                break
-        engine = "rg-pcre2" if pcre2 else ("rg-regex" if self.regex else "rg")
-        return self._format_result(engine, matches, truncated)
+                return self._format_result(engine, matches, True)
+        return self._format_result(engine, matches, False)
 
     def _should_retry_rg_with_pcre2(self, stderr: str) -> bool:
         if not self.regex:
@@ -1626,7 +1576,6 @@ class SearchTool(Tool):
 
     def _call_python(self) -> str:
         matches = []
-        truncated = False
         for path in self._iter_files():
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
@@ -1638,12 +1587,11 @@ class SearchTool(Tool):
                             continue
                         matches.append(self._make_match(path, lineno, text))
                         if len(matches) >= self.MAX_MATCHES:
-                            truncated = True
-                            return self._format_result("python", matches, truncated)
+                            return self._format_result("python", matches, True)
             except OSError:
                 continue
 
-        return self._format_result("python", matches, truncated)
+        return self._format_result("python", matches, False)
 
     def _line_matches(self, text: str) -> bool:
         if not self.regex:
@@ -1667,7 +1615,6 @@ class SearchTool(Tool):
         return self._call_python()
 
 
-@final
 @dataclass
 class EditTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -1748,7 +1695,6 @@ class EditTool(Tool):
         return "\n".join(lines)
 
 
-@final
 @dataclass
 class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -1796,7 +1742,6 @@ class CreateFileTool(Tool):
         )
 
 
-@final
 @dataclass
 class ReplaceRangeEdit:
     start: int
@@ -1807,7 +1752,6 @@ class ReplaceRangeEdit:
     content: str
 
 
-@final
 @dataclass
 class ReplaceRangeTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -2031,7 +1975,6 @@ class ReplaceRangeTool(Tool):
         return lines
 
 
-@final
 @dataclass
 class ApplyPatchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -2282,7 +2225,6 @@ class ApplyPatchTool(Tool):
         return matches[0]
 
 
-@final
 @dataclass
 class BashTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -2427,7 +2369,6 @@ class BashTool(Tool):
         return True
 
 
-@final
 @dataclass
 class GitTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -2491,7 +2432,6 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
-@final
 @dataclass
 class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
@@ -2859,7 +2799,6 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 """
 
 
-@final
 class PromptBuilder:
     def __init__(
         self,
@@ -2874,7 +2813,7 @@ class PromptBuilder:
         self.system_prompt_template = system_prompt_template
         self.user_prompt_template = user_prompt_template
         self.blackboard = blackboard or Blackboard()
-        self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
+        self.runtime = runtime or AgentRuntime()
 
     def system_prompt(self) -> str:
         return (
@@ -2908,10 +2847,10 @@ class PromptBuilder:
     def _format_tools(self) -> str:
         lines = []
         for tool in TOOL_REGISTRY.values():
-            lines.append("- " + tool.signature())
-            for item in tool.description():
+            lines.append("- " + tool.SIGNATURE)
+            for item in tool.DESCRIPTION:
                 lines.append("  - " + item)
-            for item in tool.example():
+            for item in tool.EXAMPLE:
                 lines.append("  - " + item)
         return "\n".join(lines)
 
@@ -2930,11 +2869,11 @@ class PromptBuilder:
         return "\n".join(lines).rstrip()
 
     def _format_tool_result_store(self, visible_result_keys: set[str] | None = None) -> str:
-        if not self.runtime.tool_result_store:
+        if not self.session.state.tool_result_store:
             return "(empty)"
         hidden_keys = visible_result_keys or set()
         lines = []
-        for key, item in self.runtime.tool_result_store.items():
+        for key, item in self.session.state.tool_result_store.items():
             if key in hidden_keys:
                 continue
             lines.append(item.format(result_key=key, details_hint=True))
@@ -2948,7 +2887,6 @@ class PromptBuilder:
 ############################
 
 
-@final
 class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
@@ -3351,7 +3289,6 @@ class ModelClient:
 ############################
 
 
-@final
 class ToolCallDisplayFormatter:
     DISPLAY_LIMIT: ClassVar[int] = 5
 
@@ -3365,18 +3302,18 @@ class ToolCallDisplayFormatter:
         if offset:
             lines.append("  ... " + str(offset) + " older")
         for execution in visible:
-            lines.append(cls._format_execution(execution, include_excerpt=True))
+            lines.append(cls._format_execution(execution))
         return "\n".join(lines)
 
     @classmethod
-    def _format_execution(cls, execution: ToolCallExecution, *, include_excerpt: bool) -> str:
+    def _format_execution(cls, execution: ToolCallExecution) -> str:
         marker = "[success]" if execution.outcome == "success" else "[failure]"
         text = marker + " " + cls._format_call(execution.call)
         if execution.outcome != "success":
             error = cls._compact_tool_error(execution.output)
             if error:
                 text += " | " + error
-        elif include_excerpt and execution.result_excerpted:
+        elif execution.result_excerpted:
             text += " | excerpt"
         return text
 
@@ -3395,7 +3332,6 @@ class ToolCallDisplayFormatter:
         return _shorten(text, 180)
 
 
-@final
 class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
@@ -3413,7 +3349,7 @@ class ToolCallRunner:
         on_auto_approve: ToolDisplayCallback | None = None,
         on_live_output: ToolLiveOutputCallback | None = None,
         on_live_done: ToolLiveDoneCallback | None = None,
-    ) -> str:
+    ) -> None:
         executions = []
         for item in self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls)):
             call: ParsedToolCall | None = None
@@ -3471,7 +3407,7 @@ class ToolCallRunner:
             result_excerpted = False
             if call.name != ToolResultTool.name():
                 result_key = self._store_tool_result(call, outcome, output)
-                item = self.runtime.tool_result_store[result_key]
+                item = self.session.state.tool_result_store[result_key]
                 output = item.value
                 result_excerpted = item.excerpted
 
@@ -3482,14 +3418,12 @@ class ToolCallRunner:
                 error_type=error_type,
                 result_key=result_key,
                 result_excerpted=result_excerpted,
-                requires_confirmation=requires_confirmation,
                 requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
             self._remember_last_readonly_result(call, outcome, result_key)
 
         self.latest_executions = executions
-        return _join_tool_call_blocks([_format_recent_tool_call(execution) for execution in executions]) or "(empty)"
 
     def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
         if not self.reuse_readonly_results:
@@ -3500,7 +3434,7 @@ class ToolCallRunner:
         if self.runtime.last_readonly_call_key != key or not self.runtime.last_readonly_result_key:
             return None
         result_key = self.runtime.last_readonly_result_key
-        item = self.runtime.tool_result_store.get(result_key)
+        item = self.session.state.tool_result_store.get(result_key)
         if item is None or not item.description.startswith("success "):
             return None
         return ToolCallExecution(call=call, outcome="success", output=item.value, result_key=result_key, result_excerpted=item.excerpted)
@@ -3518,7 +3452,7 @@ class ToolCallRunner:
 
     def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or tool_class.effect() != ToolEffect.READONLY:
+        if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
             return None
         return call.name, tuple(call.args)
 
@@ -3614,16 +3548,14 @@ class ToolCallRunner:
         return ReplaceRangeTool.merge_calls(self.session, parsed_group)
 
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
-        self.runtime.tool_result_counter += 1
-        if self.runtime.tool_result_store is self.session.state.tool_result_store:
-            self.session.state.tool_result_counter = self.runtime.tool_result_counter
-        key = "tr." + str(self.runtime.tool_result_counter)
+        self.session.state.tool_result_counter += 1
+        key = "tr." + str(self.session.state.tool_result_counter)
         description = outcome + " " + ToolCallDisplayFormatter._format_call(call)
         if call.intention:
             description += " - " + call.intention
         log_path = self._write_tool_result_log(key, output)
         bounded = _bound_tool_output(output, log_path=log_path)
-        self.runtime.tool_result_store[key] = ToolResultItem(
+        self.session.state.tool_result_store[key] = ToolResultItem(
             description=description,
             value=bounded.value,
             log_path=log_path,
@@ -3651,11 +3583,11 @@ class ToolCallRunner:
         return ""
 
     def _trim_tool_result_store(self) -> None:
-        overflow = len(self.runtime.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
+        overflow = len(self.session.state.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
         if overflow <= 0:
             return
-        for old_key in list(self.runtime.tool_result_store)[:overflow]:
-            self.runtime.tool_result_store.pop(old_key)
+        for old_key in list(self.session.state.tool_result_store)[:overflow]:
+            self.session.state.tool_result_store.pop(old_key)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
@@ -3680,7 +3612,7 @@ class ToolCallRunner:
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
         if tool_class is ToolResultTool:
-            return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
+            return ToolResultTool(keys=call.args, results=self.session.state.tool_result_store)
         return tool_class.make(self.session, call.args)
 
 
@@ -3692,7 +3624,6 @@ class ToolCallRunner:
 STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow", "convention", "gotcha")
 
 
-@final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     COMPACT_DISPLAY_LIMIT: ClassVar[int] = 3
@@ -3858,24 +3789,32 @@ class AgentStateUpdater:
                 self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
                 replaced = True
                 continue
-            for raw in items:
-                patch = _json_dict(raw)
-                op = _json_str(patch.get("op")) or "add"
-                item_id = _json_str(patch.get("id")) or ""
-                if op == "remove":
-                    self.blackboard.plan = [item for item in self.blackboard.plan if item.id != item_id]
-                    continue
-                plan_item = self._plan_item_from_json(patch)
-                if plan_item is None:
-                    continue
-                existing = next((item for item in self.blackboard.plan if item.id == plan_item.id and item.id), None)
-                if existing:
-                    existing.text = plan_item.text
-                    existing.status = plan_item.status
-                    existing.context = plan_item.context
-                else:
-                    self.blackboard.plan.append(plan_item)
+            self._apply_plan_patches(self.blackboard.plan, items)
         return replaced
+
+    def _apply_plan_patches(self, plan: list[PlanItem], value: JsonValue) -> bool:
+        changed = False
+        for raw in _json_list(value):
+            patch = _json_dict(raw)
+            op = _json_str(patch.get("op")) or "add"
+            item_id = _json_str(patch.get("id")) or ""
+            if op == "remove":
+                before = len(plan)
+                plan[:] = [item for item in plan if item.id != item_id]
+                changed = changed or len(plan) != before
+                continue
+            plan_item = self._plan_item_from_json(patch)
+            if plan_item is None:
+                continue
+            existing = next((item for item in plan if item.id == plan_item.id and item.id), None)
+            if existing:
+                existing.text = plan_item.text
+                existing.status = plan_item.status
+                existing.context = plan_item.context
+            else:
+                plan.append(plan_item)
+            changed = True
+        return changed
 
     def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
         item = _json_dict(value)
@@ -4095,7 +4034,6 @@ class AgentStateUpdater:
 ############################
 
 
-@final
 class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
     MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 150
@@ -4177,7 +4115,6 @@ class ResponseContext:
 ############################
 
 
-@final
 class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
@@ -4207,7 +4144,7 @@ class Agent:
     def __init__(self, session: Session):
         self.session = session
         self.blackboard = Blackboard()
-        self.runtime = AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
+        self.runtime = AgentRuntime()
         self.prompt_builder = PromptBuilder(
             session,
             blackboard=self.blackboard,
@@ -4324,8 +4261,8 @@ class Agent:
 
     def _format_recent_tool_call_context(self) -> str:
         if self.mode == AgentMode.OBSERVE and self.pending_observation_blocks:
-            return _join_tool_call_blocks(self.pending_observation_blocks)
-        return _join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
+            return "\n\n".join(self.pending_observation_blocks)
+        return "\n\n".join(self.recent_tool_call_blocks + self.latest_tool_call_blocks)
 
     def _append_latest_tool_call_blocks(self, executions: list[ToolCallExecution]) -> None:
         if not executions:
@@ -4346,7 +4283,7 @@ class Agent:
             evicted = self.recent_tool_call_blocks[:overflow]
             del self.recent_tool_call_blocks[:overflow]
             self._queue_observation_blocks([block for block in evicted if _is_full_tool_call_block(block)])
-        while len(_join_tool_call_blocks(self.recent_tool_call_blocks + self.latest_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS:
+        while len("\n\n".join(self.recent_tool_call_blocks + self.latest_tool_call_blocks)) > self.RECENT_TOOL_CALL_CHARS:
             index = next((i for i, block in enumerate(self.recent_tool_call_blocks) if _is_full_tool_call_block(block)), None)
             if index is None:
                 break
@@ -4385,11 +4322,11 @@ class Agent:
         return max((self._tool_result_counter_from_block(block) for block in blocks), default=0)
 
     def _prune_tool_result_store(self) -> None:
-        overflow = len(self.runtime.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
+        overflow = len(self.session.state.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
         if overflow <= 0:
             return
-        for key in list(self.runtime.tool_result_store)[:overflow]:
-            self.runtime.tool_result_store.pop(key)
+        for key in list(self.session.state.tool_result_store)[:overflow]:
+            self.session.state.tool_result_store.pop(key)
 
     def _remember_agent_error(self, text: str) -> None:
         text = " ".join(text.split())
@@ -4448,7 +4385,7 @@ class Agent:
             self._mark_memory_checkpoint()
 
     def _mark_memory_checkpoint(self, counter: int = 0) -> None:
-        checkpoint = counter or self._visible_tool_result_counter() or self.runtime.tool_result_counter
+        checkpoint = counter or self._visible_tool_result_counter() or self.session.state.tool_result_counter
         self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
         self.pending_observation_blocks = [
             block for block in self.pending_observation_blocks if self._tool_result_counter_from_block(block) > self.blackboard.memory_checkpoint_tool_result_counter
@@ -4490,7 +4427,7 @@ class Agent:
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
-        return _join_tool_call_blocks(self.latest_tool_call_blocks)
+        return "\n\n".join(self.latest_tool_call_blocks)
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)
@@ -4518,7 +4455,7 @@ class Agent:
             self.failed_tool_call_key = None
             self.failed_tool_call_count = 0
             return
-        key = self._tool_failure_key(execution.call)
+        key = (execution.call.name, tuple(execution.call.args))
         if key == self.failed_tool_call_key:
             self.failed_tool_call_count += 1
         else:
@@ -4531,20 +4468,14 @@ class Agent:
                 + ". Rule: do not retry the same tool with identical args; correct the args or switch tools."
             )
 
-    def _tool_failure_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]]:
-        return call.name, tuple(call.args)
-
     def _format_tool_arg_error(self, execution: ToolCallExecution) -> str:
-        detail = self._tool_arg_shape_detail(execution.call)
-        return detail or execution.output
-
-    def _tool_arg_shape_detail(self, call: ParsedToolCall) -> str:
+        call = execution.call
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return ""
-        params = self._exact_signature_params(tool_class.signature())
+            return execution.output
+        params = self._exact_signature_params(tool_class.SIGNATURE)
         if not params or len(call.args) == len(params):
-            return ""
+            return execution.output
         detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
         if len(call.args) < len(params):
             detail += ", missing: " + ", ".join(params[len(call.args) :])
@@ -4740,7 +4671,7 @@ class Agent:
                         plan = items
                         changed = True
                     continue
-                changed = self._apply_plan_patches_to_projection(plan, action.get("items")) or changed
+                changed = self.state_updater._apply_plan_patches(plan, action.get("items")) or changed
         doing = [item for item in plan if item.status == PlanStatus.DOING]
         if changed and len(doing) > 1:
             return "multiple doing plan items: " + self._format_plan_gate_items(doing)
@@ -4748,30 +4679,6 @@ class Agent:
 
     def _plan_items_from_json(self, value: JsonValue) -> list[PlanItem]:
         return [item for item in (self.state_updater._plan_item_from_json(raw) for raw in _json_list(value)) if item]
-
-    def _apply_plan_patches_to_projection(self, plan: list[PlanItem], value: JsonValue) -> bool:
-        changed = False
-        for raw in _json_list(value):
-            patch = _json_dict(raw)
-            op = _json_str(patch.get("op")) or "add"
-            item_id = _json_str(patch.get("id")) or ""
-            if op == "remove":
-                before = len(plan)
-                plan[:] = [item for item in plan if item.id != item_id]
-                changed = changed or len(plan) != before
-                continue
-            item = self.state_updater._plan_item_from_json(patch)
-            if item is None:
-                continue
-            existing = next((candidate for candidate in plan if candidate.id == item.id and item.id), None)
-            if existing:
-                existing.text = item.text
-                existing.status = item.status
-                existing.context = item.context
-            else:
-                plan.append(item)
-            changed = True
-        return changed
 
     def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
         if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
@@ -4781,7 +4688,7 @@ class Agent:
                 call = self.tool_runner.parse_tool_call(value)
             except ToolCallArgError:
                 continue
-            if self._tool_failure_key(call) == self.failed_tool_call_key:
+            if (call.name, tuple(call.args)) == self.failed_tool_call_key:
                 return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
         return ""
 
@@ -4993,10 +4900,6 @@ class Agent:
         ctx: ResponseContext,
         response: Json,
         *,
-        confirm: ConfirmCallback | None,
-        on_auto_approve: ToolDisplayCallback | None,
-        on_live_output: ToolLiveOutputCallback | None,
-        on_live_done: ToolLiveDoneCallback | None,
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
@@ -5183,10 +5086,6 @@ class Agent:
             return self._handle_observe_response(
                 ctx,
                 response,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
                 on_message=on_message,
             )
 
@@ -5237,14 +5136,12 @@ class CommandStatus(StrEnum):
     UNHANDLED = "unhandled"
 
 
-@final
 @dataclass(frozen=True)
 class CommandResult:
     status: CommandStatus
     message: str = ""
 
 
-@final
 @dataclass(frozen=True)
 class CommandSpec:
     name: str
@@ -5305,7 +5202,6 @@ CONFIG_INT_KEYS: set[str] = {"provider.timeout", "provider.first_token_timeout",
 CONFIG_SET_USAGE = "Usage: /set <key> <value>"
 
 
-@final
 class CommandDispatcher:
     def __init__(
         self,
@@ -5382,12 +5278,13 @@ class CommandDispatcher:
     def _provider(self, args: str) -> str:
         name = args.strip()
         config = self.agent.session.config
+        providers = ", ".join(sorted(config.providers))
         if not name:
-            return "provider: " + config.active_provider + "\nproviders: " + ", ".join(sorted(config.providers))
+            return "provider: " + config.active_provider + "\nproviders: " + providers
         if " " in name:
             return "Usage: /provider [name]"
         if name not in config.providers:
-            return "Unknown provider: " + name + "\nproviders: " + ", ".join(sorted(config.providers))
+            return "Unknown provider: " + name + "\nproviders: " + providers
         config.active_provider = name
         return "Set provider = " + name
 
@@ -5409,12 +5306,14 @@ class CommandDispatcher:
         blackboard = self.agent.blackboard
         provider = session.config.provider
         reasoning = provider.reasoning_effort if provider.reasoning else "off"
-        model_usage = "  (empty)"
-        if session.state.model_usage:
-            model_usage = "\n".join(
+        model_usage = (
+            "\n".join(
                 "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
                 for model, usage in session.state.model_usage.items()
             )
+            if session.state.model_usage
+            else "  (empty)"
+        )
         verification_status = blackboard.verification.status
         return "\n".join(
             [
@@ -5440,11 +5339,9 @@ class CommandDispatcher:
     def _compact_history(self) -> str:
         before = len(self.agent.session.state.conversation)
         count = self.agent.compact_history()
-        if count == 0:
-            if before == 0:
-                return "Conversation history is empty"
-            return "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
-        return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
+        if count:
+            return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
+        return "Conversation history is empty" if before == 0 else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
 
     def _config(self, args: str) -> str:
         if args:
@@ -5549,10 +5446,8 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " <positive-number>"
             setattr(target, attr, parsed_int)
             return ""
-        if key in {"provider.url", "provider.key", "provider.model"}:
-            setattr(target, attr, value)
-            return ""
-        return CONFIG_SET_USAGE
+        setattr(target, attr, value)
+        return ""
 
     def _config_target(self, key: str) -> tuple[object, str]:
         if key in CONFIG_PROVIDER_ATTRS:
@@ -5604,7 +5499,6 @@ def _format_count(value: int) -> str:
 ############################
 
 
-@final
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
 
@@ -5720,7 +5614,6 @@ class StatusBar:
         return fragments
 
 
-@final
 class AgentLoop:
     LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
     LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
@@ -5911,22 +5804,21 @@ class AgentLoop:
             self.status_bar.pause()
 
     def _confirm_tool_call(self, call: ParsedToolCall, tool: Tool) -> ConfirmationResult:
-        was_running = self.status_bar.is_running()
-        if was_running:
-            self.status_bar.pause()
-        try:
+        def action() -> ConfirmationResult:
             self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
             return self._wait_confirm("Proceed?", default=True)
-        finally:
-            if was_running:
-                self.status_bar.resume()
+
+        return self._with_status_paused(action)
 
     def _show_auto_tool_call(self, call: ParsedToolCall, tool: Tool) -> None:
+        self._with_status_paused(lambda: self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue"))
+
+    def _with_status_paused(self, action: Callable[[], JsonValue]) -> JsonValue:
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.pause()
         try:
-            self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")
+            return action()
         finally:
             if was_running:
                 self.status_bar.resume()
@@ -5961,14 +5853,7 @@ class AgentLoop:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)
 
     def _emit(self, message: str) -> None:
-        was_running = self.status_bar.is_running()
-        if was_running:
-            self.status_bar.pause()
-        try:
-            self._print_message(message)
-        finally:
-            if was_running:
-                self.status_bar.resume()
+        self._with_status_paused(lambda: self._print_message(message))
 
     def _print_welcome(self) -> None:
         self._emit_segments([("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")], "nanocode - AI coding assistant")
@@ -6208,7 +6093,7 @@ class AgentLoop:
 
 
 def _format_lines(lines: list[str], indent: str) -> str:
-    return "\n".join([(indent + line) for line in lines])
+    return "\n".join(indent + line for line in lines)
 
 
 def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str:
