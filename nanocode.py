@@ -3449,19 +3449,13 @@ class ToolCallDisplayFormatter:
     def _format_execution(cls, execution: ToolCallExecution, *, include_excerpt: bool) -> str:
         marker = "[success]" if execution.outcome == "success" else "[failure]"
         text = marker + " " + cls._format_call(execution.call)
-        details = cls._details(execution, include_excerpt=include_excerpt)
-        if details:
-            text += " | " + " | ".join(details)
-        return text
-
-    @classmethod
-    def _details(cls, execution: ToolCallExecution, *, include_excerpt: bool) -> list[str]:
         if execution.outcome != "success":
             error = cls._compact_tool_error(execution.output)
-            return [error] if error else []
-        if include_excerpt and execution.result_excerpted:
-            return ["excerpt"]
-        return []
+            if error:
+                text += " | " + error
+        elif include_excerpt and execution.result_excerpted:
+            text += " | excerpt"
+        return text
 
     @classmethod
     def _format_call(cls, call: ParsedToolCall) -> str:
@@ -3518,9 +3512,11 @@ class ToolCallRunner:
                         continue
                     tool = self._make_tool(call)
                 requires_verification = tool.effect() == ToolEffect.EDIT
-                preview_error = self._preview_error(tool)
-                if preview_error:
-                    raise ToolCallError("preview unavailable: " + preview_error)
+                preview_error = getattr(tool, "preview_error", None)
+                if callable(preview_error):
+                    preview_error_text = str(preview_error())
+                    if preview_error_text:
+                        raise ToolCallError("preview unavailable: " + preview_error_text)
                 requires_confirmation = tool.requires_confirmation(self.session)
                 if requires_confirmation:
                     if self.session.settings.yolo:
@@ -3536,7 +3532,8 @@ class ToolCallRunner:
                                 raise Cancellation("user refused: " + reason)
                             raise Cancellation("user refused")
                 output = self._call_tool(tool, call, on_live_output=on_live_output, on_live_done=on_live_done)
-                if self._process_exit_failed(output):
+                exit_match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
+                if exit_match and int(exit_match.group(1)) != 0:
                     outcome = "failure"
             except Cancellation as error:
                 outcome = "failure"
@@ -3572,11 +3569,7 @@ class ToolCallRunner:
             self._remember_last_readonly_result(call, outcome, result_key)
 
         self.latest_executions = executions
-        return self._format_recent_tool_calls(executions)
-
-    def _process_exit_failed(self, output: str) -> bool:
-        match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
-        return bool(match and int(match.group(1)) != 0)
+        return _join_tool_call_blocks([_format_recent_tool_call(execution) for execution in executions]) or "(empty)"
 
     def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
         if not self.reuse_readonly_results:
@@ -3608,11 +3601,6 @@ class ToolCallRunner:
         if tool_class is None or not self._is_tool_allowed(call.name) or tool_class.effect() != ToolEffect.READONLY:
             return None
         return call.name, tuple(call.args)
-
-    @staticmethod
-    def _format_recent_tool_calls(executions: list[ToolCallExecution]) -> str:
-        blocks = [_format_recent_tool_call(execution) for execution in executions]
-        return _join_tool_call_blocks(blocks) or "(empty)"
 
     def _call_tool(
         self,
@@ -3764,14 +3752,11 @@ class ToolCallRunner:
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
-        return ParsedToolCall(name="InvalidToolCall", intention=self._invalid_tool_call_summary(value), args=[])
-
-    @staticmethod
-    def _invalid_tool_call_summary(value: JsonValue) -> str:
         item = _json_dict(value)
+        summary = "invalid tool action"
         if _json_str(item.get("type")) == "tool" and not _json_str(item.get("name")):
-            return "invalid tool action: missing required field name"
-        return "invalid tool action"
+            summary += ": missing required field name"
+        return ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
 
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)
@@ -3785,13 +3770,6 @@ class ToolCallRunner:
 
     def _is_tool_allowed(self, name: str) -> bool:
         return self.allowed_tools is None or name in self.allowed_tools
-
-    def _preview_error(self, tool: Tool) -> str:
-        preview_error = getattr(tool, "preview_error", None)
-        if not callable(preview_error):
-            return ""
-        return str(preview_error())
-
 
 ############################
 # Agent State
@@ -5145,17 +5123,14 @@ class CommandDispatcher:
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
-        command, args = self._parse(user_input)
+        command, _, args = user_input.strip().partition(" ")
+        args = args.strip()
         if command in {"/exit", "/quit", "exit", "quit"}:
             return CommandResult(CommandStatus.EXIT, "Exit")
         handler = self.handlers.get(command)
         if handler is None:
             return CommandResult(CommandStatus.UNHANDLED, "")
         return CommandResult(CommandStatus.HANDLED, handler(args))
-
-    def _parse(self, user_input: str) -> tuple[str, str]:
-        command, _, args = user_input.strip().partition(" ")
-        return command, args.strip()
 
     def _help(self, args: str) -> str:
         if args:
