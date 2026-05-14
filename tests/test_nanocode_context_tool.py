@@ -29,6 +29,17 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
     assert "status: missing" in result
 
 
+def test_tool_result_tool_bounds_large_recall_result(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = ToolResultItem(description="Read large.", value="x" * 20_000)
+
+    result = ToolResultTool.make(session, ["tr.1"]).call()
+
+    assert len(result) <= 12_000
+    assert "[tool result excerpt]" in result
+    assert "original_chars:" in result
+
+
 def test_tool_result_item_details_hint_avoids_recall_call_syntax():
     item = ToolResultItem(description="Read sample.", value="line", excerpted=True)
 

@@ -3455,8 +3455,6 @@ class ToolCallRunner:
                 item = self.runtime.tool_result_store[result_key]
                 output = item.value
                 result_excerpted = item.excerpted
-            else:
-                output = _bound_tool_output(output).value
 
             execution = ToolCallExecution(
                 call=call,
