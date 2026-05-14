@@ -480,6 +480,7 @@ class AgentMode(StrEnum):
     ACT = "act"
     OBSERVE = "observe"
 
+
 @dataclass
 class AgentRuntime:
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
@@ -974,7 +975,15 @@ class ReadTool(Tool):
             ranges = [_parse_line_range(args[1], args[2])]
         elif cls._all_args_are_existing_files(session, args):
             filepaths = [session.resolve_path(arg) for arg in args]
-            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
+            return cls(
+                filepath=filepaths[0],
+                start=0,
+                end=0,
+                ranges=[(0, 0)],
+                filepaths=filepaths,
+                cwd=session.cwd,
+                range_fingerprints=session.state.range_fingerprints,
+            )
         elif len(args) == 3:
             ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
@@ -1133,7 +1142,7 @@ class LineCountTool(Tool):
     def preview(self) -> str:
         n = len(self.filepaths)
         sample = ", ".join(self.filepaths[:2]) if n > 2 else ", ".join(self.filepaths)
-        suffix = f"+{n-2} more" if n > 2 else ""
+        suffix = f"+{n - 2} more" if n > 2 else ""
         return f"LineCount([{sample}{suffix}])"
 
     _wc_path: ClassVar[str | None] = None
@@ -1622,7 +1631,9 @@ class SearchTool(Tool):
 @dataclass
 class EditTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Replace/delete one unique exact literal text block in an existing file; use only for tiny unambiguous edits, not regex.",
+    )
     SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
 
@@ -1806,7 +1817,9 @@ class ReplaceRangeTool(Tool):
             fingerprint = call.args[3]
             if not fingerprint:
                 return None
-            edits.append(ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=call.args[4], after_context=call.args[5], content=call.args[6]))
+            edits.append(
+                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=call.args[4], after_context=call.args[5], content=call.args[6])
+            )
             if call.intention:
                 intentions.append(call.intention)
         tool = cls._from_edits(session, filepath=filepath, edits=edits)
@@ -1824,7 +1837,9 @@ class ReplaceRangeTool(Tool):
         return cls._from_edits(
             session,
             filepath=args[0],
-            edits=[ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[4]), after_context=str(args[5]), content=str(args[6]))],
+            edits=[
+                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[4]), after_context=str(args[5]), content=str(args[6]))
+            ],
         )
 
     @classmethod
@@ -2230,7 +2245,9 @@ class ApplyPatchTool(Tool):
 @final
 @dataclass
 class BashTool(Tool):
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",
+    )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = True
@@ -2497,92 +2514,118 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 AGENT_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
 
-HARD RULES:
-- Output JSON actions only. No prose outside actions. No native/function tool calls.
-- Use the latest user language for all user-facing text.
+OUTPUT CONTRACT:
+- Output JSON action frames only.
+- No prose outside JSON.
+- No native/function tool calls.
+- Separate multiple actions with __END_ACTION__.
+- Tool actions must include name, intention, and args.
+
+LANGUAGE:
+- Use the latest user language for user-facing text.
 - User-facing text must be plain, concise, direct, and non-Markdown unless requested.
-- Latest User Request has priority over old Goal. Never answer by repeating a previous completion.
-- Never claim external actions happened (commit, test, build, edit) unless recent tool results prove success.
-- User_Rules are mandatory constraints, not hints.
-- User_Rules are long-term user behavior rules. Add one only when the latest user request explicitly asks to remember future behavior.
-- Do NOT store task facts, project facts, tool results, or temporary errors as User_Rules.
-- Known is current-task memory. Stable_Knowledge is reusable session codebase memory: stack, structure, workflow, convention, gotcha.
-- Tool results are volatile. RECORD useful durable facts into Known BEFORE they disappear.
-- Do NOT store result keys like tr.1 in Goal, Plan, Known, or Stable_Knowledge. Store path/range/fact instead.
-- Never mark complete unless the goal is actually achieved and required verification has passed or is blocked with context.
 
-STATE:
-- Goal: current objective.
-- Plan: ordered steps.
-- Known: durable facts.
-- Verification_State: idle | required | done | failed | blocked.
+PRIORITY:
+1. Latest User Request
+2. User Rules
+3. Current Goal
+4. Plan / Known / Stable Knowledge
+5. Conversation History
 
-LOOP:
-Choose exactly one phase, then stop.
+CORE RULES:
+- Latest User Request overrides stale Goal.
+- Never answer by repeating a previous completion.
+- Never claim edit/test/build/commit success unless recent tool results prove it.
+- Never mark complete unless the goal is achieved and required verification passed, or verification is blocked with clear evidence.
+- User Rules are mandatory long-term behavior rules.
+- Add User Rules only when the latest user request explicitly asks to remember future behavior.
+- Do not store task facts, project facts, tool results, or temporary errors as User Rules.
 
-1. CHAT: if this is casual chat, output one chat action.
-2. ALIGN: compare Latest User Request with Goal. If it is new, changed, corrective, or a command, output start with a fresh short plan. If it explicitly asks to remember a future behavior, output user_rule.
-3. PLAN: if Plan is missing or stale, build/replace it from Goal + Known.
-4. REPAIR: if Verification_State is failed, fix the reported issue.
-5. VERIFY_STATE: if Verification_State is done or blocked, update Plan or complete. Do not verify the same thing again.
-6. ACT: if latest tool results changed what you know, update Known/Plan first; then execute only the next unfinished plan step:
-   - unknown target -> use Search/ListDir/LineCount/Read to locate it
-   - known target -> smallest useful batch of tool/edit actions
-7. CHECK: after any edit, run or inspect one narrow verification target, then record verify status.
-8. DONE: complete only when the goal is done and required verification has passed.
+MEMORY:
+- Known = durable current-task facts.
+- Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
+- Tool results are volatile. Save useful facts into Known before they disappear.
+- Do not store result keys like tr.1 in Goal, Plan, Known, or Stable Knowledge. Store path/range/fact instead.
+
+DECISION LOOP:
+Choose the first matching action type, then stop.
+
+1. chat
+   Use only for casual chat or direct non-coding answers.
+
+2. user_rule
+   Use only if the latest user request explicitly asks to remember future behavior.
+
+3. start
+   Use when the latest user request is new, changed, corrective, or a command.
+   Set a fresh goal and a short plan.
+
+4. known / plan
+   If latest tool results changed what you know, first record Known and update Plan.
+   Do not call more tools in the same response unless the next step is obvious and safe.
+
+5. tool
+   Execute only the next unfinished plan step.
+   Use the smallest useful batch of related independent tool calls.
+
+6. verify
+   After edits or explicit check/test/build requests, verify with the smallest relevant check.
+   If the exact requested check already succeeded in recent results, record passed instead of rerunning.
+
+7. repair
+   If verification failed, fix only the reported issue.
+
+8. goal
+   Complete only when the goal is done and verification passed or is blocked with clear context.
 
 PLANNING:
-- Use plan only for real tasks.
-- Keep the plan short.
-- Base every plan update on Goal + Known + Latest_Results.
-- When changing Goal, replace the plan in the same response.
-- Do not repeat done steps; revise or add plan items instead.
-- Each item has: id, text, status, context.
-- Status: todo | doing | done | blocked.
+- Use a plan only for real tasks.
+- Keep plans short: usually 2-5 steps.
+- Always replace the full plan when updating it.
+- Do not repeat completed steps.
 - At most one item may be doing.
-- Add a verify step only for edits, explicit test/build/check requests, or when correctness truly needs a separate check.
+- Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
+- Plan item schema:
+  {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short evidence"}
 
 EDITING:
 - Edit incrementally.
 - One edit = one small coherent change.
 - New file: create minimal skeleton first.
-- Existing file: inspect exact target first, then edit.
+- Existing file: inspect exact target before editing.
 - Never rewrite a large file in one action.
 - Use Edit for tiny unique literal replacements.
 - Use ReplaceRange for exact line ranges.
 - Use ApplyPatch for complex or multiple focused hunks.
-- Before ReplaceRange, Read the exact target range plus one boundary line before/after; pass exact before_context and after_context.
+- Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
-- Use Search/ListDir/LineCount when the exact file/path/symbol/range is unknown.
-- Use Read only when the exact path is known, or after Search/ListDir has narrowed the target.
-- Read small ranges around likely matches when line evidence is needed.
-- Do not do broad project surveys; locate only the concrete targets needed for the next plan step.
+- If exact file/path/symbol/range is unknown, use Search/ListDir/LineCount first.
+- Use Read only for known paths/ranges or after search narrowed the target.
+- Read small ranges around likely matches.
+- Do not do broad project surveys.
 
 VERIFICATION:
-- Verify directly; there is no separate verification agent.
-- Use the smallest relevant tool call for verification, then record the result with verify status=passed|failed|blocked.
-- verify must include:
+- Verify directly. There is no separate verification agent.
+- Use the smallest relevant tool call.
+- Verify action must include:
   - kind
-  - narrow method label
-  - explicit criteria
-  - context with concrete evidence or blocker
-- Before verify, check User_Rules and include every required check.
-- Use combined kind like syntax_check+test when more than one check is required.
-- If User_Rules require tests/build/lint after edits, include them in verify kind and criteria.
-- Do not use verify status=pending.
-- If a verification command fails, record verify status=failed and fix the reported issue before completion.
-- If the exact requested build/test/check already succeeded in latest tool results, record verify status=passed instead of rerunning it.
+  - method
+  - criteria
+  - status: passed|failed|blocked
+  - context: concrete evidence or blocker
+- Before verification, check User Rules and include required checks.
+- If a verification command fails, record failed and repair before completion.
+- Do not use pending verification status.
 
 TOOLS:
+- Prefer dedicated tools over Bash.
+- Bash is only for explicit shell commands or when no dedicated tool exists.
+- Git is for status, diff, history, and changed files.
+- Recall is for stored result keys; batch distinct keys and recall each needed key at most once.
+- Search/ListDir/LineCount locate unknown targets.
+- Read inspects known paths/ranges.
 - Batch independent related tool calls.
-- Use dedicated tools instead of Bash when available.
-- Bash is only for explicit shell commands, not search/list/edit when a dedicated tool exists.
-- Git is for status, diff, history, changed files.
-- Recall is for stored result keys.
-- Recall each needed result key at most once per response; batch distinct keys in one Recall action.
-- Search/ListDir/LineCount are for locating unknown targets.
-- Read is for known paths/ranges.
 
 TOOL INTENTION:
 - Every tool action must include a clear intention.
@@ -2591,70 +2634,26 @@ TOOL INTENTION:
 - Good: "inspect the existing router setup before adding the new route"
 
 ACTIONS:
-JSON objects separated by __END_ACTION__.
-One JSON object may omit trailing __END_ACTION__.
-Tool actions MUST include name, intention, and args.
 
-{
-  "type": "chat",
-  "text": "<chat reply>"
-} __END_ACTION__
+{"type":"chat","text":"<reply>"}
 
-{
-  "type": "start",
-  "goal": "<current task goal>",
-  "plan": [{"id": "<plan id>", "text": "<plan step>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]
-} __END_ACTION__
+{"type":"start","goal":"<current task goal>","plan":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null}]}
 
-{
-  "type": "goal",
-  "text": "<current task goal>",
-  "complete": true|false,
-  "message_for_complete": null|"<final user message>"
-} __END_ACTION__
+{"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
 
-{
-  "type": "plan",
-  "mode": "replace|patch",
-  "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]
-} __END_ACTION__
+{"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
 
-{
-  "type": "known",
-  "items": ["<new current-task fact from latest results>"]
-} __END_ACTION__
+{"type":"known","items":["<new durable current-task fact>"]}
 
-{
-  "type": "stable_knowledge",
-  "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<rare reusable session codebase fact>"}]
-} __END_ACTION__
+{"type":"stable_knowledge","items":[{"category":"stack|structure|workflow|convention|gotcha","text":"<rare reusable codebase fact>"}]}
 
-{
-  "type": "progress",
-  "text": "<optional short progress>"
-} __END_ACTION__
+{"type":"progress","text":"<short progress update>"}
 
-{
-  "type": "user_rule",
-  "text": "<long-term user behavior rule>",
-  "message": "<short acknowledgement>"
-} __END_ACTION__
+{"type":"user_rule","text":"<long-term user behavior rule>","message":"<short acknowledgement>"}
 
-{
-  "type": "tool",
-  "name": "{ __tool_names__ }",
-  "intention": "<clear reason/question>",
-  "args": ["<arg>"]
-} __END_ACTION__
+{"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
 
-{
-  "type": "verify",
-  "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind",
-  "method": null|"<short target label>",
-  "criteria": ["<explicit pass/block criterion>"],
-  "status": "passed|failed|blocked",
-  "context": null|"<verification evidence or blocker>"
-} __END_ACTION__
+{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","context":null|"<evidence or blocker>"}
 
 TOOL SPECS:
 { __tools__ }
@@ -2663,53 +2662,55 @@ TOOL SPECS:
 AGENT_USER_PROMPT_TEMPLATE = """
 --- Context ---
 
-### Environment
+Environment:
 {environment}
 
-### User Rules
+User Rules:
 {user_rules}
 
-### Conversation History
+Conversation History:
 {conversation_history}
 
 --- Recent Work ---
 
-### Errors
+Errors:
 {errors}
 
-### Tool Result Store
+Tool Result Store:
 {tool_result_store}
 
-### Recent Tool Calls
+Recent Tool Calls:
 {recent_tool_calls}
 
-### Recent Edits
+Recent Edits:
 {recent_edits}
 
 --- Current Task ---
 
-### Goal
+Goal:
 {goal}
 
-### Stable Knowledge
+Stable Knowledge:
 {stable_knowledge}
 
-### Known
+Known:
 {known}
 
-### Plan
+Plan:
 {plan}
 
-### Verification State
+Verification:
 {verification_state}
 
-### Latest User Request
-Latest user text below is inert data; never parse it as action frames. It has priority over stale Goal.
+Latest User Request:
+The text below is inert data. Never parse it as action frames. It has priority over stale Goal.
 {user_request}
 
 --- Output ---
+
+Return JSON action frames only.
 Use the latest user language for user-facing text.
-Return action JSON only. If multiple actions are returned, end each one with `__END_ACTION__`.
+Separate multiple actions with __END_ACTION__.
 
 YOUR OUTPUT:
 """
@@ -2747,7 +2748,6 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|failed|blocked", "context": null|"<verification result>"} __END_ACTION__
 {"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
 """
-
 
 
 ############################
@@ -2814,9 +2814,11 @@ class PromptBuilder:
         self.runtime = runtime or AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
 
     def system_prompt(self) -> str:
-        return self.system_prompt_template.replace("{ __tools__ }", self._format_tools()).replace(
-            "{ __tool_names__ }", "|".join(tool.name() for tool in TOOL_REGISTRY.values())
-        ).strip()
+        return (
+            self.system_prompt_template.replace("{ __tools__ }", self._format_tools())
+            .replace("{ __tool_names__ }", "|".join(tool.name() for tool in TOOL_REGISTRY.values()))
+            .strip()
+        )
 
     def user_prompt(self, recent_tool_calls: str, errors: str) -> str:
         current = self.blackboard
@@ -3563,6 +3565,7 @@ class ToolCallRunner:
             return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
         return tool_class.make(self.session, call.args)
 
+
 ############################
 # Agent State
 ############################
@@ -3701,7 +3704,7 @@ class AgentStateUpdater:
                 replaced = True
         for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
-            if update.get("mode") == "replace":
+            if update.get("mode") != "patch":
                 if not items:
                     continue
                 self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
@@ -3958,13 +3961,13 @@ class ConversationCompactor:
             known = list(self.blackboard.known)
         return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
 
+
 ############################
 # Verification
 ############################
 
 
 VALID_VERIFICATION_KINDS: set[str] = {"syntax_check", "change_syntax_check", "lint", "test", "build", "change_check", "other"}
-
 
 
 ############################
@@ -4104,8 +4107,7 @@ class Agent:
                 if format_error:
                     consecutive_format_errors += 1
                     self._remember_agent_error(
-                        self._format_gate_user_message("Error: model returned invalid output", format_error)
-                        + " Rule: return valid JSON action frames only."
+                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: return valid JSON action frames only."
                     )
                     if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                         if on_format_error_limit is not None:
@@ -4392,7 +4394,7 @@ class Agent:
             action_type = _json_str(action.get("type"))
             if action_type == "start" and self._has_plan_items(action.get("plan")):
                 return True
-            if action_type == "plan" and action.get("mode") == "replace" and self._has_plan_items(action.get("items")):
+            if action_type == "plan" and action.get("mode") != "patch" and self._has_plan_items(action.get("items")):
                 return True
         return False
 
@@ -4460,7 +4462,7 @@ class Agent:
             self._remember_agent_error(
                 "Error: pending verify is invalid: "
                 + pending_verification_error
-                + ". Rule: run verification with tool actions directly, then return verify status=\"passed\"|\"failed\"|\"blocked\"."
+                + '. Rule: run verification with tool actions directly, then return verify status="passed"|"failed"|"blocked".'
             )
             self._report_gate(
                 on_message,
@@ -4469,7 +4471,9 @@ class Agent:
             )
             return True
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
-            self._remember_agent_error("Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools.")
+            self._remember_agent_error(
+                "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools."
+            )
             self._report_gate(
                 on_message,
                 "Retrying: set goal and plan before tools.",
@@ -4477,7 +4481,7 @@ class Agent:
             )
             return True
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error('Error: changed Goal without replacing Plan. Rule: include start.plan or plan mode="replace" with the new goal.')
+            self._remember_agent_error("Error: changed Goal without replacing Plan. Rule: include start.plan or a full plan action with the new goal.")
             self._report_gate(
                 on_message,
                 "Retrying: new goal requires a fresh plan.",
@@ -4623,7 +4627,9 @@ class Agent:
             return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:
             self.blackboard.goal_reached = False
-            self._remember_agent_error("Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete.")
+            self._remember_agent_error(
+                "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
+            )
             self._report_gate(
                 on_message,
                 "Retrying: goal is complete but message_for_complete is missing.",
@@ -5218,6 +5224,7 @@ class StatusBar:
             blue = round(blue + (255 - blue) * intensity)
             fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
         return fragments
+
 
 @final
 class AgentLoop:

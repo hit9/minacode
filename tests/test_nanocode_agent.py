@@ -900,7 +900,7 @@ def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
 
     prompt = agent.build_user_prompt()
 
-    assert "### Stable Knowledge\nworkflow:\n- Project test command is make test.\n\n### Known" in prompt
+    assert "Stable Knowledge:\nworkflow:\n- Project test command is make test.\n\nKnown:" in prompt
 
 
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
@@ -1037,6 +1037,22 @@ def test_agent_ignores_empty_plan_replace(tmp_path):
 
     assert [item.text for item in agent.blackboard.plan] == ["Inspect file"]
     assert agent.state_updater.latest_report == ""
+
+
+def test_agent_treats_plan_without_mode_as_replace(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="Inspect old file", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="Edit old file", status=nanocode.PlanStatus.TODO),
+    ]
+    response = {"actions": [{"type": "plan", "items": [{"id": "p1", "text": "Inspect new file", "status": "doing"}]}]}
+
+    assert agent._build_response_context(response).has_fresh_plan_action is True
+    agent.apply_response(response)
+
+    assert [item.text for item in agent.blackboard.plan] == ["Inspect new file"]
+    assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
 
 
 def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
@@ -1304,7 +1320,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert path.read_text(encoding="utf-8") == "new\n"
     assert agent.blackboard.verification_required is True
     assert agent.runtime.recent_edits == ["- sample.txt: edit sample"]
-    assert "### Recent Edits\n- sample.txt: edit sample\n\n--- Current Task ---" in agent.build_user_prompt()
+    assert "Recent Edits:\n- sample.txt: edit sample\n\n--- Current Task ---" in agent.build_user_prompt()
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
