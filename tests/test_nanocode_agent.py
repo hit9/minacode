@@ -745,6 +745,31 @@ def test_agent_request_accepts_adjacent_unmarked_json_actions(tmp_path):
     }
 
 
+def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        "The test is failing because the expected message changed. Let me read the test.\n\n"
+        '{"type":"tool","name":"Read","intention":"read the failing test","args":["tests/test_nanocode_commands.py","140,165"]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "progress", "text": "The test is failing because the expected message changed. Let me read the test."},
+            {"type": "tool", "name": "Read", "intention": "read the failing test", "args": ["tests/test_nanocode_commands.py", "140,165"]},
+        ],
+    }
+
+
+def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('{"type":"message","text":"ok"}\nDone.')
+
+    assert response["actions"] == []
+    assert "Expecting value" in response["_format_error"]
+
+
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 

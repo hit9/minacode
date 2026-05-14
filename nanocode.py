@@ -3161,10 +3161,33 @@ class ModelClient:
         actions: list[Json] = []
         decoder = json.JSONDecoder()
         index = 0
+        while index < len(text) and text[index].isspace():
+            index += 1
+        prefix = ""
+        if index < len(text) and text[index] != "{":
+            if text[index] == "[":
+                try:
+                    value, _ = decoder.raw_decode(text, index)
+                except json.JSONDecodeError as error:
+                    return [], str(error)
+                if not isinstance(value, dict):
+                    return [], "expected JSON object action"
+                return [], "action missing type"
+            action_start = text.find("{", index)
+            if action_start < 0:
+                try:
+                    decoder.raw_decode(text, index)
+                except json.JSONDecodeError as error:
+                    return [], str(error)
+                return [], "expected JSON object action"
+            prefix = _shorten(" ".join(text[:action_start].split()), 500)
+            index = action_start
         while True:
             while index < len(text) and text[index].isspace():
                 index += 1
             if index >= len(text):
+                if prefix and actions:
+                    actions.insert(0, {"type": "progress", "text": prefix})
                 return actions, ""
             try:
                 value, index = decoder.raw_decode(text, index)
