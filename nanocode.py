@@ -3676,6 +3676,7 @@ STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow"
 @final
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
+    COMPACT_DISPLAY_LIMIT: ClassVar[int] = 3
     MAX_KNOWN_ITEMS: ClassVar[int] = 500
     MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
     VERIFY_STATUS_ACTIONS: ClassVar[dict[str, VerificationStatus]] = {
@@ -3763,6 +3764,30 @@ class AgentStateUpdater:
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
             rows.append("    " + str(index) + ". " + self._compact(item))
+        return rows
+
+    def compact_report(self) -> str:
+        lines = ["State"]
+        if self.blackboard.plan:
+            lines.append("Plan")
+            lines.extend(self._compact_plan_rows())
+        if self.blackboard.known:
+            lines.append("Known")
+            lines.extend(self._compact_known_rows())
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _compact_plan_rows(self) -> list[str]:
+        items = self.blackboard.plan
+        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " older"] if offset else []
+        rows.extend("  " + str(item.status) + " " + self._compact(item.text, 90) for item in items[offset:])
+        return rows
+
+    def _compact_known_rows(self) -> list[str]:
+        items = self.blackboard.known
+        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " older"] if offset else []
+        rows.extend("  - " + self._compact(item, 100) for item in items[offset:])
         return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
@@ -4171,7 +4196,6 @@ class Agent:
         self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
-        self.gate_report_counts: dict[str, int] = {}
         self.mode = AgentMode.ACT
 
     def build_user_prompt(self) -> str:
@@ -4196,7 +4220,7 @@ class Agent:
                 if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
                     raise
                 delay = self.MODEL_TIMEOUT_RETRY_DELAYS[attempt]
-                if on_message is not None:
+                if on_message is not None and self.session.settings.debug:
                     on_message(
                         "Retrying: request model timeout; retry "
                         + str(attempt + 1)
@@ -4363,12 +4387,6 @@ class Agent:
             on_message(debug_message)
             return
         if not message.startswith(("Retrying:", "Continuing:")):
-            on_message(message)
-            return
-        key = debug_message.split(":", 1)[0] or message
-        count = self.gate_report_counts.get(key, 0) + 1
-        self.gate_report_counts[key] = count
-        if count == 2:
             on_message(message)
 
     def _format_gate_user_message(self, prefix: str, format_error: str) -> str:
@@ -4870,7 +4888,9 @@ class Agent:
 
     def _emit_state_and_progress(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
-            on_message(self.state_updater.latest_report)
+            report = self.state_updater.latest_report if self.session.settings.debug else self.state_updater.compact_report()
+            if report:
+                on_message(report)
         if on_message is not None:
             for message in ctx.progress_messages:
                 on_message(message)
@@ -5089,7 +5109,6 @@ class Agent:
         on_message: MessageCallback | None = None,
     ) -> Json:
         self.agent_feedback_errors = []
-        self.gate_report_counts = {}
         self.failed_tool_call_key = None
         self.failed_tool_call_count = 0
         self._prune_recent_tool_calls()
@@ -5940,6 +5959,9 @@ class AgentLoop:
     def _print_message(self, message: str) -> None:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
+            return
+        if message.startswith("State"):
+            self._emit_segments([("ansibrightblack", message + "\n")], message)
             return
         if self._is_tool_report(message):
             self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")

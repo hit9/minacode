@@ -435,7 +435,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
     assert sleeps == [3, 10, 20]
 
 
-def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
+def test_agent_request_hides_model_timeout_retries_without_debug(tmp_path, monkeypatch):
     class FakeModelClient:
         def __init__(self):
             self.calls = 0
@@ -458,13 +458,21 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
     assert agent.model_client.calls == 3
     assert agent.session.state.turn_model_calls == 3
     assert sleeps == [3, 10]
-    assert messages == [
+    assert messages == []
+
+    debug_messages = []
+    debug_agent = Agent(_session(tmp_path, debug=True))
+    debug_agent.model_client = FakeModelClient()
+
+    debug_agent.request("system", "user", on_message=debug_messages.append)
+
+    assert debug_messages == [
         "Retrying: request model timeout; retry 1/6 in 3s.",
         "Retrying: request model timeout; retry 2/6 in 10s.",
     ]
 
 
-def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
+def test_agent_gate_hides_retry_messages_without_debug(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     messages = []
 
@@ -472,7 +480,7 @@ def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: second")
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: third")
 
-    assert messages == ["Retrying: sample gate."]
+    assert messages == []
 
 
 def test_agent_gate_reports_immediately_in_debug(tmp_path):
@@ -1154,8 +1162,52 @@ def test_main_agent_user_rule_finishes_with_message(tmp_path):
     assert fake_client.calls == 1
     assert response["actions"][0]["type"] == "user_rule"
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
-    assert any(message.startswith("State Updated") for message in messages)
+    assert not any(message.startswith("State Updated") for message in messages)
     assert session.state.conversation[-1].content == "记住了。"
+
+
+def test_main_agent_state_updates_show_in_debug(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+
+    class FakeModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            return {"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests.", "message": "记住了。"}]}
+
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    agent.run("记住：prompt 改动不用测试", on_message=messages.append)
+
+    assert any(message.startswith("State Updated") for message in messages)
+
+
+def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "inspect project",
+                    "plan": [
+                        {"id": "p1", "text": "List files", "status": "done"},
+                        {"id": "p2", "text": "Read config", "status": "done"},
+                        {"id": "p3", "text": "Update code", "status": "doing"},
+                        {"id": "p4", "text": "Run tests", "status": "todo"},
+                    ],
+                },
+                {"type": "known", "items": ["fact one", "fact two", "fact three", "fact four"]},
+            ]
+        }
+    )
+
+    report = agent.state_updater.compact_report()
+    assert report.startswith("State")
+    assert "Plan\n  ... 1 older\n  ✓ done Read config\n  ◔ doing Update code\n  ○ todo Run tests" in report
+    assert "Known\n  ... 1 older\n  - fact two\n  - fact three\n  - fact four" in report
+    assert "inspect project" not in report
+    assert "State Updated" not in report
 
 
 def test_agent_ignores_known_items_without_fact(tmp_path):
@@ -1687,7 +1739,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert any(message.startswith("[success] Edit sample.txt") for message in messages)
     assert any(message.startswith("[success] Read sample.txt") for message in messages)
-    assert any("VERIFY:required" in message for message in messages)
+    assert any(message.startswith("State\nPlan") for message in messages)
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.verification.context == "sample.txt contains new"
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
@@ -1859,7 +1911,7 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: create a short plan before tools." in messages
+    assert "Retrying: create a short plan before tools." not in messages
     assert len(session.state.tool_result_store) == 1
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
 
@@ -1913,7 +1965,7 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
     response = agent.run("new goal", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Retrying: new goal requires a fresh plan." in messages
+    assert "Retrying: new goal requires a fresh plan." not in messages
     assert agent.blackboard.goal == "new goal"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(session.state.tool_result_store) == 1
@@ -2033,7 +2085,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "Continuing: goal is not complete yet." not in messages
-    assert any(message.startswith("State Updated") for message in messages)
+    assert not any(message.startswith("State Updated") for message in messages)
 
 
 def test_agent_run_stops_after_chat_action(tmp_path):
@@ -2126,7 +2178,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Continuing: assistant must set current task's goal." in messages
+    assert "Continuing: assistant must set current task's goal." not in messages
 
 
 def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
@@ -2158,7 +2210,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: verification is done but goal is not complete." in messages
+    assert "Retrying: verification is done but goal is not complete." not in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
@@ -2186,7 +2238,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: goal is complete but message_for_complete is missing." in messages
+    assert "Retrying: goal is complete but message_for_complete is missing." not in messages
     assert agent.agent_feedback_errors
     assert agent.blackboard.goal_reached is False
 
@@ -2289,7 +2341,7 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: model returned invalid output: plain answer" in messages
+    assert "Retrying: model returned invalid output: plain answer" not in messages
     assert messages[-1] == "done"
 
 
@@ -2589,7 +2641,7 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: goal is complete but message_for_complete is missing." in messages
+    assert "Retrying: goal is complete but message_for_complete is missing." not in messages
     assert agent.agent_feedback_errors
 
 
