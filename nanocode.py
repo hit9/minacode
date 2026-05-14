@@ -3767,27 +3767,35 @@ class AgentStateUpdater:
         return rows
 
     def compact_report(self) -> str:
-        lines = ["State"]
-        if self.blackboard.plan:
-            lines.append("Plan")
+        sections = []
+        if "  Plan" in self.latest_report and self.blackboard.plan:
+            sections.append("Plan")
+        if "  Known" in self.latest_report and self.blackboard.known:
+            sections.append("Known")
+        if not sections:
+            return ""
+        lines = [" + ".join(sections) + " Updated"]
+        if "Plan" in sections:
             lines.extend(self._compact_plan_rows())
-        if self.blackboard.known:
-            lines.append("Known")
+        if "Known" in sections:
             lines.extend(self._compact_known_rows())
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return "\n".join(lines)
 
     def _compact_plan_rows(self) -> list[str]:
         items = self.blackboard.plan
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend("  " + str(item.status) + " " + self._compact(item.text, 90) for item in items[offset:])
+        rows.extend(
+            "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
+            for index, item in enumerate(items[offset:], start=offset + 1)
+        )
         return rows
 
     def _compact_known_rows(self) -> list[str]:
         items = self.blackboard.known
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend("  - " + self._compact(item, 100) for item in items[offset:])
+        rows.extend("  " + str(index) + ". " + self._compact(item, 100) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
@@ -5960,8 +5968,8 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
-        if message.startswith("State"):
-            self._emit_segments([("ansibrightblack", message + "\n")], message)
+        if message.startswith(("Plan Updated", "Known Updated", "Plan + Known Updated")):
+            self._emit_segments(self._compact_state_segments(message), message)
             return
         if self._is_tool_report(message):
             self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")
@@ -6120,6 +6128,17 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", "    "), ("ansiwhite", line[4:] + "\n")])
             else:
                 segments.extend([("ansiwhite", line + "\n")])
+        return segments
+
+    def _compact_state_segments(self, message: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        for line in message.splitlines():
+            if line.endswith("Updated"):
+                segments.append(("bold ansicyan", line + "\n"))
+            elif line.startswith("  ..."):
+                segments.append(("ansibrightblack", line + "\n"))
+            else:
+                segments.append(("ansiwhite", line + "\n"))
         return segments
 
     def _tool_segments(self, message: str) -> list[tuple[str, str]]:

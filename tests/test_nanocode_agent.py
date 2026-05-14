@@ -1203,9 +1203,11 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     )
 
     report = agent.state_updater.compact_report()
-    assert report.startswith("State")
-    assert "Plan\n  ... 1 older\n  ✓ done Read config\n  ◔ doing Update code\n  ○ todo Run tests" in report
-    assert "Known\n  ... 1 older\n  - fact two\n  - fact three\n  - fact four" in report
+    assert report.startswith("Plan + Known Updated")
+    assert "  ... 1 older\n  2. [✓ done] Read config\n  3. [◔ doing] Update code\n  4. [○ todo] Run tests" in report
+    assert "  ... 1 older\n  2. fact two\n  3. fact three\n  4. fact four" in report
+    assert "\nPlan\n" not in report
+    assert "\nKnown\n" not in report
     assert "inspect project" not in report
     assert "State Updated" not in report
 
@@ -1739,7 +1741,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert any(message.startswith("[success] Edit sample.txt") for message in messages)
     assert any(message.startswith("[success] Read sample.txt") for message in messages)
-    assert any(message.startswith("State\nPlan") for message in messages)
+    assert not any(message.startswith("State Updated") for message in messages)
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.verification.context == "sample.txt contains new"
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
