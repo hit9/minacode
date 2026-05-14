@@ -775,23 +775,7 @@ class Tool(Protocol):
         return [_cli_token(arg) for arg in args]
 
     @classmethod
-    def stores_result(cls) -> bool:
-        return True
-
-    @classmethod
-    def merge_key(cls, call: "ParsedToolCall") -> tuple[str, ...] | None:
-        return None
-
-    @classmethod
-    def merge_calls(cls, session: Session, calls: list["ParsedToolCall"]) -> "PreparedToolCall | None":
-        return None
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self: ...
-
-    @classmethod
-    def make_for_runtime(cls, session: Session, runtime: AgentRuntime, args: list[str]) -> Self:
-        return cls.make(session, args)
 
     def requires_confirmation(self, session: Session) -> bool: ...
     def preview(self) -> str: ...
@@ -890,22 +874,18 @@ def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bo
     if include_result:
         lines.extend(["  output:", execution.output])
     elif execution.output:
-        lines.append("  output_summary: " + _format_recent_tool_call_output_summary(execution))
+        parts = []
+        line_count = _tool_output_line_count(execution.output)
+        if line_count or execution.output:
+            parts.append(str(line_count) + " lines, " + str(len(execution.output)) + " chars")
+        if execution.result_excerpted:
+            parts.append("excerpt")
+        if execution.result_key and execution.result_excerpted:
+            parts.append("use Recall(result_key) only if the excerpt is insufficient")
+        elif execution.output and not execution.result_key:
+            parts.append(_shorten(" ".join(execution.output.split()), 220))
+        lines.append("  output_summary: " + ("; ".join(parts) if parts else "ok"))
     return "\n".join(lines)
-
-
-def _format_recent_tool_call_output_summary(execution: ToolCallExecution) -> str:
-    parts: list[str] = []
-    line_count = _tool_output_line_count(execution.output)
-    if line_count or execution.output:
-        parts.append(str(line_count) + " lines, " + str(len(execution.output)) + " chars")
-    if execution.result_excerpted:
-        parts.append("excerpt")
-    if execution.result_key and execution.result_excerpted:
-        parts.append("use Recall(result_key) only if the excerpt is insufficient")
-    elif execution.output and not execution.result_key:
-        parts.append(_shorten(" ".join(execution.output.split()), 220))
-    return "; ".join(parts) if parts else "ok"
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -2646,16 +2626,8 @@ class ToolResultTool(Tool):
         ]
 
     @classmethod
-    def stores_result(cls) -> bool:
-        return False
-
-    @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         return cls(keys=args, results=session.state.tool_result_store)
-
-    @classmethod
-    def make_for_runtime(cls, session: Session, runtime: AgentRuntime, args: list[str]) -> Self:
-        return cls(keys=args, results=runtime.tool_result_store)
 
     def requires_confirmation(self, session: Session) -> bool:
         return False
@@ -3038,6 +3010,8 @@ class PromptBuilder:
                 "If Response_Language is empty, include response_language in the start action once. "
                 "Do not create a task or tool call for language detection. Examples: en-US, zh-CN, zh-TW, pt-BR, pt-PT, ja-JP.\n"
             )
+        user_request = current.user_input or "(empty)"
+        fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
         return self.user_prompt_template.format(
             environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
@@ -3052,7 +3026,7 @@ class PromptBuilder:
             verification_state=self.context.verification.format() if self.context.verification is not None else "(empty)",
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
-            user_request=_format_fenced_text(current.user_input or "(empty)"),
+            user_request=fence + "text\n" + user_request + "\n" + fence,
         ).strip()
 
     def _format_tools(self) -> str:
@@ -3576,7 +3550,7 @@ class ToolCallRunner:
                 call = self._invalid_tool_call(item)
             result_key = ""
             result_excerpted = False
-            if self._stores_tool_result(call):
+            if call.name != ToolResultTool.name():
                 result_key = self._store_tool_result(call, outcome, output)
                 item = self.runtime.tool_result_store[result_key]
                 output = item.value
@@ -3716,12 +3690,9 @@ class ToolCallRunner:
         return merged
 
     def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
-        if not isinstance(item, ParsedToolCall):
+        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.name() or not self._is_tool_allowed(item.name):
             return None
-        tool_class = TOOL_REGISTRY.get(item.name)
-        if tool_class is None or not self._is_tool_allowed(item.name):
-            return None
-        key = tool_class.merge_key(item)
+        key = ReplaceRangeTool.merge_key(item)
         if key is None:
             return None
         return (item.name, key)
@@ -3730,10 +3701,9 @@ class ToolCallRunner:
         parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
         if len(parsed_group) != len(group):
             return None
-        tool_class = TOOL_REGISTRY.get(parsed_group[0].name)
-        if tool_class is None or not self._is_tool_allowed(parsed_group[0].name):
+        if parsed_group[0].name != ReplaceRangeTool.name() or not self._is_tool_allowed(parsed_group[0].name):
             return None
-        return tool_class.merge_calls(self.session, parsed_group)
+        return ReplaceRangeTool.merge_calls(self.session, parsed_group)
 
     def format_latest_report(self) -> str:
         return ToolCallDisplayFormatter.latest_report(self.latest_executions)
@@ -3803,17 +3773,15 @@ class ToolCallRunner:
             return "invalid tool action: missing required field name"
         return "invalid tool action"
 
-    def _stores_tool_result(self, call: ParsedToolCall) -> bool:
-        tool_class = TOOL_REGISTRY.get(call.name)
-        return tool_class is None or tool_class.stores_result()
-
     def _make_tool(self, call: ParsedToolCall) -> Tool:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
         if not self._is_tool_allowed(call.name):
             raise ToolCallArgError("tool not allowed for this agent: " + call.name)
-        return tool_class.make_for_runtime(self.session, self.runtime, call.args)
+        if tool_class is ToolResultTool:
+            return ToolResultTool(keys=call.args, results=self.runtime.tool_result_store)
+        return tool_class.make(self.session, call.args)
 
     def _is_tool_allowed(self, name: str) -> bool:
         return self.allowed_tools is None or name in self.allowed_tools
@@ -4155,7 +4123,7 @@ class AgentStateUpdater:
         for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
             kind = _json_str(data.get("kind"))
             if kind is not None:
-                self.blackboard.verification.kind = kind if _is_valid_verification_kind(kind) else ""
+                self.blackboard.verification.kind = kind if kind and all(part in VALID_VERIFICATION_KINDS for part in kind.split("+")) else ""
             criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
             if "criteria" in data:
                 self.blackboard.verification.criteria = criteria
@@ -4261,20 +4229,7 @@ class ConversationCompactor:
 ############################
 
 
-class VerificationKind(StrEnum):
-    SYNTAX_CHECK = "syntax_check"
-    CHANGE_SYNTAX_CHECK = "change_syntax_check"
-    LINT = "lint"
-    TEST = "test"
-    BUILD = "build"
-    CHANGE_CHECK = "change_check"
-    OTHER = "other"
-
-
-def _is_valid_verification_kind(kind: str) -> bool:
-    valid_kinds = {item.value for item in VerificationKind}
-    parts = kind.split("+")
-    return bool(kind) and all(part in valid_kinds for part in parts)
+VALID_VERIFICATION_KINDS: set[str] = {"syntax_check", "change_syntax_check", "lint", "test", "build", "change_check", "other"}
 
 
 
@@ -4867,7 +4822,7 @@ class Agent:
         if verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.BLOCKED}:
             return
         verification.status = VerificationStatus.REQUIRED
-        verification.kind = verification.kind or VerificationKind.CHANGE_SYNTAX_CHECK
+        verification.kind = verification.kind or "change_syntax_check"
         verification.method = verification.method or self.blackboard.goal or self.blackboard.user_input
         if not verification.criteria:
             verification.criteria = ["changed files pass the smallest relevant syntax or compile check"]
@@ -6043,12 +5998,6 @@ class AgentLoop:
 
 def _format_lines(lines: list[str], indent: str) -> str:
     return "\n".join([(indent + line) for line in lines])
-
-
-def _format_fenced_text(text: str, info: str = "text") -> str:
-    longest = max((len(match.group(0)) for match in re.finditer(r"`{3,}", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return fence + info + "\n" + text + "\n" + fence
 
 
 def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str:
