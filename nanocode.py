@@ -42,7 +42,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from typing_extensions import override
 
-__version__ = "0.3.14"
+__version__ = "0.3.15"
 
 
 JsonValue: TypeAlias = Any
