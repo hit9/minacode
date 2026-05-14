@@ -2,7 +2,7 @@ import os
 
 import shutil
 
-from nanocode import Config, MainAgent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, UserMessage
+from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, UserMessage
 
 
 class FakeModelClient:
@@ -10,7 +10,7 @@ class FakeModelClient:
         self.summary = summary
         self.requests = []
 
-    def request(self, system_prompt, user_prompt, *, activity="main"):
+    def request(self, system_prompt, user_prompt, *, activity="agent"):
         self.requests.append((system_prompt, user_prompt, activity))
         return {"summary": self.summary}
 
@@ -24,7 +24,7 @@ def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compa
 
 def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     session = make_session(tmp_path, model="old", compact_at=100)
-    agent = MainAgent(session)
+    agent = Agent(session)
     fake_client = FakeModelClient()
     agent.compactor.model_client = fake_client
     dispatcher = CommandDispatcher(agent)
@@ -63,7 +63,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     session.state.last_total_tokens = 1200
     session.state.session_total_tokens = 2_345_678
     session.state.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678)
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/status")
 
@@ -79,7 +79,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
 def test_set_command_shows_and_validates_runtime_config(tmp_path):
     session = make_session(tmp_path, stream=True)
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
 
     status_result = dispatcher.dispatch("/set model.stream")
     off_result = dispatcher.dispatch("/set model.stream off")
@@ -96,20 +96,20 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
 
 
 def test_config_command_reports_resolved_model_config(tmp_path):
-    session = make_session(tmp_path, model="main-model")
-    dispatcher = CommandDispatcher(MainAgent(session))
+    session = make_session(tmp_path, model="config-model")
+    dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/config")
 
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
-    assert "model.model: main-model" in result.message
+    assert "model.model: config-model" in result.message
     assert "model.first_token_timeout: 60" in result.message
     assert "runtime.max_agent_steps: 100" in result.message
 
 
 def test_blackboard_command_is_not_registered(tmp_path):
-    dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))))
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
 
     result = dispatcher.dispatch("/blackboard")
 
@@ -120,7 +120,7 @@ def test_blackboard_command_is_not_registered(tmp_path):
 def test_rules_command_shows_rules_content(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.state.user_rules.add("Prompt-only changes do not need tests.")
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/rules")
 
@@ -129,7 +129,7 @@ def test_rules_command_shows_rules_content(tmp_path):
 
 
 def test_knowledge_command_shows_stable_knowledge(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     dispatcher = CommandDispatcher(agent)
 
     empty_result = dispatcher.dispatch("/knowledge")
@@ -156,7 +156,7 @@ def test_knowledge_command_shows_stable_knowledge(tmp_path):
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
     session = make_session(tmp_path, compact_at=2)
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.compactor.model_client = FakeModelClient()
     dispatcher = CommandDispatcher(agent)
     session.state.conversation = [
@@ -178,7 +178,7 @@ def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(
 
 def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
     session = make_session(tmp_path, compact_at=2)
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.compactor.model_client = FakeModelClient()
     session.state.conversation = [
         UserMessage(content="old"),
@@ -206,7 +206,7 @@ def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
 
 def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
     session = make_session(tmp_path, compact_at=100)
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.compactor.model_client = FakeModelClient()
     session.state.conversation = [
         UserMessage(content="old"),
@@ -227,7 +227,7 @@ def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
 
 
 def test_command_dispatcher_reports_unhandled_input(tmp_path):
-    dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))))
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
 
     result = dispatcher.dispatch("regular user request")
 
@@ -237,7 +237,7 @@ def test_command_dispatcher_reports_unhandled_input(tmp_path):
 
 def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     prompts = []
-    dispatcher = CommandDispatcher(MainAgent(Session(cwd=str(tmp_path))), run_agent=prompts.append)
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))), run_agent=prompts.append)
 
     result = dispatcher.dispatch("/help how does compact work?")
 
@@ -262,7 +262,7 @@ def test_clean_logs_command_removes_log_files(tmp_path):
     with open(other, "w"):
         pass
 
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean-logs")
 
     assert result.status == CommandStatus.HANDLED
@@ -279,7 +279,7 @@ def test_clean_logs_command_no_directory(tmp_path):
     if os.path.exists(tool_results_dir):
         shutil.rmtree(tool_results_dir)
 
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean-logs")
 
     assert result.status == CommandStatus.HANDLED
@@ -291,7 +291,7 @@ def test_clean_logs_command_empty_directory(tmp_path):
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean-logs")
 
     assert result.status == CommandStatus.HANDLED
@@ -303,7 +303,7 @@ def test_clean_logs_command_with_args_returns_usage(tmp_path):
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
-    dispatcher = CommandDispatcher(MainAgent(session))
+    dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean-logs extra-arg")
 
     assert result.status == CommandStatus.HANDLED
@@ -335,7 +335,7 @@ def test_clean_logs_command_reports_failed_deletions(tmp_path):
 
     import unittest.mock
     with unittest.mock.patch("os.remove", side_effect=mock_remove):
-        dispatcher = CommandDispatcher(MainAgent(session))
+        dispatcher = CommandDispatcher(Agent(session))
         result = dispatcher.dispatch("/clean-logs")
 
     assert result.status == CommandStatus.HANDLED

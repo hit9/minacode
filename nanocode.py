@@ -290,7 +290,7 @@ class UserRules(PromptItem):
 
 
 @dataclass
-class MainBlackboard:
+class Blackboard:
     user_input: str = ""
     goal: str = ""
     goal_reached: bool = False
@@ -542,7 +542,7 @@ class AgentRuntime:
 
 @dataclass
 class PromptContext:
-    blackboard: MainBlackboard
+    blackboard: Blackboard
     runtime: AgentRuntime
     verification: Verification | None = None
 
@@ -2773,10 +2773,10 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 
 
 ############################
-# MainAgent Prompt
+# Agent Prompt
 ############################
 
-MAIN_AGENT_SYSTEM_PROMPT = """You are the main coding agent in an AI coding assistant.
+AGENT_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
 
 HARD RULES:
 - Output JSON actions only. No prose outside actions. No native/function tool calls.
@@ -2841,7 +2841,7 @@ TARGET DISCOVERY:
 - Do not do broad project surveys; locate only the concrete targets needed for the next plan step.
 
 VERIFICATION:
-- Main verifies directly; there is no separate verification agent.
+- Verify directly; there is no separate verification agent.
 - Use the smallest relevant tool call for verification, then record the result with verify status=passed|failed|blocked.
 - verify must include:
   - kind
@@ -2942,7 +2942,7 @@ TOOL SPECS:
 { __tools__ }
 """
 
-MAIN_AGENT_USER_PROMPT_TEMPLATE = """
+AGENT_USER_PROMPT_TEMPLATE = """
 --- Context ---
 
 ### Environment
@@ -2997,7 +2997,7 @@ YOUR OUTPUT:
 """
 
 
-MAIN_AGENT_OBSERVE_SYSTEM_PROMPT = """You are the main coding agent in an AI coding assistant.
+AGENT_OBSERVE_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
 Your ONLY job: digest volatile results before they leave the prompt window.
 
 Must:
@@ -3039,7 +3039,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 SUMMARIZER_AGENT_COMPACT_PROMPT = """You are nanocode's conversation-history compactor.
 
-Compress conversation history and Known facts so the main coding agent can continue later.
+Compress conversation history and Known facts so the coding agent can continue later.
 Do not solve the task or add unsupported facts.
 
 Preserve continuity-critical facts:
@@ -3084,8 +3084,8 @@ class PromptBuilder:
         self,
         session: Session,
         *,
-        system_prompt_template: str = MAIN_AGENT_SYSTEM_PROMPT,
-        user_prompt_template: str = MAIN_AGENT_USER_PROMPT_TEMPLATE,
+        system_prompt_template: str = AGENT_SYSTEM_PROMPT,
+        user_prompt_template: str = AGENT_USER_PROMPT_TEMPLATE,
         allowed_tools: set[str] | None = None,
         context: PromptContext | None = None,
         allow_response_language_bootstrap: bool = False,
@@ -3096,7 +3096,7 @@ class PromptBuilder:
         self.allowed_tools = allowed_tools
         self.allow_response_language_bootstrap = allow_response_language_bootstrap
         self.context = context or PromptContext(
-            blackboard=MainBlackboard(),
+            blackboard=Blackboard(),
             runtime=AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter),
         )
 
@@ -3227,7 +3227,7 @@ class ModelClient:
     def _request_config(self) -> ModelConfig:
         return self.session.model_config(self.model_config)
 
-    def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "main") -> Json:
+    def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "agent") -> Json:
         return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
 
     def request(
@@ -3235,7 +3235,7 @@ class ModelClient:
         system_prompt: str,
         user_prompt: str,
         *,
-        activity: str = "main",
+        activity: str = "agent",
         parse_actions: bool = True,
     ) -> Json:
         if not self.session.config.api.url:
@@ -3954,7 +3954,7 @@ class ToolCallRunner:
 
 
 ############################
-# MainAgent State
+# Agent State
 ############################
 
 
@@ -3962,7 +3962,7 @@ STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow"
 
 
 @final
-class MainAgentStateUpdater:
+class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     MAX_KNOWN_ITEMS: ClassVar[int] = 500
     MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
@@ -3970,7 +3970,7 @@ class MainAgentStateUpdater:
     def __init__(
         self,
         session: Session,
-        blackboard: MainBlackboard,
+        blackboard: Blackboard,
     ):
         self.session = session
         self.blackboard = blackboard
@@ -4363,7 +4363,7 @@ class ConversationCompactor:
     KEEP_RECENT: ClassVar[int] = 5
     MAX_COMPACTED_KNOWN_ITEMS: ClassVar[int] = 150
 
-    def __init__(self, session: Session, model_client: ModelClient, blackboard: MainBlackboard):
+    def __init__(self, session: Session, model_client: ModelClient, blackboard: Blackboard):
         self.session = session
         self.model_client = model_client
         self.blackboard = blackboard
@@ -4430,12 +4430,12 @@ def _is_valid_verification_kind(kind: str) -> bool:
 
 
 ############################
-# MainAgent
+# Agent
 ############################
 
 
 @dataclass(frozen=True)
-class MainResponseContext:
+class ResponseContext:
     response: Json
     actions: list[Json]
     goal_was_empty: bool
@@ -4454,7 +4454,7 @@ class MainResponseContext:
     state_or_work_requested: bool
 
 
-MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
+AGENT_ALLOWED_TOOLS: set[str] = {
     ReadTool.name(),
     LineCountTool.name(),
     ListDirTool.name(),
@@ -4470,17 +4470,17 @@ MAIN_AGENT_ALLOWED_TOOLS: set[str] = {
 
 
 ############################
-# MainAgent Runtime
+# Agent Runtime
 ############################
 
 
 @final
-class MainAgent:
+class Agent:
     MAX_CONSECUTIVE_FORMAT_ERRORS: ClassVar[int] = 3
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
-    blackboard: MainBlackboard
+    blackboard: Blackboard
     ACT_ACTION_TYPES: ClassVar[set[str]] = {
         "chat",
         "start",
@@ -4501,19 +4501,19 @@ class MainAgent:
 
     def __init__(self, session: Session):
         self.session = session
-        self.blackboard = MainBlackboard()
+        self.blackboard = Blackboard()
         self.runtime = AgentRuntime(tool_result_store=session.state.tool_result_store, tool_result_counter=session.state.tool_result_counter)
-        self.activity = "main"
+        self.activity = "agent"
         self.prompt_context = PromptContext(blackboard=self.blackboard, runtime=self.runtime, verification=self.blackboard.verification)
         self.prompt_builder = PromptBuilder(
             session,
-            allowed_tools=MAIN_AGENT_ALLOWED_TOOLS,
+            allowed_tools=AGENT_ALLOWED_TOOLS,
             context=self.prompt_context,
             allow_response_language_bootstrap=True,
         )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=MAIN_AGENT_ALLOWED_TOOLS)
-        self.state_updater = MainAgentStateUpdater(session, self.blackboard)
+        self.tool_runner = ToolCallRunner(session, runtime=self.runtime, allowed_tools=AGENT_ALLOWED_TOOLS)
+        self.state_updater = AgentStateUpdater(session, self.blackboard)
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.latest_tool_call_executions: list[ToolCallExecution] = []
         self.latest_tool_call_blocks: list[str] = []
@@ -4525,7 +4525,7 @@ class MainAgent:
 
     def build_system_prompt(self) -> str:
         if self.mode == AgentMode.OBSERVE:
-            return MAIN_AGENT_OBSERVE_SYSTEM_PROMPT.strip()
+            return AGENT_OBSERVE_SYSTEM_PROMPT.strip()
         return self.prompt_builder.system_prompt()
 
     def build_user_prompt(self) -> str:
@@ -4539,7 +4539,7 @@ class MainAgent:
         system_prompt: str,
         user_prompt: str,
         *,
-        activity: str = "main",
+        activity: str = "agent",
         on_message: MessageCallback | None = None,
     ) -> Json:
         for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
@@ -4914,7 +4914,7 @@ class MainAgent:
         return (
             "Error: pending verify is invalid: "
             + reason
-            + ". Rule: run verification with main tool actions directly, then return verify status=\"passed\"|\"failed\"|\"blocked\"."
+            + ". Rule: run verification with tool actions directly, then return verify status=\"passed\"|\"failed\"|\"blocked\"."
         )
 
     def _format_agent_feedback_verified_but_not_complete_error(self) -> str:
@@ -4922,7 +4922,7 @@ class MainAgent:
 
     def _format_agent_feedback_empty_actions_error(self) -> str:
         return (
-            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful main action and optional progress field, or final goal action."
+            "Error: returned no actions while the goal is incomplete. Rule: continue with a useful agent action and optional progress field, or final goal action."
         )
 
     def _format_agent_feedback_completion_without_message_error(self) -> str:
@@ -4942,7 +4942,7 @@ class MainAgent:
             return "status=pending is not supported in single-agent mode"
         return ""
 
-    def _build_response_context(self, response: Json) -> MainResponseContext:
+    def _build_response_context(self, response: Json) -> ResponseContext:
         actions = self._response_actions(response)
         tool_calls = self._tool_calls_from_actions(actions)
         pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
@@ -4950,7 +4950,7 @@ class MainAgent:
         has_goal_action = self._has_goal_action(actions)
         has_plan_action = self._has_plan_action(actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
-        return MainResponseContext(
+        return ResponseContext(
             response=response,
             actions=actions,
             goal_was_empty=not self.blackboard.goal,
@@ -4969,7 +4969,7 @@ class MainAgent:
             state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action),
         )
 
-    def _handle_chat_response(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+    def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.chat_message is None:
             return None
         self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
@@ -4977,13 +4977,13 @@ class MainAgent:
             on_message(ctx.chat_message)
         return AgentRunResult(done=True, value=ctx.response)
 
-    def _gate_before_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> bool:
+    def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         action_gate = self._gate_action_types(
             ctx.actions,
             allowed=self.ACT_ACTION_TYPES,
             on_message=on_message,
-            retry_message="Retrying: use a valid main action.",
-            feedback_message="Error: this step only accepts main work actions.",
+            retry_message="Retrying: use a valid agent action.",
+            feedback_message="Error: this step only accepts agent work actions.",
         )
         if action_gate is not None:
             return True
@@ -5021,14 +5021,14 @@ class MainAgent:
         if frame_error_report:
             on_message(frame_error_report)
 
-    def _emit_state_and_progress(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> None:
+    def _emit_state_and_progress(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
             on_message(self.state_updater.latest_report)
         if on_message is not None:
             for message in ctx.progress_messages:
                 on_message(message)
 
-    def _gate_after_apply(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+    def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.plan_was_empty and not self.blackboard.plan and (ctx.tool_calls or ctx.pending_verify_requested):
             self._remember_agent_error(self._format_agent_feedback_missing_plan_error())
             self._report_gate(
@@ -5052,7 +5052,7 @@ class MainAgent:
             return AgentRunResult()
         return None
 
-    def _promote_required_verification(self, ctx: MainResponseContext) -> None:
+    def _promote_required_verification(self, ctx: ResponseContext) -> None:
         verification = self.blackboard.verification
         if not self.blackboard.verification_required or not self.blackboard.goal_reached:
             return
@@ -5067,7 +5067,7 @@ class MainAgent:
 
     def _run_tool_actions(
         self,
-        ctx: MainResponseContext,
+        ctx: ResponseContext,
         *,
         confirm: ConfirmCallback | None,
         on_auto_approve: ToolDisplayCallback | None,
@@ -5093,7 +5093,7 @@ class MainAgent:
 
     def _handle_observe_response(
         self,
-        ctx: MainResponseContext,
+        ctx: ResponseContext,
         response: Json,
         *,
         confirm: ConfirmCallback | None,
@@ -5130,7 +5130,7 @@ class MainAgent:
     def _observe_verify_error(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
 
-    def _finish_or_continue(self, ctx: MainResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
+    def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             self.blackboard.goal_reached = False
             self._remember_agent_error(self._format_agent_feedback_verification_error())
@@ -5349,7 +5349,7 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
 class CommandDispatcher:
     def __init__(
         self,
-        agent: MainAgent,
+        agent: Agent,
         run_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
     ):
@@ -5833,7 +5833,7 @@ class AgentLoop:
 
     def __init__(
         self,
-        agent: MainAgent,
+        agent: Agent,
         *,
         input_fn: Callable[[str], str] = input,
         output_fn: MessageCallback = print,
@@ -6454,7 +6454,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Missing config: " + ", ".join(missing), file=sys.stderr)
             print("Edit " + (os.path.expanduser(args.config) if args.config else ConfigFile.path()) + " or run `nanocode --init-config`.", file=sys.stderr)
             return 2
-        return AgentLoop(MainAgent(session)).run()
+        return AgentLoop(Agent(session)).run()
     except ConfigError as error:
         print("Error: " + str(error), file=sys.stderr)
         return 2

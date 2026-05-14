@@ -2,7 +2,7 @@ from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
 
 import nanocode
-from nanocode import AgentLoop, Config, ConfigFile, MainBlackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
+from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
@@ -71,7 +71,7 @@ url = "https://example.test/v1"
 key = "key"
 
 [model]
-model = "custom-main"
+model = "custom-model"
 
 [paths]
 nanocode_dir = ".custom-nanocode"
@@ -91,7 +91,7 @@ nanocode_dir = ".custom-nanocode"
     assert result == 0
     assert sessions[0].config.api.url == "https://example.test/v1"
     assert sessions[0].config.api.key == "key"
-    assert sessions[0].config.model.model == "custom-main"
+    assert sessions[0].config.model.model == "custom-model"
     assert sessions[0].config.paths.nanocode_dir == ".custom-nanocode"
 
 
@@ -325,7 +325,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
-            self.blackboard = MainBlackboard()
+            self.blackboard = Blackboard()
             self.runs = []
 
         def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):

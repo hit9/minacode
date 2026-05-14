@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import CreateFileTool, MainAgent, Session, ToolCallError
+from nanocode import CreateFileTool, Agent, Session, ToolCallError
 
 
 def test_create_file_tool_creates_missing_file(tmp_path):
@@ -40,7 +40,7 @@ def test_create_file_tool_rejects_existing_file(tmp_path):
 def test_main_agent_can_execute_create_file_tool(tmp_path):
     path = tmp_path / "created.txt"
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls(
         [{"name": "CreateFile", "intention": "create sample file", "args": ["created.txt", "alpha\n"]}],

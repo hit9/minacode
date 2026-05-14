@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import MainAgent, Session, ToolCallError, ToolResultItem, ToolResultTool
+from nanocode import Agent, Session, ToolCallError, ToolResultItem, ToolResultTool
 
 
 def test_tool_result_tool_gets_multiple_keys(tmp_path):
@@ -31,7 +31,7 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
 
 def test_known_action_accepts_string_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {

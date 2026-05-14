@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import MainAgent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
+from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
 
 
 def _fingerprint(read_result: str) -> str:
@@ -134,7 +134,7 @@ def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):
     session = Session(cwd=str(tmp_path))
     beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
     delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
-    agent = MainAgent(session)
+    agent = Agent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -258,7 +258,7 @@ def test_replace_range_cache_survives_goal_rewording(tmp_path):
     session = Session(cwd=str(tmp_path))
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
 
-    MainAgent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
+    Agent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
     ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA\n")).call()
 
@@ -270,14 +270,14 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.cancel_current_goal()
 
     assert len(session.state.range_fingerprints) == 1
 
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return {"actions": [{"type": "chat", "text": "done"}]}
 
     agent.model_client = FakeModelClient()
@@ -288,14 +288,14 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
 
 def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return {"actions": [{"type": "chat", "text": "done"}]}
 
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
 
     agent.run("new task")

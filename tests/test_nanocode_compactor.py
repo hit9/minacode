@@ -1,4 +1,4 @@
-from nanocode import MainAgent, AssistantMessage, Session, UserMessage
+from nanocode import Agent, AssistantMessage, Session, UserMessage
 
 
 class FakeModelClient:
@@ -7,7 +7,7 @@ class FakeModelClient:
         self.known = known
         self.requests = []
 
-    def request(self, system_prompt, user_prompt, *, activity="main"):
+    def request(self, system_prompt, user_prompt, *, activity="agent"):
         self.requests.append((system_prompt, user_prompt, activity))
         response = {"summary": self.summary}
         if self.known is not None:
@@ -17,7 +17,7 @@ class FakeModelClient:
 
 def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     fake_client = FakeModelClient("LLM kept the old user request and assistant note.")
     agent.compactor.model_client = fake_client
     agent.blackboard.known = ["old known", "keep known"]
@@ -49,7 +49,7 @@ def test_agent_compact_history_uses_llm_and_keeps_recent(tmp_path):
 
 def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     fake_client = FakeModelClient("summary", known=["known " + str(index) for index in range(35)])
     agent.compactor.model_client = fake_client
     agent.blackboard.known = ["old " + str(index) for index in range(40)]
@@ -74,7 +74,7 @@ def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
 
 def test_agent_compact_history_skips_when_not_over_keep_recent(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     fake_client = FakeModelClient()
     agent.compactor.model_client = fake_client
     session.state.conversation = [

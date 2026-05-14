@@ -1,7 +1,7 @@
 import json
 
 import nanocode
-from nanocode import MainAgent, LLMError, ParsedToolCall, Session, VerificationStatus
+from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
 
 
 def _verify_passed_action():
@@ -61,7 +61,7 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls(
         [
@@ -93,7 +93,7 @@ def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls(
         [
@@ -114,7 +114,7 @@ def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls(
         [
@@ -134,7 +134,7 @@ def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.execute_tool_calls(
         [
@@ -152,7 +152,7 @@ def test_agent_merges_adjacent_recall_calls(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
     session.state.tool_result_store["tr.2"] = nanocode.ToolResultItem(description="success Read b", value="beta")
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.execute_tool_calls(
         [
@@ -170,7 +170,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.execute_tool_calls(
         [
@@ -190,7 +190,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("H" * 5000 + "M" * 5000 + "T" * 5000 + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0", "1"]}])
 
@@ -212,7 +212,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.RECENT_TOOL_CALLS = 2
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
@@ -239,7 +239,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
 
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.RECENT_TOOL_CALL_CHARS = 80
 
     agent._append_recent_tool_call_blocks(["old call " + "x" * 40])
@@ -253,7 +253,7 @@ def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     for index in range(257):
         agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
@@ -292,7 +292,7 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, stream=False)
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
     assert captured["url"] == "https://example.test/v1/chat/completions"
@@ -313,7 +313,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             if self.calls <= 3:
                 raise LLMError("request model timeout")
@@ -321,7 +321,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     response = agent.request("system", "user")
@@ -337,7 +337,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             if self.calls <= 2:
                 raise LLMError("request model timeout")
@@ -346,7 +346,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
     sleeps = []
     messages = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     response = agent.request("system", "user", on_message=messages.append)
@@ -362,7 +362,7 @@ def test_agent_request_reports_model_timeout_retries(tmp_path, monkeypatch):
 
 
 def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     messages = []
 
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: first")
@@ -373,7 +373,7 @@ def test_agent_gate_reports_only_on_second_retry_in_non_debug(tmp_path):
 
 
 def test_agent_gate_reports_immediately_in_debug(tmp_path):
-    agent = MainAgent(_session(tmp_path, debug=True))
+    agent = Agent(_session(tmp_path, debug=True))
     messages = []
 
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: debug")
@@ -386,13 +386,13 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             raise LLMError("request model timeout")
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     try:
@@ -412,13 +412,13 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             raise LLMError("API request failed")
 
     sleeps = []
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
 
     try:
@@ -465,7 +465,7 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert captured["payload"]["stream"] is True
     assert captured["payload"]["stream_options"] == {"include_usage": True}
@@ -498,7 +498,7 @@ def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, m
     monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert response["actions"][0]["text"] == "ok"
     assert timers[0] == 90
@@ -524,7 +524,7 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12)
 
     try:
-        MainAgent(session).request("system", "user")
+        Agent(session).request("system", "user")
     except LLMError as error:
         assert str(error) == "request model timeout"
     else:
@@ -572,7 +572,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "read sample")
     messages = []
 
@@ -606,7 +606,7 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="model", reasoning_effort="high", stream=False)
 
-    MainAgent(session).request("system", "user")
+    Agent(session).request("system", "user")
 
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert "reasoning_effort" not in captured["payload"]
@@ -626,9 +626,9 @@ def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, debug=True, stream=False)
 
-    response = MainAgent(session).request("system prompt", "user prompt")
+    response = Agent(session).request("system prompt", "user prompt")
 
-    files = list((tmp_path / ".nanocode" / "debug").glob("*-0001-main.txt"))
+    files = list((tmp_path / ".nanocode" / "debug").glob("*-0001-agent.txt"))
     assert response["actions"][0]["text"] == "ok"
     assert len(files) == 1
     content = files[0].read_text(encoding="utf-8")
@@ -660,13 +660,13 @@ def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
 
 
 def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     assert client._parse_model_content('</think>{"type":"message","text":"ok"}\n__END_ACTION__') == {
         "actions": [{"type": "message", "text": "ok"}],
@@ -677,7 +677,7 @@ def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
 
 
 def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content(
         '{\n  "type": "message",\n  "text": "ok"\n}\n**END_ACTION**\n{"type":"goal","text":"next"}\nEND_ACTION'
@@ -687,7 +687,7 @@ def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path
 
 
 def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}__END_ACTION__{"type":"goal","text":"next"}__END_ACTION__')
 
@@ -695,7 +695,7 @@ def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
 
 
 def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}')
 
@@ -703,7 +703,7 @@ def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
 
 
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('plain answer\n__END_ACTION__\n{"type":"message","text":"ok"}\n__END_ACTION__')
 
@@ -712,7 +712,7 @@ def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tm
 
 
 def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
 
@@ -739,7 +739,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
     assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
@@ -747,7 +747,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
 
 
 def test_agent_request_rejects_unmarked_json_action_array(tmp_path):
-    client = MainAgent(Session(cwd=str(tmp_path))).model_client
+    client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('[{"type":"message","text":"ok"}]')
 
@@ -782,7 +782,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = MainAgent(session).request("system", "user")
+    response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
     assert "expected one JSON object" in response["_format_error"]
@@ -791,7 +791,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
 
 def test_agent_keeps_known_items_structured_in_current(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -814,7 +814,7 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
 
 def test_agent_dedupes_exact_known_facts(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -841,7 +841,7 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
 
 def test_agent_keeps_latest_500_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [], "known": ["fact " + str(index) for index in range(501)]}]})
 
@@ -852,7 +852,7 @@ def test_agent_keeps_latest_500_known_items(tmp_path):
 
 def test_main_agent_applies_stable_knowledge_action(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -878,7 +878,7 @@ def test_main_agent_applies_stable_knowledge_action(tmp_path):
 
 def test_main_agent_keeps_latest_30_stable_knowledge_items_per_category(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -898,7 +898,7 @@ def test_main_agent_keeps_latest_30_stable_knowledge_items_per_category(tmp_path
 
 def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
 
     prompt = agent.build_user_prompt()
@@ -908,7 +908,7 @@ def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
 
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response({"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests."}]})
 
@@ -920,7 +920,7 @@ def test_main_agent_applies_user_rule_and_saves(tmp_path):
 
 def test_user_rules_deduplicate(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -936,13 +936,13 @@ def test_user_rules_deduplicate(tmp_path):
 
 def test_main_agent_user_rule_finishes_with_message(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     class FakeModelClient:
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             return {
                 "actions": [
@@ -969,7 +969,7 @@ def test_main_agent_user_rule_finishes_with_message(tmp_path):
 
 def test_agent_ignores_known_items_without_fact(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -996,7 +996,7 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
 
 def test_agent_ignores_schema_placeholder_known_facts(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response({"actions": [{"type": "known", "items": ["<fact from latest tool results>", "Real fact."]}]})
 
@@ -1005,7 +1005,7 @@ def test_agent_ignores_schema_placeholder_known_facts(tmp_path):
 
 def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     response = {
         "actions": [
@@ -1033,7 +1033,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
 def test_agent_ignores_empty_plan_replace(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="Inspect file", status=nanocode.PlanStatus.TODO)]
 
     agent.apply_response({"actions": [{"type": "plan", "mode": "replace", "items": []}]})
@@ -1044,7 +1044,7 @@ def test_agent_ignores_empty_plan_replace(tmp_path):
 
 def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -1071,7 +1071,7 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
 
 def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.goal = "change map"
 
     agent.apply_response(
@@ -1092,7 +1092,7 @@ def test_agent_state_report_shows_goal_for_restarted_task_even_when_text_matches
 
 def test_agent_applies_response_language_from_start_action(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.apply_response(
         {
@@ -1112,7 +1112,7 @@ def test_agent_applies_response_language_from_start_action(tmp_path):
 
 def test_agent_resets_verification_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.goal = "old goal"
     agent.blackboard.verification.goal = "old goal"
     agent.blackboard.verification.status = VerificationStatus.DONE
@@ -1148,7 +1148,7 @@ def test_agent_resets_verification_when_goal_changes(tmp_path):
 
 
 def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.apply_response(
         {
@@ -1187,7 +1187,7 @@ def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path)
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -1207,7 +1207,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls(
         [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}],
@@ -1224,7 +1224,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     confirmations = []
 
     latest = agent.execute_tool_calls(
@@ -1239,7 +1239,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
 
 def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
@@ -1253,7 +1253,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
 
 def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}])
 
@@ -1265,7 +1265,7 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
 
 def test_agent_execute_bash_does_not_require_verification(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     agent.execute_tool_calls([{"name": "Bash", "intention": "run command", "args": ["true"]}], confirm=lambda call, tool: True)
 
@@ -1274,7 +1274,7 @@ def test_agent_execute_bash_does_not_require_verification(tmp_path):
 
 def test_agent_marks_nonzero_bash_exit_as_failed_tool_call(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"name": "Bash", "intention": "run failing command", "args": ["exit 7"]}], confirm=lambda call, tool: True)
 
@@ -1285,7 +1285,7 @@ def test_agent_marks_nonzero_bash_exit_as_failed_tool_call(tmp_path):
 
 def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0", "1"]}])
 
@@ -1296,7 +1296,7 @@ def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp
 def test_main_agent_accepts_search_tool(tmp_path):
     (tmp_path / "sample.py").write_text("class Foo:\n    pass\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
 
     latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": ["class Foo"]}])
 
@@ -1308,7 +1308,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
     session = _session(tmp_path, yolo=True)
-    agent = MainAgent(session)
+    agent = Agent(session)
     confirmations = []
     auto_approvals = []
 
@@ -1352,12 +1352,12 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "read sample")
     fake_client = FakeModelClient()
     agent.model_client = fake_client
@@ -1398,11 +1398,11 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
-    agent = MainAgent(Session(cwd=str(tmp_path)))
+    agent = Agent(Session(cwd=str(tmp_path)))
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1441,12 +1441,12 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "change sample")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1475,12 +1475,12 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
                 {"actions": _final_actions("read sample")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
 
@@ -1508,11 +1508,11 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
                 {"actions": _final_actions("read samples")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
@@ -1551,12 +1551,12 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
                 {"actions": _final_actions("read sample", "done too early")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1596,12 +1596,12 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
                 {"actions": _final_actions("read sample")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1644,11 +1644,11 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
                 {"actions": _final_actions("new goal")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.goal = "old goal"
     agent.blackboard.plan = [nanocode.PlanItem(id="old", text="Old plan")]
     agent.model_client = FakeModelClient()
@@ -1672,12 +1672,12 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1695,12 +1695,12 @@ def test_agent_run_stops_after_chat_action(tmp_path):
         def __init__(self):
             self.user_prompts = []
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return {"actions": [{"type": "chat", "text": "你好"}]}
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "你好")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1720,11 +1720,11 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1743,11 +1743,11 @@ def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
 
@@ -1767,11 +1767,11 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
@@ -1797,12 +1797,12 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
                 {"actions": _final_actions("change file")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent)
     agent.model_client = FakeModelClient()
     messages = []
@@ -1825,12 +1825,12 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent)
     agent.model_client = FakeModelClient()
     messages = []
@@ -1854,12 +1854,12 @@ def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -1881,12 +1881,12 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("answer")
@@ -1896,7 +1896,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
     assert agent.agent_feedback_errors
 
     class ChatModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return {"actions": [{"type": "chat", "text": "ok"}]}
 
     agent.model_client = ChatModelClient()
@@ -1915,12 +1915,12 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent)
     agent.model_client = FakeModelClient()
 
@@ -1949,11 +1949,11 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     _seed_plan(agent)
     agent.model_client = FakeModelClient()
 
@@ -1973,14 +1973,14 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
                 KeyboardInterrupt(),
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             response = self.responses.pop(0)
             if isinstance(response, KeyboardInterrupt):
                 raise response
             return response
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
@@ -2005,7 +2005,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     assert agent.blackboard.goal_reached is False
 
     class ChatModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return {"actions": [{"type": "chat", "text": "ok"}]}
 
     agent.model_client = ChatModelClient()
@@ -2023,12 +2023,12 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
 
     response = agent.run("answer")
@@ -2047,11 +2047,11 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
                 }
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2061,7 +2061,7 @@ def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
     assert messages[-1] == "done"
 
     debug_session = _session(tmp_path, debug=True)
-    debug_agent = MainAgent(debug_session)
+    debug_agent = Agent(debug_session)
     debug_agent.model_client = FakeModelClient()
     debug_messages = []
 
@@ -2079,11 +2079,11 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             return self.responses.pop(0)
 
     session = _session(tmp_path, debug=True)
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2097,12 +2097,12 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
             return {"_format_error": "Invalid model output: missing content", "actions": []}
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2113,7 +2113,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
     else:
         raise AssertionError("expected LLMError")
 
-    assert agent.model_client.calls == MainAgent.MAX_CONSECUTIVE_FORMAT_ERRORS
+    assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
     assert "model returned invalid output 3 times in a row" in message
     assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
 
@@ -2127,12 +2127,12 @@ def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2154,12 +2154,12 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2190,12 +2190,12 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -2219,12 +2219,12 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="main"):
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
-    agent = MainAgent(session)
+    agent = Agent(session)
     agent.model_client = FakeModelClient()
     messages = []
 
