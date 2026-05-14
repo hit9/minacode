@@ -1303,6 +1303,8 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert latest.startswith("- ok")
     assert path.read_text(encoding="utf-8") == "new\n"
     assert agent.blackboard.verification_required is True
+    assert agent.runtime.recent_edits == ["- sample.txt: edit sample"]
+    assert "### Recent Edits\n- sample.txt: edit sample\n\n--- Current Task ---" in agent.build_user_prompt()
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):

@@ -486,6 +486,7 @@ class AgentRuntime:
     tool_result_counter: int = 0
     last_readonly_call_key: tuple[str, tuple[str, ...]] | None = None
     last_readonly_result_key: str = ""
+    recent_edits: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2682,6 +2683,9 @@ AGENT_USER_PROMPT_TEMPLATE = """
 ### Recent Tool Calls
 {recent_tool_calls}
 
+### Recent Edits
+{recent_edits}
+
 --- Current Task ---
 
 ### Goal
@@ -2831,6 +2835,7 @@ class PromptBuilder:
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
+            recent_edits="\n".join(self.runtime.recent_edits) if self.runtime.recent_edits else "(empty)",
             user_request=fence + "text\n" + user_request + "\n" + fence,
         ).strip()
 
@@ -4013,6 +4018,7 @@ class Agent:
     }
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal"}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
+    RECENT_EDITS: ClassVar[int] = 20
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
 
@@ -4285,6 +4291,19 @@ class Agent:
             )
         if execution.requires_verification:
             self.blackboard.verification_required = True
+            self._remember_recent_edit(execution)
+
+    def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
+        if not execution.call.args:
+            return
+        filepath = self.session.resolve_path(execution.call.args[0])
+        try:
+            path = os.path.relpath(filepath, self.session.cwd)
+        except ValueError:
+            path = filepath
+        intention = " ".join(execution.call.intention.split()) or execution.call.name
+        self.runtime.recent_edits.append("- " + path + ": " + _shorten(intention, 160))
+        self.runtime.recent_edits = self.runtime.recent_edits[-self.RECENT_EDITS :]
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
