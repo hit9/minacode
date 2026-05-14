@@ -237,7 +237,7 @@ class ToolResultItem(PromptItem):
         if self.excerpted:
             lines.append("  excerpted: true")
             if details_hint and result_key:
-                lines.append('  details: use Recall("' + result_key + '") only if the visible excerpt is insufficient')
+                lines.append('  details: use tool action Recall("' + result_key + '") only if the visible excerpt is insufficient')
         if include_content:
             lines.append("  content:")
             lines.append("  <content>")
@@ -876,7 +876,7 @@ def _format_recent_tool_call(execution: ToolCallExecution, *, include_result: bo
         if execution.result_excerpted:
             parts.append("excerpt")
         if execution.result_key and execution.result_excerpted:
-            parts.append("use Recall(result_key) only if the excerpt is insufficient")
+            parts.append("use tool action Recall(result_key) only if the excerpt is insufficient")
         elif execution.output and not execution.result_key:
             parts.append(_shorten(" ".join(execution.output.split()), 220))
         lines.append("  output_summary: " + ("; ".join(parts) if parts else "ok"))
@@ -2520,6 +2520,8 @@ OUTPUT CONTRACT:
 - No native/function tool calls.
 - Separate multiple actions with __END_ACTION__.
 - Tool actions must include name, intention, and args.
+- Valid action types are chat, start, goal, plan, known, stable_knowledge, progress, user_rule, tool, verify.
+- Tool names like Read, Search, Edit, Git, and Recall are values for tool.name, not action types.
 
 LANGUAGE:
 - Use the latest user language for user-facing text.
@@ -2572,7 +2574,7 @@ Choose the first matching action type, then stop.
    After edits or explicit check/test/build requests, verify with the smallest relevant check.
    If the exact requested check already succeeded in recent results, record passed instead of rerunning.
 
-7. repair
+7. tool / plan
    If verification failed, fix only the reported issue.
 
 8. goal
@@ -2622,7 +2624,7 @@ TOOLS:
 - Prefer dedicated tools over Bash.
 - Bash is only for explicit shell commands or when no dedicated tool exists.
 - Git is for status, diff, history, and changed files.
-- Recall is for stored result keys; batch distinct keys and recall each needed key at most once.
+- Use tool action with name Recall for stored result keys; batch distinct keys and recall each needed key at most once.
 - Search/ListDir/LineCount locate unknown targets.
 - Read inspects known paths/ranges.
 - Batch independent related tool calls.
@@ -2744,7 +2746,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "progress", "text": "<optional short progress>"} __END_ACTION__
-{"type": "plan", "mode": "replace|patch", "items": [{"op": "add|update|remove", "id": "<plan id>", "after": null|"<previous plan id>", "text": null|"<plan step>", "status": null|"todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
+{"type": "plan", "items": [{"id": "<plan id>", "text": "<plan step>", "status": "todo|doing|done|blocked", "context": null|"<short context>"}]} __END_ACTION__
 {"type": "verify", "kind": "syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind", "method": null|"<short target label>", "criteria": ["<explicit criterion>"], "status": "passed|failed|blocked", "context": null|"<verification result>"} __END_ACTION__
 {"type": "goal", "text": "<current task goal>", "complete": true|false, "message_for_complete": null|"<final user message>", "known": ["<new durable fact>"]} __END_ACTION__
 """
@@ -4332,7 +4334,30 @@ class Agent:
         return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
-        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+        return [self._normalize_action_alias(action) for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+
+    def _normalize_action_alias(self, action: Json) -> Json:
+        alias_name = self._tool_name_for_action_alias(action)
+        if not alias_name:
+            return action
+        normalized = dict(action)
+        normalized["type"] = "tool"
+        normalized["name"] = alias_name
+        if "args" not in normalized:
+            keys = _json_list(normalized.get("keys"))
+            key = _json_str(normalized.get("key"))
+            normalized["args"] = keys if keys else ([key] if key else [])
+        normalized["intention"] = _json_str(normalized.get("intention")) or ("recall stored tool result" if alias_name == ToolResultTool.name() else "run " + alias_name)
+        return normalized
+
+    def _tool_name_for_action_alias(self, action: Json) -> str:
+        action_type = _json_str(action.get("type")) or ""
+        name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == action_type.lower()), "")
+        if not name:
+            return ""
+        if name == ToolResultTool.name() or "args" in action:
+            return name
+        return ""
 
     def _gate_action_types(
         self,

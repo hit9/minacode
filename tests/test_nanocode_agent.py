@@ -163,6 +163,33 @@ def test_agent_merges_adjacent_recall_calls(tmp_path):
     assert agent.tool_runner.latest_executions[0].call.args == ["tr.1", "tr.2"]
 
 
+def test_agent_accepts_recall_action_alias(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
+    agent = Agent(session)
+    _seed_plan(agent, "recall result")
+
+    result = agent.handle_response({"actions": [{"type": "recall", "key": "tr.1"}]})
+
+    assert result.done is False
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].call.name == "Recall"
+    assert agent.tool_runner.latest_executions[0].call.args == ["tr.1"]
+    assert "alpha" in agent.latest_tool_call_blocks[0]
+
+
+def test_agent_accepts_tool_name_action_alias_with_args(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "read sample")
+
+    result = agent.handle_response({"actions": [{"type": "read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]})
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions[0].call.name == "Read"
+    assert "alpha" in agent.latest_tool_call_blocks[0]
+
+
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
