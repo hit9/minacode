@@ -4350,7 +4350,7 @@ class Agent:
         self._report_gate(
             on_message,
             retry_message,
-            "agent_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
+            "ActionType_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
         )
         return AgentRunResult()
 
@@ -4477,7 +4477,7 @@ class Agent:
             self._report_gate(
                 on_message,
                 "Retrying: set goal and plan before tools.",
-                "Goal_Gate: Goal is empty before task state/work.",
+                "GoalPlan_Gate: Goal is empty before task state/work.",
             )
             return True
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
@@ -4485,7 +4485,7 @@ class Agent:
             self._report_gate(
                 on_message,
                 "Retrying: new goal requires a fresh plan.",
-                "Plan_Gate: Goal changed without replacing Plan.",
+                "GoalPlan_Gate: Goal changed without replacing Plan.",
             )
             return True
         return False
@@ -4510,7 +4510,7 @@ class Agent:
             self._report_gate(
                 on_message,
                 "Retrying: create a short plan before tools.",
-                "Plan_Gate: Plan is empty before tool/verify.",
+                "GoalPlan_Gate: Plan is empty before tool/verify.",
             )
             return AgentRunResult()
 
@@ -4594,7 +4594,7 @@ class Agent:
             self._report_gate(
                 on_message,
                 "Retrying: observe latest results before new verification.",
-                "Observe_Gate: verify status=pending is not allowed while digesting latest results.",
+                "Verification_Gate: verify status=pending is not allowed while digesting latest results.",
             )
             return AgentRunResult()
         self._emit_debug_frame_errors(response, on_message)
@@ -4608,13 +4608,22 @@ class Agent:
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             self.blackboard.goal_reached = False
-            self._remember_agent_error(
-                'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
-            )
+            if self.blackboard.verification_required:
+                self._remember_agent_error(
+                    'Error: edited files must be verified before completion. Rule: run the smallest relevant check, then return verify status="passed"|"blocked" with context before goal complete=true.'
+                )
+                retry_message = "Retrying: verify edited files before completion."
+                debug_message = "Verification_Gate: edit completion requires verification."
+            else:
+                self._remember_agent_error(
+                    'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
+                )
+                retry_message = "Retrying: verification is required before completion."
+                debug_message = "Verification_Gate: retrying until verification is passed or blocked."
             self._report_gate(
                 on_message,
-                "Retrying: verification is required before completion.",
-                "Verification_Gate: retrying until verification is passed or blocked.",
+                retry_message,
+                debug_message,
             )
             return AgentRunResult()
         if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
@@ -4650,7 +4659,7 @@ class Agent:
             self._report_gate(
                 on_message,
                 "Continuing: assistant must set current task's goal.",
-                "Continuation_Gate: goal not reached; retrying next useful action.",
+                "GoalPlan_Gate: goal not reached; retrying next useful action.",
             )
         return AgentRunResult()
 

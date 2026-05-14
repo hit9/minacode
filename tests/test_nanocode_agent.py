@@ -1458,6 +1458,21 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     assert messages[-1] == "done"
 
 
+def test_agent_reports_edit_verification_gate_in_debug(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "change sample")
+    agent.blackboard.goal_reached = True
+    agent.blackboard.verification_required = True
+    agent.blackboard.verification.status = VerificationStatus.REQUIRED
+    ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
+    messages = []
+
+    result = agent._finish_or_continue(ctx, messages.append)
+
+    assert result.done is False
+    assert messages == ["Verification_Gate: edit completion requires verification."]
+
+
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
