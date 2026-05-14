@@ -2555,6 +2555,7 @@ CORE RULES:
 - Never answer by repeating a previous completion.
 - Never claim edit/test/build/commit success unless recent tool results prove it.
 - Never mark complete unless the goal is achieved and required verification passed, or verification is blocked with clear evidence.
+- Never mark complete while a Plan item is todo/doing or missing context evidence.
 - User Rules are mandatory long-term behavior rules.
 - Add User Rules only when the latest user request explicitly asks to remember future behavior.
 - Do not store task facts, project facts, tool results, or temporary errors as User Rules.
@@ -2601,7 +2602,7 @@ Choose the first matching action type, then stop.
    If verification failed, fix only the reported issue.
 
 8. goal
-   Complete only when the goal is done and verification passed or is blocked with clear context.
+   Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked with clear context.
 
 PLANNING:
 - Use a plan only for real tasks.
@@ -2753,7 +2754,7 @@ Must:
 - Record NEW durable facts in known when useful.
 - Update Plan toward Goal before more work.
 - Use recent tool calls as volatile input; keep only durable facts.
-- Complete only when Goal is done and required verification is satisfied.
+- Complete only when Goal is done, every Plan item is done/blocked with context, and required verification is satisfied.
 - If there is nothing useful to retain, return an empty actions array.
 
 Allowed actions:
@@ -4091,6 +4092,7 @@ class Agent:
         "user_rule",
     }
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal"}
+    COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
     RECENT_TOOL_CALLS: ClassVar[int] = 50
@@ -4516,6 +4518,28 @@ class Agent:
     def _has_plan_items(self, value: JsonValue) -> bool:
         return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
+    def _completion_plan_error(self, ctx: ResponseContext) -> str:
+        if not self.blackboard.goal_reached:
+            return ""
+        if not self.blackboard.plan:
+            return "plan was removed before completion" if not ctx.plan_was_empty and ctx.has_plan_action else ""
+        unfinished = [item for item in self.blackboard.plan if item.status not in self.COMPLETED_PLAN_STATUSES]
+        if unfinished:
+            return "unfinished plan items: " + self._format_plan_gate_items(unfinished)
+        missing_context = [item for item in self.blackboard.plan if not item.context.strip()]
+        if missing_context:
+            return "plan items missing context: " + self._format_plan_gate_items(missing_context)
+        return ""
+
+    def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
+        rendered = []
+        for item in items[:3]:
+            label = item.id or item.text
+            rendered.append(str(item.status) + " " + _shorten(" ".join(label.split()), 80))
+        if len(items) > 3:
+            rendered.append("+" + str(len(items) - 3) + " more")
+        return "; ".join(rendered)
+
     def _user_rule_message_from_actions(self, actions: list[Json]) -> str | None:
         for action in actions:
             if _json_str(action.get("type")) == "user_rule":
@@ -4778,6 +4802,18 @@ class Agent:
                 on_message,
                 "Retrying: verification failed; fix the reported issue first.",
                 "Verification_Gate: verification failed; fix before completion.",
+            )
+            return AgentRunResult()
+        completion_plan_error = self._completion_plan_error(ctx)
+        if completion_plan_error:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(
+                "Error: returned goal.complete=true before Plan was complete. Rule: every existing Plan item must be done or blocked with context evidence before completion."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: finish the plan before completing.",
+                "Completion_Gate: " + completion_plan_error + ".",
             )
             return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:

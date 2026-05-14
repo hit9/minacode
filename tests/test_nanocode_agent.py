@@ -21,7 +21,7 @@ def _observe_actions(fact="observed latest result"):
 
 def _seed_plan(agent, goal="test goal"):
     agent.blackboard.goal = goal
-    agent.blackboard.plan = [nanocode.PlanItem(text="test plan")]
+    agent.blackboard.plan = [nanocode.PlanItem(text="test plan", status=nanocode.PlanStatus.DONE, context="seeded")]
 
 
 def _blocks_text(blocks):
@@ -1511,7 +1511,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
     assert agent.blackboard.goal == "read sample"
-    assert agent.blackboard.plan == [nanocode.PlanItem(text="test plan")]
+    assert agent.blackboard.plan == [nanocode.PlanItem(text="test plan", status=nanocode.PlanStatus.DONE, context="seeded")]
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.goal_reached is False
     assert agent.blackboard.verification_required is False
@@ -1663,7 +1663,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.goal = "answer"
-    agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
+    agent.blackboard.plan = [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     agent.blackboard.known = ["keep this fact"]
     agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
     agent.latest_tool_call_blocks = ["old tool call"]
@@ -1682,7 +1682,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert list(session.state.tool_result_store)[-1] == "tr.51"
     assert session.state.tool_result_counter == 51
     assert agent.blackboard.goal == "read samples"
-    assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
+    assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     assert agent.blackboard.known == ["keep this fact"]
     assert agent.blackboard.stable_knowledge == {"workflow": ["Project test command is make test."]}
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
@@ -1742,7 +1742,12 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
                 },
-                {"actions": _final_actions("read sample")},
+                {
+                    "actions": [
+                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                        *_final_actions("read sample"),
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
@@ -1790,7 +1795,12 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
                 },
-                {"actions": _final_actions("new goal")},
+                {
+                    "actions": [
+                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                        *_final_actions("new goal"),
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
@@ -1838,7 +1848,12 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
                     ]
                 },
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": _final_actions("read sample")},
+                {
+                    "actions": [
+                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                        *_final_actions("read sample"),
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
@@ -2053,6 +2068,81 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
     assert "Retrying: goal is complete but message_for_complete is missing." in messages
     assert agent.agent_feedback_errors
     assert agent.blackboard.goal_reached is False
+
+
+def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"}]},
+                {
+                    "actions": [
+                        {
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "answer", "status": "done", "context": "answered"}],
+                        },
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "answer"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DOING)]
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert any("before Plan was complete" in error for error in agent.agent_feedback_errors)
+    assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
+
+
+def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {
+                    "actions": [
+                        {"type": "plan", "items": [{"id": "p1", "text": "answer", "status": "done"}]},
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "answer", "status": "done", "context": "answered"}],
+                        },
+                        {"type": "goal", "text": "answer", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "answer"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DOING)]
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert any("before Plan was complete" in error for error in agent.agent_feedback_errors)
+    assert agent.agent_feedback_errors
+    assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
 
 
 def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
