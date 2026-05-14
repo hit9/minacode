@@ -795,6 +795,30 @@ def test_agent_request_accepts_adjacent_unmarked_json_actions(tmp_path):
     }
 
 
+def test_agent_request_accepts_unmarked_json_action_array(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('[{"type":"tool","name":"Read","args":["nanocode.py","0,1"],"intention":"read source"}]')
+
+    assert response == {"actions": [{"type": "tool", "name": "Read", "args": ["nanocode.py", "0,1"], "intention": "read source"}]}
+
+
+def test_agent_request_accepts_comma_separated_unmarked_json_actions(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '{"type":"tool","name":"Read","args":["nanocode.py","3893,3910"]},'
+        '{"type":"tool","name":"Search","args":["STABLE_KNOWLEDGE_CATEGORIES","path=nanocode.py","context=2"]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "tool", "name": "Read", "args": ["nanocode.py", "3893,3910"]},
+            {"type": "tool", "name": "Search", "args": ["STABLE_KNOWLEDGE_CATEGORIES", "path=nanocode.py", "context=2"]},
+        ]
+    }
+
+
 def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -864,13 +888,13 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     assert "plain answer" in response["_format_error"]
 
 
-def test_agent_request_rejects_unmarked_json_action_array(tmp_path):
+def test_agent_request_rejects_invalid_unmarked_json_action_array(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
-    response = client._parse_model_content('[{"type":"message","text":"ok"}]')
+    response = client._parse_model_content('[{"text":"ok"}]')
 
     assert response["actions"] == []
-    assert "expected JSON object action" in response["_format_error"]
+    assert "action missing type" in response["_format_error"]
 
 
 def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, monkeypatch):
@@ -930,7 +954,7 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
     assert agent.blackboard.known == ["Search only supports rg and Python fallback."]
 
 
-def test_agent_dedupes_exact_known_facts(tmp_path):
+def test_agent_dedupes_normalized_known_facts(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
@@ -951,10 +975,28 @@ def test_agent_dedupes_exact_known_facts(tmp_path):
         }
     )
 
-    assert agent.blackboard.known == [
-        "Preview logic exists in _preview_segments.",
-        "Preview logic exists in _preview_segments!",
-    ]
+    assert agent.blackboard.known == ["Preview logic exists in _preview_segments."]
+
+
+def test_agent_replaces_redundant_known_fact_with_more_specific_fact(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "known",
+                    "items": [
+                        "_knowledge 方法位于 nanocode.py 第5138行，当前仅支持显示知识",
+                        "_knowledge 方法位于 nanocode.py 第5138行，当前仅支持显示知识（无参数时）",
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert agent.blackboard.known == ["_knowledge 方法位于 nanocode.py 第5138行，当前仅支持显示知识（无参数时）"]
 
 
 def test_agent_keeps_latest_500_known_items(tmp_path):
@@ -1390,6 +1432,32 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     assert agent.agent_feedback_errors == [
         'Error: tool call args invalid: tool=Read args=["sample.txt","bad","1"] -> ToolCallError: invalid start: should be an integer. Rule: use the tool signature exactly.'
     ]
+
+
+def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"name": "ReplaceRange", "intention": "bad edit", "args": ["sample.txt", "0", "1", "abc", "", ""]}])
+
+    assert "ToolCallError: requires exactly 7 args" in latest
+    assert "got 6 args, expected 7, missing: content" in agent.agent_feedback_errors[0]
+    assert "switch to ApplyPatch" in agent.agent_feedback_errors[0]
+
+
+def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    _seed_plan(agent, "read sample")
+    action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}
+
+    agent.handle_response({"actions": [action]})
+    agent.handle_response({"actions": [action]})
+    result = agent.handle_response({"actions": [action]})
+
+    assert result.done is False
+    assert session.state.tool_result_counter == 2
+    assert any("repeated failed tool call is blocked" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_execute_bash_does_not_require_verification(tmp_path):
@@ -1872,6 +1940,30 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
     assert "repeated start is invalid" in " ".join(agent.agent_feedback_errors)
+
+
+def test_agent_rejects_plan_with_multiple_doing_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "answer",
+                    "plan": [
+                        {"id": "p1", "text": "first", "status": "doing"},
+                        {"id": "p2", "text": "second", "status": "doing"},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert result.done is False
+    assert agent.blackboard.plan == []
+    assert any("at most one Plan item may be doing" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):

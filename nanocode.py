@@ -2623,6 +2623,7 @@ EDITING:
 - Use Edit for tiny unique literal replacements.
 - Use ReplaceRange for exact line ranges.
 - Use ApplyPatch for complex or multiple focused hunks.
+- If an edit tool's args keep failing, switch to ApplyPatch with a focused unified diff.
 - Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
@@ -3165,6 +3166,23 @@ class ModelClient:
             return None, "frame " + str(frame_number) + ": action missing type"
         return value, ""
 
+    def _actions_from_json_value(self, value: JsonValue) -> tuple[list[Json], str]:
+        if isinstance(value, dict):
+            if not _json_str(value.get("type")):
+                return [], "action missing type"
+            return [value], ""
+        if isinstance(value, list):
+            actions = []
+            for index, raw in enumerate(value, start=1):
+                action = _json_dict(raw)
+                if not action:
+                    return [], "array item " + str(index) + ": expected JSON object action"
+                if not _json_str(action.get("type")):
+                    return [], "array item " + str(index) + ": action missing type"
+                actions.append(action)
+            return actions, ""
+        return [], "expected JSON object action"
+
     def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
         actions: list[Json] = []
         decoder = json.JSONDecoder()
@@ -3175,12 +3193,17 @@ class ModelClient:
         if index < len(text) and text[index] != "{":
             if text[index] == "[":
                 try:
-                    value, _ = decoder.raw_decode(text, index)
+                    value, index = decoder.raw_decode(text, index)
                 except json.JSONDecodeError as error:
                     return [], str(error)
-                if not isinstance(value, dict):
-                    return [], "expected JSON object action"
-                return [], "action missing type"
+                parsed, error = self._actions_from_json_value(value)
+                if error:
+                    return [], error
+                while index < len(text) and text[index].isspace():
+                    index += 1
+                if index < len(text):
+                    return [], "unexpected text after JSON action array"
+                return parsed, ""
             action_start = text.find("{", index)
             if action_start < 0:
                 try:
@@ -3201,11 +3224,14 @@ class ModelClient:
                 value, index = decoder.raw_decode(text, index)
             except json.JSONDecodeError as error:
                 return [], str(error)
-            if not isinstance(value, dict):
-                return [], "expected JSON object action"
-            if not _json_str(value.get("type")):
-                return [], "action missing type"
-            actions.append(value)
+            parsed, error = self._actions_from_json_value(value)
+            if error:
+                return [], error
+            actions.extend(parsed)
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index < len(text) and text[index] == ",":
+                index += 1
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
@@ -3821,9 +3847,24 @@ class AgentStateUpdater:
             self.session.save_user_rules()
 
     def _add_known_item(self, fact: str) -> None:
-        if fact not in self.blackboard.known:
-            self.blackboard.known.append(fact)
-            del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
+        fact = _shorten(" ".join(fact.split()))
+        for index, existing in enumerate(self.blackboard.known):
+            if self._known_facts_overlap(existing, fact):
+                if len(fact) > len(existing):
+                    self.blackboard.known[index] = fact
+                return
+        self.blackboard.known.append(fact)
+        del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
+
+    def _known_facts_overlap(self, left: str, right: str) -> bool:
+        left_key = self._known_fact_key(left)
+        right_key = self._known_fact_key(right)
+        if left_key == right_key:
+            return True
+        return min(len(left_key), len(right_key)) >= 32 and (left_key in right_key or right_key in left_key)
+
+    def _known_fact_key(self, fact: str) -> str:
+        return re.sub(r"\s+", " ", fact).strip(" \t\r\n。.;；").lower()
 
     def _before_extra_state(self) -> str:
         return json.dumps(
@@ -4115,6 +4156,8 @@ class Agent:
         self.latest_tool_call_blocks: list[str] = []
         self.recent_tool_call_blocks: list[str] = []
         self.pending_observation_blocks: list[str] = []
+        self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
+        self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
         self.gate_report_counts: dict[str, int] = {}
         self.mode = AgentMode.ACT
@@ -4376,18 +4419,73 @@ class Agent:
         return _join_tool_call_blocks(self.latest_tool_call_blocks)
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
+        self._remember_tool_failure(execution)
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
+            detail = self._format_tool_arg_error(execution)
+            rule = "Rule: use the tool signature exactly."
+            if execution.call.name in {EditTool.name(), ReplaceRangeTool.name(), ApplyPatchTool.name()}:
+                rule = "Rule: switch to ApplyPatch if edit args keep failing; otherwise use the tool signature exactly."
             self._remember_agent_error(
                 "Error: tool call args invalid: "
                 + _format_tool_call_summary(execution.call)
                 + " -> "
-                + execution.output
-                + ". Rule: use the tool signature exactly."
+                + detail
+                + ". "
+                + rule
+                + ((" Tool output: " + execution.output) if detail != execution.output else "")
             )
         if execution.requires_verification:
             self.blackboard.verification_required = True
             self.blackboard.task_code = TaskCode.VERIFYING
             self._remember_recent_edit(execution)
+
+    def _remember_tool_failure(self, execution: ToolCallExecution) -> None:
+        if execution.outcome != "failure":
+            self.failed_tool_call_key = None
+            self.failed_tool_call_count = 0
+            return
+        key = self._tool_failure_key(execution.call)
+        if key == self.failed_tool_call_key:
+            self.failed_tool_call_count += 1
+        else:
+            self.failed_tool_call_key = key
+            self.failed_tool_call_count = 1
+        if self.failed_tool_call_count >= 2:
+            self._remember_agent_error(
+                "Error: repeated same failed tool call: "
+                + _format_tool_call_summary(execution.call)
+                + ". Rule: do not retry the same tool with identical args; correct the args or switch tools."
+            )
+
+    def _tool_failure_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]]:
+        return call.name, tuple(call.args)
+
+    def _format_tool_arg_error(self, execution: ToolCallExecution) -> str:
+        detail = self._tool_arg_shape_detail(execution.call)
+        return detail or execution.output
+
+    def _tool_arg_shape_detail(self, call: ParsedToolCall) -> str:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            return ""
+        params = self._exact_signature_params(tool_class.signature())
+        if not params or len(call.args) == len(params):
+            return ""
+        detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
+        if len(call.args) < len(params):
+            detail += ", missing: " + ", ".join(params[len(call.args) :])
+        else:
+            detail += ", extra: " + str(len(call.args) - len(params))
+        return detail
+
+    def _exact_signature_params(self, signature: str) -> list[str]:
+        match = re.search(r"\(([^)]*)\)", signature)
+        if not match:
+            return []
+        value = match.group(1)
+        if "[" in value or "]" in value or "*" in value or "..." in value:
+            return []
+        return [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
 
     def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
         if not execution.call.args:
@@ -4551,6 +4649,68 @@ class Agent:
             return "status=pending is not supported in single-agent mode"
         return ""
 
+    def _plan_shape_error(self, actions: list[Json]) -> str:
+        plan = [PlanItem(text=item.text, status=item.status, id=item.id, context=item.context) for item in self.blackboard.plan]
+        changed = False
+        for action in actions:
+            action_type = _json_str(action.get("type"))
+            if action_type == "start":
+                items = self._plan_items_from_json(action.get("plan"))
+                if items:
+                    plan = items
+                    changed = True
+            elif action_type == "plan":
+                items = self._plan_items_from_json(action.get("items"))
+                if action.get("mode") != "patch":
+                    if items:
+                        plan = items
+                        changed = True
+                    continue
+                changed = self._apply_plan_patches_to_projection(plan, action.get("items")) or changed
+        doing = [item for item in plan if item.status == PlanStatus.DOING]
+        if changed and len(doing) > 1:
+            return "multiple doing plan items: " + self._format_plan_gate_items(doing)
+        return ""
+
+    def _plan_items_from_json(self, value: JsonValue) -> list[PlanItem]:
+        return [item for item in (self.state_updater._plan_item_from_json(raw) for raw in _json_list(value)) if item]
+
+    def _apply_plan_patches_to_projection(self, plan: list[PlanItem], value: JsonValue) -> bool:
+        changed = False
+        for raw in _json_list(value):
+            patch = _json_dict(raw)
+            op = _json_str(patch.get("op")) or "add"
+            item_id = _json_str(patch.get("id")) or ""
+            if op == "remove":
+                before = len(plan)
+                plan[:] = [item for item in plan if item.id != item_id]
+                changed = changed or len(plan) != before
+                continue
+            item = self.state_updater._plan_item_from_json(patch)
+            if item is None:
+                continue
+            existing = next((candidate for candidate in plan if candidate.id == item.id and item.id), None)
+            if existing:
+                existing.text = item.text
+                existing.status = item.status
+                existing.context = item.context
+            else:
+                plan.append(item)
+            changed = True
+        return changed
+
+    def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
+        if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
+            return ""
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                continue
+            if self._tool_failure_key(call) == self.failed_tool_call_key:
+                return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
+        return ""
+
     def _build_response_context(self, response: Json) -> ResponseContext:
         actions = self._response_actions(response)
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
@@ -4596,6 +4756,28 @@ class Agent:
             feedback_message="Error: this step only accepts agent work actions.",
         )
         if action_gate is not None:
+            return True
+        plan_shape_error = self._plan_shape_error(ctx.actions)
+        if plan_shape_error:
+            self._remember_agent_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
+            self._report_gate(
+                on_message,
+                "Retrying: keep only one plan item doing.",
+                "Plan_Gate: " + plan_shape_error + ".",
+            )
+            return True
+        repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
+        if repeated_tool_retry_error:
+            self._remember_agent_error(
+                "Error: repeated failed tool call is blocked: "
+                + repeated_tool_retry_error
+                + ". Rule: correct the args or switch tools; for edit failures, prefer ApplyPatch."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: change the failed tool call instead of repeating it.",
+                "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
+            )
             return True
         if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
             self._remember_agent_error(
@@ -4741,6 +4923,19 @@ class Agent:
         on_live_done: ToolLiveDoneCallback | None,
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
+        repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
+        if repeated_tool_retry_error:
+            self._remember_agent_error(
+                "Error: repeated failed tool call is blocked: "
+                + repeated_tool_retry_error
+                + ". Rule: first digest latest results, then correct the args or switch tools."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: change the failed tool call instead of repeating it.",
+                "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
+            )
+            return AgentRunResult()
         gate_result = self._gate_action_types(
             ctx.actions,
             allowed=self.OBSERVE_ACTION_TYPES,
@@ -4750,6 +4945,15 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
+        plan_shape_error = self._plan_shape_error(ctx.actions)
+        if plan_shape_error:
+            self._remember_agent_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
+            self._report_gate(
+                on_message,
+                "Retrying: keep only one plan item doing.",
+                "Plan_Gate: " + plan_shape_error + ".",
+            )
+            return AgentRunResult()
         if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
             self._remember_agent_error("Error: cannot request new verification before digesting latest results. Rule: summarize results first.")
             self._report_gate(
@@ -4857,6 +5061,8 @@ class Agent:
     ) -> Json:
         self.agent_feedback_errors = []
         self.gate_report_counts = {}
+        self.failed_tool_call_key = None
+        self.failed_tool_call_count = 0
         self._prune_recent_tool_calls()
         self.pending_observation_blocks = []
         self._prune_tool_result_store()
