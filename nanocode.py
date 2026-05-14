@@ -343,7 +343,7 @@ class RuntimeSettings:
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             compact_at=Config.int(runtime, "compact_at", 50),
-            max_agent_steps=Config.positive_int(runtime, "max_agent_steps", 100),
+            max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
             yolo=yolo,
             debug=debug,
         )
@@ -410,11 +410,6 @@ class Config:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"config value `{key}` must be an integer")
         return value
-
-    @classmethod
-    def positive_int(cls, config: Json, key: str, default: int) -> int:
-        value = cls.int(config, key, default)
-        return max(1, value if value is not None else default)
 
 
 @final
@@ -3679,9 +3674,6 @@ class ToolCallRunner:
             return None
         return ReplaceRangeTool.merge_calls(self.session, parsed_group)
 
-    def format_latest_report(self) -> str:
-        return ToolCallDisplayFormatter.latest_report(self.latest_executions)
-
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.runtime.tool_result_counter += 1
         if self.runtime.tool_result_store is self.session.state.tool_result_store:
@@ -4322,9 +4314,6 @@ class Agent:
     def compact_history(self) -> int:
         return self.compactor.compact()
 
-    def maybe_auto_compact(self) -> bool:
-        return self.compactor.maybe_compact()
-
     def cancel_current_goal(self) -> None:
         self._finish_current_goal()
 
@@ -4801,10 +4790,10 @@ class Agent:
             on_live_done=on_live_done,
         )
         if on_message is not None:
-            report = self.tool_runner.format_latest_report()
+            report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
             if report:
                 on_message(report)
-        self.maybe_auto_compact()
+        self.compactor.maybe_compact()
         return True
 
     def _handle_observe_response(
@@ -4916,7 +4905,7 @@ class Agent:
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
         self.blackboard.verification.reset()
-        self.maybe_auto_compact()
+        self.compactor.maybe_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
         return self.run_loop(
@@ -5245,7 +5234,7 @@ class CommandDispatcher:
             return error
         suffix = ""
         if key == "runtime.compact_at":
-            compacted = self._with_status(lambda: "yes" if self.agent.maybe_auto_compact() else "") == "yes"
+            compacted = self._with_status(lambda: "yes" if self.agent.compactor.maybe_compact() else "") == "yes"
             suffix = " and compacted history" if compacted else ""
         return "Set " + key + " = " + self._config_value(key) + suffix
 
@@ -5418,9 +5407,6 @@ class StatusBar:
         self.output.erase_end_of_line()
         self.output.flush()
         self.rendered = False
-
-    def _text(self, turn_elapsed: float, *, now: float) -> str:
-        return self._plain(self._fragments(turn_elapsed, now=now, show_sweep=True, show_elapsed=True))
 
     def _fragments(self, turn_elapsed: float, *, now: float, show_sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         text = self._format_line(turn_elapsed, now=now, show_elapsed=show_elapsed)
