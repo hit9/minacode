@@ -26,7 +26,6 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-from abc import abstractmethod
 from dataclasses import dataclass, field
 
 from datetime import datetime
@@ -40,7 +39,6 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
-from typing_extensions import override
 
 __version__ = "0.3.15"
 
@@ -78,19 +76,13 @@ class Cancellation(Error): ...
 ############################
 
 
-class PromptItem:
-    @abstractmethod
-    def format(self, indent: str = "") -> str:
-        raise NotImplementedError
-
-
 class Role(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
 
 
 @dataclass
-class ConversationItem(PromptItem):
+class ConversationItem:
     role: Role
     time: datetime = field(default_factory=datetime.now)
 
@@ -109,7 +101,6 @@ class UserMessage(ConversationItem):
     role: Role = Role.USER
     content: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
         return self.format_transcript("User", self.content, indent)
 
@@ -119,7 +110,6 @@ class AssistantMessage(ConversationItem):
     role: Role = Role.ASSISTANT
     content: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
         return self.format_transcript("Assistant", self.content, indent)
 
@@ -156,13 +146,12 @@ class TaskCode(StrEnum):
 
 
 @dataclass
-class PlanItem(PromptItem):
+class PlanItem:
     text: str
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
     context: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
         text = "- [" + str(self.status) + "] " + self.text
         if self.id:
@@ -175,7 +164,6 @@ class PlanItem(PromptItem):
 
 class VerificationStatus(StrEnum):
     IDLE = "idle"
-    PLANNED = "planned"
     REQUIRED = "required"
     DONE = "done"
     FAILED = "failed"
@@ -183,7 +171,7 @@ class VerificationStatus(StrEnum):
 
 
 @dataclass
-class Verification(PromptItem):
+class Verification:
     goal: str = ""
     status: VerificationStatus = VerificationStatus.IDLE
     kind: str = ""
@@ -191,7 +179,6 @@ class Verification(PromptItem):
     criteria: list[str] = field(default_factory=list)
     context: str = ""
 
-    @override
     def format(self, indent: str = "") -> str:
         lines = ["status: " + self.status]
         if self.goal:
@@ -220,7 +207,7 @@ class Verification(PromptItem):
 
 
 @dataclass
-class ToolResultItem(PromptItem):
+class ToolResultItem:
     description: str
     value: str
     log_path: str = ""
@@ -228,7 +215,6 @@ class ToolResultItem(PromptItem):
     original_chars: int = 0
     excerpted: bool = False
 
-    @override
     def format(self, indent: str = "", *, result_key: str = "", include_content: bool = False, details_hint: bool = False) -> str:
         lines = ["- result_key: " + result_key] if result_key else ["- result"]
         lines.append("  description: " + self.description)
@@ -249,7 +235,7 @@ class ToolResultItem(PromptItem):
 
 
 @dataclass
-class UserRules(PromptItem):
+class UserRules:
     content: str = ""
 
     @classmethod
@@ -273,7 +259,6 @@ class UserRules(PromptItem):
         with open(path, "w", encoding="utf-8") as file:
             file.write((self.content.strip() or "# User Rules").rstrip() + "\n")
 
-    @override
     def format(self, indent: str = "") -> str:
         return _format_lines((self.content.strip() or "(empty)").splitlines(), indent)
 
@@ -539,14 +524,7 @@ class RangeFingerprintStore:
     def remember(self, *, filepath: str, start: int, end: int, content: str) -> str:
         fingerprint = _range_fingerprint(content)
         entry = self.Entry(fingerprint=fingerprint, filepath=os.path.realpath(filepath), start=start, end=end, content=content)
-        if not any(
-            existing.fingerprint == entry.fingerprint
-            and existing.filepath == entry.filepath
-            and existing.start == entry.start
-            and existing.end == entry.end
-            and existing.content == entry.content
-            for existing in self._entries
-        ):
+        if entry not in self._entries:
             self._entries.append(entry)
             del self._entries[: max(0, len(self._entries) - self.MAX_ENTRIES)]
         return fingerprint
@@ -1139,10 +1117,8 @@ class LineCountTool(Tool):
         suffix = f"+{n - 2} more" if n > 2 else ""
         return f"LineCount([{sample}{suffix}])"
 
-    _wc_path: ClassVar[str | None] = None
-
     def call(self) -> str:
-        wc_path = self._wc_command()
+        wc_path = shutil.which("wc") or ""
         if wc_path:
             result = subprocess.run([wc_path, "-l", *self.filepaths], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
@@ -1155,12 +1131,6 @@ class LineCountTool(Tool):
             with open(filepath, "r", encoding="utf-8", errors="replace") as file:
                 total += sum(1 for _ in file)
         return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
-
-    @classmethod
-    def _wc_command(cls) -> str:
-        if cls._wc_path is None:
-            cls._wc_path = shutil.which("wc") or ""
-        return cls._wc_path
 
 
 @dataclass
@@ -1258,8 +1228,6 @@ class SearchTool(Tool):
         context: list[tuple[int, str]]
 
     pattern: str = ""
-    patterns: list[str] = field(default_factory=list)
-    regex: bool = False
     target_path: str = ""
     glob_pattern: str = ""
     context_lines: int = CONTEXT_LINES
@@ -1278,12 +1246,10 @@ class SearchTool(Tool):
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallArgError("pattern cannot be empty")
-        explicit_regex = raw_pattern.startswith("re:")
-        pattern = raw_pattern[3:] if explicit_regex else raw_pattern
-        regex = True
+        pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
         if not pattern:
             raise ToolCallArgError("pattern cannot be empty")
-        if regex and "\n" in pattern:
+        if "\n" in pattern:
             raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
         target_path_arg = "."
         glob_pattern = ""
@@ -1324,17 +1290,12 @@ class SearchTool(Tool):
                 continue
             target_path_arg = option
             positional_path_seen = True
-        patterns = [pattern]
-        if not patterns:
-            raise ToolCallArgError("no valid search patterns")
         try:
             re.compile(pattern)
         except re.error as error:
             raise ToolCallArgError("invalid regex: " + str(error))
         return cls(
-            pattern=raw_pattern,
-            patterns=patterns,
-            regex=regex,
+            pattern=pattern,
             target_path=session.resolve_path(target_path_arg),
             glob_pattern=glob_pattern,
             context_lines=context_lines,
@@ -1518,13 +1479,10 @@ class SearchTool(Tool):
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
         if pcre2:
             cmd.append("--pcre2")
-        if not self.regex:
-            cmd.append("--fixed-strings")
         cmd.append("-i")
         if self.glob_pattern:
             cmd.extend(["--glob", self.glob_pattern])
-        for pattern in self.patterns:
-            cmd.extend(["-e", pattern])
+        cmd.extend(["-e", self.pattern])
         cmd.extend(["--", self.target_path])
         return cmd
 
@@ -1544,7 +1502,7 @@ class SearchTool(Tool):
             raise ToolCallError(proc.stderr.strip() or "rg failed")
 
         matches = []
-        engine = "rg-pcre2" if pcre2 else ("rg-regex" if self.regex else "rg")
+        engine = "rg-pcre2" if pcre2 else "rg-regex"
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -1569,8 +1527,6 @@ class SearchTool(Tool):
         return self._format_result(engine, matches, False)
 
     def _should_retry_rg_with_pcre2(self, stderr: str) -> bool:
-        if not self.regex:
-            return False
         text = stderr.lower()
         return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
@@ -1594,10 +1550,8 @@ class SearchTool(Tool):
         return self._format_result("python", matches, False)
 
     def _line_matches(self, text: str) -> bool:
-        if not self.regex:
-            return any(pattern.lower() in text.lower() for pattern in self.patterns)
         try:
-            return re.search(self.patterns[0], text, re.IGNORECASE) is not None
+            return re.search(self.pattern, text, re.IGNORECASE) is not None
         except re.error as error:
             raise ToolCallArgError("invalid regex: " + str(error))
 
@@ -5943,14 +5897,8 @@ class AgentLoop:
             return
         self._emit_segments([("ansicyan", message + "\n")], message)
 
-    def _display_plain(self, message: str) -> str:
-        lines = []
-        for line in message.splitlines():
-            lines.append(line.replace("[success] ", "").replace("[failure] ", ""))
-        return "\n".join(lines)
-
     def _tool_plain(self, message: str, *, indent: str) -> str:
-        return "\n".join(indent + line for line in self._display_plain(message).splitlines())
+        return "\n".join(indent + line.replace("[success] ", "").replace("[failure] ", "") for line in message.splitlines())
 
     def _is_tool_report(self, message: str) -> bool:
         lines = message.splitlines()

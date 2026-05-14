@@ -102,7 +102,6 @@ def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
 
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
-    assert tool.regex is True
 
 
 def test_search_tool_rejects_ignore_case_option(tmp_path):
@@ -123,7 +122,6 @@ def test_search_tool_uses_pipe_as_regex_or(tmp_path):
     tool = SearchTool.make(session, ["alpha|beta", "sample.txt"])
     result = tool.call()
 
-    assert tool.regex is True
     assert "* sample.txt:1: alpha" in result
     assert "* sample.txt:2: beta" in result
 
@@ -364,7 +362,6 @@ def test_search_tool_defaults_to_regex(tmp_path):
     tool = SearchTool.make(session, ["class.*Tool", "sample.py"])
     result = tool.call()
 
-    assert tool.regex is True
     assert "* sample.py:1: class SearchTool:" in result
 
 

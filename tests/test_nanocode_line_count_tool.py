@@ -37,25 +37,17 @@ def test_line_count_tool_counts_multiple_files(tmp_path):
 
 def test_line_count_tool_falls_back_when_wc_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: None)
-    LineCountTool._wc_path = None
     path = tmp_path / "fallback.txt"
     path.write_text("one\ntwo\nthree\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     tool = LineCountTool.make(session, ["fallback.txt"])
 
-    try:
-        assert tool.call() == "<LineCountToolResult>3</LineCountToolResult>"
-    finally:
-        LineCountTool._wc_path = None
+    assert tool.call() == "<LineCountToolResult>3</LineCountToolResult>"
 
 
 def test_line_count_tool_reports_invalid_path_without_wc(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: None)
-    LineCountTool._wc_path = None
     session = Session(cwd=str(tmp_path))
     tool = LineCountTool.make(session, ["nonexistent.txt"])
-    try:
-        with pytest.raises(FileNotFoundError):
-            tool.call()
-    finally:
-        LineCountTool._wc_path = None
+    with pytest.raises(FileNotFoundError):
+        tool.call()

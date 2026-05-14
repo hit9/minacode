@@ -29,7 +29,6 @@ classifiers = [
 dependencies = [
     "json-repair>=0.39",
     "prompt-toolkit>=3.0",
-    "typing-extensions>=4.7",
 ]
 
 [project.urls]
