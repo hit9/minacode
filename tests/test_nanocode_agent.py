@@ -41,19 +41,16 @@ def _session(
     yolo: bool = False,
     debug: bool = False,
 ) -> Session:
-    model: dict[str, object] = {"model": model}
+    provider: dict[str, object] = {"url": api_url, "key": api_key, "model": model}
     if stream is not None:
-        model["stream"] = stream
+        provider["stream"] = stream
     if timeout is not None:
-        model["timeout"] = timeout
+        provider["timeout"] = timeout
     if first_token_timeout is not None:
-        model["first_token_timeout"] = first_token_timeout
+        provider["first_token_timeout"] = first_token_timeout
     if reasoning_effort:
-        model["reasoning_effort"] = reasoning_effort
-    data = {
-        "api": {"url": api_url, "key": api_key},
-        "model": model,
-    }
+        provider["reasoning_effort"] = reasoning_effort
+    data = {"provider": provider}
     return Session(cwd=str(tmp_path), config=nanocode.Config.from_dict(data), settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
 
 

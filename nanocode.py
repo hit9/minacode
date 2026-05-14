@@ -298,7 +298,9 @@ class Blackboard:
 
 
 @dataclass
-class ModelConfig:
+class ProviderConfig:
+    url: str = ""
+    key: str = ""
     model: str = ""
     temperature: float | None = None
     reasoning: bool | None = None
@@ -307,8 +309,10 @@ class ModelConfig:
     timeout: int | None = None
     first_token_timeout: int | None = None
 
-    def resolved(self, fallback: "ModelConfig") -> "ModelConfig":
-        return ModelConfig(
+    def resolved(self, fallback: "ProviderConfig") -> "ProviderConfig":
+        return ProviderConfig(
+            url=self.url or fallback.url,
+            key=self.key or fallback.key,
             model=self.model or fallback.model,
             temperature=self.temperature if self.temperature is not None else fallback.temperature,
             reasoning=self.reasoning if self.reasoning is not None else fallback.reasoning,
@@ -338,7 +342,7 @@ class ModelUsage:
 ############################
 
 
-DEFAULT_MODEL_CONFIG = ModelConfig(
+DEFAULT_PROVIDER_CONFIG = ProviderConfig(
     temperature=0.7,
     reasoning=True,
     reasoning_effort="medium",
@@ -346,12 +350,6 @@ DEFAULT_MODEL_CONFIG = ModelConfig(
     timeout=90,
     first_token_timeout=60,
 )
-
-
-@dataclass
-class ApiConfig:
-    url: str = ""
-    key: str = ""
 
 
 @dataclass
@@ -381,17 +379,15 @@ class RuntimeSettings:
 
 @dataclass
 class Config:
-    api: ApiConfig = field(default_factory=ApiConfig)
-    model: ModelConfig = field(default_factory=lambda: DEFAULT_MODEL_CONFIG.resolved(ModelConfig()))
+    provider: ProviderConfig = field(default_factory=lambda: DEFAULT_PROVIDER_CONFIG.resolved(ProviderConfig()))
     paths: PathsConfig = field(default_factory=PathsConfig)
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
-        api = cls.table(data, "api")
+        provider = cls.table(data, "provider")
         paths = cls.table(data, "paths")
         return cls(
-            api=ApiConfig(url=cls.str(api, "url"), key=cls.str(api, "key")),
-            model=cls.model_config(cls.table(data, "model"), DEFAULT_MODEL_CONFIG),
+            provider=cls.provider_config(provider, DEFAULT_PROVIDER_CONFIG),
             paths=PathsConfig(nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode")),
         )
 
@@ -443,8 +439,10 @@ class Config:
         return max(1, value if value is not None else default)
 
     @classmethod
-    def model_config(cls, config: Json, defaults: ModelConfig) -> ModelConfig:
-        return ModelConfig(
+    def provider_config(cls, config: Json, defaults: ProviderConfig) -> ProviderConfig:
+        return ProviderConfig(
+            url=cls.str(config, "url", defaults.url),
+            key=cls.str(config, "key", defaults.key),
             model=cls.str(config, "model", defaults.model),
             temperature=cls.float(config, "temperature", defaults.temperature),
             reasoning=cls.bool(config, "reasoning", defaults.reasoning),
@@ -460,13 +458,11 @@ class ConfigFile:
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
 # Location: ~/.nanocode/config.toml
 
-[api]
+[provider]
 # OpenAI-compatible chat completions base URL, for example "https://api.openai.com/v1".
 url = ""
 # API key for the configured provider.
 key = ""
-
-[model]
 # Default model used by nanocode.
 model = ""
 temperature = 0.7
@@ -756,16 +752,16 @@ class Session:
 
     def missing_required_config(self) -> list[str]:
         missing = []
-        if not self.config.api.url:
-            missing.append("api.url")
-        if not self.config.api.key:
-            missing.append("api.key")
-        if not self.config.model.model:
-            missing.append("model.model")
+        if not self.config.provider.url:
+            missing.append("provider.url")
+        if not self.config.provider.key:
+            missing.append("provider.key")
+        if not self.config.provider.model:
+            missing.append("provider.model")
         return missing
 
-    def model_config(self, override: ModelConfig | None = None) -> ModelConfig:
-        config = self.config.model
+    def provider_config(self, override: ProviderConfig | None = None) -> ProviderConfig:
+        config = self.config.provider
         if override is not None:
             config = override.resolved(config)
         return config
@@ -3206,15 +3202,15 @@ class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
-    def __init__(self, session: Session, *, model_config: ModelConfig | None = None, model: str = "", reasoning_effort: str = ""):
+    def __init__(self, session: Session, *, provider_config: ProviderConfig | None = None, model: str = "", reasoning_effort: str = ""):
         self.session = session
-        self.model_config = model_config or ModelConfig(model=model, reasoning_effort=reasoning_effort)
+        self.provider_config = provider_config or ProviderConfig(model=model, reasoning_effort=reasoning_effort)
 
     def _timeout_handler(self, signum: int, frame: Any) -> None:
         raise ModelRequestTimeout()
 
-    def _request_config(self) -> ModelConfig:
-        return self.session.model_config(self.model_config)
+    def _request_config(self) -> ProviderConfig:
+        return self.session.provider_config(self.provider_config)
 
     def request_json(self, system_prompt: str, user_prompt: str, *, activity: str = "agent") -> Json:
         return self.request(system_prompt, user_prompt, activity=activity, parse_actions=False)
@@ -3227,14 +3223,14 @@ class ModelClient:
         activity: str = "agent",
         parse_actions: bool = True,
     ) -> Json:
-        if not self.session.config.api.url:
-            raise LLMError("config api.url is required")
-        if not self.session.config.api.key:
-            raise LLMError("config api.key is required")
         config = self._request_config()
+        if not config.url:
+            raise LLMError("config provider.url is required")
+        if not config.key:
+            raise LLMError("config provider.key is required")
         model = config.model
         if not model:
-            raise LLMError("config model.model is required")
+            raise LLMError("config provider.model is required")
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -3256,10 +3252,10 @@ class ModelClient:
         self._write_debug_prompt(activity=activity, messages=messages)
 
         request = urllib.request.Request(
-            url=self._chat_completions_url(),
+            url=self._chat_completions_url(config),
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": "Bearer " + self.session.config.api.key,
+                "Authorization": "Bearer " + config.key,
                 "Content-Type": "application/json",
             },
         )
@@ -3512,16 +3508,16 @@ class ModelClient:
         text = self._strip_leaked_think_tags(content.strip())
         return text.startswith("<tool_call>")
 
-    def _chat_completions_url(self) -> str:
-        url = self.session.config.api.url.rstrip("/")
+    def _chat_completions_url(self, config: ProviderConfig) -> str:
+        url = config.url.rstrip("/")
         if url.endswith("/chat/completions"):
             return url
         return url + "/chat/completions"
 
-    def _reasoning_params(self, config: ModelConfig) -> Json:
+    def _reasoning_params(self, config: ProviderConfig) -> Json:
         if config.reasoning is False:
             return {}
-        if "openrouter.ai" in self.session.config.api.url:
+        if "openrouter.ai" in config.url:
             return {"reasoning": {"effort": config.reasoning_effort or "medium"}}
         return {}
 
@@ -3545,7 +3541,7 @@ class ModelClient:
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
-    def _record_usage(self, usage: Json, config: ModelConfig) -> None:
+    def _record_usage(self, usage: Json, config: ProviderConfig) -> None:
         prompt_tokens = self._json_int(usage.get("prompt_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
@@ -5304,32 +5300,36 @@ COMMANDS: tuple[CommandSpec, ...] = (
 
 CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 CONFIG_SET_KEYS: tuple[str, ...] = (
-    "model.model",
-    "model.reasoning",
-    "model.effort",
-    "model.stream",
-    "model.temperature",
-    "model.timeout",
-    "model.first_token_timeout",
+    "provider.url",
+    "provider.key",
+    "provider.model",
+    "provider.reasoning",
+    "provider.effort",
+    "provider.stream",
+    "provider.temperature",
+    "provider.timeout",
+    "provider.first_token_timeout",
     "runtime.compact_at",
     "runtime.shell_timeout",
     "runtime.max_agent_steps",
     "runtime.yolo",
 )
 CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
-    "model.reasoning": ("on", "off"),
-    "model.effort": CONFIG_EFFORTS,
-    "model.stream": ("on", "off"),
+    "provider.reasoning": ("on", "off"),
+    "provider.effort": CONFIG_EFFORTS,
+    "provider.stream": ("on", "off"),
     "runtime.yolo": ("on", "off"),
 }
-CONFIG_MODEL_ATTRS: dict[str, str] = {
-    "model.model": "model",
-    "model.reasoning": "reasoning",
-    "model.effort": "reasoning_effort",
-    "model.stream": "stream",
-    "model.temperature": "temperature",
-    "model.timeout": "timeout",
-    "model.first_token_timeout": "first_token_timeout",
+CONFIG_PROVIDER_ATTRS: dict[str, str] = {
+    "provider.url": "url",
+    "provider.key": "key",
+    "provider.model": "model",
+    "provider.reasoning": "reasoning",
+    "provider.effort": "reasoning_effort",
+    "provider.stream": "stream",
+    "provider.temperature": "temperature",
+    "provider.timeout": "timeout",
+    "provider.first_token_timeout": "first_token_timeout",
 }
 CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.compact_at": "compact_at",
@@ -5337,8 +5337,8 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.max_agent_steps": "max_agent_steps",
     "runtime.yolo": "yolo",
 }
-CONFIG_BOOL_KEYS: set[str] = {"model.reasoning", "model.stream", "runtime.yolo"}
-CONFIG_INT_KEYS: set[str] = {"model.timeout", "model.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
+CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
+CONFIG_INT_KEYS: set[str] = {"provider.timeout", "provider.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
 
 
 @final
@@ -5415,7 +5415,7 @@ class CommandDispatcher:
         )
 
     def _model(self, args: str) -> str:
-        return self._set("model.model " + args)
+        return self._set("provider.model " + args)
 
     def _yolo(self, args: str) -> str:
         if not args.strip():
@@ -5436,7 +5436,7 @@ class CommandDispatcher:
         verification_status = blackboard.verification.status
         return "\n".join(
             [
-                "model: " + self._format_model_status(session.model_config()),
+                "model: " + self._format_model_status(session.provider_config()),
                 "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
@@ -5448,7 +5448,7 @@ class CommandDispatcher:
             ]
         )
 
-    def _format_model_status(self, config: ModelConfig) -> str:
+    def _format_model_status(self, config: ProviderConfig) -> str:
         reasoning = config.reasoning_effort if config.reasoning else "off"
         return (config.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(config.stream)
 
@@ -5475,17 +5475,19 @@ class CommandDispatcher:
         if args:
             return "Usage: /config"
         session = self.agent.session
-        model_config = session.config.model
+        provider_config = session.config.provider
         return "\n".join(
             [
                 "config: " + ConfigFile.path(),
-                "model.model: " + (model_config.model or "(empty)"),
-                "model.reasoning: " + self._format_bool(model_config.reasoning),
-                "model.effort: " + (model_config.reasoning_effort or "(empty)"),
-                "model.stream: " + self._format_bool(model_config.stream),
-                "model.temperature: " + self._format_optional(model_config.temperature),
-                "model.timeout: " + self._format_optional(model_config.timeout),
-                "model.first_token_timeout: " + self._format_optional(model_config.first_token_timeout),
+                "provider.url: " + (provider_config.url or "(empty)"),
+                "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
+                "provider.model: " + (provider_config.model or "(empty)"),
+                "provider.reasoning: " + self._format_bool(provider_config.reasoning),
+                "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
+                "provider.stream: " + self._format_bool(provider_config.stream),
+                "provider.temperature: " + self._format_optional(provider_config.temperature),
+                "provider.timeout: " + self._format_optional(provider_config.timeout),
+                "provider.first_token_timeout: " + self._format_optional(provider_config.first_token_timeout),
                 "runtime.compact_at: " + str(session.settings.compact_at),
                 "runtime.shell_timeout: " + str(session.settings.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
@@ -5542,7 +5544,9 @@ class CommandDispatcher:
         value = getattr(target, attr)
         if key in CONFIG_BOOL_KEYS:
             return self._format_bool(value)
-        if key == "model.model":
+        if key == "provider.key":
+            return "(set)" if value else "(empty)"
+        if key in {"provider.url", "provider.model"}:
             return value or "(empty)"
         return str(value)
 
@@ -5554,12 +5558,12 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " [on|off]"
             setattr(target, attr, parsed)
             return ""
-        if key == "model.effort":
+        if key == "provider.effort":
             if value not in CONFIG_EFFORTS:
                 return "Usage: /set " + key + " [" + "|".join(CONFIG_EFFORTS) + "]"
             setattr(target, attr, value)
             return ""
-        if key == "model.temperature":
+        if key == "provider.temperature":
             parsed_float = self._parse_float(value)
             if parsed_float is None:
                 return "Usage: /set " + key + " <number>"
@@ -5571,14 +5575,14 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " <positive-number>"
             setattr(target, attr, parsed_int)
             return ""
-        if key == "model.model":
+        if key in {"provider.url", "provider.key", "provider.model"}:
             setattr(target, attr, value)
             return ""
         return self._set_usage()
 
     def _config_target(self, key: str) -> tuple[object, str]:
-        if key in CONFIG_MODEL_ATTRS:
-            return self.agent.session.config.model, CONFIG_MODEL_ATTRS[key]
+        if key in CONFIG_PROVIDER_ATTRS:
+            return self.agent.session.config.provider, CONFIG_PROVIDER_ATTRS[key]
         return self.agent.session.settings, CONFIG_RUNTIME_ATTRS[key]
 
     def _clean_logs(self, args: str) -> str:
@@ -5729,9 +5733,11 @@ class StatusBar:
 
     def _format_line(self, turn_elapsed: float, *, now: float, show_elapsed: bool) -> str:
         session = self.session
-        active_model = session.state.current_model_call_label or session.config.model.model
+        active_model = session.state.current_model_call_label or session.config.provider.model
         model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
-        reasoning = session.state.current_model_call_reasoning_label or (session.config.model.reasoning_effort if session.config.model.reasoning else "off")
+        reasoning = session.state.current_model_call_reasoning_label or (
+            session.config.provider.reasoning_effort if session.config.provider.reasoning else "off"
+        )
         yolo = " | yolo" if session.settings.yolo else ""
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)

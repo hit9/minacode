@@ -90,8 +90,7 @@ USE AT YOUR OWN RISK.
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- API config: `[api]` url and key.
-- Model config: `[model]`.
+- Provider config: `[provider]` url, key, model, and model options.
 - Runtime config: `[paths]` and `[runtime]`.
 
 ## Status

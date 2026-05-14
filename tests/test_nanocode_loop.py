@@ -6,18 +6,18 @@ from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, 
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
-    data = {"model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    data = {"provider": {"model": model}, "runtime": {"compact_at": compact_at}}
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
 
 
 def test_session_reports_missing_required_config(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    assert session.missing_required_config() == ["api.url", "api.key", "model.model"]
+    assert session.missing_required_config() == ["provider.url", "provider.key", "provider.model"]
 
-    session.config.api.url = "url"
-    session.config.api.key = "key"
-    session.config.model.model = "model"
+    session.config.provider.url = "url"
+    session.config.provider.key = "key"
+    session.config.provider.model = "model"
 
     assert session.missing_required_config() == []
 
@@ -28,7 +28,7 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     (rules_dir / "user_rules.md").write_text("# User Rules\n\n- Prompt-only changes do not need tests.\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    session = Session.from_config_data({"api": {"url": "url", "key": "key"}, "model": {"model": "model"}})
+    session = Session.from_config_data({"provider": {"url": "url", "key": "key", "model": "model"}})
 
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
@@ -44,10 +44,10 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert created is True
     assert second_path == str(config_path)
     assert second_created is False
-    assert config["api"]["url"] == ""
-    assert config["model"]["temperature"] == 0.7
-    assert config["model"]["timeout"] == 90
-    assert config["model"]["first_token_timeout"] == 60
+    assert config["provider"]["url"] == ""
+    assert config["provider"]["temperature"] == 0.7
+    assert config["provider"]["timeout"] == 90
+    assert config["provider"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
 
 
@@ -66,11 +66,9 @@ def test_main_loads_config_argument(tmp_path, monkeypatch):
     config_path = tmp_path / "custom.toml"
     config_path.write_text(
         """
-[api]
+[provider]
 url = "https://example.test/v1"
 key = "key"
-
-[model]
 model = "custom-model"
 
 [paths]
@@ -89,9 +87,9 @@ nanocode_dir = ".custom-nanocode"
     result = nanocode.main(["--config", str(config_path)])
 
     assert result == 0
-    assert sessions[0].config.api.url == "https://example.test/v1"
-    assert sessions[0].config.api.key == "key"
-    assert sessions[0].config.model.model == "custom-model"
+    assert sessions[0].config.provider.url == "https://example.test/v1"
+    assert sessions[0].config.provider.key == "key"
+    assert sessions[0].config.provider.model == "custom-model"
     assert sessions[0].config.paths.nanocode_dir == ".custom-nanocode"
 
 
@@ -242,13 +240,13 @@ def test_agent_loop_command_completer_matches_slash_commands(tmp_path):
 
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
-    set_key_completions = list(completer.get_completions(Document("/set model."), CompleteEvent(completion_requested=True)))
-    set_bool_completions = list(completer.get_completions(Document("/set model.reasoning "), CompleteEvent(completion_requested=True)))
-    set_effort_completions = list(completer.get_completions(Document("/set model.effort h"), CompleteEvent(completion_requested=True)))
+    set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
+    set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
+    set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
-    assert "model.reasoning" in [completion.text for completion in set_key_completions]
+    assert "provider.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
 

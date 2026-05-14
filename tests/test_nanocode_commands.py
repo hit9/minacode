@@ -16,9 +16,9 @@ class FakeModelClient:
 
 
 def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
-    data = {"model": {"model": model}, "runtime": {"compact_at": compact_at}}
+    data = {"provider": {"model": model}, "runtime": {"compact_at": compact_at}}
     if stream is not None:
-        data["model"]["stream"] = stream
+        data["provider"]["stream"] = stream
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
 
 
@@ -30,25 +30,31 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     dispatcher = CommandDispatcher(agent)
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
-    model_result = dispatcher.dispatch("/set model.model new-model")
-    effort_result = dispatcher.dispatch("/set model.effort high")
-    reason_result = dispatcher.dispatch("/set model.reasoning off")
-    stream_result = dispatcher.dispatch("/set model.stream off")
-    first_token_result = dispatcher.dispatch("/set model.first_token_timeout 6")
+    model_result = dispatcher.dispatch("/set provider.model new-model")
+    url_result = dispatcher.dispatch("/set provider.url https://example.test/v1")
+    key_result = dispatcher.dispatch("/set provider.key secret")
+    effort_result = dispatcher.dispatch("/set provider.effort high")
+    reason_result = dispatcher.dispatch("/set provider.reasoning off")
+    stream_result = dispatcher.dispatch("/set provider.stream off")
+    first_token_result = dispatcher.dispatch("/set provider.first_token_timeout 6")
     yolo_result = dispatcher.dispatch("/set runtime.yolo on")
     compact_result = dispatcher.dispatch("/set runtime.compact_at 2")
     exit_result = dispatcher.dispatch("/exit")
 
     assert model_result.status == CommandStatus.HANDLED
-    assert session.config.model.model == "new-model"
-    assert effort_result.message == "Set model.effort = high"
-    assert session.config.model.reasoning_effort == "high"
-    assert reason_result.message == "Set model.reasoning = off"
-    assert session.config.model.reasoning is False
-    assert stream_result.message == "Set model.stream = off"
-    assert session.config.model.stream is False
-    assert first_token_result.message == "Set model.first_token_timeout = 6"
-    assert session.config.model.first_token_timeout == 6
+    assert session.config.provider.model == "new-model"
+    assert url_result.message == "Set provider.url = https://example.test/v1"
+    assert session.config.provider.url == "https://example.test/v1"
+    assert key_result.message == "Set provider.key = (set)"
+    assert session.config.provider.key == "secret"
+    assert effort_result.message == "Set provider.effort = high"
+    assert session.config.provider.reasoning_effort == "high"
+    assert reason_result.message == "Set provider.reasoning = off"
+    assert session.config.provider.reasoning is False
+    assert stream_result.message == "Set provider.stream = off"
+    assert session.config.provider.stream is False
+    assert first_token_result.message == "Set provider.first_token_timeout = 6"
+    assert session.config.provider.first_token_timeout == 6
     assert yolo_result.message == "Set runtime.yolo = on"
     assert session.settings.yolo is True
     assert compact_result.message == "Set runtime.compact_at = 2"
@@ -81,21 +87,21 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     session = make_session(tmp_path, stream=True)
     dispatcher = CommandDispatcher(Agent(session))
 
-    status_result = dispatcher.dispatch("/set model.stream")
-    off_result = dispatcher.dispatch("/set model.stream off")
-    off_status_result = dispatcher.dispatch("/set model.stream")
-    on_result = dispatcher.dispatch("/set model.stream on")
-    invalid_result = dispatcher.dispatch("/set model.stream maybe")
+    status_result = dispatcher.dispatch("/set provider.stream")
+    off_result = dispatcher.dispatch("/set provider.stream off")
+    off_status_result = dispatcher.dispatch("/set provider.stream")
+    on_result = dispatcher.dispatch("/set provider.stream on")
+    invalid_result = dispatcher.dispatch("/set provider.stream maybe")
 
-    assert status_result.message == "Current model.stream is on"
-    assert off_result.message == "Set model.stream = off"
-    assert off_status_result.message == "Current model.stream is off"
-    assert on_result.message == "Set model.stream = on"
-    assert invalid_result.message == "Usage: /set model.stream [on|off]"
-    assert session.config.model.stream is True
+    assert status_result.message == "Current provider.stream is on"
+    assert off_result.message == "Set provider.stream = off"
+    assert off_status_result.message == "Current provider.stream is off"
+    assert on_result.message == "Set provider.stream = on"
+    assert invalid_result.message == "Usage: /set provider.stream [on|off]"
+    assert session.config.provider.stream is True
 
 
-def test_config_command_reports_resolved_model_config(tmp_path):
+def test_config_command_reports_resolved_provider_config(tmp_path):
     session = make_session(tmp_path, model="config-model")
     dispatcher = CommandDispatcher(Agent(session))
 
@@ -103,8 +109,8 @@ def test_config_command_reports_resolved_model_config(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "config: " in result.message
-    assert "model.model: config-model" in result.message
-    assert "model.first_token_timeout: 60" in result.message
+    assert "provider.model: config-model" in result.message
+    assert "provider.first_token_timeout: 60" in result.message
     assert "runtime.max_agent_steps: 100" in result.message
 
 
