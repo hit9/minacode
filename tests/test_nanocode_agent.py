@@ -1722,6 +1722,17 @@ def test_agent_plan_mode_rejects_mutating_tool_before_execution(tmp_path):
     assert messages == ['PlanMode_Gate: plan mode allows readonly discovery only; blocked tool=Edit args=["sample.txt","old","new"].']
 
 
+def test_agent_plan_mode_rejects_chat_instead_of_completing(tmp_path):
+    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "chat", "text": "done"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert agent.session.state.conversation == []
+    assert messages == ["ActionType_Gate: use action types: goal, known, plan, progress, stable_knowledge, start, tool, verify; got: chat."]
+
+
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
     agent = Agent(_session(tmp_path, plan_mode=True))
     _seed_plan(agent, "plan change")

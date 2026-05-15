@@ -2646,7 +2646,7 @@ OUTPUT PROTOCOL
 - No prose outside JSON.
 - No native/function tool calls.
 - Separate multiple actions with __END_ACTION__.
-- Allowed action types: chat, start, goal, plan, known, stable_knowledge, progress, tool, verify.
+- Allowed action types: start, goal, plan, known, stable_knowledge, progress, tool, verify.
 - Tool names such as Read, Search, Git, Recall, LineCount, and ListDir belong in tool.name, never in action type.
 - Every action must be a single valid JSON object.
 - Do not invent fields when a listed action shape already fits.
@@ -2755,9 +2755,8 @@ DISCOVERY STRATEGY
 4. After tool results, record only durable findings in known.
 5. Use stable_knowledge sparingly for broadly true technical facts that are not repository-specific.
 6. Update plan status as discovery progresses.
-7. Ask a chat clarification only when a safe, useful plan is impossible without it.
-8. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
-9. Complete with goal.complete=true only when the final proposal is ready.
+7. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
+8. Complete with goal.complete=true only when the final proposal is ready.
 
 ACTION SEMANTICS
 - start: initialize the planning goal and discovery plan for a new Task Code.
@@ -2765,7 +2764,6 @@ ACTION SEMANTICS
 - known: record durable repository findings from discovery. Do not include guesses.
 - stable_knowledge: record stable external/technical knowledge. Use sparingly.
 - progress: brief user-facing status update in the latest user language.
-- chat: ask a necessary clarification or explain that the request cannot be planned safely.
 - tool: request one readonly discovery tool call.
 - verify: record planned verification logic or update verification confidence.
 - goal: complete the planning task with the final proposed plan.
@@ -2803,7 +2801,6 @@ CORE ACTION SHAPES
 {"type":"known","items":["<durable fact from discovery>"]}
 {"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
 {"type":"progress","message":"<brief user-facing progress update>"}
-{"type":"chat","message":"<necessary clarification or safe planning limitation>"}
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question being answered>","args":["<arg>"]}
 {"type":"verify","items":[{"text":"<verification idea or check>","status":"todo|planned|blocked","context":"<why this check matters>"}]}
 {"type":"goal","text":"<planning goal>","complete":true,"message_for_complete":"<proposed_plan>...</proposed_plan>"}
@@ -4327,6 +4324,7 @@ class Agent:
         "verify",
         "user_rule",
     }
+    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"known", "stable_knowledge", "progress", "plan", "verify", "goal"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
@@ -4956,7 +4954,7 @@ class Agent:
     def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         action_gate = self._gate_action_types(
             ctx.actions,
-            allowed=self.ACT_ACTION_TYPES,
+            allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
             on_message=on_message,
             retry_message="Retrying: use a valid agent action.",
             feedback_message="Error: this step only accepts agent work actions.",
@@ -5347,12 +5345,12 @@ class Agent:
                 on_message=on_message,
             )
 
+        if self._gate_before_apply(ctx, on_message):
+            return AgentRunResult()
+
         chat_result = self._handle_chat_response(ctx, on_message)
         if chat_result is not None:
             return chat_result
-
-        if self._gate_before_apply(ctx, on_message):
-            return AgentRunResult()
 
         self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response)
