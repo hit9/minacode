@@ -425,11 +425,30 @@ def test_agent_loop_model_command_prompts_for_model_when_available(tmp_path):
             self.session = make_session(tmp_path, model="old")
             self.session.config.provider.available_models = ("old", "new-model")
 
-    inputs = iter(["/model", "2", "0", "/exit"])
+    inputs = iter(["/model", "2", "", "/exit"])
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
 
     assert loop.run() == 0
     assert loop.agent.session.config.provider.model == "new-model"
+
+
+def test_agent_loop_provider_command_prompts_for_provider(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            data = {
+                "provider": {
+                    "active": "one",
+                    "one": {"model": "model-one"},
+                    "two": {"model": "model-two"},
+                }
+            }
+            self.session = Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
+
+    inputs = iter(["/provider", "2", "/exit"])
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
+
+    assert loop.run() == 0
+    assert loop.agent.session.config.active_provider == "two"
 
 
 def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):

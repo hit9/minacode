@@ -201,6 +201,23 @@ def test_provider_command_switches_current_provider(tmp_path):
     assert bad_result.message == "Unknown provider: missing\nproviders: one, two"
 
 
+def test_provider_command_selects_provider(tmp_path):
+    data = {
+        "provider": {
+            "active": "one",
+            "one": {"model": "model-one"},
+            "two": {"model": "model-two"},
+        }
+    }
+    session = Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
+    dispatcher = CommandDispatcher(Agent(session), select_provider=lambda providers, current: "two")
+
+    result = dispatcher.dispatch("/provider")
+
+    assert result.message == "Set provider = two"
+    assert session.config.active_provider == "two"
+
+
 def test_model_command_can_select_reasoning_effort(tmp_path):
     session = make_session(tmp_path, model="old")
     dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")

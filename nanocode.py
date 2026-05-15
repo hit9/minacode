@@ -941,6 +941,7 @@ StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 ReasoningSelector: TypeAlias = Callable[[], str | None]
 ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
+ProviderSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
 
 
 ############################
@@ -5635,12 +5636,14 @@ class CommandDispatcher:
         run_with_status: StatusRunner | None = None,
         select_reasoning: ReasoningSelector | None = None,
         select_model: ModelSelector | None = None,
+        select_provider: ProviderSelector | None = None,
     ):
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
         self.select_reasoning = select_reasoning
         self.select_model = select_model
+        self.select_provider = select_provider
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
@@ -5739,11 +5742,21 @@ class CommandDispatcher:
         config = self.agent.session.config
         providers = ", ".join(sorted(config.providers))
         if not name:
+            if self.select_provider is not None:
+                selected = self.select_provider(tuple(config.providers), config.active_provider)
+                if selected is not None:
+                    return self._set_provider(selected)
             return "provider: " + config.active_provider + "\nproviders: " + providers
         if " " in name:
             return "Usage: /provider [name]"
         if name not in config.providers:
             return "Unknown provider: " + name + "\nproviders: " + providers
+        return self._set_provider(name)
+
+    def _set_provider(self, name: str) -> str:
+        config = self.agent.session.config
+        if name not in config.providers:
+            return "Unknown provider: " + name + "\nproviders: " + ", ".join(sorted(config.providers))
         config.active_provider = name
         return "Set provider = " + name
 
@@ -6158,6 +6171,7 @@ class AgentLoop:
                 run_with_status=self._run_with_status,
                 select_reasoning=self._select_reasoning,
                 select_model=self._select_model,
+                select_provider=self._select_provider,
             )
             while True:
                 try:
@@ -6231,7 +6245,7 @@ class AgentLoop:
             try:
                 choice = ChoiceInput(
                     message=title,
-                    options=[(None, "keep current")] + [(value, labels.get(value, value)) for value in choices],
+                    options=[(value, labels.get(value, value)) for value in choices],
                     default=None,
                     style=self._choice_style(),
                     bottom_toolbar=self._choice_bottom_toolbar,
@@ -6245,11 +6259,10 @@ class AgentLoop:
         self._emit(
             title + ":\n"
             + "\n".join(
-                ["  0. keep current"]
-                + ["  " + str(index) + ". " + labels.get(choice, choice) for index, choice in enumerate(choices, start=1)]
+                ["  " + str(index) + ". " + labels.get(choice, choice) for index, choice in enumerate(choices, start=1)]
             )
         )
-        prompt = "Select " + title.lower() + " [0-" + str(len(choices)) + "] "
+        prompt = "Select " + title.lower() + " [1-" + str(len(choices)) + "] "
         while True:
             try:
                 raw_choice = self._read_input(prompt).strip()
@@ -6257,7 +6270,7 @@ class AgentLoop:
             except (EOFError, KeyboardInterrupt):
                 self._emit("Cancelled")
                 return None
-            if not choice or choice == "0":
+            if not choice:
                 return None
             if choice.isdigit() and 1 <= int(choice) <= len(choices):
                 return choices[int(choice) - 1]
@@ -6271,8 +6284,19 @@ class AgentLoop:
         labels = {current_model: current_model + " (current)"} if current_model in models else {}
         return self._select_choice("Model", models, labels)
 
+    def _select_provider(self, providers: tuple[str, ...], current_provider: str) -> str | None:
+        labels = {current_provider: current_provider + " (current)"}
+        return self._select_choice("Provider", providers, labels)
+
     def _select_reasoning(self) -> str | None:
-        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), {"off": "off - disable reasoning"})
+        provider = self.agent.session.config.provider
+        current = provider.reasoning_effort if provider.reasoning else "off"
+        labels = {"off": "off - disable reasoning"}
+        if current == "off":
+            labels["off"] = "off - disable reasoning (current)"
+        elif current in CONFIG_EFFORTS:
+            labels[current] = current + " (current)"
+        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), labels)
 
     def _discard_pending_tty_input(self) -> None:
         if not sys.stdin.isatty():
