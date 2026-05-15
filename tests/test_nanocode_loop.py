@@ -53,6 +53,16 @@ def test_runtime_settings_loads_modes_from_config():
     assert settings.plan_mode is True
 
 
+def test_runtime_settings_loads_auto_clean_recent():
+    settings = RuntimeSettings.from_dict({"runtime": {"auto_clean_recent": "12h"}})
+    disabled = RuntimeSettings.from_dict({"runtime": {"auto_clean_recent": "off"}})
+
+    assert settings.auto_clean_recent == "12h"
+    assert RuntimeSettings.clean_retention_seconds(settings.auto_clean_recent) == 12 * 3600
+    assert disabled.auto_clean_recent == "off"
+    assert RuntimeSettings.clean_retention_seconds(disabled.auto_clean_recent) == 0
+
+
 def test_init_config_file_writes_default_toml(tmp_path):
     config_path = tmp_path / "config.toml"
 
@@ -73,6 +83,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["runtime"]["compact_at"] == 50
     assert config["runtime"]["plan_timeout"] == 180
     assert config["runtime"]["plan_first_token_timeout"] == 120
+    assert config["runtime"]["auto_clean_recent"] == "3d"
     assert config["runtime"]["yolo"] is False
     assert config["runtime"]["plan_mode"] is False
 

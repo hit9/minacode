@@ -97,6 +97,7 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
+- Tool-result logs from inactive sessions are auto-cleaned after `runtime.auto_clean_recent` (default `3d`; use `off` to disable). `/clean` removes inactive session logs immediately.
 - Project data: user rules are stored under `~/.nanocode/projects/<project_key>/`.
 
 ## Status

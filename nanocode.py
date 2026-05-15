@@ -8,6 +8,7 @@ Install: uv tool install nanocode-cli
 
 import argparse
 import difflib
+import fcntl
 import fnmatch
 import hashlib
 import itertools
@@ -381,6 +382,7 @@ class RuntimeSettings:
     max_agent_steps: int = 100
     plan_timeout: int = 180
     plan_first_token_timeout: int = 120
+    auto_clean_recent: str = "3d"
     yolo: bool = False
     plan_mode: bool = False
     debug: bool = False
@@ -394,10 +396,28 @@ class RuntimeSettings:
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
             plan_timeout=max(1, Config.int(runtime, "plan_timeout", 180) or 0),
             plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 120) or 0),
+            auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "3d")),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
             plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
         )
+
+    @staticmethod
+    def clean_retention(value: str) -> str:
+        value = value.strip().lower()
+        if value in {"", "off", "0", "0m", "0h", "0d"}:
+            return "off"
+        if not re.fullmatch(r"[1-9]\d*[mhd]", value):
+            raise ConfigError("runtime.auto_clean_recent must be off or a duration like 30m, 12h, 3d")
+        return value
+
+    @staticmethod
+    def clean_retention_seconds(value: str) -> int:
+        value = RuntimeSettings.clean_retention(value)
+        if value == "off":
+            return 0
+        units = {"m": 60, "h": 3600, "d": 86400}
+        return int(value[:-1]) * units[value[-1]]
 
 
 @dataclass
@@ -513,6 +533,8 @@ compact_at = 50
 max_agent_steps = 100
 plan_timeout = 180
 plan_first_token_timeout = 120
+# Automatically delete tool-result logs older than this from inactive sessions. Use "off" to disable.
+auto_clean_recent = "3d"
 yolo = false
 plan_mode = false
 """
@@ -786,6 +808,9 @@ class Session:
 
     def tool_results_dir(self) -> str:
         return os.path.join(self.session_dir(), "tool_results")
+
+    def lock_path(self) -> str:
+        return os.path.join(self.session_dir(), "session.lock")
 
     def user_rules_path(self) -> str:
         return os.path.join(self.project_dir(), "user_rules.md")
@@ -1091,6 +1116,96 @@ StatusRunner: TypeAlias = Callable[[StatusAction], str]
 ReasoningSelector: TypeAlias = Callable[[], str | None]
 ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
 ProviderSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
+
+
+class SessionLock:
+    def __init__(self, path: str):
+        self.path = path
+        self.file = None
+
+    def acquire(self) -> None:
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.file = open(self.path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.file.close()
+            self.file = None
+            raise
+        self.file.seek(0)
+        self.file.truncate()
+        self.file.write(json.dumps({"pid": os.getpid(), "locked_at": datetime.now().isoformat()}, ensure_ascii=False))
+        self.file.flush()
+
+    def release(self) -> None:
+        if self.file is None:
+            return
+        fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+        self.file.close()
+        self.file = None
+
+    def __enter__(self) -> Self:
+        self.acquire()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.release()
+
+    @staticmethod
+    def is_locked(path: str) -> bool:
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, "r+", encoding="utf-8") as file:
+                try:
+                    fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            return False
+        return False
+
+
+@dataclass
+class CleanResult:
+    cleaned: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+class SessionLogCleaner:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def clean(self, *, older_than_seconds: int = 0) -> CleanResult:
+        result = CleanResult()
+        sessions_dir = self.session.data_path("sessions")
+        if not os.path.isdir(sessions_dir):
+            return result
+        cutoff = time.time() - older_than_seconds if older_than_seconds > 0 else 0.0
+        for session_name in os.listdir(sessions_dir):
+            session_dir = os.path.join(sessions_dir, session_name)
+            if not os.path.isdir(session_dir):
+                continue
+            if SessionLock.is_locked(os.path.join(session_dir, "session.lock")):
+                result.skipped += 1
+                continue
+            tool_results_dir = os.path.join(session_dir, "tool_results")
+            if not os.path.isdir(tool_results_dir):
+                continue
+            for name in os.listdir(tool_results_dir):
+                path = os.path.join(tool_results_dir, name)
+                if not name.endswith(".log") or not os.path.isfile(path):
+                    continue
+                if cutoff and os.path.getmtime(path) >= cutoff:
+                    continue
+                try:
+                    os.remove(path)
+                    result.cleaned += 1
+                except OSError:
+                    result.failed += 1
+        return result
 
 
 ############################
@@ -6063,6 +6178,7 @@ class CommandDispatcher:
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
                 "runtime.plan_timeout: " + str(session.settings.plan_timeout),
                 "runtime.plan_first_token_timeout: " + str(session.settings.plan_first_token_timeout),
+                "runtime.auto_clean_recent: " + session.settings.auto_clean_recent,
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
                 "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
             ]
@@ -6168,22 +6284,12 @@ class CommandDispatcher:
         sessions_dir = self.agent.session.data_path("sessions")
         if not os.path.isdir(sessions_dir):
             return f"No session logs directory found at {sessions_dir}"
-        count = 0
-        failed = 0
-        for root, _, filenames in os.walk(sessions_dir):
-            if os.path.basename(root) != "tool_results":
-                continue
-            for name in filenames:
-                if not name.endswith(".log"):
-                    continue
-                try:
-                    os.remove(os.path.join(root, name))
-                    count += 1
-                except OSError:
-                    failed += 1
-        msg = f"Cleaned {count} log file(s) from {sessions_dir}"
-        if failed:
-            msg += f" ({failed} failed)"
+        result = SessionLogCleaner(self.agent.session).clean()
+        msg = f"Cleaned {result.cleaned} log file(s) from {sessions_dir}"
+        if result.skipped:
+            msg += f" ({result.skipped} active session(s) skipped)"
+        if result.failed:
+            msg += f" ({result.failed} failed)"
         return msg
 
     def _format_bool(self, value: bool | None) -> str:
@@ -6355,7 +6461,8 @@ class AgentLoop:
 
     def run(self) -> int:
         self._print_welcome()
-        with self.status_bar:
+        with SessionLock(self.agent.session.lock_path()), self.status_bar:
+            self._auto_clean_logs()
             dispatcher = CommandDispatcher(
                 self.agent,
                 run_agent=self._run_agent,
@@ -6387,6 +6494,11 @@ class AgentLoop:
                         self._emit(result.message)
                     continue
                 self._run_agent(user_input)
+
+    def _auto_clean_logs(self) -> None:
+        seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
+        if seconds > 0:
+            SessionLogCleaner(self.agent.session).clean(older_than_seconds=seconds)
 
     def _prompt(self) -> str:
         labels = []

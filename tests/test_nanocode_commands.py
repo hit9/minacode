@@ -1,8 +1,8 @@
 import os
-
 import shutil
+import time
 
-from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, UserMessage
+from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionLogCleaner, UserMessage
 
 
 class FakeModelClient:
@@ -132,6 +132,7 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "runtime.max_agent_steps: 100" in result.message
     assert "runtime.plan_timeout: 180" in result.message
     assert "runtime.plan_first_token_timeout: 120" in result.message
+    assert "runtime.auto_clean_recent: 3d" in result.message
     assert "runtime.plan_mode: off" in result.message
 
 
@@ -449,6 +450,60 @@ def test_clean_command_removes_all_session_log_files(tmp_path):
     assert not os.path.exists(log2)
     assert not os.path.exists(log3)
     assert os.path.exists(other)
+
+
+def test_clean_command_skips_active_sessions(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    active_tool_results_dir = session.tool_results_dir()
+    stale_tool_results_dir = session.data_path("sessions", "stale-session", "tool_results")
+    os.makedirs(active_tool_results_dir, exist_ok=True)
+    os.makedirs(stale_tool_results_dir, exist_ok=True)
+
+    active_log = os.path.join(active_tool_results_dir, "active.log")
+    stale_log = os.path.join(stale_tool_results_dir, "stale.log")
+    with open(active_log, "w"):
+        pass
+    with open(stale_log, "w"):
+        pass
+
+    with SessionLock(session.lock_path()):
+        dispatcher = CommandDispatcher(Agent(session))
+        result = dispatcher.dispatch("/clean")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "Cleaned 1 log file(s)" in result.message
+    assert "1 active session(s) skipped" in result.message
+    assert os.path.exists(active_log)
+    assert not os.path.exists(stale_log)
+
+
+def test_session_log_cleaner_removes_only_old_logs_from_inactive_sessions(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    old_dir = session.data_path("sessions", "old-session", "tool_results")
+    recent_dir = session.data_path("sessions", "recent-session", "tool_results")
+    active_dir = session.tool_results_dir()
+    os.makedirs(old_dir, exist_ok=True)
+    os.makedirs(recent_dir, exist_ok=True)
+    os.makedirs(active_dir, exist_ok=True)
+
+    old_log = os.path.join(old_dir, "old.log")
+    recent_log = os.path.join(recent_dir, "recent.log")
+    active_old_log = os.path.join(active_dir, "active-old.log")
+    for path in (old_log, recent_log, active_old_log):
+        with open(path, "w"):
+            pass
+    old_time = time.time() - 10 * 86400
+    os.utime(old_log, (old_time, old_time))
+    os.utime(active_old_log, (old_time, old_time))
+
+    with SessionLock(session.lock_path()):
+        result = SessionLogCleaner(session).clean(older_than_seconds=3 * 86400)
+
+    assert result.cleaned == 1
+    assert result.skipped == 1
+    assert not os.path.exists(old_log)
+    assert os.path.exists(recent_log)
+    assert os.path.exists(active_old_log)
 
 
 def test_clean_command_no_directory(tmp_path):
