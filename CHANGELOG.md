@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.20 - 2026-05-15
+
+### Changed
+- Clarified Search tool guidance so models use at most one `glob=` per Search action and split multiple globs into multiple actions.
+
 ## 0.3.19 - 2026-05-15
 
 ### Changed

@@ -44,7 +44,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.19"
+__version__ = "0.3.20"
 
 
 JsonValue: TypeAlias = Any
@@ -1553,14 +1553,16 @@ class SearchTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
-        "Scope with path=FILE_OR_DIR, filter with glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
-        "Batch multiple Search actions in one turn when checking independent patterns.",
+        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
+        "Use at most one glob= per Search. For multiple extensions, run multiple Search actions or search path=. without glob.",
+        "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
         "Only options are path=, glob=, context=; escape regex symbols for literal text.",
     )
     SIGNATURE: ClassVar[str] = "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
         'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
+        'Multiple globs: use separate actions like ["pytest", "path=.", "glob=*.toml"] and ["pytest", "path=.", "glob=*.ini"].',
         'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
     )
 
