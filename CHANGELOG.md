@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.18 - 2026-05-15
+
+### Added
+- Added `provider.<name>.available_models` and an interactive `/model` selector.
+- Added an interactive `/provider` selector.
+- Added reasoning effort selection after changing models.
+
+### Changed
+- Selection prompts now use a subtle selected-item background, support `j`/`k`, and clear after completion.
+- Removed the redundant `keep current` option from selection prompts; current values are marked inline.
+- Removed the startup status snapshot now that the persistent status bar is always shown.
+
+### Fixed
+- Disallowed no-value `/set provider.key` and `/set provider.url` queries.
+
 ## 0.3.17 - 2026-05-15
 
 ### Added
