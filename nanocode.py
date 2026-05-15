@@ -40,6 +40,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.shortcuts import choice as prompt_choice
 from prompt_toolkit.styles import Style
 
 __version__ = "0.3.17"
@@ -919,6 +920,7 @@ ToolLiveDoneCallback: TypeAlias = Callable[[ParsedToolCall], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
+ReasoningSelector: TypeAlias = Callable[[], str | None]
 
 
 ############################
@@ -5550,7 +5552,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
-    CommandSpec("/model", "Show or set model", "Config", "/model [model_name]"),
+    CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
@@ -5611,10 +5613,12 @@ class CommandDispatcher:
         agent: Agent,
         run_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
+        select_reasoning: ReasoningSelector | None = None,
     ):
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
+        self.select_reasoning = select_reasoning
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
@@ -5677,7 +5681,28 @@ class CommandDispatcher:
         )
 
     def _model(self, args: str) -> str:
-        return self._set("provider.model " + args)
+        model = args.strip()
+        if not model:
+            return self._set("provider.model")
+        if " " in model:
+            return "Usage: /model [model_name]"
+        self.agent.session.config.provider.model = model
+        message = "Set provider.model = " + model
+        if self.select_reasoning is None:
+            return message
+        choice = self.select_reasoning()
+        return message + (("\n" + self._apply_reasoning_choice(choice)) if choice else "")
+
+    def _apply_reasoning_choice(self, choice: str) -> str:
+        provider = self.agent.session.config.provider
+        if choice == "off":
+            provider.reasoning = False
+            return "Set provider.reasoning = off"
+        if choice not in CONFIG_EFFORTS:
+            return "Invalid reasoning effort: " + choice
+        provider.reasoning = True
+        provider.reasoning_effort = choice
+        return "Set provider.reasoning = on\nSet provider.effort = " + choice
 
     def _provider(self, args: str) -> str:
         name = args.strip()
@@ -6096,7 +6121,12 @@ class AgentLoop:
     def run(self) -> int:
         self._print_welcome()
         with self.status_bar:
-            dispatcher = CommandDispatcher(self.agent, run_agent=self._run_agent, run_with_status=self._run_with_status)
+            dispatcher = CommandDispatcher(
+                self.agent,
+                run_agent=self._run_agent,
+                run_with_status=self._run_with_status,
+                select_reasoning=self._select_reasoning,
+            )
             while True:
                 try:
                     user_input = self._read_input(self._prompt()).strip()
@@ -6145,6 +6175,54 @@ class AgentLoop:
                     show_elapsed=False,
                 ),
             )
+
+    def _select_reasoning(self) -> str | None:
+        choices = ("off", *CONFIG_EFFORTS)
+        if self.prompt_session is not None and sys.stdin.isatty():
+            try:
+                return prompt_choice(
+                    "Reasoning effort",
+                    options=[(None, "keep current")]
+                    + [(value, value + (" - disable reasoning" if value == "off" else "")) for value in choices],
+                    default=None,
+                    style=Style.from_dict(
+                        {
+                            "selected-option": "bold #0f4c5c bg:#e6f2f3",
+                            "bottom-toolbar": "noreverse bg:default fg:default",
+                            "bottom-toolbar.text": "noreverse bg:default fg:default",
+                        }
+                    ),
+                    bottom_toolbar=lambda: self.status_bar._fragments(
+                        0.0,
+                        now=time.monotonic(),
+                        show_sweep=False,
+                        show_elapsed=False,
+                    ),
+                )
+            except (EOFError, KeyboardInterrupt):
+                self._emit("Cancelled")
+                return None
+        self._emit(
+            "Reasoning effort:\n"
+            + "\n".join(
+                ["  0. keep current"]
+                + ["  " + str(index) + ". " + choice for index, choice in enumerate(choices, start=1)]
+            )
+        )
+        prompt = "Select reasoning effort [0-" + str(len(choices)) + "] "
+        while True:
+            try:
+                choice = self._read_input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                self._emit("Cancelled")
+                return None
+            if not choice or choice == "0":
+                return None
+            if choice.isdigit() and 1 <= int(choice) <= len(choices):
+                return choices[int(choice) - 1]
+            if choice in choices:
+                return choice
+            self._emit("Invalid reasoning effort: " + choice)
 
     def _discard_pending_tty_input(self) -> None:
         if not sys.stdin.isatty():
@@ -6333,10 +6411,6 @@ class AgentLoop:
         self._emit_segments(
             [("ansibrightblack", "  "), ("ansicyan", "/status"), ("ansiwhite", " for current session state\n")],
             "  /status for current session state",
-        )
-        self._emit_segments(
-            self.status_bar._fragments(0.0, now=time.monotonic(), show_sweep=False, show_elapsed=False) + [("", "\n")],
-            self.status_bar.snapshot(),
         )
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:

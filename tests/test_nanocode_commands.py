@@ -199,6 +199,29 @@ def test_provider_command_switches_current_provider(tmp_path):
     assert bad_result.message == "Unknown provider: missing\nproviders: one, two"
 
 
+def test_model_command_can_select_reasoning_effort(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert session.config.provider.model == "new-model"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "high"
+
+
+def test_model_command_can_disable_reasoning(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "off")
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = off"
+    assert session.config.provider.model == "new-model"
+    assert session.config.provider.reasoning is False
+
+
 def test_blackboard_command_is_not_registered(tmp_path):
     dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
 

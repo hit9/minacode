@@ -87,6 +87,8 @@ USE AT YOUR OWN RISK.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
+`/model <model_name>` also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it.
+
 ## Configuration
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.

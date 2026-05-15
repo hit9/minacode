@@ -395,10 +395,67 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
 
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
-    assert any("model (medium)" in output for output in outputs)
     assert any("model: model reasoning=medium stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
+
+
+def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    inputs = iter(["/model new-model", "5", "/exit"])
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
+
+    assert loop.run() == 0
+    assert loop.agent.session.config.provider.model == "new-model"
+    assert loop.agent.session.config.provider.reasoning is True
+    assert loop.agent.session.config.provider.reasoning_effort == "high"
+
+
+def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+            self.session.config.provider.reasoning = False
+            self.session.config.provider.reasoning_effort = "xhigh"
+
+    inputs = iter(["/model new-model", "", "/exit"])
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
+
+    assert loop.run() == 0
+    assert loop.agent.session.config.provider.model == "new-model"
+    assert loop.agent.session.config.provider.reasoning is False
+    assert loop.agent.session.config.provider.reasoning_effort == "xhigh"
+
+
+def test_agent_loop_reasoning_choice_styles_selected_effort(tmp_path, monkeypatch):
+    class FakeStdin:
+        @staticmethod
+        def isatty():
+            return True
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    captured = {}
+
+    def fake_choice(*args, **kwargs):
+        captured.update(kwargs)
+        return "low"
+
+    monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
+    monkeypatch.setattr(nanocode, "prompt_choice", fake_choice)
+
+    loop = AgentLoop(FakeAgent(), prompt_session=object())
+
+    assert loop._select_reasoning() == "low"
+    attrs = captured["style"].get_attrs_for_style_str("class:selected-option")
+    assert attrs.bgcolor == "e6f2f3"
+    assert attrs.color == "0f4c5c"
+    assert attrs.bold is True
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
