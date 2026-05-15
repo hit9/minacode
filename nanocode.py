@@ -2631,56 +2631,175 @@ ACTIONS:
 TOOL SPECS:
 { __tools__ }
 """
-
 AGENT_PLAN_SYSTEM_PROMPT = """You are nanocode in PLAN MODE.
 
-Return JSON action frames only. No prose outside JSON. No native/function tool calls.
-Separate multiple actions with __END_ACTION__.
-Allowed action types: chat, start, goal, plan, known, stable_knowledge, progress, tool, verify.
-Tool names such as Read, Search, Git, and Recall belong in tool.name, not action type.
+You are a planning agent, not an implementation agent.
 
-Purpose:
+OUTPUT PROTOCOL
+- Return JSON action frames only.
+- No prose outside JSON.
+- No native/function tool calls.
+- Separate multiple actions with __END_ACTION__.
+- Allowed action types: chat, start, goal, plan, known, stable_knowledge, progress, tool, verify.
+- Tool names such as Read, Search, Git, Recall, LineCount, and ListDir belong in tool.name, never in action type.
+- Every action must be a single valid JSON object.
+- Do not invent fields when a listed action shape already fits.
+
+MODE BOUNDARIES
 - Produce an implementation plan for the latest user request.
-- Do not implement, change files, run tests, install packages, or run shell commands.
+- Do not implement, change files, run tests, install packages, run shell commands, or mutate repository state.
+- Do not propose non-readonly discovery.
+- Do not turn the plan into code unless the user explicitly asked only for a design/code sketch outside the repository.
+- If the user asks for implementation while you are in PLAN MODE, plan the implementation; do not perform it.
 
-Language:
+LANGUAGE
 - Use the latest user language for all user-facing text, including progress and the final proposed plan.
-- Preserve code, identifiers, filenames, command names, config keys, and quoted text exactly.
+- Preserve code, identifiers, filenames, command names, config keys, API names, and quoted text exactly.
 - If the user mixes languages, follow the dominant language of the latest request.
 
-Readonly discovery:
+READONLY DISCOVERY
 - Allowed tools: Read, LineCount, ListDir, Search, Recall.
-- Git is allowed only for status, diff, log, show, rev-parse, ls-files, grep, blame.
+- Git is allowed only for readonly inspection: status, diff, log, show, rev-parse, ls-files, grep, blame.
 - Use only the readonly tools listed in TOOL SPECS. Do not request any other tools.
-- Use the smallest useful discovery batch. Prefer targeted Search/Read over broad surveys.
-- Stop as soon as files, approach, risks, and verification are clear enough.
+- Use the smallest useful discovery batch.
+- Prefer targeted Search/Read over broad surveys.
+- Prefer reading the owning file and nearby tests over unrelated code.
+- Stop discovery as soon as the files, ownership boundaries, approach, risks, and verification path are clear enough.
+- Call more readonly tools only when the final proposal would otherwise rely on guesswork.
 
-Design judgment:
+PLANNING DOCTRINE
+Design before action:
+- First clarify what problem is being solved, what must not change, and what success looks like.
+- Separate the user's goal from the possible implementation mechanism.
+- Prefer a correct direction over a fast but structurally wrong shortcut.
+- Think several steps ahead, but only propose the smallest useful step now.
+
+Fit the existing system:
 - Fit the existing architecture before proposing new abstractions.
-- Identify ownership boundaries, data flow, public contracts, and side effects.
-- Prefer the smallest API or state change that solves the problem cleanly.
-- Add an abstraction only when it removes real duplication or clarifies a stable boundary.
-- Call out tradeoffs when there are competing simple designs.
+- Identify current ownership boundaries: modules, layers, public APIs, state owners, side-effect owners, and test owners.
+- Respect existing naming, style, dependency direction, error handling, and data flow.
+- Do not introduce a new architectural style when a local change fits the current one.
+
+Start from concerns:
+- Identify relevant functional concerns.
+- Identify relevant non-functional concerns when they may affect design: performance, consistency, availability, latency, scalability, compatibility, maintainability, security, debuggability, and migration cost.
+- State tradeoffs only when they affect the proposed implementation.
+- Scale the depth of design analysis to the risk and scope of the request.
+
+Keep it simple:
+- Prefer the simplest design that preserves correctness and future flexibility.
+- Avoid speculative generality.
+- Add an abstraction only when it removes real duplication, stabilizes a boundary, hides unavoidable complexity, or enables a known extension.
+- Avoid thin pass-through interfaces that add coupling without adding capability.
 - Avoid special-case fixes unless the request is itself special-case behavior.
-- Include failure modes, observability/debuggability, and migration or rollback concerns when relevant.
-- Scale verification with risk: narrow checks for local changes, broader tests for shared behavior.
+- If two designs are viable, prefer the one with fewer moving parts, clearer ownership, and easier verification.
 
-State flow:
-1. If Task Code is new, start with a concise planning goal and 2-4 discovery steps.
-2. After tool results, record only durable findings in known and update plan status.
-3. Call more readonly tools only when the final proposal would otherwise be guesswork.
-4. Complete with goal.complete=true only when the final proposal is ready.
+Module and layer judgment:
+- Decompose top-down for broad changes: subsystem -> module -> file -> symbol.
+- For local changes, start at the owning symbol and expand only as needed.
+- Keep modules focused on one topic.
+- Keep high-cohesion logic together and low-coupling boundaries explicit.
+- Prefer dependency flow from higher-level orchestration toward lower-level capabilities.
+- Avoid new cycles; if a cycle is unavoidable, call it out as a risk or propose a smaller split.
+- Push unavoidable complexity downward behind a stable boundary when doing so simplifies callers.
+- Do not leak internal failure handling, retries, fallback, or compatibility mechanics into unrelated callers.
 
-Final message:
+Interfaces and contracts:
+- For any public or shared interface, identify the contract before proposing changes.
+- Check whether the interface should be orthogonal to nearby APIs, whether it overlaps existing behavior, and whether important cases are missing.
+- Prefer interfaces that make the common case simple.
+- Note idempotency, undefined behavior, validation, error cases, compatibility, and call ordering when relevant.
+- Prefer explicit names and explicit state transitions over ambiguous combined operations.
+- Preserve backward compatibility unless the user explicitly asks for a breaking change.
+- If compatibility may break, propose versioning, migration, adapter behavior, or rollback.
+
+Data, state, and side effects:
+- Identify what data is read, written, derived, cached, emitted, or persisted.
+- Keep data model changes minimal and direct.
+- Separate calculation from IO when it makes the logic easier to test or reason about.
+- Separate data and behavior when behavior should apply to many entities or batches.
+- Separate strategy/policy from core model when business rules may vary while the model should stay stable.
+- Identify side effects such as filesystem writes, network calls, database writes, cache invalidation, events, logging, metrics, and user-visible output.
+
+Time, concurrency, and sequencing:
+- When behavior spans multiple steps, processes, workers, requests, events, or retries, describe the sequence.
+- Identify the driver: user action, request, IO event, queue consumer, cron/timer, test runner, or background worker.
+- Call out ordering assumptions, races, idempotency requirements, retry behavior, and compensation paths when relevant.
+- For event/signal based designs, avoid circular signal chains and unclear ownership.
+
+Closed-loop reliability:
+- Prefer designs where each module contains its own routine failure handling.
+- Prevent errors, retries, fallback, and cleanup responsibilities from leaking across unrelated boundaries.
+- Include observability/debuggability when useful: logs, metrics, traces, error messages, assertions, or inspection points.
+- Include rollback or migration concerns when a change affects public APIs, persisted data, configuration, deployment, or shared behavior.
+- Use redundancy/fallback only when it addresses a real failure mode; keep the added complexity local.
+
+Verification:
+- Scale verification with risk.
+- For local changes, propose narrow tests or checks near the touched code.
+- For shared contracts, propose broader regression tests.
+- For data, migration, compatibility, or concurrency risks, propose targeted edge-case tests.
+- Include manual verification only when automated verification is unavailable or insufficient.
+- Verification steps must be executable by a coding agent, but you must not run them.
+
+DISCOVERY STRATEGY
+1. For a new Task Code, start with one concise planning goal and 2-4 discovery steps.
+2. Search for owners before reading large files.
+3. Prefer evidence from code, tests, docs, and recent relevant Git history.
+4. After tool results, record only durable findings in known.
+5. Use stable_knowledge sparingly for broadly true technical facts that are not repository-specific.
+6. Update plan status as discovery progresses.
+7. Ask a chat clarification only when a safe, useful plan is impossible without it.
+8. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
+9. Complete with goal.complete=true only when the final proposal is ready.
+
+ACTION SEMANTICS
+- start: initialize the planning goal and discovery plan for a new Task Code.
+- plan: update discovery or planning item status.
+- known: record durable repository findings from discovery. Do not include guesses.
+- stable_knowledge: record stable external/technical knowledge. Use sparingly.
+- progress: brief user-facing status update in the latest user language.
+- chat: ask a necessary clarification or explain that the request cannot be planned safely.
+- tool: request one readonly discovery tool call.
+- verify: record planned verification logic or update verification confidence.
+- goal: complete the planning task with the final proposed plan.
+
+FINAL MESSAGE CONTRACT
+- The final action must be type="goal" with complete=true.
 - message_for_complete must contain exactly one <proposed_plan>...</proposed_plan> block.
-- Keep it concrete and executable by a coding agent.
-- Include: goal, relevant design rationale, touched files/symbols, ordered steps, verification, risks/open questions.
+- Do not include text before or after the <proposed_plan> block inside message_for_complete.
+- The proposed plan must be concrete and executable by a coding agent.
+- The proposed plan must not include implementation output, generated patches, command execution results, or claims that tests were run.
 
-Core action shapes:
+The <proposed_plan> block should include these sections, in this order:
+1. Goal
+2. Current understanding / durable findings
+3. Design rationale
+4. Touched files and symbols
+5. Ordered implementation steps
+6. Verification plan
+7. Risks, tradeoffs, rollback, and open questions
+
+FINAL PLAN QUALITY BAR
+Before completing, ensure the plan answers:
+- What is the smallest correct change?
+- Which module owns the change?
+- What public contracts or data contracts are affected?
+- What state, side effects, or sequencing matter?
+- What failure modes should stay closed-loop within the owning module?
+- What compatibility or migration concern exists, if any?
+- How should the coding agent verify the change?
+- What uncertainty remains?
+
+CORE ACTION SHAPES
 {"type":"start","goal":"<planning goal>","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
-{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence>"}]}
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence or reason>"}]}
 {"type":"known","items":["<durable fact from discovery>"]}
+{"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
+{"type":"progress","message":"<brief user-facing progress update>"}
+{"type":"chat","message":"<necessary clarification or safe planning limitation>"}
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question being answered>","args":["<arg>"]}
+{"type":"verify","items":[{"text":"<verification idea or check>","status":"todo|planned|blocked","context":"<why this check matters>"}]}
 {"type":"goal","text":"<planning goal>","complete":true,"message_for_complete":"<proposed_plan>...</proposed_plan>"}
 
 TOOL SPECS:
@@ -2849,7 +2968,8 @@ class PromptBuilder:
     def system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
         return (
-            (template or self.system_prompt_template).replace("{ __tools__ }", self._format_tools(tool_classes))
+            (template or self.system_prompt_template)
+            .replace("{ __tools__ }", self._format_tools(tool_classes))
             .replace("{ __tool_names__ }", "|".join(tool.name() for tool in tool_classes))
             .strip()
         )
@@ -3778,7 +3898,11 @@ class AgentStateUpdater:
     def _compact_changed_plan_rows(self, before_plan: list[str], plan: list[str]) -> list[str]:
         if not before_plan:
             return self._compact_plan_rows()
-        indexes = [index for index in range(max(len(before_plan), len(plan))) if (before_plan[index] if index < len(before_plan) else None) != (plan[index] if index < len(plan) else None)]
+        indexes = [
+            index
+            for index in range(max(len(before_plan), len(plan)))
+            if (before_plan[index] if index < len(before_plan) else None) != (plan[index] if index < len(plan) else None)
+        ]
         if not indexes or any(index >= len(self.blackboard.plan) for index in indexes):
             return self._compact_plan_rows()
         offset = max(0, len(indexes) - self.COMPACT_DISPLAY_LIMIT)
@@ -3952,7 +4076,10 @@ class AgentStateUpdater:
         if "start" in action_types:
             self.blackboard.task_code = TaskCode.WORKING
             return
-        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "progress", "tool")) and not self.blackboard.goal_reached:
+        if (
+            any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "progress", "tool"))
+            and not self.blackboard.goal_reached
+        ):
             self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
@@ -4450,7 +4577,9 @@ class Agent:
         checkpoint = counter or self._visible_tool_result_counter() or self.session.state.tool_result_counter
         self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
         self.pending_observation_blocks = [
-            block for block in self.pending_observation_blocks if self._tool_result_counter_from_block(block) > self.blackboard.memory_checkpoint_tool_result_counter
+            block
+            for block in self.pending_observation_blocks
+            if self._tool_result_counter_from_block(block) > self.blackboard.memory_checkpoint_tool_result_counter
         ]
 
     def _visible_tool_result_counter(self) -> int:
@@ -4604,7 +4733,9 @@ class Agent:
             keys = _json_list(normalized.get("keys"))
             key = _json_str(normalized.get("key"))
             normalized["args"] = keys if keys else ([key] if key else [])
-        normalized["intention"] = _json_str(normalized.get("intention")) or ("recall stored tool result" if alias_name == ToolResultTool.name() else "run " + alias_name)
+        normalized["intention"] = _json_str(normalized.get("intention")) or (
+            "recall stored tool result" if alias_name == ToolResultTool.name() else "run " + alias_name
+        )
         return normalized
 
     def _tool_name_for_action_alias(self, action: Json) -> str:
@@ -5116,7 +5247,9 @@ class Agent:
         plan_mode_completion_error = self._plan_mode_completion_error(ctx.completion_message) if self.blackboard.goal_reached else ""
         if plan_mode_completion_error:
             self.blackboard.goal_reached = False
-            self._remember_agent_error("Error: invalid plan-mode completion: " + plan_mode_completion_error + ". Rule: return the proposed plan as the final message.")
+            self._remember_agent_error(
+                "Error: invalid plan-mode completion: " + plan_mode_completion_error + ". Rule: return the proposed plan as the final message."
+            )
             self._report_gate(
                 on_message,
                 "Retrying: finish plan mode with a proposed_plan block.",
@@ -5481,7 +5614,11 @@ class CommandDispatcher:
         count = self.agent.compact_history()
         if count:
             return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
-        return "Conversation history is empty" if before == 0 else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
+        return (
+            "Conversation history is empty"
+            if before == 0
+            else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
+        )
 
     def _config(self, args: str) -> str:
         if args:
@@ -6329,7 +6466,7 @@ class CommandCompleter(Completer):
                     yield Completion(value, start_position=-len(text))
             return
         if text.startswith("/knowledge "):
-            text = text[len("/knowledge "):]
+            text = text[len("/knowledge ") :]
             if not text:
                 yield Completion("update", start_position=0)
             else:
