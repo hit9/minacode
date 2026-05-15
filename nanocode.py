@@ -26,6 +26,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 
 from datetime import datetime
@@ -41,7 +42,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.16"
+__version__ = "0.3.17"
 
 
 JsonValue: TypeAlias = Any
@@ -363,7 +364,7 @@ class RuntimeSettings:
 class Config:
     active_provider: str = "default"
     providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
-    nanocode_dir: str = ".nanocode"
+    data_dir: str = ".nanocode"
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
@@ -378,7 +379,7 @@ class Config:
         return cls(
             active_provider=active,
             providers=providers,
-            nanocode_dir=cls.str(paths, "nanocode_dir", ".nanocode"),
+            data_dir=cls.str(paths, "data_dir", "~/.nanocode"),
         )
 
     @property
@@ -446,8 +447,8 @@ timeout = 90
 first_token_timeout = 60
 
 [paths]
-# Relative paths are resolved from the current project directory.
-nanocode_dir = ".nanocode"
+# Global nanocode data directory. Project/session data is stored below this directory.
+data_dir = "~/.nanocode"
 
 [runtime]
 shell_timeout = 60
@@ -486,6 +487,15 @@ plan_mode = false
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"Invalid config file {config_path}: {error}") from error
         return data if isinstance(data, dict) else {}
+
+
+def _new_session_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + str(os.getpid()) + "-" + uuid.uuid4().hex[:8]
+
+
+def _safe_path_name(value: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
+    return value or "project"
 
 
 ############################
@@ -664,6 +674,7 @@ class Session:
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     state: RuntimeState = field(default_factory=RuntimeState)
+    session_id: str = field(default_factory=_new_session_id)
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
@@ -681,6 +692,12 @@ class Session:
             path = os.path.join(self.cwd, path)
         return os.path.abspath(path)
 
+    def data_path(self, *parts: str) -> str:
+        base = os.path.expanduser(self.config.data_dir)
+        if not os.path.isabs(base):
+            base = os.path.join(self.cwd, base)
+        return os.path.abspath(os.path.join(base, *parts))
+
     def is_path_in_cwd(self, path: str) -> bool:
         cwd = os.path.realpath(self.cwd)
         path = os.path.realpath(path)
@@ -692,14 +709,29 @@ class Session:
     def append_conversation(self, item: ConversationItem) -> None:
         self.state.conversation.append(item)
 
+    def project_key(self) -> str:
+        cwd = os.path.realpath(self.cwd)
+        basename = _safe_path_name(os.path.basename(cwd.rstrip(os.sep)) or "root")
+        digest = hashlib.sha1(cwd.encode("utf-8")).hexdigest()[:10]
+        return basename + "-" + digest
+
+    def project_dir(self) -> str:
+        return self.data_path("projects", self.project_key())
+
+    def session_dir(self) -> str:
+        return self.data_path("sessions", self.session_id)
+
+    def history_path(self) -> str:
+        return self.data_path("history")
+
     def debug_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.config.nanocode_dir, "debug"))
+        return os.path.join(self.session_dir(), "debug")
 
     def tool_results_dir(self) -> str:
-        return self.resolve_path(os.path.join(self.config.nanocode_dir, "tool_results"))
+        return os.path.join(self.session_dir(), "tool_results")
 
     def user_rules_path(self) -> str:
-        return self.resolve_path(os.path.join(self.config.nanocode_dir, "user_rules.md"))
+        return os.path.join(self.project_dir(), "user_rules.md")
 
     def load_user_rules(self) -> None:
         self.state.user_rules = UserRules.load(self.user_rules_path())
@@ -3746,7 +3778,7 @@ class ToolCallRunner:
             try:
                 with open(filepath, "x", encoding="utf-8") as fp:
                     fp.write(output)
-                return os.path.relpath(filepath, self.session.cwd)
+                return os.path.relpath(filepath, self.session.cwd) if self.session.is_path_in_cwd(filepath) else filepath
             except FileExistsError:
                 continue
         return ""
@@ -5522,7 +5554,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
-    CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
+    CommandSpec("/clean", "Clean all session tool result logs", "Maintenance", "/clean"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
@@ -5590,7 +5622,7 @@ class CommandDispatcher:
             "/compact": self._compact,
             "/config": self._config,
             "/set": self._set,
-            "/clean-logs": self._clean_logs,
+            "/clean": self._clean,
             "/model": self._model,
             "/provider": self._provider,
             "/plan": self._plan,
@@ -5711,6 +5743,7 @@ class CommandDispatcher:
             [
                 "provider: " + session.config.active_provider,
                 "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
+                "session: " + session.session_id,
                 "runtime: yolo="
                 + self._format_bool(session.settings.yolo)
                 + " plan="
@@ -5763,6 +5796,10 @@ class CommandDispatcher:
                 "provider.temperature: " + self._format_optional(provider_config.temperature),
                 "provider.timeout: " + self._format_optional(provider_config.timeout),
                 "provider.first_token_timeout: " + self._format_optional(provider_config.first_token_timeout),
+                "paths.data_dir: " + session.data_path(),
+                "paths.project_dir: " + session.project_dir(),
+                "paths.session_dir: " + session.session_dir(),
+                "paths.history: " + session.history_path(),
                 "runtime.compact_at: " + str(session.settings.compact_at),
                 "runtime.shell_timeout: " + str(session.settings.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
@@ -5865,22 +5902,26 @@ class CommandDispatcher:
             return self.agent.session.config.provider, CONFIG_PROVIDER_ATTRS[key]
         return self.agent.session.settings, CONFIG_RUNTIME_ATTRS[key]
 
-    def _clean_logs(self, args: str) -> str:
+    def _clean(self, args: str) -> str:
         if args:
-            return "Usage: /clean-logs"
-        tool_results_dir = self.agent.session.tool_results_dir()
-        if not os.path.isdir(tool_results_dir):
-            return f"No tool_results directory found at {tool_results_dir}"
+            return "Usage: /clean"
+        sessions_dir = self.agent.session.data_path("sessions")
+        if not os.path.isdir(sessions_dir):
+            return f"No session logs directory found at {sessions_dir}"
         count = 0
         failed = 0
-        for name in os.listdir(tool_results_dir):
-            if name.endswith(".log"):
+        for root, _, filenames in os.walk(sessions_dir):
+            if os.path.basename(root) != "tool_results":
+                continue
+            for name in filenames:
+                if not name.endswith(".log"):
+                    continue
                 try:
-                    os.remove(os.path.join(tool_results_dir, name))
+                    os.remove(os.path.join(root, name))
                     count += 1
                 except OSError:
                     failed += 1
-        msg = f"Cleaned {count} log file(s) from {tool_results_dir}"
+        msg = f"Cleaned {count} log file(s) from {sessions_dir}"
         if failed:
             msg += f" ({failed} failed)"
         return msg
@@ -6042,7 +6083,7 @@ class AgentLoop:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.status_bar = StatusBar(agent.session)
-        self.history_path = agent.session.resolve_path(os.path.join(agent.session.config.nanocode_dir, "history"))
+        self.history_path = agent.session.history_path()
         self.prompt_session = prompt_session
         self._live_preview_active = False
         self._live_preview_resume_status = False
@@ -6657,7 +6698,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
         parser.add_argument("--plan", action="store_true", help="Plan changes without editing or running commands")
-        parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
+        parser.add_argument("--debug", action="store_true", help="Write request prompts to the current session debug directory")
         parser.add_argument("--config", default=None, help="Path to config file (default: ~/.nanocode/config.toml)")
         parser.add_argument("--init-config", action="store_true", help="Create a default config file at --config or ~/.nanocode/config.toml")
         args = parser.parse_args(argv)

@@ -6,7 +6,11 @@ from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, 
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
-    data = {"provider": {"active": "default", "default": {"model": model}}, "runtime": {"compact_at": compact_at}}
+    data = {
+        "provider": {"active": "default", "default": {"model": model}},
+        "paths": {"data_dir": str(tmp_path / ".nanocode")},
+        "runtime": {"compact_at": compact_at},
+    }
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode))
 
 
@@ -23,12 +27,19 @@ def test_session_reports_missing_required_config(tmp_path):
 
 
 def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
-    rules_dir = tmp_path / ".nanocode"
-    rules_dir.mkdir()
+    data_dir = tmp_path / "nanocode-home"
+    project_key = Session(cwd=str(tmp_path), config=Config(data_dir=str(data_dir))).project_key()
+    rules_dir = data_dir / "projects" / project_key
+    rules_dir.mkdir(parents=True)
     (rules_dir / "user_rules.md").write_text("# User Rules\n\n- Prompt-only changes do not need tests.\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    session = Session.from_config_data({"provider": {"active": "default", "default": {"url": "url", "key": "key", "model": "model"}}})
+    session = Session.from_config_data(
+        {
+            "provider": {"active": "default", "default": {"url": "url", "key": "key", "model": "model"}},
+            "paths": {"data_dir": str(data_dir)},
+        }
+    )
 
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
@@ -89,7 +100,7 @@ key = "key"
 model = "custom-model"
 
 [paths]
-nanocode_dir = ".custom-nanocode"
+data_dir = ".custom-nanocode"
 """.strip(),
         encoding="utf-8",
     )
@@ -107,7 +118,7 @@ nanocode_dir = ".custom-nanocode"
     assert sessions[0].config.provider.url == "https://example.test/v1"
     assert sessions[0].config.provider.key == "key"
     assert sessions[0].config.provider.model == "custom-model"
-    assert sessions[0].config.nanocode_dir == ".custom-nanocode"
+    assert sessions[0].config.data_dir == ".custom-nanocode"
     assert sessions[0].settings.plan_mode is True
 
 

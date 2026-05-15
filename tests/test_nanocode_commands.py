@@ -19,7 +19,11 @@ def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compa
     provider: dict[str, object] = {"model": model}
     if stream is not None:
         provider["stream"] = stream
-    data = {"provider": {"active": "default", "default": provider}, "runtime": {"compact_at": compact_at}}
+    data = {
+        "provider": {"active": "default", "default": provider},
+        "paths": {"data_dir": str(tmp_path / ".nanocode")},
+        "runtime": {"compact_at": compact_at},
+    }
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
 
 
@@ -77,6 +81,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
     assert "model: model reasoning=medium stream=on" in result.message
+    assert "session: " + session.session_id in result.message
     assert "runtime: yolo=off plan=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
@@ -114,6 +119,10 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
+    assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message
+    assert "paths.project_dir: " in result.message
+    assert "paths.session_dir: " in result.message
+    assert "paths.history: " + str(tmp_path / ".nanocode" / "history") in result.message
     assert "runtime.max_agent_steps: 100" in result.message
     assert "runtime.plan_timeout: 180" in result.message
     assert "runtime.plan_first_token_timeout: 120" in result.message
@@ -353,71 +362,76 @@ def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     assert len(prompts) == 1
 
 
-def test_clean_logs_command_removes_log_files(tmp_path):
+def test_clean_command_removes_all_session_log_files(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
+    other_tool_results_dir = session.data_path("sessions", "other-session", "tool_results")
     os.makedirs(tool_results_dir, exist_ok=True)
+    os.makedirs(other_tool_results_dir, exist_ok=True)
 
     # Create some log files and a non-log file
     log1 = os.path.join(tool_results_dir, "test1.log")
     log2 = os.path.join(tool_results_dir, "test2.log")
+    log3 = os.path.join(other_tool_results_dir, "test3.log")
     other = os.path.join(tool_results_dir, "other.txt")
     with open(log1, "w"):
         pass
     with open(log2, "w"):
         pass
+    with open(log3, "w"):
+        pass
     with open(other, "w"):
         pass
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 2 log file(s)" in result.message
+    assert "Cleaned 3 log file(s)" in result.message
     assert not os.path.exists(log1)
     assert not os.path.exists(log2)
+    assert not os.path.exists(log3)
     assert os.path.exists(other)
 
 
-def test_clean_logs_command_no_directory(tmp_path):
+def test_clean_command_no_directory(tmp_path):
     session = Session(cwd=str(tmp_path))
-    # Ensure tool_results_dir does not exist
-    tool_results_dir = session.tool_results_dir()
-    if os.path.exists(tool_results_dir):
-        shutil.rmtree(tool_results_dir)
+    sessions_dir = session.data_path("sessions")
+    if os.path.exists(sessions_dir):
+        shutil.rmtree(sessions_dir)
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "No tool_results directory found" in result.message
+    assert "No session logs directory found" in result.message
 
 
-def test_clean_logs_command_empty_directory(tmp_path):
+def test_clean_command_empty_directory(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
     assert "Cleaned 0 log file(s)" in result.message
 
 
-def test_clean_logs_command_with_args_returns_usage(tmp_path):
+def test_clean_command_with_args_returns_usage(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs extra-arg")
+    result = dispatcher.dispatch("/clean extra-arg")
 
     assert result.status == CommandStatus.HANDLED
-    assert result.message == "Usage: /clean-logs"
+    assert result.message == "Usage: /clean"
 
 
-def test_clean_logs_command_reports_failed_deletions(tmp_path):
+def test_clean_command_reports_failed_deletions(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
@@ -443,7 +457,7 @@ def test_clean_logs_command_reports_failed_deletions(tmp_path):
     import unittest.mock
     with unittest.mock.patch("os.remove", side_effect=mock_remove):
         dispatcher = CommandDispatcher(Agent(session))
-        result = dispatcher.dispatch("/clean-logs")
+        result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
     assert "Cleaned 1 log file(s)" in result.message

@@ -1,4 +1,5 @@
 import json
+import os
 
 import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
@@ -51,7 +52,7 @@ def _session(
         provider["first_token_timeout"] = first_token_timeout
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
-    data = {"provider": {"active": "default", "default": provider}}
+    data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
     return Session(
         cwd=str(tmp_path),
         config=nanocode.Config.from_dict(data),
@@ -81,13 +82,13 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert "output:\n<ReadToolResult>" in latest
     assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.state.tool_result_store["tr.1"].value
-    assert session.state.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
+    assert session.state.tool_result_store["tr.1"].log_path.startswith(os.path.join(".nanocode", "sessions"))
     assert session.state.tool_result_store["tr.1"].original_chars > 0
     assert session.state.tool_result_store["tr.1"].original_lines > 0
     assert session.state.tool_result_store["tr.1"].excerpted is False
     assert (tmp_path / session.state.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.state.tool_result_store["tr.1"].value
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
@@ -1090,7 +1091,8 @@ def test_main_agent_applies_user_rule_and_saves(tmp_path):
 
     agent.apply_response({"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests."}]})
 
-    content = (tmp_path / ".nanocode" / "user_rules.md").read_text(encoding="utf-8")
+    with open(session.user_rules_path(), encoding="utf-8") as file:
+        content = file.read()
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
     assert content == "# User Rules\n\n- Prompt-only changes do not need tests.\n"
     assert "  User_Rules    updated" in agent.state_updater.latest_report
@@ -1479,7 +1481,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert "Cancelled: user refused: please inspect tests first" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
@@ -1531,7 +1533,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     assert "InvalidToolCall" in latest
     assert "bad call" not in latest
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
@@ -1680,7 +1682,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[0].startswith("[success] Read sample.txt 0:1")
     assert "tr.1" not in messages[0]
     assert "why:" not in messages[0]
-    assert "log: .nanocode/tool_results/" not in messages[0]
+    assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 2
     assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.latest_tool_call_blocks)
