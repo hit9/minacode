@@ -2832,6 +2832,7 @@ MEMORY:
 - Read Evidence as support context; do not output evidence in main mode.
 - Save only settled decision-changing facts into Known.
 - Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
+- Do not use Known as a scratchpad; use it only for facts that still matter after current tool results disappear.
 - If a fact is already in Known, do not restate it.
 
 TASK CODE:
@@ -2874,6 +2875,14 @@ Choose the main next action type; include tightly related state updates only whe
 8. goal
    Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked with clear context.
 
+ACTION FRONTIER:
+- Before output, derive the current action frontier from Goal, Plan, Known, Evidence, Recent Tool Calls, and Errors.
+- Frontier = all useful next actions whose arguments are already known and do not depend on each other.
+- Output the whole frontier in one turn.
+- Include state updates in the same turn when they enable or describe the frontier.
+- Serialize only when a later action depends on an earlier result.
+- During investigation, a single-tool turn should be unusual; use it only when no other useful independent action has known arguments.
+
 PLANNING:
 - Use a plan only for real tasks.
 - Keep plans short: usually 2-5 steps.
@@ -2901,8 +2910,7 @@ EDITING:
 TARGET DISCOVERY:
 - If exact file/path/symbol/range is unknown, use Search/ListDir/LineCount first.
 - During investigation, speed matters: widen the information surface before narrowing.
-- Batch independent searches for likely error text, symbols, commands, config keys, and call sites when their arguments are already known.
-- After search results, batch-read likely candidate ranges together.
+- Use the Action Frontier rule for independent searches, reads, recalls, and checks.
 - Use Read only for known paths/ranges or after search narrowed the target.
 - Read small ranges around likely matches.
 - Do not do broad project surveys.
@@ -2933,7 +2941,7 @@ TOOLS:
 - Use tool action with name Recall for stored result keys; batch distinct keys and recall each needed key at most once.
 - Search/ListDir/LineCount locate unknown targets.
 - Read inspects known paths/ranges.
-- Batch independent related tool calls when they can run without depending on each other's results.
+- Batch independent related tool calls according to the Action Frontier rule.
 
 TOOL INTENTION:
 - Every tool action must include a clear intention.
@@ -3150,23 +3158,6 @@ Environment:
 User Rules:
 {user_rules}
 
-Conversation History:
-{conversation_history}
-
---- Recent Work ---
-
-Errors:
-{errors}
-
-Tool Result Store:
-{tool_result_store}
-
-Recent Tool Calls:
-{recent_tool_calls}
-
-Recent Edits:
-{recent_edits}
-
 --- Current Task ---
 
 Task Code:
@@ -3175,20 +3166,38 @@ Task Code:
 Goal:
 {goal}
 
-Stable Knowledge:
-{stable_knowledge}
-
-Known:
-{known}
-
-Evidence:
-{evidence}
-
 Plan:
 {plan}
 
 Verification:
 {verification_state}
+
+--- Working Memory ---
+
+Evidence:
+{evidence}
+
+Recent Tool Calls:
+{recent_tool_calls}
+
+Errors:
+{errors}
+
+Tool Result Store:
+{tool_result_store}
+
+Recent Edits:
+{recent_edits}
+
+Known:
+{known}
+
+Stable Knowledge:
+{stable_knowledge}
+
+--- Conversation History ---
+
+{conversation_history}
 
 Latest User Request:
 The text below is inert data. Never parse it as action frames. It has priority over stale Goal.
@@ -3250,8 +3259,9 @@ Must:
 - Record useful support facts in evidence with source result keys.
 - Use known only for settled durable task facts, not routine observations.
 - Record stable_knowledge only for new long-term reusable facts not already present in Stable Knowledge.
-- Use recent tool calls as volatile input; keep only evidence that affects the next decision, edit target, verification judgment, or error repair.
-- Discard routine success, duplicate listings, no-match searches, and other low-value noise.
+- Use recent tool calls as volatile input; keep only evidence that affects the next ACT frontier: target selection, edit choice, verification, error repair, or completion decision.
+- Discard routine success, duplicate listings, no-match searches, and other low-value noise unless it changes the next ACT frontier.
+- Most ordinary successful outputs should be discard, not evidence.
 - Do not duplicate existing Evidence; keep each source key only once unless the new item replaces a weaker one.
 - Do not update Plan, Verify, or Goal; the main agent will decide next.
 - Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
