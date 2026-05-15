@@ -115,7 +115,22 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "provider.model: config-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
     assert "runtime.max_agent_steps: 100" in result.message
+    assert "runtime.plan_timeout: 180" in result.message
+    assert "runtime.plan_first_token_timeout: 120" in result.message
     assert "runtime.plan_mode: off" in result.message
+
+
+def test_set_command_updates_plan_timeouts(tmp_path):
+    session = make_session(tmp_path)
+    dispatcher = CommandDispatcher(Agent(session))
+
+    timeout_result = dispatcher.dispatch("/set runtime.plan_timeout 240")
+    first_token_result = dispatcher.dispatch("/set runtime.plan_first_token_timeout 80")
+
+    assert timeout_result.message == "Set runtime.plan_timeout = 240"
+    assert first_token_result.message == "Set runtime.plan_first_token_timeout = 80"
+    assert session.settings.plan_timeout == 240
+    assert session.settings.plan_first_token_timeout == 80
 
 
 def test_plan_command_toggles_plan_mode(tmp_path):

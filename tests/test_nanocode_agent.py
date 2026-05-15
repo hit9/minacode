@@ -416,6 +416,16 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.state.last_total_tokens == 5
 
 
+def test_plan_mode_uses_runtime_plan_timeouts(tmp_path):
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, first_token_timeout=5, plan_mode=True)
+    session.settings.plan_timeout = 240
+    session.settings.plan_first_token_timeout = 80
+    client = nanocode.ModelClient(session)
+
+    assert client._request_timeouts(session.config.provider, activity="agent") == (240, 80)
+    assert client._request_timeouts(session.config.provider, activity="compact") == (12, 5)
+
+
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
     class FakeModelClient:
         def __init__(self):

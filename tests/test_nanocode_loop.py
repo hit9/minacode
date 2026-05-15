@@ -59,6 +59,8 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["timeout"] == 90
     assert config["provider"]["default"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
+    assert config["runtime"]["plan_timeout"] == 180
+    assert config["runtime"]["plan_first_token_timeout"] == 120
     assert config["runtime"]["yolo"] is False
     assert config["runtime"]["plan_mode"] is False
 
@@ -261,6 +263,7 @@ def test_agent_loop_command_completer_matches_slash_commands():
     set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
     set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
     set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
+    set_plan_timeout_completions = list(completer.get_completions(Document("/set runtime.plan_"), CompleteEvent(completion_requested=True)))
     plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
@@ -269,6 +272,7 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
+    assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in plan_completions] == ["on", "off"]
 
     knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))

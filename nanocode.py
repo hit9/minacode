@@ -337,6 +337,8 @@ class RuntimeSettings:
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 100
+    plan_timeout: int = 180
+    plan_first_token_timeout: int = 120
     yolo: bool = False
     plan_mode: bool = False
     debug: bool = False
@@ -348,6 +350,8 @@ class RuntimeSettings:
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             compact_at=Config.int(runtime, "compact_at", 50),
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
+            plan_timeout=max(1, Config.int(runtime, "plan_timeout", 180) or 0),
+            plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 120) or 0),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
             plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
@@ -448,6 +452,8 @@ nanocode_dir = ".nanocode"
 shell_timeout = 60
 compact_at = 50
 max_agent_steps = 100
+plan_timeout = 180
+plan_first_token_timeout = 120
 yolo = false
 plan_mode = false
 """
@@ -3079,8 +3085,7 @@ class ModelClient:
         if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
-        timeout = config.timeout if config.timeout is not None else 90
-        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
+        timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
         if config.reasoning is not False and "openrouter.ai" in config.url:
             payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
         self._write_debug_prompt(activity=activity, messages=messages)
@@ -3147,6 +3152,13 @@ class ModelClient:
         if not parse_actions:
             return self._parse_json_content(content)
         return self._parse_model_content(content)
+
+    def _request_timeouts(self, config: ProviderConfig, *, activity: str) -> tuple[int, int | None]:
+        timeout = config.timeout if config.timeout is not None else 90
+        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
+        if activity == "agent" and self.session.settings.plan_mode:
+            return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
+        return timeout, first_token_timeout
 
     def _read_streaming_content(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
         parts: list[str] = []
@@ -5435,6 +5447,8 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.compact_at": "compact_at",
     "runtime.shell_timeout": "shell_timeout",
     "runtime.max_agent_steps": "max_agent_steps",
+    "runtime.plan_timeout": "plan_timeout",
+    "runtime.plan_first_token_timeout": "plan_first_token_timeout",
     "runtime.yolo": "yolo",
 }
 CONFIG_SET_KEYS: tuple[str, ...] = tuple(CONFIG_PROVIDER_ATTRS) + tuple(CONFIG_RUNTIME_ATTRS)
@@ -5445,7 +5459,15 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "runtime.yolo": ("on", "off"),
 }
 CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
-CONFIG_INT_KEYS: set[str] = {"provider.timeout", "provider.first_token_timeout", "runtime.compact_at", "runtime.shell_timeout", "runtime.max_agent_steps"}
+CONFIG_INT_KEYS: set[str] = {
+    "provider.timeout",
+    "provider.first_token_timeout",
+    "runtime.compact_at",
+    "runtime.shell_timeout",
+    "runtime.max_agent_steps",
+    "runtime.plan_timeout",
+    "runtime.plan_first_token_timeout",
+}
 CONFIG_SET_USAGE = "Usage: /set <key> <value>"
 
 
@@ -5642,6 +5664,8 @@ class CommandDispatcher:
                 "runtime.compact_at: " + str(session.settings.compact_at),
                 "runtime.shell_timeout: " + str(session.settings.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
+                "runtime.plan_timeout: " + str(session.settings.plan_timeout),
+                "runtime.plan_first_token_timeout: " + str(session.settings.plan_first_token_timeout),
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
                 "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
             ]
