@@ -358,7 +358,7 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     prompt = agent.build_observe_prompt()
 
     assert "fix bug" in prompt
-    assert "always run tests" in prompt
+    assert "always run tests" not in prompt
     assert "fix bug goal" in prompt
     assert "inspect failing path" in prompt
     assert "known fact" in prompt
