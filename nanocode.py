@@ -338,16 +338,18 @@ class RuntimeSettings:
     compact_at: int = 50
     max_agent_steps: int = 100
     yolo: bool = False
+    plan_mode: bool = False
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             compact_at=Config.int(runtime, "compact_at", 50),
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
-            yolo=yolo,
+            yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
+            plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
         )
 
@@ -446,6 +448,8 @@ nanocode_dir = ".nanocode"
 shell_timeout = 60
 compact_at = 50
 max_agent_steps = 100
+yolo = false
+plan_mode = false
 """
 
     @classmethod
@@ -655,12 +659,12 @@ class Session:
     state: RuntimeState = field(default_factory=RuntimeState)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
-        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, debug=debug)
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
+        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, plan_mode=plan_mode, debug=debug)
 
     @classmethod
-    def from_config_data(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
-        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
+    def from_config_data(cls, data: Json, *, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
+        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode, debug=debug))
         session.load_user_rules()
         return session
 
@@ -2327,6 +2331,9 @@ class BashTool(Tool):
         return True
 
 
+GIT_READONLY_COMMANDS = frozenset({"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"})
+
+
 @dataclass
 class GitTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -2369,8 +2376,7 @@ class GitTool(Tool):
         return cls(args=git_args, git_path=git_path, cwd=cwd, timeout=session.settings.shell_timeout)
 
     def requires_confirmation(self, session: Session) -> bool:
-        readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
-        return not self.args or self.args[0] not in readonly
+        return not self.args or self.args[0] not in GIT_READONLY_COMMANDS
 
     def preview(self) -> str:
         return "Git(" + " ".join(self.args) + ")"
@@ -2388,6 +2394,14 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired as error:
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
+
+
+class PlanModeGitTool(GitTool):
+    NAME: ClassVar[str] = "Git"
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Run readonly git commands only: status, diff, log, show, rev-parse, ls-files, grep, blame.",
+        "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
+    )
 
 
 @dataclass
@@ -2444,6 +2458,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.name(): GitTool,
     ToolResultTool.name(): ToolResultTool,
 }
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListDirTool, SearchTool, PlanModeGitTool, ToolResultTool)
 
 
 ############################
@@ -2617,6 +2632,61 @@ TOOL SPECS:
 { __tools__ }
 """
 
+AGENT_PLAN_SYSTEM_PROMPT = """You are nanocode in PLAN MODE.
+
+Return JSON action frames only. No prose outside JSON. No native/function tool calls.
+Separate multiple actions with __END_ACTION__.
+Allowed action types: chat, start, goal, plan, known, stable_knowledge, progress, tool, verify.
+Tool names such as Read, Search, Git, and Recall belong in tool.name, not action type.
+
+Purpose:
+- Produce an implementation plan for the latest user request.
+- Do not implement, change files, run tests, install packages, or run shell commands.
+
+Language:
+- Use the latest user language for all user-facing text, including progress and the final proposed plan.
+- Preserve code, identifiers, filenames, command names, config keys, and quoted text exactly.
+- If the user mixes languages, follow the dominant language of the latest request.
+
+Readonly discovery:
+- Allowed tools: Read, LineCount, ListDir, Search, Recall.
+- Git is allowed only for status, diff, log, show, rev-parse, ls-files, grep, blame.
+- Use only the readonly tools listed in TOOL SPECS. Do not request any other tools.
+- Use the smallest useful discovery batch. Prefer targeted Search/Read over broad surveys.
+- Stop as soon as files, approach, risks, and verification are clear enough.
+
+Design judgment:
+- Fit the existing architecture before proposing new abstractions.
+- Identify ownership boundaries, data flow, public contracts, and side effects.
+- Prefer the smallest API or state change that solves the problem cleanly.
+- Add an abstraction only when it removes real duplication or clarifies a stable boundary.
+- Call out tradeoffs when there are competing simple designs.
+- Avoid special-case fixes unless the request is itself special-case behavior.
+- Include failure modes, observability/debuggability, and migration or rollback concerns when relevant.
+- Scale verification with risk: narrow checks for local changes, broader tests for shared behavior.
+
+State flow:
+1. If Task Code is new, start with a concise planning goal and 2-4 discovery steps.
+2. After tool results, record only durable findings in known and update plan status.
+3. Call more readonly tools only when the final proposal would otherwise be guesswork.
+4. Complete with goal.complete=true only when the final proposal is ready.
+
+Final message:
+- message_for_complete must contain exactly one <proposed_plan>...</proposed_plan> block.
+- Keep it concrete and executable by a coding agent.
+- Include: goal, relevant design rationale, touched files/symbols, ordered steps, verification, risks/open questions.
+
+Core action shapes:
+{"type":"start","goal":"<planning goal>","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence>"}]}
+{"type":"known","items":["<durable fact from discovery>"]}
+{"type":"tool","name":"{ __tool_names__ }","intention":"<question being answered>","args":["<arg>"]}
+{"type":"goal","text":"<planning goal>","complete":true,"message_for_complete":"<proposed_plan>...</proposed_plan>"}
+
+TOOL SPECS:
+{ __tools__ }
+"""
+
 AGENT_USER_PROMPT_TEMPLATE = """
 --- Context ---
 
@@ -2776,10 +2846,11 @@ class PromptBuilder:
         self.blackboard = blackboard or Blackboard()
         self.runtime = runtime or AgentRuntime()
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
+        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
         return (
-            self.system_prompt_template.replace("{ __tools__ }", self._format_tools())
-            .replace("{ __tool_names__ }", "|".join(tool.name() for tool in TOOL_REGISTRY.values()))
+            (template or self.system_prompt_template).replace("{ __tools__ }", self._format_tools(tool_classes))
+            .replace("{ __tool_names__ }", "|".join(tool.name() for tool in tool_classes))
             .strip()
         )
 
@@ -2805,9 +2876,9 @@ class PromptBuilder:
             user_request=fence + "text\n" + user_request + "\n" + fence,
         ).strip()
 
-    def _format_tools(self) -> str:
+    def _format_tools(self, tools: Iterable[ToolClass]) -> str:
         lines = []
-        for tool in TOOL_REGISTRY.values():
+        for tool in tools:
             lines.append("- " + tool.SIGNATURE)
             for item in tool.DESCRIPTION:
                 lines.append("  - " + item)
@@ -4124,6 +4195,7 @@ class Agent:
     RECENT_TOOL_CALLS: ClassVar[int] = 50
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
     RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 20
+    PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
     def __init__(self, session: Session):
         self.session = session
@@ -4354,7 +4426,13 @@ class Agent:
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
-        system_prompt = AGENT_OBSERVE_SYSTEM_PROMPT.strip() if self.mode == AgentMode.OBSERVE else self.prompt_builder.system_prompt()
+        if self.mode == AgentMode.OBSERVE:
+            system_prompt = AGENT_OBSERVE_SYSTEM_PROMPT.strip()
+        else:
+            system_prompt = self.prompt_builder.system_prompt(
+                AGENT_PLAN_SYSTEM_PROMPT if self.session.settings.plan_mode else None,
+                tools=PLAN_MODE_TOOLS if self.session.settings.plan_mode else None,
+            )
         response = self.request(system_prompt, self.build_user_prompt(), activity="agent", on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
@@ -4676,6 +4754,26 @@ class Agent:
                 return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
         return ""
 
+    def _plan_mode_tool_error(self, tool_calls: list[JsonValue]) -> str:
+        if not self.session.settings.plan_mode:
+            return ""
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                continue
+            tool_class = TOOL_REGISTRY.get(call.name)
+            if tool_class is None:
+                return "plan mode allows registered readonly tools only; blocked " + _format_tool_call_summary(call)
+            if tool_class.effect() == ToolEffect.READONLY:
+                continue
+            if tool_class is GitTool:
+                args = call.args[1:] if call.args and call.args[0].startswith("cwd=") else call.args
+                if args and args[0] in self.PLAN_MODE_GIT_READONLY:
+                    continue
+            return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
+        return ""
+
     def _build_response_context(self, response: Json) -> ResponseContext:
         actions = self._response_actions(response)
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
@@ -4742,6 +4840,15 @@ class Agent:
                 on_message,
                 "Retrying: change the failed tool call instead of repeating it.",
                 "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
+            )
+            return True
+        plan_mode_tool_error = self._plan_mode_tool_error(ctx.tool_calls)
+        if plan_mode_tool_error:
+            self._remember_agent_error("Error: " + plan_mode_tool_error + ". Rule: produce a proposed plan without executing mutations.")
+            self._report_gate(
+                on_message,
+                "Retrying: plan mode only allows readonly discovery.",
+                "PlanMode_Gate: " + plan_mode_tool_error + ".",
             )
             return True
         if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
@@ -4838,6 +4945,18 @@ class Agent:
             )
             return AgentRunResult()
         return None
+
+    def _plan_mode_completion_error(self, message: str) -> str:
+        if not self.session.settings.plan_mode:
+            return ""
+        text = message.strip()
+        if not text.startswith("<proposed_plan>") or not text.endswith("</proposed_plan>"):
+            return "final plan must be wrapped in <proposed_plan>...</proposed_plan>"
+        if text.count("<proposed_plan>") != 1 or text.count("</proposed_plan>") != 1:
+            return "final plan must contain exactly one proposed_plan block"
+        if not text.removeprefix("<proposed_plan>").removesuffix("</proposed_plan>").strip():
+            return "final plan block is empty"
+        return ""
 
     def _promote_required_verification(self, ctx: ResponseContext) -> None:
         verification = self.blackboard.verification
@@ -4994,6 +5113,16 @@ class Agent:
                 "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
             )
             return AgentRunResult()
+        plan_mode_completion_error = self._plan_mode_completion_error(ctx.completion_message) if self.blackboard.goal_reached else ""
+        if plan_mode_completion_error:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error("Error: invalid plan-mode completion: " + plan_mode_completion_error + ". Rule: return the proposed plan as the final message.")
+            self._report_gate(
+                on_message,
+                "Retrying: finish plan mode with a proposed_plan block.",
+                "PlanMode_Gate: " + plan_mode_completion_error + ".",
+            )
+            return AgentRunResult()
         if self.blackboard.goal_reached:
             self.session.append_conversation(AssistantMessage(content=ctx.completion_message))
             if on_message is not None:
@@ -5144,6 +5273,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/model", "Show or set model", "Config", "/model [model_name]"),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
+    CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
     CommandSpec("/clean-logs", "Clean tool result log files", "Maintenance", "/clean-logs"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
@@ -5206,6 +5336,7 @@ class CommandDispatcher:
             "/clean-logs": self._clean_logs,
             "/model": self._model,
             "/provider": self._provider,
+            "/plan": self._plan,
             "/yolo": self._yolo,
             "/knowledge": self._knowledge,
         }
@@ -5278,6 +5409,26 @@ class CommandDispatcher:
             return self._set("runtime.yolo " + ("off" if current else "on"))
         return self._set("runtime.yolo " + args)
 
+    def _plan(self, args: str) -> str:
+        text = args.strip()
+        if not text:
+            current = self.agent.session.settings.plan_mode
+            self.agent.session.settings.plan_mode = not current
+            return "Set plan mode = " + self._format_bool(self.agent.session.settings.plan_mode)
+        if text in {"on", "off"}:
+            self.agent.session.settings.plan_mode = text == "on"
+            return "Set plan mode = " + text
+        previous = self.agent.session.settings.plan_mode
+        self.agent.session.settings.plan_mode = True
+        try:
+            if self.run_agent is not None:
+                self.run_agent(text)
+            else:
+                self.agent.run(text)
+        finally:
+            self.agent.session.settings.plan_mode = previous
+        return ""
+
     def _rules(self, args: str) -> str:
         if args:
             return "Usage: /rules"
@@ -5303,7 +5454,12 @@ class CommandDispatcher:
             [
                 "provider: " + session.config.active_provider,
                 "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
-                "runtime: yolo=" + self._format_bool(session.settings.yolo) + " compact_at=" + str(session.settings.compact_at),
+                "runtime: yolo="
+                + self._format_bool(session.settings.yolo)
+                + " plan="
+                + self._format_bool(session.settings.plan_mode)
+                + " compact_at="
+                + str(session.settings.compact_at),
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
@@ -5350,6 +5506,7 @@ class CommandDispatcher:
                 "runtime.shell_timeout: " + str(session.settings.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
+                "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
             ]
         )
 
@@ -5573,12 +5730,12 @@ class StatusBar:
         reasoning = session.state.current_model_call_reasoning_label or (
             session.config.provider.reasoning_effort if session.config.provider.reasoning else "off"
         )
-        yolo = " | yolo" if session.settings.yolo else ""
+        modes = "".join(" | " + label for label, enabled in (("yolo", session.settings.yolo), ("plan", session.settings.plan_mode)) if enabled)
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)
         session_tokens = _format_count(session.state.session_total_tokens)
         tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + yolo, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
+        parts = [model + " (" + reasoning + ")" + modes, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
@@ -5661,7 +5818,12 @@ class AgentLoop:
                 self._run_agent(user_input)
 
     def _prompt(self) -> str:
-        return "[yolo] > " if self.agent.session.settings.yolo else "> "
+        labels = []
+        if self.agent.session.settings.yolo:
+            labels.append("yolo")
+        if self.agent.session.settings.plan_mode:
+            labels.append("plan")
+        return "[" + ",".join(labels) + "] > " if labels else "> "
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:
@@ -6160,6 +6322,12 @@ class CommandCompleter(Completer):
                 if provider.startswith(text):
                     yield Completion(provider, start_position=-len(text))
             return
+        if text.startswith("/plan "):
+            text = text[len("/plan ") :]
+            for value in ("on", "off"):
+                if value.startswith(text):
+                    yield Completion(value, start_position=-len(text))
+            return
         if text.startswith("/knowledge "):
             text = text[len("/knowledge "):]
             if not text:
@@ -6213,6 +6381,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="nanocode: AI coding assistant")
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
+        parser.add_argument("--plan", action="store_true", help="Plan changes without editing or running commands")
         parser.add_argument("--debug", action="store_true", help="Write request prompts to .nanocode/debug")
         parser.add_argument("--config", default=None, help="Path to config file (default: ~/.nanocode/config.toml)")
         parser.add_argument("--init-config", action="store_true", help="Create a default config file at --config or ~/.nanocode/config.toml")
@@ -6221,7 +6390,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path, created = ConfigFile.init(args.config)
             print(("Created config: " if created else "Config already exists: ") + config_path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, plan_mode=args.plan, debug=args.debug)
         missing = session.missing_required_config()
         if missing:
             print("Missing config: " + ", ".join(missing), file=sys.stderr)

@@ -59,6 +59,7 @@ Ask a source-aware question about nanocode itself:
 CLI arguments:
 
 - `--yolo`: Skip tool execution confirmations.
+- `--plan`: Plan changes without editing files or running commands.
 - `--debug`: Write request prompts to `.nanocode/debug`.
 - `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
 - `--init-config`: Create a default config file.
@@ -82,7 +83,7 @@ USE AT YOUR OWN RISK.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean-logs`.
 - Exit: `/exit`, `/quit`.
 
@@ -95,5 +96,5 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
 ## Status
 
-- Status bar: active model, reasoning, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- Status bar: active model, reasoning, active yolo/plan modes, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
 - `/status`: active provider, model state, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.

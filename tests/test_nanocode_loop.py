@@ -5,9 +5,9 @@ import nanocode
 from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
 
 
-def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
+def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
     data = {"provider": {"active": "default", "default": {"model": model}}, "runtime": {"compact_at": compact_at}}
-    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
+    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode))
 
 
 def test_session_reports_missing_required_config(tmp_path):
@@ -33,6 +33,15 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
+def test_runtime_settings_loads_modes_from_config():
+    data = {"runtime": {"yolo": True, "plan_mode": True}}
+
+    settings = RuntimeSettings.from_dict(data)
+
+    assert settings.yolo is True
+    assert settings.plan_mode is True
+
+
 def test_init_config_file_writes_default_toml(tmp_path):
     config_path = tmp_path / "config.toml"
 
@@ -50,6 +59,8 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["timeout"] == 90
     assert config["provider"]["default"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
+    assert config["runtime"]["yolo"] is False
+    assert config["runtime"]["plan_mode"] is False
 
 
 def test_main_init_config_uses_config_argument(tmp_path, capsys):
@@ -88,13 +99,14 @@ nanocode_dir = ".custom-nanocode"
 
     monkeypatch.setattr(nanocode.AgentLoop, "run", fake_run)
 
-    result = nanocode.main(["--config", str(config_path)])
+    result = nanocode.main(["--config", str(config_path), "--plan"])
 
     assert result == 0
     assert sessions[0].config.provider.url == "https://example.test/v1"
     assert sessions[0].config.provider.key == "key"
     assert sessions[0].config.provider.model == "custom-model"
     assert sessions[0].config.nanocode_dir == ".custom-nanocode"
+    assert sessions[0].settings.plan_mode is True
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
@@ -131,6 +143,13 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
 
     assert "active-model (low)" in text
     assert "calling(2):0.6s" in text
+
+
+def test_status_bar_shows_active_modes(tmp_path):
+    session = make_session(tmp_path, model="provider/model", yolo=True, plan_mode=True)
+    bar = StatusBar(session)
+
+    assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tools:0 | tok:last:- session:-"
 
 
 def test_agent_loop_highlights_only_diff_previews(tmp_path):
@@ -242,12 +261,15 @@ def test_agent_loop_command_completer_matches_slash_commands():
     set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
     set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
     set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
+    plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
+    assert "/plan" in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
+    assert [completion.text for completion in plan_completions] == ["on", "off"]
 
     knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))
     knowledge_u_completions = list(completer.get_completions(Document("/knowledge u"), CompleteEvent(completion_requested=True)))

@@ -77,7 +77,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
     assert "model: model reasoning=medium stream=on" in result.message
-    assert "runtime: yolo=off compact_at=50" in result.message
+    assert "runtime: yolo=off plan=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
@@ -115,6 +115,37 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "provider.model: config-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
     assert "runtime.max_agent_steps: 100" in result.message
+    assert "runtime.plan_mode: off" in result.message
+
+
+def test_plan_command_toggles_plan_mode(tmp_path):
+    session = make_session(tmp_path)
+    dispatcher = CommandDispatcher(Agent(session))
+
+    on_result = dispatcher.dispatch("/plan")
+    off_result = dispatcher.dispatch("/plan off")
+    unknown_set_result = dispatcher.dispatch("/set runtime.plan_mode on")
+
+    assert on_result.message == "Set plan mode = on"
+    assert off_result.message == "Set plan mode = off"
+    assert unknown_set_result.message == "Unknown config key: runtime.plan_mode"
+    assert session.settings.plan_mode is False
+
+
+def test_plan_command_runs_one_shot_plan_question(tmp_path):
+    prompts = []
+    session = make_session(tmp_path)
+
+    def run_agent(prompt):
+        prompts.append((prompt, session.settings.plan_mode))
+
+    dispatcher = CommandDispatcher(Agent(session), run_agent=run_agent)
+
+    result = dispatcher.dispatch("/plan how should lsp tools work?")
+
+    assert result.message == ""
+    assert prompts == [("how should lsp tools work?", True)]
+    assert session.settings.plan_mode is False
 
 
 def test_provider_command_switches_current_provider(tmp_path):
