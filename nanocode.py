@@ -2595,6 +2595,9 @@ VERIFICATION:
 - If a verification command fails, record failed and repair before completion.
 - Do not use pending verification status.
 - Passed/blocked verification context must cite concrete recent tool evidence or a concrete blocker.
+- After Plan is complete and verification passed/blocked, finish by default.
+- If more tools are still needed, first reopen Plan with a todo/doing item and context explaining why completion is insufficient.
+- Complete with verify blocked only when context explicitly says user/manual confirmation is needed.
 
 TOOLS:
 - Prefer dedicated tools over Bash.
@@ -2882,6 +2885,8 @@ Must:
 - Complete only when Goal is done, every Plan item is done/blocked with context, and required verification is satisfied.
 - Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
 - Done/blocked plan context and verify context must cite result evidence or a concrete blocker.
+- After Plan is complete and verification passed/blocked, finish by default; reopen Plan with context before more tools.
+- Complete with verify blocked only when context explicitly says user/manual confirmation is needed.
 - If there is nothing useful to retain, return an empty actions array.
 
 Allowed actions:
@@ -4288,6 +4293,8 @@ class ResponseContext:
     actions: list[Json]
     goal_was_empty: bool
     plan_was_empty: bool
+    plan_was_complete: bool
+    verification_was_settled: bool
     goal_will_change: bool
     chat_message: str | None
     tool_calls: list[JsonValue]
@@ -4838,6 +4845,17 @@ class Agent:
     def _has_plan_items(self, value: JsonValue) -> bool:
         return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
+    def _plan_is_complete(self) -> bool:
+        return bool(self.blackboard.plan) and all(
+            item.status in self.COMPLETED_PLAN_STATUSES and item.context.strip() for item in self.blackboard.plan
+        )
+
+    def _verification_is_settled(self) -> bool:
+        return self.blackboard.verification.status in {VerificationStatus.DONE, VerificationStatus.BLOCKED}
+
+    def _latest_tool_results_clean(self) -> bool:
+        return not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions)
+
     def _completion_plan_error(self, ctx: ResponseContext) -> str:
         if not self.blackboard.goal_reached:
             return ""
@@ -4850,6 +4868,30 @@ class Agent:
         if missing_context:
             return "plan items missing context: " + self._format_plan_gate_items(missing_context)
         return ""
+
+    def _blocked_verification_completion_error(self) -> str:
+        if not self.blackboard.goal_reached or self.blackboard.verification.status != VerificationStatus.BLOCKED:
+            return ""
+        context = self.blackboard.verification.context.lower()
+        manual_markers = (
+            "manual",
+            "human",
+            "user confirmation",
+            "user confirm",
+            "confirm with user",
+            "visual",
+            "appearance",
+            "用户确认",
+            "用户人工",
+            "人工",
+            "手动",
+            "确认",
+            "外观",
+            "视觉",
+        )
+        if any(marker in context for marker in manual_markers):
+            return ""
+        return "verify blocked context does not say user/manual confirmation is needed"
 
     def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
         rendered = []
@@ -4942,6 +4984,8 @@ class Agent:
             actions=actions,
             goal_was_empty=not self.blackboard.goal,
             plan_was_empty=not self.blackboard.plan,
+            plan_was_complete=self._plan_is_complete(),
+            verification_was_settled=self._verification_is_settled(),
             goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
             chat_message=self._chat_message_from_actions(actions),
             tool_calls=tool_calls,
@@ -5084,6 +5128,36 @@ class Agent:
                 "GoalPlan_Gate: Plan is empty before tool/verify.",
             )
             return AgentRunResult()
+
+        if ctx.tool_calls and self._latest_tool_results_clean() and self._verification_is_settled():
+            if self._plan_is_complete():
+                self._remember_agent_error(
+                    "Error: Plan and verification are complete. Rule: finish with goal.complete=true; "
+                    "if more tools are needed, first reopen Plan with a todo/doing item and context explaining why completion is insufficient."
+                )
+                self._report_gate(
+                    on_message,
+                    "Retrying: finish the completed task or reopen the plan before more tools.",
+                    "Completion_Gate: completed plan and verification cannot continue tools without reopening Plan.",
+                )
+                return AgentRunResult()
+            if ctx.plan_was_complete and ctx.verification_was_settled:
+                missing_context = [
+                    item
+                    for item in self.blackboard.plan
+                    if item.status not in self.COMPLETED_PLAN_STATUSES and not item.context.strip()
+                ]
+                if missing_context:
+                    self._remember_agent_error(
+                        "Error: continuing after completed Plan requires a reopened todo/doing Plan item with context. "
+                        "Rule: explain why existing completion is insufficient before tool calls."
+                    )
+                    self._report_gate(
+                        on_message,
+                        "Retrying: reopen the plan with context before more tools.",
+                        "Completion_Gate: reopened plan item missing context: " + self._format_plan_gate_items(missing_context) + ".",
+                    )
+                    return AgentRunResult()
 
         if (
             not ctx.tool_calls
@@ -5257,6 +5331,20 @@ class Agent:
                 on_message,
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
+            )
+            return AgentRunResult()
+        blocked_completion_error = self._blocked_verification_completion_error()
+        if blocked_completion_error:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error(
+                "Error: returned goal.complete=true with verify blocked, but "
+                + blocked_completion_error
+                + ". Rule: continue verification if possible; only complete blocked verification when user/manual confirmation is explicitly needed."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: blocked verification needs user/manual confirmation context.",
+                "Verification_Gate: " + blocked_completion_error + ".",
             )
             return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:

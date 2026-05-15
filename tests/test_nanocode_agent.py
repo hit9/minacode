@@ -2308,6 +2308,138 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
+def test_agent_blocks_tool_after_completed_plan_and_verification(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "tool", "name": "Read", "intention": "inspect again", "args": ["sample.txt", "0", "1"]}
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions == []
+    assert messages[-1] == "Completion_Gate: completed plan and verification cannot continue tools without reopening Plan."
+    assert any("Plan and verification are complete" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [
+                        {
+                            "id": "p2",
+                            "text": "Inspect the remaining issue",
+                            "status": "doing",
+                            "context": "user reported the visual state still looks wrong",
+                        }
+                    ],
+                },
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+            ]
+        }
+    )
+
+    assert result.done is False
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "success"
+    assert agent.blackboard.plan[-1] == nanocode.PlanItem(
+        id="p2",
+        text="Inspect the remaining issue",
+        status=nanocode.PlanStatus.DOING,
+        context="user reported the visual state still looks wrong",
+    )
+
+
+def test_agent_blocks_tool_after_reopening_completed_plan_without_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [{"id": "p2", "text": "Inspect the remaining issue", "status": "doing"}],
+                },
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions == []
+    assert messages[-1].startswith("Completion_Gate: reopened plan item missing context:")
+    assert any("continuing after completed Plan requires" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "verify")
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "verify", "status": "blocked", "context": "pytest unavailable"},
+                {"type": "goal", "text": "verify", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert messages[-1] == "Verification_Gate: verify blocked context does not say user/manual confirmation is needed."
+    assert not agent.session.state.conversation
+
+
+def test_agent_allows_verify_blocked_completion_with_manual_context(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "verify")
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "verify",
+                    "status": "blocked",
+                    "context": "needs user confirmation of the visual appearance",
+                },
+                {"type": "goal", "text": "verify", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is True
+    assert messages[-1] == "done"
+
+
 def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
     class FakeModelClient:
         def __init__(self):
