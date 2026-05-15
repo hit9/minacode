@@ -77,7 +77,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["active"] == "default"
     assert config["provider"]["default"]["url"] == ""
     assert config["provider"]["default"]["available_models"] == []
-    assert config["provider"]["default"]["temperature"] == 0.7
+    assert "temperature" not in config["provider"]["default"]
     assert config["provider"]["default"]["timeout"] == 90
     assert config["provider"]["default"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
@@ -228,6 +228,19 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     loop._print_message("[success] Read sample.txt 0:1")
 
     assert captured == ["  Read sample.txt 0:1"]
+
+
+def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message("Evidence Updated: tr.12 tr.15")
+
+    assert captured == ["  evidence: tr.12 tr.15"]
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
@@ -516,6 +529,13 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     assert attrs.color == "0f4c5c"
     assert attrs.bold is True
     assert captured["erase_when_done"] is True
+    assert captured["default"] == "medium"
+
+    loop._select_model(("old", "new"), "new")
+    assert captured["default"] == "new"
+
+    loop._select_provider(("one", "two"), "two")
+    assert captured["default"] == "two"
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):

@@ -38,6 +38,7 @@ def _session(
     stream: bool | None = None,
     timeout: int | None = None,
     first_token_timeout: int | None = None,
+    temperature: float | None = None,
     reasoning_effort: str = "",
     yolo: bool = False,
     plan_mode: bool = False,
@@ -50,6 +51,8 @@ def _session(
         provider["timeout"] = timeout
     if first_token_timeout is not None:
         provider["first_token_timeout"] = first_token_timeout
+    if temperature is not None:
+        provider["temperature"] = temperature
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
     data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
@@ -422,6 +425,20 @@ def test_evidence_tool_results_deduplicate_by_tool_key(tmp_path):
     assert agent.tool_context.evidence[0].count("key=tr.1") == 1
 
 
+def test_observe_reports_evidence_updated_keys(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    messages = []
+
+    agent.handle_response(
+        {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample contains alpha."}]}]},
+        on_message=messages.append,
+    )
+
+    assert "Evidence Updated: tr.1" in messages
+
+
 def test_evidence_tool_results_ignore_non_tool_sources(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -607,12 +624,38 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert captured["authorization"] == "Bearer key"
     assert captured["payload"]["model"] == "model"
     assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
+    assert "temperature" not in captured["payload"]
     assert "response_format" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert "reasoning" not in captured["payload"]
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
+
+
+def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, temperature=0.2)
+
+    Agent(session).request("system", "user")
+
+    assert captured["payload"]["temperature"] == 0.2
 
 
 def test_plan_mode_uses_runtime_plan_timeouts(tmp_path):

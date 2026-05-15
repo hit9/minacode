@@ -101,6 +101,9 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     off_status_result = dispatcher.dispatch("/set provider.stream")
     on_result = dispatcher.dispatch("/set provider.stream on")
     invalid_result = dispatcher.dispatch("/set provider.stream maybe")
+    temperature_result = dispatcher.dispatch("/set provider.temperature 0.2")
+    temperature_off_result = dispatcher.dispatch("/set provider.temperature off")
+    invalid_temperature_result = dispatcher.dispatch("/set provider.temperature nope")
 
     assert url_status_result.message == "Usage: /set provider.url <value>"
     assert key_status_result.message == "Usage: /set provider.key <value>"
@@ -110,6 +113,10 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     assert on_result.message == "Set provider.stream = on"
     assert invalid_result.message == "Usage: /set provider.stream [on|off]"
     assert session.config.provider.stream is True
+    assert temperature_result.message == "Set provider.temperature = 0.2"
+    assert temperature_off_result.message == "Set provider.temperature = (fallback)"
+    assert invalid_temperature_result.message == "Usage: /set provider.temperature <number|off>"
+    assert session.config.provider.temperature is None
 
 
 def test_config_command_reports_resolved_provider_config(tmp_path):

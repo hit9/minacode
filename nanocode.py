@@ -332,7 +332,7 @@ class ProviderConfig:
     key: str = ""
     model: str = ""
     available_models: tuple[str, ...] = ()
-    temperature: float | None = 0.7
+    temperature: float | None = None
     reasoning: bool | None = True
     reasoning_effort: str = "medium"
     stream: bool | None = True
@@ -470,8 +470,10 @@ class Config:
         value = config.get(key)
         if value is None:
             return default
+        if value is False or (isinstance(value, str) and value.lower() == "off"):
+            return None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ConfigError(f"config value `{key}` must be a number")
+            raise ConfigError(f"config value `{key}` must be a number or off")
         return float(value)
 
     @classmethod
@@ -515,7 +517,8 @@ key = ""
 model = ""
 # Optional model choices for the /model selector.
 available_models = []
-temperature = 0.7
+# Optional. Uncomment only for models/providers that support temperature.
+# temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
 stream = true
@@ -1010,16 +1013,20 @@ class ToolResultContext:
                 queued.add(counter)
         return bool(self.pending_observe)
 
-    def select_evidence(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> None:
+    def select_evidence(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
         wanted = self.result_keys_from_actions(actions)
         if not wanted:
-            return
+            return []
         by_key = self.blocks_by_key(observed_blocks)
         selected = {key: by_key[key] for key in wanted if key in by_key}
+        if not selected:
+            return []
         existing = self.blocks_by_key(self.evidence)
         self.evidence = [block for key, block in existing.items() if key not in selected] + [selected[key] for key in wanted if key in selected]
         while self.evidence and len("\n\n".join(self.evidence)) > max_chars:
             del self.evidence[0]
+        retained = self.blocks_by_key(self.evidence)
+        return [key for key in wanted if key in selected and key in retained]
 
     def mark_checkpoint(self, checkpoint: int) -> None:
         self.pending_observe = [block for block in self.pending_observe if self.result_counter(block) > checkpoint]
@@ -3481,8 +3488,9 @@ class ModelClient:
         payload: Json = {
             "model": model,
             "messages": messages,
-            "temperature": config.temperature if config.temperature is not None else 0.7,
         }
+        if config.temperature is not None:
+            payload["temperature"] = config.temperature
         stream = config.stream is not False
         if stream:
             payload["stream"] = True
@@ -5647,7 +5655,9 @@ class Agent:
         self._emit_state_and_progress(ctx, on_message)
         if self._has_observation_checkpoint_action(ctx.actions):
             self.mode = AgentMode.ACT
-            self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.RECENT_TOOL_CALL_CHARS)
+            evidence_keys = self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.RECENT_TOOL_CALL_CHARS)
+            if evidence_keys and on_message is not None:
+                on_message("Evidence Updated: " + " ".join(evidence_keys))
             self.tool_context.compact_observed(observed_blocks)
             self._mark_memory_checkpoint(observed_counter)
             self.observe_feedback_errors = []
@@ -5926,6 +5936,7 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "provider.reasoning": ("on", "off"),
     "provider.effort": CONFIG_EFFORTS,
     "provider.stream": ("on", "off"),
+    "provider.temperature": ("off",),
     "runtime.yolo": ("on", "off"),
 }
 CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
@@ -6248,6 +6259,8 @@ class CommandDispatcher:
             return "(set)" if value else "(empty)"
         if key in {"provider.url", "provider.model"}:
             return value or "(empty)"
+        if key == "provider.temperature":
+            return self._format_optional(value)
         return str(value)
 
     def _apply_config_value(self, key: str, value: str) -> str:
@@ -6263,12 +6276,15 @@ class CommandDispatcher:
             setattr(target, attr, value)
             return ""
         if key == "provider.temperature":
+            if value == "off":
+                setattr(target, attr, None)
+                return ""
             try:
                 parsed_float = float(value)
             except ValueError:
-                return "Usage: /set " + key + " <number>"
+                return "Usage: /set " + key + " <number|off>"
             if parsed_float < 0:
-                return "Usage: /set " + key + " <number>"
+                return "Usage: /set " + key + " <number|off>"
             setattr(target, attr, parsed_float)
             return ""
         if key in CONFIG_INT_KEYS:
@@ -6552,14 +6568,15 @@ class AgentLoop:
             show_elapsed=False,
         )
 
-    def _select_choice(self, title: str, choices: tuple[str, ...], labels: dict[str, str] | None = None) -> str | None:
+    def _select_choice(self, title: str, choices: tuple[str, ...], labels: dict[str, str] | None = None, current: str = "") -> str | None:
         labels = labels or {}
+        default = current if current in choices else None
         if self.prompt_session is not None and sys.stdin.isatty():
             try:
                 choice = ChoiceInput(
                     message=title,
                     options=[(value, labels.get(value, value)) for value in choices],
-                    default=None,
+                    default=default,
                     style=self._choice_style(),
                     bottom_toolbar=self._choice_bottom_toolbar,
                 )
@@ -6595,11 +6612,11 @@ class AgentLoop:
 
     def _select_model(self, models: tuple[str, ...], current_model: str) -> str | None:
         labels = {current_model: current_model + " (current)"} if current_model in models else {}
-        return self._select_choice("Model", models, labels)
+        return self._select_choice("Model", models, labels, current=current_model)
 
     def _select_provider(self, providers: tuple[str, ...], current_provider: str) -> str | None:
         labels = {current_provider: current_provider + " (current)"}
-        return self._select_choice("Provider", providers, labels)
+        return self._select_choice("Provider", providers, labels, current=current_provider)
 
     def _select_reasoning(self) -> str | None:
         provider = self.agent.session.config.provider
@@ -6609,7 +6626,7 @@ class AgentLoop:
             labels["off"] = "off - disable reasoning (current)"
         elif current in CONFIG_EFFORTS:
             labels[current] = current + " (current)"
-        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), labels)
+        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), labels, current=current)
 
     def _discard_pending_tty_input(self) -> None:
         if not sys.stdin.isatty():
@@ -6830,6 +6847,10 @@ class AgentLoop:
             return
         if message.startswith(("Plan Updated", "Known Updated", "Plan + Known Updated")):
             self._emit_segments(self._compact_state_segments(message), message)
+            return
+        if message.startswith("Evidence Updated:"):
+            plain = "  evidence: " + message.removeprefix("Evidence Updated:").strip()
+            self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
         if self._is_tool_report(message):
             self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")
