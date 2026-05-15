@@ -294,6 +294,8 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 1
     assert agent.mode == nanocode.AgentMode.ACT
     assert agent.pending_observation_blocks == []
+    assert "recall=tr.1" in _blocks_text(agent.recent_tool_call_blocks)
+    assert "<ReadToolResult>" not in _blocks_text(agent.recent_tool_call_blocks)
     assert "two.txt" in _blocks_text(agent.latest_tool_call_blocks)
 
 

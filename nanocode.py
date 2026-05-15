@@ -4514,6 +4514,19 @@ class Agent:
     def _max_tool_result_counter(self, blocks: list[str]) -> int:
         return max((self._tool_result_counter_from_block(block) for block in blocks), default=0)
 
+    def _compact_observed_tool_call_blocks(self, observed_blocks: list[str]) -> None:
+        observed_counters = {self._tool_result_counter_from_block(block) for block in observed_blocks}
+        if not observed_counters:
+            return
+
+        def compact(block: str) -> str:
+            if _is_full_tool_call_block(block) and self._tool_result_counter_from_block(block) in observed_counters:
+                return _compact_tool_call_block(block)
+            return block
+
+        self.recent_tool_call_blocks = [compact(block) for block in self.recent_tool_call_blocks]
+        self.latest_tool_call_blocks = [compact(block) for block in self.latest_tool_call_blocks]
+
     def _prune_tool_result_store(self) -> None:
         overflow = len(self.session.state.tool_result_store) - self.MAX_COMPLETED_GOAL_TOOL_RESULTS
         if overflow <= 0:
@@ -5185,12 +5198,14 @@ class Agent:
                 "Verification_Gate: verify status=pending is not allowed while digesting latest results.",
             )
             return AgentRunResult()
-        observed_counter = self._max_tool_result_counter(self.pending_observation_blocks)
+        observed_blocks = list(self.pending_observation_blocks)
+        observed_counter = self._max_tool_result_counter(observed_blocks)
         self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
         if self._has_observation_checkpoint_action(ctx.actions):
             self.mode = AgentMode.ACT
+            self._compact_observed_tool_call_blocks(observed_blocks)
             self._mark_memory_checkpoint(observed_counter)
         else:
             self.mode = AgentMode.OBSERVE
