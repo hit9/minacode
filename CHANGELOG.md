@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.19 - 2026-05-15
+
+### Changed
+- Observe mode now requires every latest tool-result key to be covered by either `evidence` or `discard`.
+- Verification pass/fail/block tool results are treated as decision-changing evidence until verification is recorded.
+
+### Fixed
+- Prevented partial observe checkpoints from silently dropping unhandled tool results.
+
 ## 0.3.18 - 2026-05-15
 
 ### Added

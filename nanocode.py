@@ -44,7 +44,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.18"
+__version__ = "0.3.19"
 
 
 JsonValue: TypeAlias = Any
@@ -1014,7 +1014,7 @@ class ToolResultContext:
         return bool(self.pending_observe)
 
     def select_evidence(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
-        wanted = self.result_keys_from_actions(actions)
+        wanted = self.evidence_result_keys_from_actions(actions)
         if not wanted:
             return []
         by_key = self.blocks_by_key(observed_blocks)
@@ -1099,17 +1099,24 @@ class ToolResultContext:
         return max((cls.result_counter(block) for block in blocks), default=0)
 
     @staticmethod
-    def result_keys_from_actions(actions: list[Json]) -> list[str]:
+    def evidence_result_keys_from_actions(actions: list[Json]) -> list[str]:
         keys: list[str] = []
         for action in actions:
-            action_type = _json_str(action.get("type"))
-            values = _json_list(action.get("items")) if action_type in {"evidence", "known"} else []
-            values += _json_list(action.get("evidence")) + _json_list(action.get("known"))
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "evidence" else []
+            values += _json_list(action.get("evidence"))
             for raw in values:
                 item = _json_dict(raw)
                 source = _source_from_json(item) if item else ()
                 keys.extend(key for key in source if key.startswith("tr."))
         return list(dict.fromkeys(keys))
+
+    @classmethod
+    def covered_observe_keys_from_actions(cls, actions: list[Json]) -> set[str]:
+        covered = set(cls.evidence_result_keys_from_actions(actions))
+        for action in actions:
+            if _json_str(action.get("type")) == "discard":
+                covered.update(key for key in _source_from_json(action) if key.startswith("tr."))
+        return covered
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -3268,11 +3275,13 @@ Must:
 - Record stable_knowledge only for new long-term reusable facts not already present in Stable Knowledge.
 - Use recent tool calls as volatile input; keep only evidence that affects the next ACT frontier: target selection, edit choice, verification, error repair, or completion decision.
 - Discard routine success, duplicate listings, no-match searches, and other low-value noise unless it changes the next ACT frontier.
+- Verification pass/fail/block results are decision-changing; keep them as evidence until Verify has been recorded.
 - Most ordinary successful outputs should be discard, not evidence.
 - Do not duplicate existing Evidence; keep each source key only once unless the new item replaces a weaker one.
 - Do not update Plan, Verify, or Goal; the main agent will decide next.
 - Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
 - If there is nothing useful to retain, return discard with a clear reason.
+- Every latest result key must be covered by evidence or discard.
 - Discard permanently compacts the latest raw results; use it only when they are definitely noise.
 - Do not return {"actions":[]}.
 
@@ -3291,7 +3300,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "known", "items": [{"source": ["tr.1"], "text": "<new durable fact from latest results>"}]} __END_ACTION__
 {"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
-{"type": "discard", "reason": "<why latest raw results are not useful>"} __END_ACTION__
+{"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
 """
 
 
@@ -5662,6 +5671,19 @@ class Agent:
             return AgentRunResult()
         observed_blocks = list(self.tool_context.pending_observe)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
+        missing_observe_keys = self._missing_observe_keys(ctx.actions, observed_blocks)
+        if missing_observe_keys:
+            self._remember_observe_error(
+                "Error: observe did not cover latest result keys: "
+                + ", ".join(missing_observe_keys)
+                + ". Rule: every latest result key must be covered by evidence or discard."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: cover every latest result key with evidence or discard.",
+                "Observe_Gate: missing coverage for result keys: " + ", ".join(missing_observe_keys) + ".",
+            )
+            return AgentRunResult()
         self._emit_debug_frame_errors(response, on_message)
         self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
@@ -5680,6 +5702,11 @@ class Agent:
 
     def _has_observation_checkpoint_action(self, actions: list[Json]) -> bool:
         return any(_json_str(action.get("type")) in {"discard", "evidence", "known", "stable_knowledge"} for action in actions)
+
+    def _missing_observe_keys(self, actions: list[Json], observed_blocks: list[str]) -> list[str]:
+        observed = list(ToolResultContext.blocks_by_key(observed_blocks))
+        covered = ToolResultContext.covered_observe_keys_from_actions(actions)
+        return [key for key in observed if key not in covered]
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:

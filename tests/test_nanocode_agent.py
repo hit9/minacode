@@ -292,7 +292,14 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert "<ReadToolResult>" not in recent
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
-    agent.handle_response({"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "one.txt contains one."}]}]})
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["tr.1"], "text": "one.txt contains one."}]},
+                {"type": "discard", "source": ["tr.2"], "reason": "two.txt is not needed"},
+            ]
+        }
+    )
 
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 2
     assert agent.mode == nanocode.AgentMode.ACT
@@ -391,7 +398,14 @@ def test_act_prompt_includes_selected_evidence_tool_results(tmp_path):
             {"name": "Read", "intention": "read other", "args": ["other.txt", "0", "1"]},
         ]
     )
-    agent.handle_response({"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample has alpha."}]}]})
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample has alpha."}]},
+                {"type": "discard", "source": ["tr.2"], "reason": "other.txt is not needed"},
+            ]
+        }
+    )
 
     prompt = agent.build_user_prompt()
     assert "Evidence Source Results:" not in prompt
@@ -444,7 +458,14 @@ def test_evidence_tool_results_ignore_non_tool_sources(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
-    agent.handle_response({"actions": [{"type": "evidence", "items": [{"source": ["note.1"], "text": "sample has alpha."}]}]})
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["note.1"], "text": "sample has alpha."}]},
+                {"type": "discard", "source": ["tr.1"], "reason": "invalid evidence source is ignored"},
+            ]
+        }
+    )
 
     assert agent.tool_context.evidence == []
     assert "alpha\n" not in agent.build_user_prompt()
@@ -471,6 +492,52 @@ def test_observe_rejects_progress_and_empty_actions(tmp_path):
     assert any("latest results must be observed" in error for error in agent.observe_feedback_errors)
     assert any("observe returned no actions" in error for error in agent.observe_feedback_errors)
     assert agent.mode == nanocode.AgentMode.OBSERVE
+
+
+def test_observe_requires_every_result_key_to_be_covered(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = [
+        '- ok tool=Read args=["a"] key=tr.1\n  output:\na',
+        '- ok tool=Read args=["b"] key=tr.2\n  output:\nb',
+    ]
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "a matters"}]}]},
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "tr.2" in _blocks_text(agent.tool_context.pending_observe)
+    assert any("tr.2" in error for error in agent.observe_feedback_errors)
+    assert messages == ["Observe_Gate: missing coverage for result keys: tr.2."]
+
+
+def test_observe_discard_source_covers_result_key(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+
+    result = agent.handle_response({"actions": [{"type": "discard", "source": ["tr.1"], "reason": "not useful"}]})
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.tool_context.pending_observe == []
+    assert agent.tool_context.evidence == []
+
+
+def test_observe_known_source_does_not_cover_result_key(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+
+    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "a exists"}]}]})
+
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert agent.blackboard.known == []
+    assert any("tr.1" in error for error in agent.observe_feedback_errors)
 
 
 def test_evidence_tool_results_respect_char_budget(tmp_path):
@@ -1865,7 +1932,7 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
     action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}
 
     agent.handle_response({"actions": [action]})
-    agent.handle_response({"actions": [{"type": "discard", "reason": "failed read has no useful evidence"}]})
+    agent.handle_response({"actions": [{"type": "discard", "source": ["tr.1"], "reason": "failed read has no useful evidence"}]})
     agent.handle_response({"actions": [action]})
     result = agent.handle_response({"actions": [action]})
 
@@ -2215,7 +2282,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
                         for index in range(51)
                     ]
                 },
-                {"actions": [{"type": "discard", "reason": "bulk sample reads are not needed after execution"}]},
+                {"actions": [{"type": "discard", "source": ["tr." + str(index) for index in range(1, 52)], "reason": "bulk sample reads are not needed after execution"}]},
                 {"actions": _final_actions("read samples")},
             ]
 
@@ -2259,7 +2326,7 @@ def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": [{"type": "discard", "reason": "sample content is not needed"}]},
+                {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "sample content is not needed"}]},
                 {"actions": _final_actions("read sample", "done too early")},
             ]
 
@@ -2967,7 +3034,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"], "progress": "reading sample"},
                     ]
                 },
-                {"actions": [{"type": "discard", "reason": "progress-only read result is not needed"}]},
+                {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "progress-only read result is not needed"}]},
                 {"actions": _final_actions()},
             ]
 
