@@ -87,13 +87,13 @@ USE AT YOUR OWN RISK.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-`/model <model_name>` also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it.
+`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it.
 
 ## Configuration
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, and model options.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.

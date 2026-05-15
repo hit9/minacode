@@ -40,7 +40,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.shortcuts import choice as prompt_choice
+from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
 __version__ = "0.3.17"
@@ -293,6 +293,7 @@ class ProviderConfig:
     url: str = ""
     key: str = ""
     model: str = ""
+    available_models: tuple[str, ...] = ()
     temperature: float | None = 0.7
     reasoning: bool | None = True
     reasoning_effort: str = "medium"
@@ -307,6 +308,7 @@ class ProviderConfig:
             url=Config.str(data, "url", defaults.url),
             key=Config.str(data, "key", defaults.key),
             model=Config.str(data, "model", defaults.model),
+            available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", defaults.temperature),
             reasoning=Config.bool(data, "reasoning", defaults.reasoning),
             reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
@@ -424,6 +426,21 @@ class Config:
             raise ConfigError(f"config value `{key}` must be an integer")
         return value
 
+    @classmethod
+    def str_tuple(cls, config: Json, key: str) -> tuple[str, ...]:
+        value = config.get(key)
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            raise ConfigError(f"config value `{key}` must be a string array")
+        models = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ConfigError(f"config value `{key}` must be a string array")
+            if item := item.strip():
+                models.append(item)
+        return tuple(models)
+
 
 class ConfigFile:
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
@@ -439,6 +456,8 @@ url = ""
 key = ""
 # Default model used by nanocode.
 model = ""
+# Optional model choices for the /model selector.
+available_models = []
 temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
@@ -921,6 +940,7 @@ MessageCallback: TypeAlias = Callable[[str], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 ReasoningSelector: TypeAlias = Callable[[], str | None]
+ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
 
 
 ############################
@@ -5614,11 +5634,13 @@ class CommandDispatcher:
         run_agent: MessageCallback | None = None,
         run_with_status: StatusRunner | None = None,
         select_reasoning: ReasoningSelector | None = None,
+        select_model: ModelSelector | None = None,
     ):
         self.agent = agent
         self.run_agent = run_agent
         self.run_with_status = run_with_status
         self.select_reasoning = select_reasoning
+        self.select_model = select_model
         self.handlers: dict[str, Callable[[str], str]] = {
             "/help": self._help,
             "/status": self._status,
@@ -5683,9 +5705,17 @@ class CommandDispatcher:
     def _model(self, args: str) -> str:
         model = args.strip()
         if not model:
+            provider = self.agent.session.config.provider
+            if provider.available_models and self.select_model is not None:
+                selected = self.select_model(provider.available_models, provider.model)
+                if selected is not None:
+                    return self._set_model(selected)
             return self._set("provider.model")
         if " " in model:
             return "Usage: /model [model_name]"
+        return self._set_model(model)
+
+    def _set_model(self, model: str) -> str:
         self.agent.session.config.provider.model = model
         message = "Set provider.model = " + model
         if self.select_reasoning is None:
@@ -5815,6 +5845,7 @@ class CommandDispatcher:
                 "provider.url: " + (provider_config.url or "(empty)"),
                 "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
                 "provider.model: " + (provider_config.model or "(empty)"),
+                "provider.available_models: " + (", ".join(provider_config.available_models) or "(empty)"),
                 "provider.reasoning: " + self._format_bool(provider_config.reasoning),
                 "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
                 "provider.stream: " + self._format_bool(provider_config.stream),
@@ -6126,6 +6157,7 @@ class AgentLoop:
                 run_agent=self._run_agent,
                 run_with_status=self._run_with_status,
                 select_reasoning=self._select_reasoning,
+                select_model=self._select_model,
             )
             while True:
                 try:
@@ -6176,43 +6208,52 @@ class AgentLoop:
                 ),
             )
 
-    def _select_reasoning(self) -> str | None:
-        choices = ("off", *CONFIG_EFFORTS)
+    def _choice_style(self) -> Style:
+        return Style.from_dict(
+            {
+                "selected-option": "bold #0f4c5c bg:#e6f2f3",
+                "bottom-toolbar": "noreverse bg:default fg:default",
+                "bottom-toolbar.text": "noreverse bg:default fg:default",
+            }
+        )
+
+    def _choice_bottom_toolbar(self):
+        return self.status_bar._fragments(
+            0.0,
+            now=time.monotonic(),
+            show_sweep=False,
+            show_elapsed=False,
+        )
+
+    def _select_choice(self, title: str, choices: tuple[str, ...], labels: dict[str, str] | None = None) -> str | None:
+        labels = labels or {}
         if self.prompt_session is not None and sys.stdin.isatty():
             try:
-                return prompt_choice(
-                    "Reasoning effort",
-                    options=[(None, "keep current")]
-                    + [(value, value + (" - disable reasoning" if value == "off" else "")) for value in choices],
+                choice = ChoiceInput(
+                    message=title,
+                    options=[(None, "keep current")] + [(value, labels.get(value, value)) for value in choices],
                     default=None,
-                    style=Style.from_dict(
-                        {
-                            "selected-option": "bold #0f4c5c bg:#e6f2f3",
-                            "bottom-toolbar": "noreverse bg:default fg:default",
-                            "bottom-toolbar.text": "noreverse bg:default fg:default",
-                        }
-                    ),
-                    bottom_toolbar=lambda: self.status_bar._fragments(
-                        0.0,
-                        now=time.monotonic(),
-                        show_sweep=False,
-                        show_elapsed=False,
-                    ),
+                    style=self._choice_style(),
+                    bottom_toolbar=self._choice_bottom_toolbar,
                 )
+                application = choice._create_application()
+                application.erase_when_done = True
+                return application.run()
             except (EOFError, KeyboardInterrupt):
                 self._emit("Cancelled")
                 return None
         self._emit(
-            "Reasoning effort:\n"
+            title + ":\n"
             + "\n".join(
                 ["  0. keep current"]
-                + ["  " + str(index) + ". " + choice for index, choice in enumerate(choices, start=1)]
+                + ["  " + str(index) + ". " + labels.get(choice, choice) for index, choice in enumerate(choices, start=1)]
             )
         )
-        prompt = "Select reasoning effort [0-" + str(len(choices)) + "] "
+        prompt = "Select " + title.lower() + " [0-" + str(len(choices)) + "] "
         while True:
             try:
-                choice = self._read_input(prompt).strip().lower()
+                raw_choice = self._read_input(prompt).strip()
+                choice = raw_choice.lower()
             except (EOFError, KeyboardInterrupt):
                 self._emit("Cancelled")
                 return None
@@ -6220,9 +6261,18 @@ class AgentLoop:
                 return None
             if choice.isdigit() and 1 <= int(choice) <= len(choices):
                 return choices[int(choice) - 1]
+            if raw_choice in choices:
+                return raw_choice
             if choice in choices:
                 return choice
-            self._emit("Invalid reasoning effort: " + choice)
+            self._emit("Invalid selection: " + raw_choice)
+
+    def _select_model(self, models: tuple[str, ...], current_model: str) -> str | None:
+        labels = {current_model: current_model + " (current)"} if current_model in models else {}
+        return self._select_choice("Model", models, labels)
+
+    def _select_reasoning(self) -> str | None:
+        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), {"off": "off - disable reasoning"})
 
     def _discard_pending_tty_input(self) -> None:
         if not sys.stdin.isatty():
@@ -6240,7 +6290,13 @@ class AgentLoop:
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter(self.agent.session.config.providers)),
+            completer=ReferenceFileCompleter(
+                self.agent.session.cwd,
+                CommandCompleter(
+                    lambda: self.agent.session.config.providers,
+                    lambda: self.agent.session.config.provider.available_models,
+                ),
+            ),
             complete_while_typing=True,
             style=Style.from_dict(
                 {
@@ -6689,8 +6745,12 @@ def _shorten(text: str, limit: int = 500) -> str:
 
 
 class CommandCompleter(Completer):
-    def __init__(self, providers: Iterable[str] = ()):
+    def __init__(self, providers: Iterable[str] | Callable[[], Iterable[str]] = (), models: Iterable[str] | Callable[[], Iterable[str]] = ()):
         self.providers = providers
+        self.models = models
+
+    def _values(self, values: Iterable[str] | Callable[[], Iterable[str]]) -> Iterable[str]:
+        return values() if callable(values) else values
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -6708,9 +6768,15 @@ class CommandCompleter(Completer):
             return
         if text.startswith("/provider "):
             text = text[len("/provider ") :]
-            for provider in self.providers:
+            for provider in self._values(self.providers):
                 if provider.startswith(text):
                     yield Completion(provider, start_position=-len(text))
+            return
+        if text.startswith("/model "):
+            text = text[len("/model ") :]
+            for model in self._values(self.models):
+                if model.startswith(text):
+                    yield Completion(model, start_position=-len(text))
             return
         if text.startswith("/plan "):
             text = text[len("/plan ") :]

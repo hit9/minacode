@@ -66,6 +66,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert second_created is False
     assert config["provider"]["active"] == "default"
     assert config["provider"]["default"]["url"] == ""
+    assert config["provider"]["default"]["available_models"] == []
     assert config["provider"]["default"]["temperature"] == 0.7
     assert config["provider"]["default"]["timeout"] == 90
     assert config["provider"]["default"]["first_token_timeout"] == 60
@@ -98,6 +99,7 @@ active = "custom"
 url = "https://example.test/v1"
 key = "key"
 model = "custom-model"
+available_models = ["custom-model", "other-model"]
 
 [paths]
 data_dir = ".custom-nanocode"
@@ -118,6 +120,7 @@ data_dir = ".custom-nanocode"
     assert sessions[0].config.provider.url == "https://example.test/v1"
     assert sessions[0].config.provider.key == "key"
     assert sessions[0].config.provider.model == "custom-model"
+    assert sessions[0].config.provider.available_models == ("custom-model", "other-model")
     assert sessions[0].config.data_dir == ".custom-nanocode"
     assert sessions[0].settings.plan_mode is True
 
@@ -275,6 +278,7 @@ def test_agent_loop_command_completer_matches_slash_commands():
     set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
     set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
     set_plan_timeout_completions = list(completer.get_completions(Document("/set runtime.plan_"), CompleteEvent(completion_requested=True)))
+    model_completions = list(nanocode.CommandCompleter(models=["qwen3", "deepseek"]).get_completions(Document("/model q"), CompleteEvent(completion_requested=True)))
     plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
@@ -284,6 +288,7 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert [completion.text for completion in set_bool_completions] == ["on", "off"]
     assert [completion.text for completion in set_effort_completions] == ["high"]
     assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
+    assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
 
     knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))
@@ -414,6 +419,19 @@ def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):
     assert loop.agent.session.config.provider.reasoning_effort == "high"
 
 
+def test_agent_loop_model_command_prompts_for_model_when_available(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+            self.session.config.provider.available_models = ("old", "new-model")
+
+    inputs = iter(["/model", "2", "0", "/exit"])
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
+
+    assert loop.run() == 0
+    assert loop.agent.session.config.provider.model == "new-model"
+
+
 def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -430,7 +448,7 @@ def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):
     assert loop.agent.session.config.provider.reasoning_effort == "xhigh"
 
 
-def test_agent_loop_reasoning_choice_styles_selected_effort(tmp_path, monkeypatch):
+def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tmp_path, monkeypatch):
     class FakeStdin:
         @staticmethod
         def isatty():
@@ -442,12 +460,23 @@ def test_agent_loop_reasoning_choice_styles_selected_effort(tmp_path, monkeypatc
 
     captured = {}
 
-    def fake_choice(*args, **kwargs):
-        captured.update(kwargs)
-        return "low"
+    class FakeApplication:
+        erase_when_done = False
+
+        def run(self):
+            captured["erase_when_done"] = self.erase_when_done
+            return "low"
+
+    class FakeChoiceInput:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        @staticmethod
+        def _create_application():
+            return FakeApplication()
 
     monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
-    monkeypatch.setattr(nanocode, "prompt_choice", fake_choice)
+    monkeypatch.setattr(nanocode, "ChoiceInput", FakeChoiceInput)
 
     loop = AgentLoop(FakeAgent(), prompt_session=object())
 
@@ -456,6 +485,7 @@ def test_agent_loop_reasoning_choice_styles_selected_effort(tmp_path, monkeypatc
     assert attrs.bgcolor == "e6f2f3"
     assert attrs.color == "0f4c5c"
     assert attrs.bold is True
+    assert captured["erase_when_done"] is True
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):

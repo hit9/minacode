@@ -110,6 +110,7 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
 
 def test_config_command_reports_resolved_provider_config(tmp_path):
     session = make_session(tmp_path, model="config-model")
+    session.config.provider.available_models = ("config-model", "other-model")
     dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/config")
@@ -118,6 +119,7 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "config: " in result.message
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
+    assert "provider.available_models: config-model, other-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
     assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message
     assert "paths.project_dir: " in result.message
@@ -220,6 +222,17 @@ def test_model_command_can_disable_reasoning(tmp_path):
     assert result.message == "Set provider.model = new-model\nSet provider.reasoning = off"
     assert session.config.provider.model == "new-model"
     assert session.config.provider.reasoning is False
+
+
+def test_model_command_selects_from_available_models(tmp_path):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.available_models = ("old", "new-model")
+    dispatcher = CommandDispatcher(Agent(session), select_model=lambda models, current: "new-model")
+
+    result = dispatcher.dispatch("/model")
+
+    assert result.message == "Set provider.model = new-model"
+    assert session.config.provider.model == "new-model"
 
 
 def test_blackboard_command_is_not_registered(tmp_path):
