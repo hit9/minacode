@@ -39,6 +39,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
 
 __version__ = "0.3.16"
 
@@ -6008,6 +6009,12 @@ class AgentLoop:
                 multiline=False,
                 enable_history_search=True,
                 refresh_interval=StatusBar.INTERVAL,
+                bottom_toolbar=lambda: self.status_bar._fragments(
+                    0.0,
+                    now=time.monotonic(),
+                    show_sweep=False,
+                    show_elapsed=False,
+                ),
             )
 
     def _discard_pending_tty_input(self) -> None:
@@ -6028,6 +6035,12 @@ class AgentLoop:
             history=FileHistory(self.history_path),
             completer=ReferenceFileCompleter(self.agent.session.cwd, CommandCompleter(self.agent.session.config.providers)),
             complete_while_typing=True,
+            style=Style.from_dict(
+                {
+                    "bottom-toolbar": "noreverse bg:default fg:default",
+                    "bottom-toolbar.text": "noreverse bg:default fg:default",
+                }
+            ),
         )
 
     def _run_agent(self, user_input: str) -> None:

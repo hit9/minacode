@@ -414,4 +414,7 @@ def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
     assert kwargs["multiline"] is False
     assert kwargs["enable_history_search"] is True
     assert kwargs["refresh_interval"] == StatusBar.INTERVAL
-    assert "bottom_toolbar" not in kwargs
+    assert callable(kwargs["bottom_toolbar"])
+    assert "".join(text for _, text in kwargs["bottom_toolbar"]()) == (
+        "model (medium) | ctx:0/50 | tools:0 | tok:last:- session:-"
+    )
