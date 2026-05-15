@@ -9,7 +9,7 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
         "tr.1": ToolResultItem(
             description="Read sample.",
             value="line 1\nline 2",
-            log_path=".nanocode/tool_results/sample.log",
+            log_path=".nanocode/sessions/test-session/tool_results/sample.log",
             original_lines=2,
             original_chars=13,
         )
@@ -21,7 +21,7 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
     assert result.startswith("RecallToolResult:")
     assert "- result_key: tr.1" in result
     assert "description: Read sample." in result
-    assert "log: .nanocode/tool_results/sample.log" in result
+    assert "log: .nanocode/sessions/test-session/tool_results/sample.log" in result
     assert "size: 2 lines, 13 chars" in result
     assert "<content>" in result
     assert "line 1\nline 2" in result

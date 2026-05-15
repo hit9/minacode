@@ -4,6 +4,8 @@ A lightweight terminal-based AI coding assistant.
 
 nanocode is used to help building itself, including features such as `@file` path completion.
 
+Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, configuration, and behavior may change incompatibly before a 1.0 release.
+
 ## Screenshots
 
 | | |
@@ -59,7 +61,8 @@ Ask a source-aware question about nanocode itself:
 CLI arguments:
 
 - `--yolo`: Skip tool execution confirmations.
-- `--debug`: Write request prompts to `.nanocode/debug`.
+- `--plan`: Plan changes without editing files or running commands.
+- `--debug`: Write request prompts to the current session directory under `~/.nanocode/sessions/`.
 - `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
 - `--init-config`: Create a default config file.
 - `-v`, `--version`: Show program version.
@@ -82,18 +85,24 @@ USE AT YOUR OWN RISK.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/yolo`.
-- Maintenance: `/clean-logs`.
+- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
+- Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
+
+`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
 
 ## Configuration
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, and model options.
-- Runtime config: `[paths]` and `[runtime]`.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options.
+- Path config: `[paths] data_dir = "~/.nanocode"`.
+- Runtime config: `[runtime]`.
+- Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
+- Tool-result logs from inactive sessions are auto-cleaned after `runtime.auto_clean_recent` (default `3d`; use `off` to disable). `/clean` removes inactive session logs immediately.
+- Project data: user rules are stored under `~/.nanocode/projects/<project_key>/`.
 
 ## Status
 
-- Status bar: active model, reasoning, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: active provider, model state, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.
+- Status bar: active model, reasoning, active yolo/plan modes, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.

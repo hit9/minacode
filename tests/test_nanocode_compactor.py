@@ -1,3 +1,4 @@
+import nanocode
 from nanocode import Agent, AssistantMessage, Session, UserMessage
 
 
@@ -70,6 +71,29 @@ def test_agent_compact_history_replaces_known_with_compacted_known(tmp_path):
     assert len(agent.blackboard.known) == 35
     assert agent.blackboard.known[0] == "known 0"
     assert agent.blackboard.known[-1] == "known 34"
+
+
+def test_agent_compact_history_preserves_known_sources(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    fake_client = FakeModelClient("summary", known=[{"text": "router lives in app.py", "source": ["tr.1"]}])
+    agent.compactor.model_client = fake_client
+    agent.blackboard.known = [nanocode.KnownItem(text="old fact", source=("tr.9",))]
+    session.state.conversation = [
+        UserMessage(content="old 1"),
+        UserMessage(content="old 2"),
+        UserMessage(content="old 3"),
+        UserMessage(content="keep 1"),
+        UserMessage(content="keep 2"),
+        UserMessage(content="keep 3"),
+        UserMessage(content="keep 4"),
+        UserMessage(content="keep 5"),
+    ]
+
+    agent.compact_history()
+
+    assert agent.blackboard.known == ["router lives in app.py"]
+    assert agent.blackboard.known[0].source == ("tr.1",)
 
 
 def test_agent_compact_history_skips_when_not_over_keep_recent(tmp_path):

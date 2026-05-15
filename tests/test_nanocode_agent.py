@@ -1,4 +1,5 @@
 import json
+import os
 
 import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
@@ -37,8 +38,10 @@ def _session(
     stream: bool | None = None,
     timeout: int | None = None,
     first_token_timeout: int | None = None,
+    temperature: float | None = None,
     reasoning_effort: str = "",
     yolo: bool = False,
+    plan_mode: bool = False,
     debug: bool = False,
 ) -> Session:
     provider: dict[str, object] = {"url": api_url, "key": api_key, "model": model}
@@ -48,10 +51,16 @@ def _session(
         provider["timeout"] = timeout
     if first_token_timeout is not None:
         provider["first_token_timeout"] = first_token_timeout
+    if temperature is not None:
+        provider["temperature"] = temperature
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
-    data = {"provider": {"active": "default", "default": provider}}
-    return Session(cwd=str(tmp_path), config=nanocode.Config.from_dict(data), settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
+    data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
+    return Session(
+        cwd=str(tmp_path),
+        config=nanocode.Config.from_dict(data),
+        settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode, debug=debug),
+    )
 
 
 def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
@@ -76,13 +85,13 @@ def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
     assert "output:\n<ReadToolResult>" in latest
     assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
     assert "alpha" in session.state.tool_result_store["tr.1"].value
-    assert session.state.tool_result_store["tr.1"].log_path.startswith(".nanocode/tool_results/")
+    assert session.state.tool_result_store["tr.1"].log_path.startswith(os.path.join(".nanocode", "sessions"))
     assert session.state.tool_result_store["tr.1"].original_chars > 0
     assert session.state.tool_result_store["tr.1"].original_lines > 0
     assert session.state.tool_result_store["tr.1"].excerpted is False
     assert (tmp_path / session.state.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.state.tool_result_store["tr.1"].value
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
@@ -174,7 +183,7 @@ def test_agent_accepts_recall_action_alias(tmp_path):
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.tool_runner.latest_executions[0].call.name == "Recall"
     assert agent.tool_runner.latest_executions[0].call.args == ["tr.1"]
-    assert "alpha" in agent.latest_tool_call_blocks[0]
+    assert "alpha" in agent.tool_context.latest[0]
 
 
 def test_agent_accepts_tool_name_action_alias_with_args(tmp_path):
@@ -186,7 +195,7 @@ def test_agent_accepts_tool_name_action_alias_with_args(tmp_path):
 
     assert result.done is False
     assert agent.tool_runner.latest_executions[0].call.name == "Read"
-    assert "alpha" in agent.latest_tool_call_blocks[0]
+    assert "alpha" in agent.tool_context.latest[0]
 
 
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
@@ -236,32 +245,31 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALLS = 2
+    agent.RECENT_TOOL_CALL_SUMMARIES = 2
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
 
-    latest = _blocks_text(agent.latest_tool_call_blocks)
-    recent = _blocks_text(agent.recent_tool_call_blocks)
+    latest = _blocks_text(agent.tool_context.latest)
+    recent = _blocks_text(agent.tool_context.recent)
     assert "four.txt" in latest
     assert "four.txt" not in recent
     assert "one.txt" not in recent
     assert "two.txt" in recent
     assert "three.txt" in recent
     assert "<ReadToolResult>" in latest
-    assert "<ReadToolResult>" in recent
-    assert "two.txt\n" in recent
-    assert "three.txt\n" in recent
-    assert "Recall(" not in recent
-    assert len(agent.recent_tool_call_blocks) == 2
+    assert "<ReadToolResult>" not in recent
+    assert "recall=tr.2" in recent
+    assert "recall=tr.3" in recent
+    assert len(agent.tool_context.recent) == 2
     assert agent.mode == nanocode.AgentMode.OBSERVE
     context = agent._format_recent_tool_call_context()
     assert "one.txt" in context
-    assert "two.txt" not in context
-    assert "three.txt" not in context
-    assert "four.txt" not in context
+    assert "two.txt" in context
+    assert "three.txt" in context
+    assert "four.txt" in context
     assert "<ReadToolResult>" in context
-    assert len(agent.pending_observation_blocks) == 1
+    assert len(agent.tool_context.pending_observe) == 4
 
 
 def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
@@ -278,21 +286,30 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert "one.txt" in context
     assert "<ReadToolResult>" in context
     assert "one\n" in context
-    assert "two.txt" not in context
-    recent = _blocks_text(agent.recent_tool_call_blocks)
+    assert "two.txt" in context
+    recent = _blocks_text(agent.tool_context.recent)
     assert "recall=tr.1" in recent
     assert "<ReadToolResult>" not in recent
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
-    agent.handle_response({"actions": [{"type": "known", "items": ["one.txt contains one."]}]})
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["tr.1"], "text": "one.txt contains one."}]},
+                {"type": "discard", "source": ["tr.2"], "reason": "two.txt is not needed"},
+            ]
+        }
+    )
 
-    assert agent.blackboard.memory_checkpoint_tool_result_counter == 1
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 2
     assert agent.mode == nanocode.AgentMode.ACT
-    assert agent.pending_observation_blocks == []
-    assert "two.txt" in _blocks_text(agent.latest_tool_call_blocks)
+    assert agent.tool_context.pending_observe == []
+    assert "recall=tr.1" in _blocks_text(agent.tool_context.recent)
+    assert "<ReadToolResult>" not in _blocks_text(agent.tool_context.recent)
+    assert "recall=tr.2" in _blocks_text(agent.tool_context.latest)
 
 
-def test_observe_progress_does_not_mark_tool_results_digested(tmp_path):
+def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -305,7 +322,8 @@ def test_observe_progress_does_not_mark_tool_results_digested(tmp_path):
 
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
     assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert "one.txt" in _blocks_text(agent.pending_observation_blocks)
+    assert "one.txt" in _blocks_text(agent.tool_context.pending_observe)
+    assert "two.txt" in _blocks_text(agent.tool_context.pending_observe)
 
 
 def test_progress_does_not_mark_memory_checkpoint(tmp_path):
@@ -318,40 +336,292 @@ def test_progress_does_not_mark_memory_checkpoint(tmp_path):
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
 
+def test_known_action_accepts_source_references(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "Router setup lives in app.py."}]}]})
+    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.2"], "text": "Router setup lives in app.py."}]}]})
+
+    assert agent.blackboard.known == ["Router setup lives in app.py."]
+    assert agent.blackboard.known[0].source == ("tr.1", "tr.2")
+    assert "[tr.1, tr.2] Router setup lives in app.py." in agent.build_user_prompt()
+
+
+def test_observe_prompt_uses_narrow_context(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.conversation.append(nanocode.UserMessage(content="old conversation text"))
+    session.state.tool_result_store["tr.9"] = nanocode.ToolResultItem(description="stored result", value="stored raw text")
+    session.state.user_rules.add("always run tests")
+    agent = Agent(session)
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.blackboard.user_input = "fix bug"
+    agent.blackboard.goal = "fix bug goal"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect failing path", status=nanocode.PlanStatus.DOING)]
+    agent.blackboard.known = ["known fact"]
+    agent.blackboard.stable_knowledge = {"workflow": ["use pytest"]}
+    agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
+    agent.runtime.recent_edits = ["- sample.py: old edit"]
+    agent.agent_feedback_errors = ["act error"]
+    agent.observe_feedback_errors = ["observe error"]
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["sample.py"] key=tr.1\n  output:\nraw alpha']
+
+    prompt = agent.build_observe_prompt()
+
+    assert "fix bug" in prompt
+    assert "always run tests" not in prompt
+    assert "fix bug goal" in prompt
+    assert "inspect failing path" in prompt
+    assert "known fact" in prompt
+    assert "use pytest" in prompt
+    assert "selected evidence" in prompt
+    assert "raw alpha" in prompt
+    assert "Observe Errors" in prompt
+    assert "observe error" in prompt
+    assert "act error" not in prompt
+    assert "Conversation History" not in prompt
+    assert "old conversation text" not in prompt
+    assert "Tool Result Store" not in prompt
+    assert "stored raw text" not in prompt
+    assert "Evidence Source Results" not in prompt
+    assert "Recent Edits" not in prompt
+    assert "old edit" not in prompt
+
+
+def test_act_prompt_includes_selected_evidence_tool_results(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha unique\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("beta unique\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls(
+        [
+            {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+            {"name": "Read", "intention": "read other", "args": ["other.txt", "0", "1"]},
+        ]
+    )
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample has alpha."}]},
+                {"type": "discard", "source": ["tr.2"], "reason": "other.txt is not needed"},
+            ]
+        }
+    )
+
+    prompt = agent.build_user_prompt()
+    assert "Evidence Source Results:" not in prompt
+    assert "Evidence:" in prompt
+    assert "alpha unique" in prompt
+    assert "beta unique" not in prompt
+    assert len(agent.tool_context.evidence) == 1
+
+
+def test_evidence_tool_results_deduplicate_by_tool_key(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "evidence",
+                    "items": [
+                        {"source": ["tr.1"], "text": "sample contains alpha."},
+                        {"source": ["tr.1"], "text": "same source again."},
+                    ],
+                },
+                {"type": "known", "items": [{"source": ["tr.1"], "text": "sample.txt was inspected."}]},
+            ]
+        }
+    )
+
+    assert len(agent.tool_context.evidence) == 1
+    assert agent.tool_context.evidence[0].count("key=tr.1") == 1
+
+
+def test_observe_reports_evidence_updated_keys(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    messages = []
+
+    agent.handle_response(
+        {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample contains alpha."}]}]},
+        on_message=messages.append,
+    )
+
+    assert "Evidence Updated: tr.1" in messages
+
+
+def test_evidence_tool_results_ignore_non_tool_sources(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "evidence", "items": [{"source": ["note.1"], "text": "sample has alpha."}]},
+                {"type": "discard", "source": ["tr.1"], "reason": "invalid evidence source is ignored"},
+            ]
+        }
+    )
+
+    assert agent.tool_context.evidence == []
+    assert "alpha\n" not in agent.build_user_prompt()
+
+
+def test_evidence_action_is_observe_only(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "answer")
+
+    result = agent.handle_response({"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "fact"}]}]})
+
+    assert result.done is False
+    assert any("Invalid action(s): evidence" in error for error in agent.agent_feedback_errors)
+
+
+def test_observe_rejects_progress_and_empty_actions(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+
+    agent.handle_response({"actions": [{"type": "progress", "text": "checking"}]})
+    agent.handle_response({"actions": []})
+
+    assert any("latest results must be observed" in error for error in agent.observe_feedback_errors)
+    assert any("observe returned no actions" in error for error in agent.observe_feedback_errors)
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+
+
+def test_observe_requires_every_result_key_to_be_covered(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = [
+        '- ok tool=Read args=["a"] key=tr.1\n  output:\na',
+        '- ok tool=Read args=["b"] key=tr.2\n  output:\nb',
+    ]
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "a matters"}]}]},
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "tr.2" in _blocks_text(agent.tool_context.pending_observe)
+    assert any("tr.2" in error for error in agent.observe_feedback_errors)
+    assert messages == ["Observe_Gate: missing coverage for result keys: tr.2."]
+
+
+def test_observe_discard_source_covers_result_key(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+
+    result = agent.handle_response({"actions": [{"type": "discard", "source": ["tr.1"], "reason": "not useful"}]})
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.tool_context.pending_observe == []
+    assert agent.tool_context.evidence == []
+
+
+def test_observe_known_source_does_not_cover_result_key(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+
+    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "a exists"}]}]})
+
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert agent.blackboard.known == []
+    assert any("tr.1" in error for error in agent.observe_feedback_errors)
+
+
+def test_evidence_tool_results_respect_char_budget(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.RECENT_TOOL_CALL_CHARS = 100
+    agent.tool_context.pending_observe = [
+        '- ok tool=Read args=["a"] key=tr.1\n  output:\n' + ("a" * 30),
+        '- ok tool=Read args=["b"] key=tr.2\n  output:\n' + ("b" * 30),
+    ]
+
+    agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "evidence",
+                    "items": [{"source": ["tr.1"], "text": "a"}, {"source": ["tr.2"], "text": "b"}],
+                }
+            ]
+        }
+    )
+
+    context = agent.tool_context.evidence_context()
+    assert "key=tr.1" not in context
+    assert "key=tr.2" in context
+
+
+def test_observe_checkpoint_clears_observe_errors(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.observe_feedback_errors = ["old observe error"]
+
+    agent.handle_response({"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]})
+
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.observe_feedback_errors == []
+
+
 def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.RECENT_TOOL_CALL_CHARS = 180
 
-    agent._append_recent_tool_call_blocks(['- ok tool=Read args=["old"] key=tr.1\n  output:\n' + "x" * 200])
-    agent._append_recent_tool_call_blocks(['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew'])
+    agent.tool_context.append_recent(
+        ['- ok tool=Read args=["old"] key=tr.1\n  output:\n' + "x" * 200],
+        max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
+        max_chars=agent.RECENT_TOOL_CALL_CHARS,
+    )
+    agent.tool_context.append_recent(
+        ['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew'],
+        max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
+        max_chars=agent.RECENT_TOOL_CALL_CHARS,
+    )
 
-    recent = _blocks_text(agent.recent_tool_call_blocks)
+    recent = _blocks_text(agent.tool_context.recent)
     assert "recall=tr.1" in recent
+    assert "recall=tr.2" in recent
     assert "x" * 50 not in recent
     assert 'tool=Read args=["new"] key=tr.2' in recent
-    assert "\n  output:\nnew" in recent
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert "x" * 50 in _blocks_text(agent.pending_observation_blocks)
+    assert "\n  output:\nnew" not in recent
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.tool_context.pending_observe == []
 
 
 def test_agent_recent_tool_call_compact_summaries_have_count_limit(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALL_CHARS = 1
+    agent.RECENT_TOOL_CALL_CHARS = 10_000
     agent.RECENT_TOOL_CALL_SUMMARIES = 2
 
     for index in range(4):
-        agent._append_recent_tool_call_blocks(
-            ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)]
+        agent.tool_context.append_recent(
+            ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)],
+            max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
+            max_chars=agent.RECENT_TOOL_CALL_CHARS,
         )
 
-    recent = _blocks_text(agent.recent_tool_call_blocks)
+    recent = _blocks_text(agent.tool_context.recent)
     assert "recall=tr.1" not in recent
     assert "recall=tr.2" not in recent
     assert "recall=tr.3" in recent
     assert "recall=tr.4" in recent
-    assert len(agent.recent_tool_call_blocks) == 2
+    assert len(agent.tool_context.recent) == 2
 
 
 def test_tool_result_store_keeps_latest_256_items(tmp_path):
@@ -365,6 +635,24 @@ def test_tool_result_store_keeps_latest_256_items(tmp_path):
     assert list(session.state.tool_result_store)[:2] == ["tr.2", "tr.3"]
     assert list(session.state.tool_result_store)[-1] == "tr.257"
     assert session.state.tool_result_counter == 257
+
+
+def test_agent_prunes_tool_result_store_but_keeps_evidence_result_keys(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    for index in range(52):
+        key = "tr." + str(index + 1)
+        session.state.tool_result_store[key] = nanocode.ToolResultItem(description=key, value="value")
+    agent.tool_context.evidence = ['- ok tool=Read args=["sample.txt"] key=tr.1\n  output:\nvalue']
+
+    agent._prune_tool_result_store()
+
+    assert len(session.state.tool_result_store) == 50
+    assert "tr.1" in session.state.tool_result_store
+    assert "tr.2" not in session.state.tool_result_store
+    assert "tr.3" not in session.state.tool_result_store
+    assert "tr.52" in session.state.tool_result_store
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
@@ -403,12 +691,48 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert captured["authorization"] == "Bearer key"
     assert captured["payload"]["model"] == "model"
     assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
+    assert "temperature" not in captured["payload"]
     assert "response_format" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert "reasoning" not in captured["payload"]
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
+
+
+def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, temperature=0.2)
+
+    Agent(session).request("system", "user")
+
+    assert captured["payload"]["temperature"] == 0.2
+
+
+def test_plan_mode_uses_runtime_plan_timeouts(tmp_path):
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, first_token_timeout=5, plan_mode=True)
+    session.settings.plan_timeout = 240
+    session.settings.plan_first_token_timeout = 80
+    client = nanocode.ModelClient(session)
+
+    assert client._request_timeouts(session.config.provider, activity="agent") == (240, 80)
+    assert client._request_timeouts(session.config.provider, activity="compact") == (12, 5)
 
 
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
@@ -657,6 +981,11 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
             '"intention":"read other","args":["other.txt","0","1"]}__END_ACTION__',
         ],
         [
+            '{"type":"evidence","items":[',
+            '{"source":["tr.1","tr.2"],"text":"sample.txt contains alpha and other.txt contains beta."}',
+            "]}__END_ACTION__",
+        ],
+        [
             '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__',
             '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__',
         ],
@@ -690,8 +1019,8 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
-    assert len(captured_payloads) == 2
-    assert [payload["stream"] for payload in captured_payloads] == [True, True]
+    assert len(captured_payloads) == 3
+    assert [payload["stream"] for payload in captured_payloads] == [True, True, True]
     assert messages[0].startswith("[success] Read sample.txt 0:1")
     assert "why:" not in messages[0]
     assert messages[-1] == "done"
@@ -721,32 +1050,6 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
 
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert "reasoning_effort" not in captured["payload"]
-
-
-def test_agent_request_writes_debug_prompt(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, debug=True, stream=False)
-
-    response = Agent(session).request("system prompt", "user prompt")
-
-    files = list((tmp_path / ".nanocode" / "debug").glob("*-0001-agent.txt"))
-    assert response["actions"][0]["text"] == "ok"
-    assert len(files) == 1
-    content = files[0].read_text(encoding="utf-8")
-    assert content == "--- system message 1 ---\nsystem prompt\n\n--- user message 2 ---\nuser prompt\n"
-    assert "model:" not in content
-    assert "extra_params:" not in content
-    assert "key" not in content
 
 
 def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
@@ -838,6 +1141,13 @@ def test_agent_request_accepts_unmarked_json_action_array(tmp_path):
     response = client._parse_model_content('[{"type":"tool","name":"Read","args":["nanocode.py","0,1"],"intention":"read source"}]')
 
     assert response == {"actions": [{"type": "tool", "name": "Read", "args": ["nanocode.py", "0,1"], "intention": "read source"}]}
+
+
+def test_agent_request_accepts_empty_actions_response_object(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    assert client._parse_model_content('{"actions": []}') == {"actions": []}
+    assert client._parse_model_content('{"actions": []}__END_ACTION__') == {"actions": []}
 
 
 def test_agent_request_accepts_comma_separated_unmarked_json_actions(tmp_path):
@@ -1093,42 +1403,14 @@ def test_main_agent_keeps_latest_30_stable_knowledge_items_per_category(tmp_path
     assert agent.blackboard.stable_knowledge["workflow"][-1] == "stable fact 30"
 
 
-def test_main_agent_injects_stable_knowledge_into_prompt(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
-    agent.blackboard.task_code = nanocode.TaskCode.WORKING
-
-    prompt = agent.build_user_prompt()
-
-    assert "Task Code:\nworking\n\nGoal:" in prompt
-    assert "Stable Knowledge:\nworkflow:\n- Project test command is make test.\n\nKnown:" in prompt
-
-
-def test_main_agent_hides_recall_visible_tool_result_store_items(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read sample", value="alpha")
-    agent = Agent(session)
-    agent.recent_tool_call_blocks = ['- ok tool=Read args=["sample.txt"]\n  out: recall=tr.1']
-
-    prompt = agent.build_user_prompt()
-
-    assert "Tool Result Store:\n(empty; current result keys are already shown in Recent Tool Calls)" in prompt
-    assert "description: success Read sample" not in prompt
-
-
-def test_compactor_prompt_does_not_prescribe_known_count():
-    assert "at most 30" not in nanocode.SUMMARIZER_AGENT_COMPACT_PROMPT
-    assert "Compress Known to concise durable facts." in nanocode.SUMMARIZER_AGENT_COMPACT_PROMPT
-
-
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     agent.apply_response({"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests."}]})
 
-    content = (tmp_path / ".nanocode" / "user_rules.md").read_text(encoding="utf-8")
+    with open(session.user_rules_path(), encoding="utf-8") as file:
+        content = file.read()
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
     assert content == "# User Rules\n\n- Prompt-only changes do not need tests.\n"
     assert "  User_Rules    updated" in agent.state_updater.latest_report
@@ -1377,6 +1659,54 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
+def test_start_new_goal_clears_task_local_evidence_only(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "old goal"
+    agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
+    agent.tool_context.latest = ['- ok tool=Read args=["latest.py"] key=tr.3\n  output:\nlatest raw']
+    agent.tool_context.recent = ['- ok tool=Read args=["recent.py"] key=tr.4\n  out: 3 lines, 12 chars; recall=tr.4']
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "new goal",
+                    "plan": [{"id": "p1", "text": "Inspect new target", "status": "doing"}],
+                }
+            ]
+        }
+    )
+
+    assert agent.tool_context.evidence == []
+    assert agent.tool_context.pending_observe == []
+    assert "latest.py" in _blocks_text(agent.tool_context.latest)
+    assert "recent.py" in _blocks_text(agent.tool_context.recent)
+
+
+def test_start_same_goal_keeps_task_local_evidence(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "same goal"
+    agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "same goal",
+                    "plan": [{"id": "p1", "text": "Continue current target", "status": "doing"}],
+                }
+            ]
+        }
+    )
+
+    assert "selected evidence" in _blocks_text(agent.tool_context.evidence)
+    assert "pending raw" in _blocks_text(agent.tool_context.pending_observe)
+
+
 def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_matches(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -1517,7 +1847,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert "Cancelled: user refused: please inspect tests first" in latest
     assert path.read_text(encoding="utf-8") == "old\n"
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
@@ -1569,7 +1899,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     assert "InvalidToolCall" in latest
     assert "bad call" not in latest
     assert session.state.conversation == []
-    assert (tmp_path / ".nanocode" / "tool_results").exists()
+    assert os.path.isdir(session.tool_results_dir())
 
 
 def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
@@ -1602,12 +1932,13 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
     action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}
 
     agent.handle_response({"actions": [action]})
+    agent.handle_response({"actions": [{"type": "discard", "source": ["tr.1"], "reason": "failed read has no useful evidence"}]})
     agent.handle_response({"actions": [action]})
     result = agent.handle_response({"actions": [action]})
 
     assert result.done is False
     assert session.state.tool_result_counter == 2
-    assert any("repeated failed tool call is blocked" in error for error in agent.agent_feedback_errors)
+    assert any("repeated failed tool call is blocked" in error for error in agent.observe_feedback_errors)
 
 
 def test_agent_execute_bash_does_not_require_verification(tmp_path):
@@ -1675,9 +2006,6 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert agent.blackboard.verification_required is True
     assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
     assert agent.runtime.recent_edits == ["- sample.txt: edit sample"]
-    prompt = agent.build_user_prompt()
-    assert "Recent Edits:\n- sample.txt: edit sample\n\n--- Current Task ---" in prompt
-    assert "Task Code:\nverifying\n\nGoal:" in prompt
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
@@ -1690,6 +2018,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                 {
                     "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]
                 },
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]},
                 {
                     "actions": [
                         {
@@ -1721,11 +2050,16 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert messages[0].startswith("[success] Read sample.txt 0:1")
     assert "tr.1" not in messages[0]
     assert "why:" not in messages[0]
-    assert "log: .nanocode/tool_results/" not in messages[0]
+    assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"
-    assert len(fake_client.user_prompts) == 2
-    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.latest_tool_call_blocks)
-    assert agent.recent_tool_call_blocks == []
+    assert len(fake_client.user_prompts) == 3
+    assert "<ReadToolResult>" in fake_client.user_prompts[1]
+    assert "alpha" in fake_client.user_prompts[2]
+    assert "Evidence Source Results:" not in fake_client.user_prompts[2]
+    assert "Evidence:" in fake_client.user_prompts[2]
+    assert "<ReadToolResult>" in fake_client.user_prompts[2]
+    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.tool_context.latest)
+    assert agent.tool_context.recent == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
     assert agent.blackboard.goal == "read sample"
@@ -1733,6 +2067,74 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.goal_reached is False
     assert agent.blackboard.verification_required is False
+
+
+def test_agent_plan_mode_tool_gate_allows_only_readonly_tools(tmp_path):
+    agent = Agent(_session(tmp_path, plan_mode=True))
+
+    assert agent._plan_mode_tool_error([{"type": "tool", "name": "Read", "args": ["sample.txt"]}]) == ""
+    assert agent._plan_mode_tool_error([{"type": "tool", "name": "Git", "args": ["status", "--short"]}]) == ""
+    assert "blocked tool=Bash" in agent._plan_mode_tool_error([{"type": "tool", "name": "Bash", "args": ["echo hi"]}])
+    assert "blocked tool=Edit" in agent._plan_mode_tool_error([{"type": "tool", "name": "Edit", "args": ["sample.txt", "old", "new"]}])
+    assert "blocked tool=Git" in agent._plan_mode_tool_error([{"type": "tool", "name": "Git", "args": ["commit", "-m", "x"]}])
+    assert "blocked tool=Lsp" in agent._plan_mode_tool_error([{"type": "tool", "name": "Lsp", "args": ["symbols"]}])
+
+
+def test_agent_plan_mode_rejects_mutating_tool_before_execution(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
+    _seed_plan(agent, "plan change")
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Edit", "intention": "change sample", "args": ["sample.txt", "old", "new"]}]},
+        confirm=lambda call, tool: True,
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert path.read_text(encoding="utf-8") == "old\n"
+    assert agent.tool_runner.latest_executions == []
+    assert messages == ['PlanMode_Gate: plan mode allows readonly discovery only; blocked tool=Edit args=["sample.txt","old","new"].']
+
+
+def test_agent_plan_mode_rejects_chat_instead_of_completing(tmp_path):
+    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "chat", "text": "done"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert agent.session.state.conversation == []
+    assert messages == ["ActionType_Gate: use action types: goal, known, plan, progress, stable_knowledge, start, tool, verify; got: chat."]
+
+
+def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
+    agent = Agent(_session(tmp_path, plan_mode=True))
+    _seed_plan(agent, "plan change")
+    message = "<proposed_plan>\n1. Inspect target.\n2. Patch code.\n3. Run tests.\n</proposed_plan>"
+
+    result = agent.handle_response({"actions": [{"type": "goal", "text": "plan change", "complete": True, "message_for_complete": message}]})
+
+    assert result.done is True
+    assert isinstance(agent.session.state.conversation[-1], nanocode.AssistantMessage)
+    assert agent.session.state.conversation[-1].content == message
+
+
+def test_agent_plan_mode_requires_proposed_plan_completion_block(tmp_path):
+    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
+    _seed_plan(agent, "plan change")
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "goal", "text": "plan change", "complete": True, "message_for_complete": "plain plan"}]},
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert not agent.session.state.conversation
+    assert messages == ["PlanMode_Gate: final plan must be wrapped in <proposed_plan>...</proposed_plan>."]
 
 
 def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
@@ -1783,8 +2185,10 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                         },
                     ]
                 },
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "Edit changed sample.txt from old to new."}]}]},
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
                 {"actions": [{"type": "tool", "name": "Read", "intention": "inspect changed sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.2"], "text": "sample.txt now contains new."}]}]},
                 {
                     "actions": [
                         {"type": "verify", "kind": "change_check", "method": "Read sample.txt", "criteria": ["sample text is new"], "status": "passed", "context": "sample.txt contains new"},
@@ -1839,6 +2243,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]},
                 {"actions": _final_actions("read sample")},
             ]
 
@@ -1854,9 +2259,14 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     response = agent.run("read sample")
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
-    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.latest_tool_call_blocks)
-    assert agent.recent_tool_call_blocks == []
+    assert len(agent.model_client.user_prompts) == 4
+    assert "<ReadToolResult>" in agent.model_client.user_prompts[1]
+    assert "<ReadToolResult>" in agent.model_client.user_prompts[2]
+    assert "Evidence Source Results:" not in agent.model_client.user_prompts[3]
+    assert "Evidence:" in agent.model_client.user_prompts[3]
+    assert "<ReadToolResult>" in agent.model_client.user_prompts[3]
+    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.tool_context.latest)
+    assert agent.tool_context.recent == []
 
 
 def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
@@ -1872,6 +2282,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
                         for index in range(51)
                     ]
                 },
+                {"actions": [{"type": "discard", "source": ["tr." + str(index) for index in range(1, 52)], "reason": "bulk sample reads are not needed after execution"}]},
                 {"actions": _final_actions("read samples")},
             ]
 
@@ -1884,7 +2295,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     agent.blackboard.known = ["keep this fact"]
     agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
-    agent.latest_tool_call_blocks = ["old tool call"]
+    agent.tool_context.latest = ["old tool call"]
     agent.model_client = FakeModelClient()
 
     agent.run("read samples")
@@ -1907,7 +2318,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal_reached is False
 
 
-def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tmp_path):
+def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -1915,6 +2326,7 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "sample content is not needed"}]},
                 {"actions": _final_actions("read sample", "done too early")},
             ]
 
@@ -1931,9 +2343,10 @@ def test_agent_run_does_not_gate_when_tool_results_are_not_reviewed_for_known(tm
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done too early"
-    assert "Retrying: Known was not reviewed after tool results." not in messages
     assert "done too early" in messages
-    assert len(agent.model_client.user_prompts) == 2
+    assert len(agent.model_client.user_prompts) == 3
+    assert "<ReadToolResult>" in agent.model_client.user_prompts[1]
+    assert "<ReadToolResult>" not in agent.model_client.user_prompts[2]
 
 
 def test_agent_run_requires_plan_before_first_tool(tmp_path):
@@ -1960,6 +2373,7 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
                 },
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]},
                 {
                     "actions": [
                         {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
@@ -2013,6 +2427,7 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
                 },
+                {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]},
                 {
                     "actions": [
                         {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
@@ -2064,11 +2479,12 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
                             "plan": [{"id": "p1", "text": "Read sample again", "status": "doing"}],
                         }
                     ]
-                },
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {
-                    "actions": [
-                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                    },
+                    {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                    {"actions": [{"type": "evidence", "items": [{"source": ["tr.1"], "text": "sample.txt contains alpha."}]}]},
+                    {
+                        "actions": [
+                            {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
                         *_final_actions("read sample"),
                     ]
                 },
@@ -2084,8 +2500,6 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
     response = agent.run("read sample")
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert "Task Code:\nnew\n\nGoal:" in agent.model_client.user_prompts[0]
-    assert "Task Code:\nworking\n\nGoal:" in agent.model_client.user_prompts[1]
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
@@ -2231,7 +2645,6 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
         def __init__(self):
             self.responses = [
                 {"actions": []},
-                {"actions": []},
                 {"actions": _final_actions()},
             ]
 
@@ -2281,6 +2694,138 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: verification is done but goal is not complete." not in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
+
+
+def test_agent_blocks_tool_after_completed_plan_and_verification(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "tool", "name": "Read", "intention": "inspect again", "args": ["sample.txt", "0", "1"]}
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions == []
+    assert messages[-1] == "Completion_Gate: completed plan and verification cannot continue tools without reopening Plan."
+    assert any("Plan and verification are complete" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [
+                        {
+                            "id": "p2",
+                            "text": "Inspect the remaining issue",
+                            "status": "doing",
+                            "context": "user reported the visual state still looks wrong",
+                        }
+                    ],
+                },
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+            ]
+        }
+    )
+
+    assert result.done is False
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "success"
+    assert agent.blackboard.plan[-1] == nanocode.PlanItem(
+        id="p2",
+        text="Inspect the remaining issue",
+        status=nanocode.PlanStatus.DOING,
+        context="user reported the visual state still looks wrong",
+    )
+
+
+def test_agent_blocks_tool_after_reopening_completed_plan_without_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "inspect")
+    agent.blackboard.verification.status = VerificationStatus.DONE
+    agent.blackboard.verification.context = "syntax check passed"
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "plan",
+                    "mode": "patch",
+                    "items": [{"id": "p2", "text": "Inspect the remaining issue", "status": "doing"}],
+                },
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions == []
+    assert messages[-1].startswith("Completion_Gate: reopened plan item missing context:")
+    assert any("continuing after completed Plan requires" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "verify")
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "verify", "status": "blocked", "context": "pytest unavailable"},
+                {"type": "goal", "text": "verify", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert messages[-1] == "Verification_Gate: verify blocked context does not say user/manual confirmation is needed."
+    assert not agent.session.state.conversation
+
+
+def test_agent_allows_verify_blocked_completion_with_manual_context(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "verify")
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "verify",
+                    "status": "blocked",
+                    "context": "needs user confirmation of the visual appearance",
+                },
+                {"type": "goal", "text": "verify", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is True
+    assert messages[-1] == "done"
 
 
 def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
@@ -2489,6 +3034,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"], "progress": "reading sample"},
                     ]
                 },
+                {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "progress-only read result is not needed"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -2528,7 +3074,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
     agent.blackboard.verification.status = VerificationStatus.REQUIRED
-    agent.latest_tool_call_blocks = ["old tool call"]
+    agent.tool_context.latest = ["old tool call"]
     agent.model_client = FakeModelClient()
 
     try:
@@ -2539,8 +3085,8 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
         raise AssertionError("expected KeyboardInterrupt")
 
     assert agent.agent_feedback_errors
-    assert agent.latest_tool_call_blocks == ["old tool call"]
-    assert agent.recent_tool_call_blocks == []
+    assert agent.tool_context.latest == ["old tool call"]
+    assert agent.tool_context.recent == []
     assert agent.blackboard.goal == "answer"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]

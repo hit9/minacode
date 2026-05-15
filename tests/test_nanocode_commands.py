@@ -1,8 +1,8 @@
 import os
-
 import shutil
+import time
 
-from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, UserMessage
+from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionLogCleaner, UserMessage
 
 
 class FakeModelClient:
@@ -19,7 +19,11 @@ def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compa
     provider: dict[str, object] = {"model": model}
     if stream is not None:
         provider["stream"] = stream
-    data = {"provider": {"active": "default", "default": provider}, "runtime": {"compact_at": compact_at}}
+    data = {
+        "provider": {"active": "default", "default": provider},
+        "paths": {"data_dir": str(tmp_path / ".nanocode")},
+        "runtime": {"compact_at": compact_at},
+    }
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
 
 
@@ -77,7 +81,8 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
     assert "model: model reasoning=medium stream=on" in result.message
-    assert "runtime: yolo=off compact_at=50" in result.message
+    assert "session: " + session.session_id in result.message
+    assert "runtime: yolo=off plan=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
@@ -89,22 +94,34 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     session = make_session(tmp_path, stream=True)
     dispatcher = CommandDispatcher(Agent(session))
 
+    url_status_result = dispatcher.dispatch("/set provider.url")
+    key_status_result = dispatcher.dispatch("/set provider.key")
     status_result = dispatcher.dispatch("/set provider.stream")
     off_result = dispatcher.dispatch("/set provider.stream off")
     off_status_result = dispatcher.dispatch("/set provider.stream")
     on_result = dispatcher.dispatch("/set provider.stream on")
     invalid_result = dispatcher.dispatch("/set provider.stream maybe")
+    temperature_result = dispatcher.dispatch("/set provider.temperature 0.2")
+    temperature_off_result = dispatcher.dispatch("/set provider.temperature off")
+    invalid_temperature_result = dispatcher.dispatch("/set provider.temperature nope")
 
+    assert url_status_result.message == "Usage: /set provider.url <value>"
+    assert key_status_result.message == "Usage: /set provider.key <value>"
     assert status_result.message == "Current provider.stream is on"
     assert off_result.message == "Set provider.stream = off"
     assert off_status_result.message == "Current provider.stream is off"
     assert on_result.message == "Set provider.stream = on"
     assert invalid_result.message == "Usage: /set provider.stream [on|off]"
     assert session.config.provider.stream is True
+    assert temperature_result.message == "Set provider.temperature = 0.2"
+    assert temperature_off_result.message == "Set provider.temperature = (fallback)"
+    assert invalid_temperature_result.message == "Usage: /set provider.temperature <number|off>"
+    assert session.config.provider.temperature is None
 
 
 def test_config_command_reports_resolved_provider_config(tmp_path):
     session = make_session(tmp_path, model="config-model")
+    session.config.provider.available_models = ("config-model", "other-model")
     dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/config")
@@ -113,8 +130,60 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "config: " in result.message
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
+    assert "provider.available_models: config-model, other-model" in result.message
     assert "provider.first_token_timeout: 60" in result.message
+    assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message
+    assert "paths.project_dir: " in result.message
+    assert "paths.session_dir: " in result.message
+    assert "paths.history: " + str(tmp_path / ".nanocode" / "history") in result.message
     assert "runtime.max_agent_steps: 100" in result.message
+    assert "runtime.plan_timeout: 180" in result.message
+    assert "runtime.plan_first_token_timeout: 120" in result.message
+    assert "runtime.auto_clean_recent: 3d" in result.message
+    assert "runtime.plan_mode: off" in result.message
+
+
+def test_set_command_updates_plan_timeouts(tmp_path):
+    session = make_session(tmp_path)
+    dispatcher = CommandDispatcher(Agent(session))
+
+    timeout_result = dispatcher.dispatch("/set runtime.plan_timeout 240")
+    first_token_result = dispatcher.dispatch("/set runtime.plan_first_token_timeout 80")
+
+    assert timeout_result.message == "Set runtime.plan_timeout = 240"
+    assert first_token_result.message == "Set runtime.plan_first_token_timeout = 80"
+    assert session.settings.plan_timeout == 240
+    assert session.settings.plan_first_token_timeout == 80
+
+
+def test_plan_command_toggles_plan_mode(tmp_path):
+    session = make_session(tmp_path)
+    dispatcher = CommandDispatcher(Agent(session))
+
+    on_result = dispatcher.dispatch("/plan")
+    off_result = dispatcher.dispatch("/plan off")
+    unknown_set_result = dispatcher.dispatch("/set runtime.plan_mode on")
+
+    assert on_result.message == "Set plan mode = on"
+    assert off_result.message == "Set plan mode = off"
+    assert unknown_set_result.message == "Unknown config key: runtime.plan_mode"
+    assert session.settings.plan_mode is False
+
+
+def test_plan_command_runs_one_shot_plan_question(tmp_path):
+    prompts = []
+    session = make_session(tmp_path)
+
+    def run_agent(prompt):
+        prompts.append((prompt, session.settings.plan_mode))
+
+    dispatcher = CommandDispatcher(Agent(session), run_agent=run_agent)
+
+    result = dispatcher.dispatch("/plan how should lsp tools work?")
+
+    assert result.message == ""
+    assert prompts == [("how should lsp tools work?", True)]
+    assert session.settings.plan_mode is False
 
 
 def test_provider_command_switches_current_provider(tmp_path):
@@ -142,6 +211,70 @@ def test_provider_command_switches_current_provider(tmp_path):
     assert session.config.providers["one"].model == "model-one"
     assert session.config.providers["two"].model == "model-two-new"
     assert bad_result.message == "Unknown provider: missing\nproviders: one, two"
+
+
+def test_provider_command_selects_provider(tmp_path):
+    data = {
+        "provider": {
+            "active": "one",
+            "one": {"model": "model-one"},
+            "two": {"model": "model-two"},
+        }
+    }
+    session = Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data))
+    dispatcher = CommandDispatcher(Agent(session), select_provider=lambda providers, current: "two")
+
+    result = dispatcher.dispatch("/provider")
+
+    assert result.message == "Set provider = two"
+    assert session.config.active_provider == "two"
+
+
+def test_model_command_can_select_reasoning_effort(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert session.config.provider.model == "new-model"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "high"
+
+
+def test_model_command_can_disable_reasoning(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "off")
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = off"
+    assert session.config.provider.model == "new-model"
+    assert session.config.provider.reasoning is False
+
+
+def test_reason_command_selects_reasoning_effort(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")
+
+    result = dispatcher.dispatch("/reason")
+    usage_result = dispatcher.dispatch("/reason high")
+
+    assert result.message == "Set provider.reasoning = on\nSet provider.effort = high"
+    assert usage_result.message == "Usage: /reason"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "high"
+
+
+def test_model_command_selects_from_available_models(tmp_path):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.available_models = ("old", "new-model")
+    dispatcher = CommandDispatcher(Agent(session), select_model=lambda models, current: "new-model")
+
+    result = dispatcher.dispatch("/model")
+
+    assert result.message == "Set provider.model = new-model"
+    assert session.config.provider.model == "new-model"
 
 
 def test_blackboard_command_is_not_registered(tmp_path):
@@ -307,71 +440,130 @@ def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     assert len(prompts) == 1
 
 
-def test_clean_logs_command_removes_log_files(tmp_path):
+def test_clean_command_removes_all_session_log_files(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
+    other_tool_results_dir = session.data_path("sessions", "other-session", "tool_results")
     os.makedirs(tool_results_dir, exist_ok=True)
+    os.makedirs(other_tool_results_dir, exist_ok=True)
 
     # Create some log files and a non-log file
     log1 = os.path.join(tool_results_dir, "test1.log")
     log2 = os.path.join(tool_results_dir, "test2.log")
+    log3 = os.path.join(other_tool_results_dir, "test3.log")
     other = os.path.join(tool_results_dir, "other.txt")
     with open(log1, "w"):
         pass
     with open(log2, "w"):
         pass
+    with open(log3, "w"):
+        pass
     with open(other, "w"):
         pass
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 2 log file(s)" in result.message
+    assert "Cleaned 3 log file(s)" in result.message
     assert not os.path.exists(log1)
     assert not os.path.exists(log2)
+    assert not os.path.exists(log3)
     assert os.path.exists(other)
 
 
-def test_clean_logs_command_no_directory(tmp_path):
+def test_clean_command_skips_active_sessions(tmp_path):
     session = Session(cwd=str(tmp_path))
-    # Ensure tool_results_dir does not exist
-    tool_results_dir = session.tool_results_dir()
-    if os.path.exists(tool_results_dir):
-        shutil.rmtree(tool_results_dir)
+    active_tool_results_dir = session.tool_results_dir()
+    stale_tool_results_dir = session.data_path("sessions", "stale-session", "tool_results")
+    os.makedirs(active_tool_results_dir, exist_ok=True)
+    os.makedirs(stale_tool_results_dir, exist_ok=True)
 
-    dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    active_log = os.path.join(active_tool_results_dir, "active.log")
+    stale_log = os.path.join(stale_tool_results_dir, "stale.log")
+    with open(active_log, "w"):
+        pass
+    with open(stale_log, "w"):
+        pass
+
+    with SessionLock(session.lock_path()):
+        dispatcher = CommandDispatcher(Agent(session))
+        result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "No tool_results directory found" in result.message
+    assert "Cleaned 1 log file(s)" in result.message
+    assert "1 active session(s) skipped" in result.message
+    assert os.path.exists(active_log)
+    assert not os.path.exists(stale_log)
 
 
-def test_clean_logs_command_empty_directory(tmp_path):
+def test_session_log_cleaner_removes_only_old_logs_from_inactive_sessions(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    old_dir = session.data_path("sessions", "old-session", "tool_results")
+    recent_dir = session.data_path("sessions", "recent-session", "tool_results")
+    active_dir = session.tool_results_dir()
+    os.makedirs(old_dir, exist_ok=True)
+    os.makedirs(recent_dir, exist_ok=True)
+    os.makedirs(active_dir, exist_ok=True)
+
+    old_log = os.path.join(old_dir, "old.log")
+    recent_log = os.path.join(recent_dir, "recent.log")
+    active_old_log = os.path.join(active_dir, "active-old.log")
+    for path in (old_log, recent_log, active_old_log):
+        with open(path, "w"):
+            pass
+    old_time = time.time() - 10 * 86400
+    os.utime(old_log, (old_time, old_time))
+    os.utime(active_old_log, (old_time, old_time))
+
+    with SessionLock(session.lock_path()):
+        result = SessionLogCleaner(session).clean(older_than_seconds=3 * 86400)
+
+    assert result.cleaned == 1
+    assert result.skipped == 1
+    assert not os.path.exists(old_log)
+    assert os.path.exists(recent_log)
+    assert os.path.exists(active_old_log)
+
+
+def test_clean_command_no_directory(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    sessions_dir = session.data_path("sessions")
+    if os.path.exists(sessions_dir):
+        shutil.rmtree(sessions_dir)
+
+    dispatcher = CommandDispatcher(Agent(session))
+    result = dispatcher.dispatch("/clean")
+
+    assert result.status == CommandStatus.HANDLED
+    assert "No session logs directory found" in result.message
+
+
+def test_clean_command_empty_directory(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs")
+    result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
     assert "Cleaned 0 log file(s)" in result.message
 
 
-def test_clean_logs_command_with_args_returns_usage(tmp_path):
+def test_clean_command_with_args_returns_usage(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
-    result = dispatcher.dispatch("/clean-logs extra-arg")
+    result = dispatcher.dispatch("/clean extra-arg")
 
     assert result.status == CommandStatus.HANDLED
-    assert result.message == "Usage: /clean-logs"
+    assert result.message == "Usage: /clean"
 
 
-def test_clean_logs_command_reports_failed_deletions(tmp_path):
+def test_clean_command_reports_failed_deletions(tmp_path):
     session = Session(cwd=str(tmp_path))
     tool_results_dir = session.tool_results_dir()
     os.makedirs(tool_results_dir, exist_ok=True)
@@ -397,7 +589,7 @@ def test_clean_logs_command_reports_failed_deletions(tmp_path):
     import unittest.mock
     with unittest.mock.patch("os.remove", side_effect=mock_remove):
         dispatcher = CommandDispatcher(Agent(session))
-        result = dispatcher.dispatch("/clean-logs")
+        result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
     assert "Cleaned 1 log file(s)" in result.message
