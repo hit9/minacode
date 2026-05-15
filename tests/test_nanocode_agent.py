@@ -1592,6 +1592,54 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
+def test_start_new_goal_clears_task_local_evidence_only(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "old goal"
+    agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
+    agent.tool_context.latest = ['- ok tool=Read args=["latest.py"] key=tr.3\n  output:\nlatest raw']
+    agent.tool_context.recent = ['- ok tool=Read args=["recent.py"] key=tr.4\n  out: 3 lines, 12 chars; recall=tr.4']
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "new goal",
+                    "plan": [{"id": "p1", "text": "Inspect new target", "status": "doing"}],
+                }
+            ]
+        }
+    )
+
+    assert agent.tool_context.evidence == []
+    assert agent.tool_context.pending_observe == []
+    assert "latest.py" in _blocks_text(agent.tool_context.latest)
+    assert "recent.py" in _blocks_text(agent.tool_context.recent)
+
+
+def test_start_same_goal_keeps_task_local_evidence(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "same goal"
+    agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "start",
+                    "goal": "same goal",
+                    "plan": [{"id": "p1", "text": "Continue current target", "status": "doing"}],
+                }
+            ]
+        }
+    )
+
+    assert "selected evidence" in _blocks_text(agent.tool_context.evidence)
+    assert "pending raw" in _blocks_text(agent.tool_context.pending_observe)
+
+
 def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_matches(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)

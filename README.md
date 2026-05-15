@@ -83,11 +83,11 @@ USE AT YOUR OWN RISK.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it.
+`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
 
 ## Configuration
 

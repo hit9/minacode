@@ -4963,9 +4963,21 @@ class Agent:
         return response
 
     def apply_response(self, response: Json) -> None:
+        actions = self._response_actions(response)
+        if self._start_changes_goal(actions):
+            self.tool_context.evidence = []
+            self.tool_context.pending_observe = []
         self.state_updater.apply(response)
-        if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(self._response_actions(response)):
+        if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
             self._mark_memory_checkpoint()
+
+    def _start_changes_goal(self, actions: list[Json]) -> bool:
+        return any(
+            _json_str(action.get("type")) == "start"
+            and bool(goal := _json_str(action.get("goal")))
+            and goal != self.blackboard.goal
+            for action in actions
+        )
 
     def _mark_memory_checkpoint(self, counter: int = 0) -> None:
         checkpoint = counter or self.tool_context.visible_counter(self.mode) or self.session.state.tool_result_counter
@@ -5897,6 +5909,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
+    CommandSpec("/reason", "Set reasoning effort", "Config", "/reason"),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
@@ -5978,6 +5991,7 @@ class CommandDispatcher:
             "/set": self._set,
             "/clean": self._clean,
             "/model": self._model,
+            "/reason": self._reason,
             "/provider": self._provider,
             "/plan": self._plan,
             "/yolo": self._yolo,
@@ -6050,6 +6064,16 @@ class CommandDispatcher:
             return message
         choice = self.select_reasoning()
         return message + (("\n" + self._apply_reasoning_choice(choice)) if choice else "")
+
+    def _reason(self, args: str) -> str:
+        if args.strip():
+            return "Usage: /reason"
+        if self.select_reasoning is None:
+            return "Reasoning selection not available"
+        choice = self.select_reasoning()
+        if choice is None:
+            return "No change"
+        return self._apply_reasoning_choice(choice)
 
     def _apply_reasoning_choice(self, choice: str) -> str:
         provider = self.agent.session.config.provider
