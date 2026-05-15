@@ -94,12 +94,16 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     session = make_session(tmp_path, stream=True)
     dispatcher = CommandDispatcher(Agent(session))
 
+    url_status_result = dispatcher.dispatch("/set provider.url")
+    key_status_result = dispatcher.dispatch("/set provider.key")
     status_result = dispatcher.dispatch("/set provider.stream")
     off_result = dispatcher.dispatch("/set provider.stream off")
     off_status_result = dispatcher.dispatch("/set provider.stream")
     on_result = dispatcher.dispatch("/set provider.stream on")
     invalid_result = dispatcher.dispatch("/set provider.stream maybe")
 
+    assert url_status_result.message == "Usage: /set provider.url <value>"
+    assert key_status_result.message == "Usage: /set provider.key <value>"
     assert status_result.message == "Current provider.stream is on"
     assert off_result.message == "Set provider.stream = off"
     assert off_status_result.message == "Current provider.stream is off"

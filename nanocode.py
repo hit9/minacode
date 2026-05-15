@@ -5616,6 +5616,7 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "runtime.yolo": ("on", "off"),
 }
 CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
+CONFIG_WRITE_ONLY_KEYS: set[str] = {"provider.key", "provider.url"}
 CONFIG_INT_KEYS: set[str] = {
     "provider.timeout",
     "provider.first_token_timeout",
@@ -5908,6 +5909,8 @@ class CommandDispatcher:
         if key not in CONFIG_SET_KEYS:
             return "Unknown config key: " + key
         if value is None:
+            if key in CONFIG_WRITE_ONLY_KEYS:
+                return "Usage: /set " + key + " <value>"
             return "Current " + key + " is " + self._config_value(key)
         error = self._apply_config_value(key, value)
         if error:
