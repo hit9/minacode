@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.30 - 2026-05-16
+
+### Changed
+- Status bar now shows compact token totals and model stream rate, including `turn:` duration labeling.
+- Stream rate uses live character-based estimation and completion-token usage when available.
+
 ## 0.3.29 - 2026-05-16
 
 ### Fixed
