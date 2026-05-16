@@ -420,7 +420,7 @@ def test_observe_reports_kept_tool_result_keys(tmp_path):
         on_message=messages.append,
     )
 
-    assert "Tool Results Kept: tr.1" in messages
+    assert "Tool Result Context: +tr.1" in messages
 
 
 def test_forget_removes_kept_tool_result_but_keeps_known_source(tmp_path):
@@ -439,7 +439,7 @@ def test_forget_removes_kept_tool_result_but_keeps_known_source(tmp_path):
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert "tr.2" in _blocks_text(agent.tool_context.kept_results)
     assert nanocode.KnownItem.source_of(agent.blackboard.known[0]) == ("tr.1",)
-    assert messages == ["Tool Results Forgotten: tr.1"]
+    assert messages == ["Tool Result Context: -tr.1"]
 
 
 def test_hypothesis_action_updates_blackboard_and_report(tmp_path):
@@ -520,7 +520,7 @@ def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
         "Hypotheses Updated\n  1. [ruled_out] h1: branch ruled out [tr.1]",
-        "Tool Results Forgotten: tr.1",
+        "Tool Result Context: -tr.1",
     ]
 
 
@@ -546,7 +546,7 @@ def test_forget_allows_source_when_hypothesis_is_dropped_same_response(tmp_path)
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
         "Hypotheses Updated\n  1. [dropped] h1: branch no longer matters [tr.1]",
-        "Tool Results Forgotten: tr.1",
+        "Tool Result Context: -tr.1",
     ]
 
 
@@ -601,7 +601,7 @@ def test_observe_can_forget_old_kept_result_while_forgetting_latest(tmp_path):
     assert agent.mode == nanocode.AgentMode.ACT
     assert agent.tool_context.kept_results == []
     assert agent.tool_context.pending_observe == []
-    assert messages == ["Tool Results Forgotten: tr.1 tr.2"]
+    assert messages == ["Tool Result Context: -tr.1 -tr.2"]
 
 
 def test_keep_tool_results_ignore_non_tool_sources(tmp_path):

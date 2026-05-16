@@ -5995,19 +5995,17 @@ class Agent:
         self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
-        if forgotten_keys and on_message is not None:
-            on_message("Tool Results Forgotten: " + " ".join(forgotten_keys))
+        kept_keys: list[str] = []
         if any(_json_str(action.get("type")) in {"keep", "forget", "known", "stable_knowledge"} for action in ctx.actions):
             self.mode = AgentMode.ACT
             self.runtime.consecutive_tool_turns = 0
             kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
-            if kept_keys and on_message is not None:
-                on_message("Tool Results Kept: " + " ".join(kept_keys))
             self.tool_context.compact_observed(observed_blocks)
             self._mark_memory_checkpoint(observed_counter)
             self.observe_feedback_errors = []
         else:
             self.mode = AgentMode.OBSERVE
+        self._emit_tool_context_update(kept_keys, forgotten_keys, on_message)
         self._promote_required_verification(ctx)
         return AgentRunResult()
 
@@ -6024,6 +6022,16 @@ class Agent:
         )
         missing = [key for key in keys if key not in visible_keys]
         return "not in visible tool results: " + ", ".join(missing) if missing else ""
+
+    def _emit_tool_context_update(self, kept: list[str], forgotten: list[str], on_message: MessageCallback | None) -> None:
+        if on_message is None or not (kept or forgotten):
+            return
+        parts = []
+        if kept:
+            parts.append(" ".join("+" + key for key in kept))
+        if forgotten:
+            parts.append(" ".join("-" + key for key in forgotten))
+        on_message("Tool Result Context: " + " / ".join(parts))
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
@@ -6207,8 +6215,7 @@ class Agent:
         self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
-        if forgotten_keys and on_message is not None:
-            on_message("Tool Results Forgotten: " + " ".join(forgotten_keys))
+        self._emit_tool_context_update([], forgotten_keys, on_message)
         if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
             message = ctx.user_rule_message or "Rule saved."
             self.session.append_conversation(AssistantMessage(content=message))
@@ -7220,12 +7227,8 @@ class AgentLoop:
         if message.startswith(("Plan Updated", "Known Updated", "Hypotheses Updated", "Plan + Known Updated", "Plan + Hypotheses Updated", "Hypotheses + Known Updated", "Plan + Hypotheses + Known Updated")):
             self._emit_segments(self._compact_state_segments(message), message)
             return
-        if message.startswith("Tool Results Kept:"):
-            plain = "  results: " + " ".join("+" + key for key in message.removeprefix("Tool Results Kept:").split())
-            self._emit_segments([("ansibrightblack", plain + "\n")], plain)
-            return
-        if message.startswith("Tool Results Forgotten:"):
-            plain = "  results: " + " ".join("-" + key for key in message.removeprefix("Tool Results Forgotten:").split())
+        if message.startswith("Tool Result Context:"):
+            plain = "  ctx: " + message.removeprefix("Tool Result Context:").strip()
             self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
         if message.startswith("Tool Calls Skipped:"):
