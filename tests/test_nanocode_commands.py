@@ -2,6 +2,7 @@ import os
 import shutil
 import time
 
+import nanocode
 from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionLogCleaner, UserMessage
 
 
@@ -269,6 +270,76 @@ def test_model_command_selects_from_available_models(tmp_path):
 
     assert result.message == "Set provider.model = new-model"
     assert session.config.provider.model == "new-model"
+
+
+def test_model_command_lists_configured_models_before_remote_models(tmp_path, monkeypatch):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.url = "https://provider.example/v1"
+    session.config.provider.key = "key"
+    session.config.provider.available_models = ("old", "manual")
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        assert request.full_url == "https://provider.example/v1/models"
+        seen["auth"] = request.headers["Authorization"]
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read():
+                return b'{"data":[{"id":"remote-b"},{"id":"manual"},{"id":"remote-a"}]}'
+
+        return Response()
+
+    def select_model(models, current):
+        seen["models"] = models
+        seen["current"] = current
+        return "remote-a"
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
+
+    result = dispatcher.dispatch("/model")
+
+    assert seen == {
+        "auth": "Bearer key",
+        "models": (
+            CommandDispatcher.MODEL_CONFIGURED_LABEL,
+            "old",
+            "manual",
+            CommandDispatcher.MODEL_DISCOVERED_LABEL,
+            "remote-a",
+            "remote-b",
+        ),
+        "current": "old",
+    }
+    assert result.message == "Set provider.model = remote-a"
+    assert session.config.provider.model == "remote-a"
+
+
+def test_model_command_ignores_remote_model_failure(tmp_path, monkeypatch):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.url = "https://provider.example/v1"
+    session.config.provider.key = "key"
+    session.config.provider.available_models = ("old", "manual")
+    seen = {}
+
+    def select_model(models, current):
+        seen["models"] = models
+        return "manual"
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: (_ for _ in ()).throw(OSError("offline")))
+    dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
+
+    result = dispatcher.dispatch("/model")
+
+    assert seen["models"] == (CommandDispatcher.MODEL_CONFIGURED_LABEL, "old", "manual")
+    assert result.message == "Set provider.model = manual"
 
 
 def test_blackboard_command_is_not_registered(tmp_path):

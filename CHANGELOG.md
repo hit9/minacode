@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.24 - 2026-05-16
+
+### Changed
+- `/model` now groups configured `available_models` first and appends deduplicated models discovered from the provider.
+- Default generated config now documents `available_models` without writing an empty setting.
+- Split latest/recent and kept tool-result context budgets for steadier context growth.
+- Compacted tool-result CLI output while keeping result keys visible.
+- Removed `ApplyPatch`; editing now uses `Edit` for tiny literal changes and `ReplaceRange` for read-backed focused ranges.
+- Refined editing prompts to prefer minimal new-file skeletons followed by focused `ReplaceRange` chunks.
+
+### Fixed
+- Stopped executing later tool calls after the first failed tool call in a batch.
+- Reported Ctrl-C interrupted Bash runs as explicit interrupted tool results.
+
+## 0.3.23 - 2026-05-16
+
+### Changed
+- Reworked tool-result context around latest, recent, pending, and kept results.
+- Increased default provider and plan-mode response timeouts.
+- Simplified result keep/forget handling and removed stale evidence naming from agent context.
+
+### Fixed
+- Kept non-argument tool failures visible to observe mode while treating argument errors as immediate feedback.
+- Preserved Recall access to stored tool logs while allowing noisy context entries to be forgotten.
+
 ## 0.3.22 - 2026-05-16
 
 ### Fixed

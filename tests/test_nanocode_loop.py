@@ -77,7 +77,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert second_created is False
     assert config["provider"]["active"] == "default"
     assert config["provider"]["default"]["url"] == ""
-    assert config["provider"]["default"]["available_models"] == []
+    assert "available_models" not in config["provider"]["default"]
     assert "temperature" not in config["provider"]["default"]
     assert config["provider"]["default"]["reasoning_payload"] == "reasoning"
     assert config["provider"]["default"]["timeout"] == 180

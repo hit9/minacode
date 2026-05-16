@@ -44,7 +44,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.23"
+__version__ = "0.3.24"
 
 
 JsonValue: TypeAlias = Any
@@ -598,8 +598,8 @@ url = ""
 key = ""
 # Default model used by nanocode.
 model = ""
-# Optional model choices for the /model selector.
-available_models = []
+# Optional: add available_models = ["model-a", "model-b"] manually to pin preferred
+# /model choices above automatically discovered provider models.
 # Optional. Uncomment only for models/providers that support temperature.
 # temperature = 0.7
 reasoning = true
@@ -6101,6 +6101,10 @@ CONFIG_SET_USAGE = "Usage: /set <key> <value>"
 
 
 class CommandDispatcher:
+    MODEL_CONFIGURED_LABEL = "---- Configured models ----"
+    MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
+    MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
+
     def __init__(
         self,
         agent: Agent,
@@ -6182,14 +6186,47 @@ class CommandDispatcher:
         model = args.strip()
         if not model:
             provider = self.agent.session.config.provider
-            if provider.available_models and self.select_model is not None:
-                selected = self.select_model(provider.available_models, provider.model)
-                if selected is not None:
+            models = self._model_choices(provider)
+            if models and self.select_model is not None:
+                selected = self.select_model(models, provider.model)
+                if selected and selected not in self.MODEL_LABELS:
                     return self._set_model(selected)
             return self._set("provider.model")
         if " " in model:
             return "Usage: /model [model_name]"
         return self._set_model(model)
+
+    def _model_choices(self, provider: ProviderConfig) -> tuple[str, ...]:
+        configured = provider.available_models
+        remote = tuple(model for model in self._fetch_remote_models(provider) if model not in configured)
+        choices: list[str] = []
+        if configured:
+            choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
+        if remote:
+            choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
+        return tuple(choices)
+
+    def _fetch_remote_models(self, provider: ProviderConfig) -> tuple[str, ...]:
+        if not provider.url or not provider.key:
+            return ()
+        base_url = provider.url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            base_url = base_url[: -len("/chat/completions")]
+        request = urllib.request.Request(
+            base_url + "/models",
+            headers={"Authorization": "Bearer " + provider.key},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return ()
+        ids = []
+        for item in _json_list(_json_dict(data).get("data")):
+            model_id = _json_dict(item).get("id")
+            if isinstance(model_id, str) and model_id:
+                ids.append(model_id)
+        return tuple(dict.fromkeys(sorted(ids)))
 
     def _set_model(self, model: str) -> str:
         self.agent.session.config.provider.model = model
@@ -6719,8 +6756,16 @@ class AgentLoop:
             show_elapsed=False,
         )
 
-    def _select_choice(self, title: str, choices: tuple[str, ...], labels: dict[str, str] | None = None, current: str = "") -> str | None:
+    def _select_choice(
+        self,
+        title: str,
+        choices: tuple[str, ...],
+        labels: dict[str, str] | None = None,
+        current: str = "",
+        disabled: set[str] | None = None,
+    ) -> str | None:
         labels = labels or {}
+        disabled = disabled or set()
         default = current if current in choices else None
         if self.prompt_session is not None and sys.stdin.isatty():
             try:
@@ -6737,13 +6782,17 @@ class AgentLoop:
             except (EOFError, KeyboardInterrupt):
                 self._emit("Cancelled")
                 return None
-        self._emit(
-            title + ":\n"
-            + "\n".join(
-                ["  " + str(index) + ". " + labels.get(choice, choice) for index, choice in enumerate(choices, start=1)]
-            )
-        )
-        prompt = "Select " + title.lower() + " [1-" + str(len(choices)) + "] "
+        enabled_choices = tuple(choice for choice in choices if choice not in disabled)
+        lines = []
+        index = 1
+        for choice in choices:
+            if choice in disabled:
+                lines.append("  " + labels.get(choice, choice))
+                continue
+            lines.append("  " + str(index) + ". " + labels.get(choice, choice))
+            index += 1
+        self._emit(title + ":\n" + "\n".join(lines))
+        prompt = "Select " + title.lower() + " [1-" + str(len(enabled_choices)) + "] "
         while True:
             try:
                 raw_choice = self._read_input(prompt).strip()
@@ -6753,17 +6802,23 @@ class AgentLoop:
                 return None
             if not choice:
                 return None
-            if choice.isdigit() and 1 <= int(choice) <= len(choices):
-                return choices[int(choice) - 1]
-            if raw_choice in choices:
+            if choice.isdigit() and 1 <= int(choice) <= len(enabled_choices):
+                return enabled_choices[int(choice) - 1]
+            if raw_choice in enabled_choices:
                 return raw_choice
-            if choice in choices:
+            if choice in enabled_choices:
                 return choice
             self._emit("Invalid selection: " + raw_choice)
 
     def _select_model(self, models: tuple[str, ...], current_model: str) -> str | None:
         labels = {current_model: current_model + " (current)"} if current_model in models else {}
-        return self._select_choice("Model", models, labels, current=current_model)
+        for label in CommandDispatcher.MODEL_LABELS:
+            if label in models:
+                labels[label] = label
+        while True:
+            selected = self._select_choice("Model", models, labels, current=current_model, disabled=set(CommandDispatcher.MODEL_LABELS))
+            if selected not in CommandDispatcher.MODEL_LABELS:
+                return selected
 
     def _select_provider(self, providers: tuple[str, ...], current_provider: str) -> str | None:
         labels = {current_provider: current_provider + " (current)"}

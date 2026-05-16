@@ -89,7 +89,7 @@ USE AT YOUR OWN RISK.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
+`/model` groups configured `available_models` first, then any extra models automatically discovered from the provider. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
 
 ## Configuration
 
