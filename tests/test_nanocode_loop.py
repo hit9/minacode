@@ -1,5 +1,6 @@
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
+import time
 
 import nanocode
 from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
@@ -233,6 +234,18 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     loop._print_message("[success] Read sample.txt 0:1")
 
     assert captured == ["  Read sample.txt 0:1"]
+
+
+def test_agent_loop_live_preview_interrupt_hint_latches(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+    loop._live_preview_started_at = time.monotonic() - loop.LIVE_PREVIEW_INTERRUPT_HINT_AFTER - 0.1
+
+    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
+    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
 
 
 def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):

@@ -2665,6 +2665,16 @@ class BashTool(Tool):
                         self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink)
                 if proc.returncode is None:
                     proc.wait()
+            except KeyboardInterrupt:
+                if proc.returncode is None:
+                    self._kill_process_group(proc)
+                    proc.wait()
+                self._drain_selector(selector, stdout_parts, stderr_parts, None)
+                stdout_text = "".join(stdout_parts)
+                stderr_text = "".join(stderr_parts)
+                if stderr_text:
+                    stderr_text += "\n"
+                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + "interrupted by user")
             except BaseException:
                 if proc.returncode is None:
                     self._kill_process_group(proc)
@@ -6841,6 +6851,7 @@ class AgentLoop:
     LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
     LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
     LIVE_PREVIEW_REFRESH_INTERVAL: ClassVar[float] = 0.12
+    LIVE_PREVIEW_INTERRUPT_HINT_AFTER: ClassVar[float] = 3.0
 
     def __init__(
         self,
@@ -6861,6 +6872,8 @@ class AgentLoop:
         self._live_preview_text = ""
         self._live_preview_rendered_lines = 0
         self._live_preview_last_render = 0.0
+        self._live_preview_started_at = 0.0
+        self._live_preview_hint_shown = False
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
 
@@ -7083,6 +7096,8 @@ class AgentLoop:
         self._live_preview_text = ""
         self._live_preview_rendered_lines = 0
         self._live_preview_last_render = 0.0
+        self._live_preview_started_at = time.monotonic()
+        self._live_preview_hint_shown = False
         self._live_preview_resume_status = self.status_bar.is_running()
         if self._live_preview_resume_status:
             self.status_bar.pause()
@@ -7096,6 +7111,8 @@ class AgentLoop:
         self._live_preview_rendered_lines = 0
         self._live_preview_active = False
         self._live_preview_text = ""
+        self._live_preview_started_at = 0.0
+        self._live_preview_hint_shown = False
         if self._live_preview_resume_status:
             self._live_preview_resume_status = False
             self.status_bar.resume()
@@ -7110,10 +7127,23 @@ class AgentLoop:
         self._live_preview_last_render = now
         self._clear_live_tool_output()
         segments: list[tuple[str, str]] = []
+        hint_visible = self._live_preview_interrupt_hint(now)
+        if hint_visible:
+            segments.append(("ansibrightblack", "  Ctrl-C interrupts current Bash; press again after it stops to cancel the session.\n"))
         for line in lines:
             segments.extend([("ansibrightblack", "  "), ("ansibrightblack", line + "\n")])
         print_formatted_text(FormattedText(segments), output=self.status_bar.output, end="", flush=True)
-        self._live_preview_rendered_lines = len(lines)
+        self._live_preview_rendered_lines = len(lines) + (1 if hint_visible else 0)
+
+    def _live_preview_interrupt_hint(self, now: float) -> bool:
+        if self._live_preview_hint_shown:
+            return True
+        if self._live_preview_started_at <= 0:
+            return False
+        if now - self._live_preview_started_at < self.LIVE_PREVIEW_INTERRUPT_HINT_AFTER:
+            return False
+        self._live_preview_hint_shown = True
+        return True
 
     def _clear_live_tool_output(self) -> None:
         if self._live_preview_rendered_lines <= 0:
