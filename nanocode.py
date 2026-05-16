@@ -160,6 +160,7 @@ ALL_WORK_MODES = frozenset(WorkMode)
 class HypothesisStatus(StrEnum):
     ACTIVE = "active"
     RULED_OUT = "ruled_out"
+    DROPPED = "dropped"
     CONFIRMED = "confirmed"
 
 
@@ -2926,7 +2927,7 @@ CORE RULES:
 MEMORY:
 - Known = durable current-task facts.
 - Evidence = selected bounded raw tool results retained by observe mode.
-- Hypotheses = investigation directions with active, ruled_out, or confirmed status.
+- Hypotheses = investigation directions with active, ruled_out, dropped, or confirmed status.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
 - Tool results are volatile. Observe mode selects useful Evidence after tool batches.
 - Read Evidence as support context; do not output evidence in main mode.
@@ -2939,6 +2940,7 @@ MEMORY:
 INVESTIGATE MODE:
 - On start, set work_mode=investigate when the task needs competing explanations, root-cause reasoning, or branch elimination.
 - Maintain hypotheses for plausible root-cause directions.
+- If several plausible directions exist, track them separately; each should imply a concrete check.
 - Mark a hypothesis ruled_out when evidence eliminates it; mark confirmed before final root-cause completion.
 - Use forget only after the conclusion is preserved in Hypotheses, Plan, Known, or Verify.
 
@@ -3073,7 +3075,7 @@ ACTIONS:
 
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
 
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"active|ruled_out|confirmed","source":["tr.1"],"context":null|"<short evidence>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"active|ruled_out|dropped|confirmed","source":["tr.1"],"context":null|"<short evidence>"}]}
 
 {"type":"known","items":["<new durable current-task fact>"]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by evidence>"}]}
@@ -3254,7 +3256,7 @@ Before completing, ensure the plan answers:
 CORE ACTION SHAPES
 {"type":"start","goal":"<planning goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence or reason>"}]}
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"active|ruled_out|confirmed","source":["tr.1"],"context":"<evidence or reason>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"active|ruled_out|dropped|confirmed","source":["tr.1"],"context":"<evidence or reason>"}]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable fact from discovery>"}]}
 {"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
 {"type":"progress","message":"<brief user-facing progress update>"}
@@ -3413,7 +3415,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
 {"type": "known", "items": [{"source": ["tr.1"], "text": "<new durable fact from latest results>"}]} __END_ACTION__
-{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "active|ruled_out|confirmed", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
+{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "active|ruled_out|dropped|confirmed", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
 {"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
@@ -5581,11 +5583,11 @@ class Agent:
             self._remember_agent_error(
                 "Error: forget would remove evidence for an active hypothesis: "
                 + forget_hypothesis_error
-                + ". Rule: mark the hypothesis ruled_out or confirmed before forgetting its source."
+                + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
             )
             self._report_gate(
                 on_message,
-                "Retrying: update hypothesis before forgetting its evidence.",
+                "Retrying: close hypothesis before forgetting its evidence.",
                 "Evidence_Gate: " + forget_hypothesis_error + ".",
             )
             return True
@@ -5878,11 +5880,11 @@ class Agent:
             self._remember_observe_error(
                 "Error: forget would remove evidence for an active hypothesis: "
                 + forget_hypothesis_error
-                + ". Rule: mark the hypothesis ruled_out or confirmed before forgetting its source."
+                + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
             )
             self._report_gate(
                 on_message,
-                "Retrying: update hypothesis before forgetting its evidence.",
+                "Retrying: close hypothesis before forgetting its evidence.",
                 "Evidence_Gate: " + forget_hypothesis_error + ".",
             )
             return AgentRunResult()

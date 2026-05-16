@@ -532,6 +532,32 @@ def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
     ]
 
 
+def test_forget_allows_source_when_hypothesis_is_dropped_same_response(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "debug branch")
+    agent.tool_context.evidence = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="branch lost priority", source=("tr.1",))]
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "hypothesis", "items": [{"id": "h1", "text": "branch no longer matters", "status": "dropped", "source": ["tr.1"]}]},
+                {"type": "forget", "source": ["tr.1"], "reason": "branch no longer matters"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.DROPPED
+    assert "tr.1" not in agent.tool_context.evidence_context()
+    assert messages == [
+        "Hypotheses Updated\n  1. [dropped] h1: branch no longer matters [tr.1]",
+        "Evidence Removed: tr.1",
+    ]
+
+
 def test_forget_rejects_missing_or_unknown_evidence_key(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "debug branch")
