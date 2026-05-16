@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.22 - 2026-05-16
+
+### Fixed
+- Preserved tool-result store entries referenced by Known, Hypotheses, and Evidence.
+- Aligned plan-mode verify guidance with the implemented verify action shape.
+
+### Changed
+- Generated hypothesis status prompt schema from the enum to avoid prompt drift.
+
 ## 0.3.21 - 2026-05-16
 
 ### Added
