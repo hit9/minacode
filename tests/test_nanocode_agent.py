@@ -998,6 +998,17 @@ def test_agent_gate_hides_retry_messages_without_debug(tmp_path):
     assert agent.session.state.status_notice == "err:gate"
 
 
+def test_agent_gate_does_not_overwrite_specific_recent_notice(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    messages = []
+    agent._set_status_notice("err:format")
+
+    agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: first")
+
+    assert messages == []
+    assert agent.session.state.status_notice == "err:format"
+
+
 def test_agent_gate_reports_immediately_in_debug(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     messages = []
@@ -1398,6 +1409,22 @@ def test_agent_request_accepts_comma_separated_unmarked_json_actions(tmp_path):
     }
 
 
+def test_agent_request_normalizes_tool_name_as_action_type(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '{"type":"ListDir","intention":"list root","args":["."]}\n'
+        '{"type":"Search","intention":"find tests","args":["pytest","path=.", "context=2"]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "tool", "name": "ListDir", "intention": "list root", "args": ["."]},
+            {"type": "tool", "name": "Search", "intention": "find tests", "args": ["pytest", "path=.", "context=2"]},
+        ]
+    }
+
+
 def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -1414,13 +1441,31 @@ def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_pa
     }
 
 
+def test_agent_request_converts_interleaved_unmarked_text_to_progress_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '{"type":"plan","items":[{"id":"p1","text":"Inspect","status":"doing"}]}\n\n'
+        "Now I will read the file.\n\n"
+        '{"type":"tool","name":"Read","intention":"read source","args":["demo/astar_demo.cpp"]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "plan", "items": [{"id": "p1", "text": "Inspect", "status": "doing"}]},
+            {"type": "progress", "text": "Now I will read the file."},
+            {"type": "tool", "name": "Read", "intention": "read source", "args": ["demo/astar_demo.cpp"]},
+        ],
+    }
+
+
 def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}\nDone.')
 
     assert response["actions"] == []
-    assert "Expecting value" in response["_format_error"]
+    assert "unexpected text after JSON action" in response["_format_error"]
 
 
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
@@ -2804,9 +2849,10 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
     assert "repeated start is invalid" in " ".join(agent.agent_feedback_errors)
 
 
-def test_agent_rejects_plan_with_multiple_doing_items(tmp_path):
+def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
 
     result = agent.handle_response(
         {
@@ -2824,8 +2870,9 @@ def test_agent_rejects_plan_with_multiple_doing_items(tmp_path):
     )
 
     assert result.done is False
-    assert agent.blackboard.plan == []
-    assert any("at most one Plan item may be doing" in error for error in agent.agent_feedback_errors)
+    assert [item.id for item in agent.blackboard.plan] == ["p1", "p2"]
+    assert [item.status for item in agent.blackboard.plan] == [nanocode.PlanStatus.DOING, nanocode.PlanStatus.DOING]
+    assert agent.agent_feedback_errors == []
 
 
 def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.28 - 2026-05-16
+
+### Changed
+- Status bar now labels model calls as `working`, `observing`, or `compacting`.
+- Removed the hard gate for multiple `doing` plan items while keeping prompt guidance to prefer a single active item.
+
+### Fixed
+- Preserved specific retry notices such as `err:format` instead of overwriting them with generic gate notices.
+- Accepted unmarked action streams with interleaved progress text between JSON actions.
+- Normalized tool-name action types such as `Search` or `ListDir` into tool actions.
+
 ## 0.3.27 - 2026-05-16
 
 ### Fixed

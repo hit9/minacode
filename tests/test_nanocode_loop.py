@@ -166,12 +166,19 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     session.state.current_model_call_started_at = 0.4
     session.state.current_model_call_label = "provider/active-model"
     session.state.current_model_call_reasoning_label = "low"
+    session.state.current_model_call_activity = "agent"
     bar = StatusBar(session)
 
     text = "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
     assert "active-model (low)" in text
-    assert "calling(2):0.6s" in text
+    assert "working(2):0.6s" in text
+
+    session.state.current_model_call_activity = "observe"
+    assert "observing(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+
+    session.state.current_model_call_activity = "compact"
+    assert "compacting(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
 
 def test_status_bar_shows_active_modes(tmp_path):

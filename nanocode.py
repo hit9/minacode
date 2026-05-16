@@ -51,7 +51,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.27"
+__version__ = "0.3.28"
 HTTP_USER_AGENT = "nanocode/" + __version__
 
 
@@ -821,6 +821,7 @@ class RuntimeState:
     current_model_call_started_at: float = 0.0
     current_model_call_label: str = ""
     current_model_call_reasoning_label: str = ""
+    current_model_call_activity: str = ""
     status_notice: str = ""
     status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
@@ -3442,6 +3443,7 @@ class ModelClient:
             self.session.state.current_model_call_started_at = time.monotonic()
             self.session.state.current_model_call_label = model
             self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+            self.session.state.current_model_call_activity = activity
             request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
@@ -3464,6 +3466,7 @@ class ModelClient:
                 self.session.state.current_model_call_started_at = 0.0
                 self.session.state.current_model_call_label = ""
                 self.session.state.current_model_call_reasoning_label = ""
+                self.session.state.current_model_call_activity = ""
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
         except (socket.timeout, TimeoutError):
@@ -3651,6 +3654,7 @@ class ModelClient:
         if isinstance(value, dict):
             if "actions" in value:
                 return self._actions_from_json_value(value.get("actions"))
+            self._normalize_tool_type(value)
             if not _json_str(value.get("type")):
                 return [], "action missing type"
             return [value], ""
@@ -3660,11 +3664,18 @@ class ModelClient:
                 action = _json_dict(raw)
                 if not action:
                     return [], "array item " + str(index) + ": expected JSON object action"
+                self._normalize_tool_type(action)
                 if not _json_str(action.get("type")):
                     return [], "array item " + str(index) + ": action missing type"
                 actions.append(action)
             return actions, ""
         return [], "expected JSON object action"
+
+    def _normalize_tool_type(self, action: Json) -> None:
+        action_type = _json_str(action.get("type"))
+        if action_type in TOOL_REGISTRY:
+            action["type"] = "tool"
+            action.setdefault("name", action_type)
 
     def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
         actions: list[Json] = []
@@ -3715,6 +3726,15 @@ class ModelClient:
                 index += 1
             if index < len(text) and text[index] == ",":
                 index += 1
+                continue
+            if index < len(text) and text[index] != "{":
+                next_action = text.find("{", index)
+                if next_action < 0:
+                    return [], "unexpected text after JSON action"
+                progress = _shorten(" ".join(text[index:next_action].split()), 500)
+                if progress:
+                    actions.append({"type": "progress", "text": progress})
+                index = next_action
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
@@ -4933,7 +4953,7 @@ class Agent:
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is None:
             return
-        if message.startswith(("Retrying:", "Continuing:")):
+        if message.startswith(("Retrying:", "Continuing:")) and self.session.state.status_notice_until <= time.monotonic():
             self._set_status_notice("err:gate")
         if self.session.settings.debug:
             on_message(debug_message)
@@ -4961,13 +4981,15 @@ class Agent:
         if self.mode == AgentMode.OBSERVE:
             system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT, tools=())
             user_prompt = self.build_observe_prompt()
+            activity = "observe"
         else:
             system_prompt = self.prompt_builder.system_prompt(
                 AGENT_PLAN_SYSTEM_PROMPT if self.session.settings.plan_mode else None,
                 tools=PLAN_MODE_TOOLS if self.session.settings.plan_mode else None,
             )
             user_prompt = self.build_user_prompt()
-        response = self.request(system_prompt, user_prompt, activity="agent", on_message=on_message)
+            activity = "agent"
+        response = self.request(system_prompt, user_prompt, activity=activity, on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -5313,29 +5335,6 @@ class Agent:
         conflict = sorted((forgotten & protected) - released)
         return "active hypothesis source: " + ", ".join(conflict) if conflict else ""
 
-    def _plan_shape_error(self, actions: list[Json]) -> str:
-        plan = [PlanItem(text=item.text, status=item.status, id=item.id, context=item.context) for item in self.blackboard.plan]
-        changed = False
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "start":
-                items = self._plan_items_from_json(action.get("plan"))
-                if items:
-                    plan = items
-                    changed = True
-            elif action_type == "plan":
-                items = self._plan_items_from_json(action.get("items"))
-                if action.get("mode") != "patch":
-                    if items:
-                        plan = items
-                        changed = True
-                    continue
-                changed = self.state_updater._apply_plan_patches(plan, action.get("items")) or changed
-        doing = [item for item in plan if item.status == PlanStatus.DOING]
-        if changed and len(doing) > 1:
-            return "multiple doing plan items: " + self._format_plan_gate_items(doing)
-        return ""
-
     def _plan_items_from_json(self, value: JsonValue) -> list[PlanItem]:
         return [item for item in (self.state_updater._plan_item_from_json(raw) for raw in _json_list(value)) if item]
 
@@ -5441,15 +5440,6 @@ class Agent:
                 on_message,
                 "Retrying: close hypothesis before forgetting its source result.",
                 "ToolResult_Gate: " + forget_hypothesis_error + ".",
-            )
-            return True
-        plan_shape_error = self._plan_shape_error(ctx.actions)
-        if plan_shape_error:
-            self._remember_agent_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
-            self._report_gate(
-                on_message,
-                "Retrying: keep only one plan item doing.",
-                "Plan_Gate: " + plan_shape_error + ".",
             )
             return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
@@ -5746,15 +5736,6 @@ class Agent:
                 on_message,
                 "Retrying: close hypothesis before forgetting its source result.",
                 "ToolResult_Gate: " + forget_hypothesis_error + ".",
-            )
-            return AgentRunResult()
-        plan_shape_error = self._plan_shape_error(ctx.actions)
-        if plan_shape_error:
-            self._remember_observe_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
-            self._report_gate(
-                on_message,
-                "Retrying: keep only one plan item doing.",
-                "Plan_Gate: " + plan_shape_error + ".",
             )
             return AgentRunResult()
         if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
@@ -6663,10 +6644,20 @@ class StatusBar:
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
-            parts.append("calling(" + str(session.state.turn_model_calls) + "):" + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s")
+            parts.append(
+                self._activity_label(session.state.current_model_call_activity)
+                + "("
+                + str(session.state.turn_model_calls)
+                + "):"
+                + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s"
+            )
         if session.state.status_notice and session.state.status_notice_until > now:
             parts.append(session.state.status_notice)
         return " | ".join(parts)
+
+    @staticmethod
+    def _activity_label(activity: str) -> str:
+        return {"compact": "compacting", "observe": "observing"}.get(activity, "working")
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
         if not text:
