@@ -2,6 +2,7 @@ import os
 import shutil
 import time
 
+import nanocode
 from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionLogCleaner, UserMessage
 
 
@@ -36,8 +37,6 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
     model_result = dispatcher.dispatch("/set provider.model new-model")
-    url_result = dispatcher.dispatch("/set provider.url https://example.test/v1")
-    key_result = dispatcher.dispatch("/set provider.key secret")
     effort_result = dispatcher.dispatch("/set provider.effort high")
     reason_result = dispatcher.dispatch("/set provider.reasoning off")
     stream_result = dispatcher.dispatch("/set provider.stream off")
@@ -48,10 +47,6 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
     assert model_result.status == CommandStatus.HANDLED
     assert session.config.provider.model == "new-model"
-    assert url_result.message == "Set provider.url = https://example.test/v1"
-    assert session.config.provider.url == "https://example.test/v1"
-    assert key_result.message == "Set provider.key = (set)"
-    assert session.config.provider.key == "secret"
     assert effort_result.message == "Set provider.effort = high"
     assert session.config.provider.reasoning_effort == "high"
     assert reason_result.message == "Set provider.reasoning = off"
@@ -105,8 +100,8 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     temperature_off_result = dispatcher.dispatch("/set provider.temperature off")
     invalid_temperature_result = dispatcher.dispatch("/set provider.temperature nope")
 
-    assert url_status_result.message == "Usage: /set provider.url <value>"
-    assert key_status_result.message == "Usage: /set provider.key <value>"
+    assert url_status_result.message == "Unknown config key: provider.url"
+    assert key_status_result.message == "Unknown config key: provider.key"
     assert status_result.message == "Current provider.stream is on"
     assert off_result.message == "Set provider.stream = off"
     assert off_status_result.message == "Current provider.stream is off"
@@ -131,14 +126,14 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
     assert "provider.available_models: config-model, other-model" in result.message
-    assert "provider.first_token_timeout: 60" in result.message
+    assert "provider.first_token_timeout: 90" in result.message
     assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message
     assert "paths.project_dir: " in result.message
     assert "paths.session_dir: " in result.message
     assert "paths.history: " + str(tmp_path / ".nanocode" / "history") in result.message
     assert "runtime.max_agent_steps: 100" in result.message
-    assert "runtime.plan_timeout: 180" in result.message
-    assert "runtime.plan_first_token_timeout: 120" in result.message
+    assert "runtime.plan_timeout: 360" in result.message
+    assert "runtime.plan_first_token_timeout: 180" in result.message
     assert "runtime.auto_clean_recent: 3d" in result.message
     assert "runtime.plan_mode: off" in result.message
 
@@ -253,6 +248,35 @@ def test_model_command_can_disable_reasoning(tmp_path):
     assert session.config.provider.reasoning is False
 
 
+def test_model_command_reasoning_back_cancels_direct_model_change(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: nanocode.SELECTION_BACK)
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "No change"
+    assert session.config.provider.model == "old"
+
+
+def test_model_command_reasoning_back_returns_to_model_selection(tmp_path):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.available_models = ("first", "second")
+    selected_models = iter(["first", "second"])
+    selected_reasoning = iter([nanocode.SELECTION_BACK, "high"])
+    dispatcher = CommandDispatcher(
+        Agent(session),
+        select_model=lambda models, current: next(selected_models),
+        select_reasoning=lambda: next(selected_reasoning),
+    )
+
+    result = dispatcher.dispatch("/model")
+
+    assert result.message == "Set provider.model = second\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert session.config.provider.model == "second"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "high"
+
+
 def test_reason_command_selects_reasoning_effort(tmp_path):
     session = make_session(tmp_path, model="old")
     dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")
@@ -266,6 +290,17 @@ def test_reason_command_selects_reasoning_effort(tmp_path):
     assert session.config.provider.reasoning_effort == "high"
 
 
+def test_reason_command_back_keeps_current_reasoning(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: nanocode.SELECTION_BACK)
+
+    result = dispatcher.dispatch("/reason")
+
+    assert result.message == "No change"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "medium"
+
+
 def test_model_command_selects_from_available_models(tmp_path):
     session = make_session(tmp_path, model="old")
     session.config.provider.available_models = ("old", "new-model")
@@ -275,6 +310,76 @@ def test_model_command_selects_from_available_models(tmp_path):
 
     assert result.message == "Set provider.model = new-model"
     assert session.config.provider.model == "new-model"
+
+
+def test_model_command_lists_configured_models_before_remote_models(tmp_path, monkeypatch):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.url = "https://provider.example/v1"
+    session.config.provider.key = "key"
+    session.config.provider.available_models = ("old", "manual")
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        assert request.full_url == "https://provider.example/v1/models"
+        seen["auth"] = request.headers["Authorization"]
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read():
+                return b'{"data":[{"id":"remote-b"},{"id":"manual"},{"id":"remote-a"}]}'
+
+        return Response()
+
+    def select_model(models, current):
+        seen["models"] = models
+        seen["current"] = current
+        return "remote-a"
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
+
+    result = dispatcher.dispatch("/model")
+
+    assert seen == {
+        "auth": "Bearer key",
+        "models": (
+            CommandDispatcher.MODEL_CONFIGURED_LABEL,
+            "old",
+            "manual",
+            CommandDispatcher.MODEL_DISCOVERED_LABEL,
+            "remote-a",
+            "remote-b",
+        ),
+        "current": "old",
+    }
+    assert result.message == "Set provider.model = remote-a"
+    assert session.config.provider.model == "remote-a"
+
+
+def test_model_command_ignores_remote_model_failure(tmp_path, monkeypatch):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.url = "https://provider.example/v1"
+    session.config.provider.key = "key"
+    session.config.provider.available_models = ("old", "manual")
+    seen = {}
+
+    def select_model(models, current):
+        seen["models"] = models
+        return "manual"
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: (_ for _ in ()).throw(OSError("offline")))
+    dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
+
+    result = dispatcher.dispatch("/model")
+
+    assert seen["models"] == (CommandDispatcher.MODEL_CONFIGURED_LABEL, "old", "manual")
+    assert result.message == "Set provider.model = manual"
 
 
 def test_blackboard_command_is_not_registered(tmp_path):
@@ -309,8 +414,8 @@ def test_knowledge_command_shows_stable_knowledge(tmp_path):
     }
     result = dispatcher.dispatch("/knowledge")
 
-    assert empty_result.message == "No stable knowledge. Use /knowledge update to record some."
-    assert usage_result.message == "Usage: /knowledge [update]"
+    assert empty_result.message == "No stable knowledge stored."
+    assert usage_result.message == "Usage: /knowledge"
     assert result.status == CommandStatus.HANDLED
     assert result.message == "\n".join(
         [
@@ -321,19 +426,6 @@ def test_knowledge_command_shows_stable_knowledge(tmp_path):
             "- Project test command is make test.",
         ]
     )
-
-
-def test_knowledge_update_command_runs_agent(tmp_path):
-    prompts = []
-    agent = Agent(Session(cwd=str(tmp_path)))
-    dispatcher = CommandDispatcher(agent, run_agent=prompts.append)
-
-    result = dispatcher.dispatch("/knowledge update")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == ""
-    assert prompts == ["Please perform a knowledge update: record stable knowledge about this project."]
-
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
     session = make_session(tmp_path, compact_at=2)

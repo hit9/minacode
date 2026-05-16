@@ -78,24 +78,24 @@ USE AT YOUR OWN RISK.
 ## Tools
 
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
-- Edit: `Edit`, `ReplaceRange`, `ApplyPatch`.
+- Edit: `Edit`, `ReplaceRange`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
+- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-`/model` selects from the active provider's `available_models` when configured. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
+`/model` groups configured `available_models` first, then any extra models automatically discovered from the provider. In selectors, use `j`/`k` or arrow keys to move, `/keyword` to filter choices, Enter to select, and Esc to step back or cancel. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
 
 ## Configuration
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `reasoning_payload` controls whether effort is sent as `reasoning`, `reasoning_effort`, or not sent.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.

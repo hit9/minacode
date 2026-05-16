@@ -1,8 +1,9 @@
 from prompt_toolkit.completion import CompleteEvent, WordCompleter
 from prompt_toolkit.document import Document
+import time
 
 import nanocode
-from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
+from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
@@ -76,13 +77,14 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert second_created is False
     assert config["provider"]["active"] == "default"
     assert config["provider"]["default"]["url"] == ""
-    assert config["provider"]["default"]["available_models"] == []
+    assert "available_models" not in config["provider"]["default"]
     assert "temperature" not in config["provider"]["default"]
-    assert config["provider"]["default"]["timeout"] == 90
-    assert config["provider"]["default"]["first_token_timeout"] == 60
+    assert "reasoning_payload" not in config["provider"]["default"]
+    assert config["provider"]["default"]["timeout"] == 180
+    assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
-    assert config["runtime"]["plan_timeout"] == 180
-    assert config["runtime"]["plan_first_token_timeout"] == 120
+    assert config["runtime"]["plan_timeout"] == 360
+    assert config["runtime"]["plan_first_token_timeout"] == 180
     assert config["runtime"]["auto_clean_recent"] == "3d"
     assert config["runtime"]["yolo"] is False
     assert config["runtime"]["plan_mode"] is False
@@ -212,9 +214,19 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
     segments = loop._tool_segments("[success] Read sample.txt 0:1")
+    keyed_segments = loop._tool_segments('[success] Search "sse|feed|history" glob=*.py path=. -> tr.2 | excerpt')
 
     assert ("ansigreen", "Read sample.txt 0:1\n") in segments
     assert all("ok " not in text for _, text in segments)
+    assert ("ansigreen", 'Search "sse|feed|history" glob=*.py path=.') in keyed_segments
+    assert ("ansibrightblack", " -> tr.2") in keyed_segments
+    assert ("ansibrightblack", " | excerpt") in keyed_segments
+
+
+def test_tool_call_report_compacts_interrupted_bash_result():
+    output = "<BashToolResult>\n* exit_code: -1\n* interrupted: true\n* reason: user_ctrl_c\n</BashToolResult>"
+
+    assert ToolCallDisplayFormatter._compact_tool_error(output) == "interrupted by user"
 
 
 def test_agent_loop_indents_top_level_tool_report(tmp_path):
@@ -230,7 +242,19 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
-def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
+def test_agent_loop_live_preview_interrupt_hint_latches(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+    loop._live_preview_started_at = time.monotonic() - loop.LIVE_PREVIEW_INTERRUPT_HINT_AFTER - 0.1
+
+    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
+    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
+
+
+def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
@@ -238,9 +262,36 @@ def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
 
-    loop._print_message("Evidence Updated: tr.12 tr.15")
+    loop._print_message("Tool Result Context: +tr.12 +tr.15 / -tr.8")
 
-    assert captured == ["  evidence: tr.12 tr.15"]
+    assert captured == ["  ctx: +tr.12 +tr.15 / -tr.8"]
+
+
+def test_agent_loop_renders_forgotten_tool_result_context_as_weak_status(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message("Tool Result Context: -tr.12 -tr.15")
+
+    assert captured == ["  ctx: -tr.12 -tr.15"]
+
+
+def test_agent_loop_styles_compact_state_section_labels(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+
+    segments = loop._compact_state_segments("Hypotheses + Known Updated\nHypotheses\n  1. h1\nKnown\n  1. fact")
+
+    assert ("bold ansicyan", "Hypotheses + Known Updated\n") in segments
+    assert ("ansicyan", "Hypotheses\n") in segments
+    assert ("ansicyan", "Known\n") in segments
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
@@ -314,13 +365,6 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
-
-    knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))
-    knowledge_u_completions = list(completer.get_completions(Document("/knowledge u"), CompleteEvent(completion_requested=True)))
-
-    assert [c.text for c in knowledge_completions] == ["update"]
-    assert [c.text for c in knowledge_u_completions] == ["update"]
-
 
 def test_agent_loop_command_completer_completes_provider_names():
     completer = nanocode.CommandCompleter(["qwen", "openai"])
@@ -504,22 +548,14 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     captured = {}
 
     class FakeApplication:
-        erase_when_done = False
-
-        def run(self):
-            captured["erase_when_done"] = self.erase_when_done
-            return "low"
-
-    class FakeChoiceInput:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-        @staticmethod
-        def _create_application():
-            return FakeApplication()
+        def run(self):
+            return "low"
 
     monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
-    monkeypatch.setattr(nanocode, "ChoiceInput", FakeChoiceInput)
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
 
     loop = AgentLoop(FakeAgent(), prompt_session=object())
 
@@ -529,13 +565,42 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     assert attrs.color == "0f4c5c"
     assert attrs.bold is True
     assert captured["erase_when_done"] is True
-    assert captured["default"] == "medium"
+    assert captured["layout"] is not None
+    assert loop._choice_initial_index(("off", "minimal", "low", "medium"), "medium") == 3
 
     loop._select_model(("old", "new"), "new")
-    assert captured["default"] == "new"
+    assert loop._choice_initial_index(("old", "new"), "new") == 1
 
     loop._select_provider(("one", "two"), "two")
-    assert captured["default"] == "two"
+    assert loop._choice_initial_index(("one", "two"), "two") == 1
+
+
+def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    inputs = iter(["/remote", "1"])
+    outputs = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=outputs.append)
+
+    selected = loop._select_choice(
+        "Model",
+        (
+            nanocode.CommandDispatcher.MODEL_CONFIGURED_LABEL,
+            "old",
+            "manual",
+            nanocode.CommandDispatcher.MODEL_DISCOVERED_LABEL,
+            "remote-a",
+            "remote-b",
+        ),
+        disabled=set(nanocode.CommandDispatcher.MODEL_LABELS),
+    )
+
+    assert selected == "remote-a"
+    assert "Model /remote:" in outputs[-1]
+    assert "remote-a" in outputs[-1]
+    assert "old" not in outputs[-1]
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):

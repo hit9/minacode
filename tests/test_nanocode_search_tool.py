@@ -36,32 +36,19 @@ def test_search_tool_python_backend_finds_or_patterns_and_applies_glob(tmp_path,
     assert "hidden.txt" not in result
 
 
-def test_search_tool_treats_plain_extra_args_as_or_terms_when_final_path_is_missing(tmp_path, monkeypatch):
-    (tmp_path / "sample.py").write_text(
-        "class EditTool:\nclass BashTool:\nclass SearchTool:\nclass ReadTool:\nclass ApplyPatchTool:\n",
-        encoding="utf-8",
-    )
+def test_search_tool_rejects_many_plain_args_without_explicit_path(tmp_path):
     session = Session(cwd=str(tmp_path))
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
-    tool = SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ApplyPatch"])
-    result = tool.call()
-
-    assert tool.pattern == "class Edit|class Bash|class Search|class Read|class ApplyPatch"
-    assert tool.target_path == str(tmp_path)
-    assert "* sample.py:1: class EditTool:" in result
-    assert "* sample.py:2: class BashTool:" in result
-    assert "* sample.py:3: class SearchTool:" in result
-    assert "* sample.py:4: class ReadTool:" in result
-    assert "* sample.py:5: class ApplyPatchTool:" in result
+    with pytest.raises(ToolCallError, match="requires 1 to 4 args"):
+        SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ReplaceRange"])
 
 
-def test_search_tool_treats_existing_final_plain_arg_as_path(tmp_path):
+def test_search_tool_treats_second_plain_arg_as_path(tmp_path):
     path = tmp_path / "sample.py"
     path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = SearchTool.make(session, ["class Edit", "class Bash", "sample.py"])
+    tool = SearchTool.make(session, ["class Edit|class Bash", "sample.py"])
 
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
