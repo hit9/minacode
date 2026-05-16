@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.33 - 2026-05-16
+
+### Fixed
+- Keep unresolved pending tool results visible as raw ACT context until observe mode explicitly keeps or forgets them.
+
 ## 0.3.32 - 2026-05-16
 
 ### Changed
