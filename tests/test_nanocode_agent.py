@@ -1530,6 +1530,31 @@ def test_agent_request_ignores_fence_only_interleaved_progress(tmp_path):
     }
 
 
+def test_agent_request_strips_leaked_tool_code_after_valid_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        "我正在分析这些更改。让我仔细检查速率计算部分是否存在潜在的 bug。\n\n"
+        "```json\n"
+        '{"type":"Read","args":["nanocode.py","3500,3510"],"intention":"检查速率计算时 elapsed 是否可能为0"}\n'
+        "```\n"
+        "<tool_code>\n"
+        "{\n"
+        "  tool: 'Read',\n"
+        "  args: [\"nanocode.py\", \"3500,3510\"],\n"
+        "  intention: '检查速率计算时 elapsed 是否可能为0'\n"
+        "}\n"
+        "</tool_code>"
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "progress", "text": "我正在分析这些更改。让我仔细检查速率计算部分是否存在潜在的 bug。"},
+            {"type": "tool", "name": "Read", "args": ["nanocode.py", "3500,3510"], "intention": "检查速率计算时 elapsed 是否可能为0"},
+        ]
+    }
+
+
 def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 

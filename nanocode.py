@@ -3611,8 +3611,11 @@ class ModelClient:
     def _parse_model_content(self, content: str) -> Json:
         text = content.strip()
         text = self._strip_leaked_think_tags(text)
+        text = self._strip_leaked_tool_code(text)
         text = self._strip_json_fence(text)
+        text = self._strip_fence_marker_lines(text)
         text = self._strip_leaked_think_tags(text)
+        text = self._strip_leaked_tool_code(text)
         if not self._has_action_frame_end(text):
             actions, error = self._parse_unmarked_actions(text)
             if actions:
@@ -3853,6 +3856,9 @@ class ModelClient:
             lines = lines[:-1]
         return "\n".join(lines).strip()
 
+    def _strip_fence_marker_lines(self, text: str) -> str:
+        return re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$\n?", "", text).strip()
+
     def _strip_leaked_think_tags(self, text: str) -> str:
         text = text.strip()
         while text.startswith("</think>"):
@@ -3865,6 +3871,9 @@ class ModelClient:
             while text.startswith("</think>"):
                 text = text[len("</think>") :].lstrip()
         return text
+
+    def _strip_leaked_tool_code(self, text: str) -> str:
+        return re.sub(r"<tool_code>.*?</tool_code>", "", text, flags=re.DOTALL).strip()
 
     def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
         guidance = ""
