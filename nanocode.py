@@ -51,7 +51,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.33"
+__version__ = "0.3.34"
 HTTP_USER_AGENT = "nanocode/" + __version__
 
 
@@ -4908,8 +4908,8 @@ class Agent:
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 72_000
     KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
     RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 40
-    PENDING_OBSERVE_RESULTS: ClassVar[int] = 8
-    PENDING_OBSERVE_TOOL_TURNS: ClassVar[int] = 2
+    # Trigger observe after this many unresolved raw tool result blocks accumulate.
+    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 8
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
     def __init__(self, session: Session):
@@ -5214,9 +5214,7 @@ class Agent:
             return False
         if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
             return True
-        if len(pending) >= self.PENDING_OBSERVE_RESULTS:
-            return True
-        return self.runtime.consecutive_tool_turns >= self.PENDING_OBSERVE_TOOL_TURNS
+        return len(pending) >= self.OBSERVE_AFTER_PENDING_RESULT_COUNT
 
     def _tool_failure_needs_observe(self, execution: ToolCallExecution) -> bool:
         if execution.outcome == "success":

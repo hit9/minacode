@@ -249,6 +249,7 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.RECENT_TOOL_CALL_CHARS = 300
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
@@ -285,7 +286,6 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.PENDING_OBSERVE_TOOL_TURNS = 99
     agent.RECENT_TOOL_CALL_CHARS = 300
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
@@ -308,6 +308,7 @@ def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.RECENT_TOOL_CALL_CHARS = 300
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
@@ -1259,7 +1260,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
     agent = Agent(session)
-    agent.PENDING_OBSERVE_TOOL_TURNS = 1
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 1
     _seed_plan(agent, "read sample")
     messages = []
 
@@ -2758,7 +2759,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.PENDING_OBSERVE_TOOL_TURNS = 1
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 1
     _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
 

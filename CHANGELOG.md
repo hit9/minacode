@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.34 - 2026-05-16
+
+### Changed
+- Trigger observe by unresolved pending tool-result count only, instead of consecutive tool batch count.
+
 ## 0.3.33 - 2026-05-16
 
 ### Fixed
