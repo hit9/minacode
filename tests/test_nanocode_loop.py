@@ -151,12 +151,13 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert ">" not in text
     assert "model (medium)" in text
     assert "ctx:0/9" in text
-    assert "tools:3" in text
-    assert "tok:last:42 session:1k" in text
+    assert "tool:3" in text
+    assert "tok:last:42 sess:1k" in text
+    assert "turn:1.2s" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = bar.snapshot()
-    assert snapshot == "model (medium) | ctx:0/9 | tools:3 | tok:last:42 session:1k"
+    assert snapshot == "model (medium) | ctx:0/9 | tool:3 | tok:last:42 sess:1k"
     assert ">" not in snapshot
 
 
@@ -175,7 +176,9 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     assert "working(2):0.6s" in text
 
     session.state.current_model_call_has_content = True
+    session.state.current_model_call_streaming_chars = 24
     assert "working*(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+    assert "10t/s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
     session.state.current_model_call_has_content = False
 
     session.state.current_model_call_activity = "observe"
@@ -189,7 +192,7 @@ def test_status_bar_shows_active_modes(tmp_path):
     session = make_session(tmp_path, model="provider/model", yolo=True, plan_mode=True)
     bar = StatusBar(session)
 
-    assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tools:0 | tok:last:- session:-"
+    assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tool:0 | tok:last:- sess:-"
 
 
 def test_status_bar_shows_recent_status_notice(tmp_path):
@@ -653,5 +656,5 @@ def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
     assert kwargs["refresh_interval"] == StatusBar.INTERVAL
     assert callable(kwargs["bottom_toolbar"])
     assert "".join(text for _, text in kwargs["bottom_toolbar"]()) == (
-        "model (medium) | ctx:0/50 | tools:0 | tok:last:- session:-"
+        "model (medium) | ctx:0/50 | tool:0 | tok:last:- sess:-"
     )

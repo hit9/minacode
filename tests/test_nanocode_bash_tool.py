@@ -2,8 +2,6 @@ import os
 import signal
 import time
 
-import pytest
-
 from nanocode import BashTool, RuntimeSettings, Session
 
 

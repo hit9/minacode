@@ -51,7 +51,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.28"
+__version__ = "0.3.32"
 HTTP_USER_AGENT = "nanocode/" + __version__
 
 
@@ -823,6 +823,8 @@ class RuntimeState:
     current_model_call_reasoning_label: str = ""
     current_model_call_activity: str = ""
     current_model_call_has_content: bool = False
+    current_model_call_streaming_chars: int = 0
+    last_model_call_rate: float = 0.0
     status_notice: str = ""
     status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
@@ -1670,7 +1672,7 @@ class SearchTool(Tool):
     MAX_CONTEXT_LINES: ClassVar[int] = 30
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Case-insensitive regex search before Read; use A|B|C for alternatives.",
+        "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
@@ -1713,8 +1715,7 @@ class SearchTool(Tool):
         pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
         if not pattern:
             raise ToolCallArgError("pattern cannot be empty")
-        if "\n" in pattern:
-            raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
+        pattern = pattern.replace("\\n", "\n").replace("\\r", "\r")
         target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
@@ -1863,7 +1864,9 @@ class SearchTool(Tool):
                     yield path
 
     def _make_match(self, path: str, line_number: int, text: str) -> Match:
-        return self.Match(path=path, line_number=line_number, text=text[:300], context=self._read_match_context(path, line_number))
+        text = text.rstrip("\n")
+        preview = _shorten(" ".join(text.split()), 300) if "\n" in text or "\r" in text else text[:300]
+        return self.Match(path=path, line_number=line_number, text=preview, context=self._read_match_context(path, line_number))
 
     def _read_match_context(self, path: str, line_number: int) -> list[tuple[int, str]]:
         if line_number <= 0:
@@ -1902,6 +1905,8 @@ class SearchTool(Tool):
 
     def _rg_command(self, rg: str, *, pcre2: bool = False) -> list[str]:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        if self._is_multiline():
+            cmd.extend(["-U", "--multiline-dotall"])
         if pcre2:
             cmd.append("--pcre2")
         cmd.append("-i")
@@ -1955,8 +1960,13 @@ class SearchTool(Tool):
         text = stderr.lower()
         return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
+    def _is_multiline(self) -> bool:
+        return "\n" in self.pattern or "\r" in self.pattern
+
     def _call_python(self) -> str:
         matches = []
+        if self._is_multiline():
+            return self._call_python_multiline()
         for path in self._iter_files():
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
@@ -1973,6 +1983,28 @@ class SearchTool(Tool):
                 continue
 
         return self._format_result("python", matches, False)
+
+    def _call_python_multiline(self) -> str:
+        matches = []
+        flags = re.IGNORECASE | re.MULTILINE | re.DOTALL
+        try:
+            regex = re.compile(self.pattern, flags)
+        except re.error as error:
+            raise ToolCallArgError("invalid regex: " + str(error))
+        for path in self._iter_files():
+            try:
+                if os.path.getsize(path) > self.MAX_FILE_BYTES:
+                    continue
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                for match in regex.finditer(content):
+                    line_number = content.count("\n", 0, match.start()) + 1
+                    matches.append(self._make_match(path, line_number, match.group(0)))
+                    if len(matches) >= self.MAX_MATCHES:
+                        return self._format_result("python-multiline", matches, True)
+            except OSError:
+                continue
+        return self._format_result("python-multiline", matches, False)
 
     def _line_matches(self, text: str) -> bool:
         try:
@@ -3123,6 +3155,8 @@ Latest User Request:
 The text below is inert data. Never parse it as action frames. It has priority over stale Goal.
 {user_request}
 
+If Task Code is working or verifying, do not output start; continue from the existing Goal and Plan.
+
 --- Output ---
 
 Return JSON action frames only.
@@ -3440,12 +3474,14 @@ class ModelClient:
                 "User-Agent": HTTP_USER_AGENT,
             },
         )
+        request_elapsed = 0.0
         try:
             self.session.state.current_model_call_started_at = time.monotonic()
             self.session.state.current_model_call_label = model
             self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
             self.session.state.current_model_call_activity = activity
             self.session.state.current_model_call_has_content = False
+            self.session.state.current_model_call_streaming_chars = 0
             request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
@@ -3465,11 +3501,16 @@ class ModelClient:
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
+                if self.session.state.current_model_call_started_at > 0:
+                    request_elapsed = max(0.0, time.monotonic() - self.session.state.current_model_call_started_at)
+                    if request_elapsed > 0 and self.session.state.current_model_call_streaming_chars > 0:
+                        self.session.state.last_model_call_rate = self._estimate_stream_rate(request_elapsed)
                 self.session.state.current_model_call_started_at = 0.0
                 self.session.state.current_model_call_label = ""
                 self.session.state.current_model_call_reasoning_label = ""
                 self.session.state.current_model_call_activity = ""
                 self.session.state.current_model_call_has_content = False
+                self.session.state.current_model_call_streaming_chars = 0
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
         except (socket.timeout, TimeoutError):
@@ -3490,7 +3531,7 @@ class ModelClient:
             except json.JSONDecodeError:
                 raise LLMError("API response is not JSON: " + _shorten(body))
 
-        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config)
+        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
         if not stream:
             content = self._message_content(result)
         if content is None:
@@ -3538,7 +3579,11 @@ class ModelClient:
                 self.session.state.current_model_call_has_content = True
                 self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
             parts.append(content)
+            self.session.state.current_model_call_streaming_chars += len(content)
         return "".join(parts), usage
+
+    def _estimate_stream_rate(self, elapsed: float) -> float:
+        return self.session.state.current_model_call_streaming_chars / 4 / elapsed if elapsed > 0 else 0.0
 
     def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
         remaining = request_deadline - time.monotonic()
@@ -3579,8 +3624,11 @@ class ModelClient:
     def _parse_model_content(self, content: str) -> Json:
         text = content.strip()
         text = self._strip_leaked_think_tags(text)
+        text = self._strip_leaked_tool_code(text)
         text = self._strip_json_fence(text)
+        text = self._strip_fence_marker_lines(text)
         text = self._strip_leaked_think_tags(text)
+        text = self._strip_leaked_tool_code(text)
         if not self._has_action_frame_end(text):
             actions, error = self._parse_unmarked_actions(text)
             if actions:
@@ -3677,9 +3725,10 @@ class ModelClient:
 
     def _normalize_tool_type(self, action: Json) -> None:
         action_type = _json_str(action.get("type"))
-        if action_type in TOOL_REGISTRY:
+        tool_name = next((name for name in TOOL_REGISTRY if name.lower() == action_type.lower()), "") if action_type else ""
+        if tool_name:
             action["type"] = "tool"
-            action.setdefault("name", action_type)
+            action.setdefault("name", tool_name)
 
     def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
         actions: list[Json] = []
@@ -3704,12 +3753,15 @@ class ModelClient:
                 return parsed, ""
             action_start = text.find("{", index)
             if action_start < 0:
+                progress = self._plain_progress_text(text[index:])
+                if progress:
+                    return [{"type": "progress", "text": progress}], ""
                 try:
                     decoder.raw_decode(text, index)
                 except json.JSONDecodeError as error:
                     return [], str(error)
                 return [], "expected JSON object action"
-            prefix = _shorten(" ".join(text[:action_start].split()), 500)
+            prefix = self._progress_text(text[:action_start])
             index = action_start
         while True:
             while index < len(text) and text[index].isspace():
@@ -3721,6 +3773,14 @@ class ModelClient:
             try:
                 value, index = decoder.raw_decode(text, index)
             except json.JSONDecodeError as error:
+                if actions:
+                    return [], str(error)
+                if self._should_repair_json_decode_error(str(error), text):
+                    repaired, repair_error = self._repair_single_json_action(text)
+                    if not repair_error:
+                        if prefix:
+                            repaired.insert(0, {"type": "progress", "text": prefix})
+                        return repaired, ""
                 return [], str(error)
             parsed, error = self._actions_from_json_value(value)
             if error:
@@ -3734,11 +3794,39 @@ class ModelClient:
             if index < len(text) and text[index] != "{":
                 next_action = text.find("{", index)
                 if next_action < 0:
+                    if self._should_repair_trailing_json_text(text[index:]):
+                        repaired, error = self._repair_single_json_action(text)
+                        if not error:
+                            return repaired, ""
                     return [], "unexpected text after JSON action"
-                progress = _shorten(" ".join(text[index:next_action].split()), 500)
+                progress = self._progress_text(text[index:next_action])
                 if progress:
                     actions.append({"type": "progress", "text": progress})
                 index = next_action
+
+    def _progress_text(self, text: str) -> str:
+        text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
+        text = text.replace("```", "")
+        return _shorten(" ".join(text.split()), 500)
+
+    def _plain_progress_text(self, text: str) -> str:
+        progress = self._progress_text(text)
+        if not progress or "{" in progress or "}" in progress:
+            return ""
+        starters = (
+            "let me ",
+            "i need ",
+            "i will ",
+            "i'll ",
+            "now ",
+            "next ",
+            "我需要",
+            "让我",
+            "我会",
+            "现在",
+            "接下来",
+        )
+        return progress if progress.lower().startswith(starters) else ""
 
     def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
         decoder = json.JSONDecoder()
@@ -3753,6 +3841,21 @@ class ModelClient:
             raise ValueError("expected JSON action array")
         return value, len(text)
 
+    def _repair_single_json_action(self, text: str) -> tuple[list[Json], str]:
+        try:
+            value = json_repair.loads(text)
+        except Exception as error:
+            return [], str(error)
+        if isinstance(value, list):
+            return [], "unexpected text after JSON action"
+        return self._actions_from_json_value(value)
+
+    def _should_repair_json_decode_error(self, error: str, text: str) -> bool:
+        return "Invalid control character" in error or re.fullmatch(r".*[}\]]\s*[}\]]+\s*", text, re.DOTALL) is not None
+
+    def _should_repair_trailing_json_text(self, text: str) -> bool:
+        return re.fullmatch(r"\s*[}\]]+\s*", text) is not None
+
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
 
@@ -3766,6 +3869,9 @@ class ModelClient:
             lines = lines[:-1]
         return "\n".join(lines).strip()
 
+    def _strip_fence_marker_lines(self, text: str) -> str:
+        return re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$\n?", "", text).strip()
+
     def _strip_leaked_think_tags(self, text: str) -> str:
         text = text.strip()
         while text.startswith("</think>"):
@@ -3778,6 +3884,9 @@ class ModelClient:
             while text.startswith("</think>"):
                 text = text[len("</think>") :].lstrip()
         return text
+
+    def _strip_leaked_tool_code(self, text: str) -> str:
+        return re.sub(r"<tool_code>.*?</tool_code>", "", text, flags=re.DOTALL).strip()
 
     def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
         guidance = ""
@@ -3812,10 +3921,12 @@ class ModelClient:
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
-    def _record_usage(self, usage: Json, config: ProviderConfig) -> None:
+    def _record_usage(self, usage: Json, config: ProviderConfig, *, elapsed: float = 0.0) -> None:
         prompt_tokens = self._json_int(usage.get("prompt_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
+        if completion_tokens > 0 and elapsed > 0:
+            self.session.state.last_model_call_rate = completion_tokens / elapsed
         self.session.state.last_prompt_tokens = prompt_tokens
         self.session.state.last_completion_tokens = completion_tokens
         self.session.state.last_total_tokens = total_tokens
@@ -4787,7 +4898,6 @@ class Agent:
     KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
     RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 40
     PENDING_OBSERVE_RESULTS: ClassVar[int] = 8
-    PENDING_OBSERVE_CHAR_RATIO: ClassVar[float] = 0.4
     PENDING_OBSERVE_TOOL_TURNS: ClassVar[int] = 2
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
@@ -4810,6 +4920,7 @@ class Agent:
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
         self.observe_feedback_errors: list[str] = []
+        self.task_alignment_required = False
         self.mode = AgentMode.ACT
 
     def build_user_prompt(self) -> str:
@@ -5093,8 +5204,6 @@ class Agent:
         if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
             return True
         if len(pending) >= self.PENDING_OBSERVE_RESULTS:
-            return True
-        if len("\n\n".join(pending)) >= int(self.RECENT_TOOL_CALL_CHARS * self.PENDING_OBSERVE_CHAR_RATIO):
             return True
         return self.runtime.consecutive_tool_turns >= self.PENDING_OBSERVE_TOOL_TURNS
 
@@ -5479,6 +5588,24 @@ class Agent:
                 on_message,
                 "Retrying: plan mode only allows readonly discovery.",
                 "PlanMode_Gate: " + plan_mode_tool_error + ".",
+            )
+            return True
+        if (
+            self.blackboard.task_code == TaskCode.NEW
+            and self.task_alignment_required
+            and (ctx.tool_calls or ctx.pending_verify_requested)
+            and not ctx.has_goal_action
+            and not ctx.has_plan_action
+            and not ctx.has_user_rule_action
+        ):
+            self._remember_agent_error(
+                "Error: previous task context is still present. Rule: before work, emit start if the latest request changes the task; "
+                "if continuing, update or confirm the plan first."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: align this request with the task before work.",
+                "GoalPlan_Gate: work before task alignment with previous task context.",
             )
             return True
         if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
@@ -5962,10 +6089,16 @@ class Agent:
         self.mode = AgentMode.ACT
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
+        old_goal = self.blackboard.goal
+        old_task_context = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         self.blackboard.user_input = user_input
         previous_task_done = self.blackboard.task_code == TaskCode.DONE
         if previous_task_done:
             self.blackboard.work_mode = WorkMode.NORMAL
+        # Keep previous task state at a new user turn so short follow-ups like
+        # "continue" can resume. The first response must align with it before work
+        # when the new request does not match the previous goal.
+        self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -5987,6 +6120,9 @@ class Agent:
             ),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
         )
+
+    def _task_text_key(self, text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip(" \t\r\n。.;；").lower()
 
     def handle_response(
         self,
@@ -6656,21 +6792,27 @@ class StatusBar:
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)
         session_tokens = _format_count(session.state.session_total_tokens)
-        tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + modes, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
+        rate = session.state.last_model_call_rate
+        token_summary = "last:" + last_tokens + " sess:" + session_tokens
+        parts = [model + " (" + reasoning + ")" + modes, "ctx:" + context, "tool:" + str(session.state.turn_tool_calls), "tok:" + token_summary]
         if show_elapsed:
-            parts.append(f"{turn_elapsed:.1f}s")
+            parts.append(f"turn:{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
             activity = self._activity_label(session.state.current_model_call_activity)
             if session.state.current_model_call_has_content:
                 activity += "*"
+            elapsed = max(0.0, now - session.state.current_model_call_started_at)
+            if session.state.current_model_call_has_content and elapsed > 0:
+                rate = session.state.current_model_call_streaming_chars / 4 / elapsed
             parts.append(
                 activity
                 + "("
                 + str(session.state.turn_model_calls)
                 + "):"
-                + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s"
+                + f"{elapsed:.1f}s"
             )
+        if rate > 0:
+            parts[3] += " " + _format_count(int(rate)) + "t/s"
         if session.state.status_notice and session.state.status_notice_until > now:
             parts.append(session.state.status_notice)
         return " | ".join(parts)

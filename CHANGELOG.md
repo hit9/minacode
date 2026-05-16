@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.32 - 2026-05-16
+
+### Changed
+- Removed the pending tool-result character threshold for observe mode; observe now triggers from failures, pending result count, or consecutive tool turns.
+
+## 0.3.31 - 2026-05-16
+
+### Changed
+- Require a new user turn with retained task context to align via `start`, `goal`, or `plan` before running more tools.
+
+### Fixed
+- Removed an unused pytest import from bash tool tests.
+
+## 0.3.30 - 2026-05-16
+
+### Changed
+- Status bar now shows compact token totals and model stream rate, including `turn:` duration labeling.
+- Stream rate uses live character-based estimation and completion-token usage when available.
+
+## 0.3.29 - 2026-05-16
+
+### Fixed
+- Ignored code-fence-only text when converting interleaved model output into progress actions.
+
 ## 0.3.28 - 2026-05-16
 
 ### Changed
