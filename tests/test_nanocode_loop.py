@@ -78,6 +78,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["url"] == ""
     assert config["provider"]["default"]["available_models"] == []
     assert "temperature" not in config["provider"]["default"]
+    assert config["provider"]["default"]["reasoning_payload"] == "reasoning"
     assert config["provider"]["default"]["timeout"] == 90
     assert config["provider"]["default"]["first_token_timeout"] == 60
     assert config["runtime"]["compact_at"] == 50
@@ -260,6 +261,20 @@ def test_agent_loop_renders_evidence_removal_as_weak_status(tmp_path):
     assert captured == ["  evidence: -tr.12 -tr.15"]
 
 
+def test_agent_loop_styles_compact_state_section_labels(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
+
+    segments = loop._compact_state_segments("Hypotheses + Known Updated\nHypotheses\n  1. h1\nKnown\n  1. fact")
+
+    assert ("bold ansicyan", "Hypotheses + Known Updated\n") in segments
+    assert ("ansicyan", "Hypotheses\n") in segments
+    assert ("ansicyan", "Known\n") in segments
+
+
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -331,13 +346,6 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
-
-    knowledge_completions = list(completer.get_completions(Document("/knowledge "), CompleteEvent(completion_requested=True)))
-    knowledge_u_completions = list(completer.get_completions(Document("/knowledge u"), CompleteEvent(completion_requested=True)))
-
-    assert [c.text for c in knowledge_completions] == ["update"]
-    assert [c.text for c in knowledge_u_completions] == ["update"]
-
 
 def test_agent_loop_command_completer_completes_provider_names():
     completer = nanocode.CommandCompleter(["qwen", "openai"])

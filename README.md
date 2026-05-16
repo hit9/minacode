@@ -84,7 +84,7 @@ USE AT YOUR OWN RISK.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/knowledge [update]`, `/compact`.
+- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
@@ -95,7 +95,7 @@ USE AT YOUR OWN RISK.
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `reasoning_payload` controls whether effort is sent as `reasoning`, `reasoning_effort`, or not sent.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.

@@ -149,6 +149,23 @@ class TaskCode(StrEnum):
     DONE = "done"
 
 
+class WorkMode(StrEnum):
+    NORMAL = "normal"
+    INVESTIGATE = "investigate"
+
+
+ALL_WORK_MODES = frozenset(WorkMode)
+
+
+class HypothesisStatus(StrEnum):
+    ACTIVE = "active"
+    RULED_OUT = "ruled_out"
+    CONFIRMED = "confirmed"
+
+
+ALL_HYPOTHESIS_STATUSES = frozenset(HypothesisStatus)
+
+
 @dataclass
 class PlanItem:
     text: str
@@ -203,12 +220,59 @@ class KnownItem:
         return cls(text=fact, source=_source_from_json(item) if item else ())
 
 
+@dataclass
+class Hypothesis:
+    text: str
+    status: HypothesisStatus = HypothesisStatus.ACTIVE
+    id: str = ""
+    source: tuple[str, ...] = ()
+    context: str = ""
+
+    def format(self, indent: str = "") -> str:
+        prefix = "[" + self.status + "] "
+        if self.id:
+            prefix += self.id + ": "
+        suffix = (" [" + ", ".join(self.source) + "]") if self.source else ""
+        lines = [prefix + self.text + suffix]
+        if self.context:
+            lines.append("  context: " + self.context)
+        return _format_lines(lines, indent)
+
+    @classmethod
+    def from_json(cls, value: JsonValue) -> "Hypothesis | None":
+        item = _json_dict(value)
+        text = _json_str(item.get("text")) or ""
+        if not text:
+            return None
+        status = _json_str(item.get("status")) or HypothesisStatus.ACTIVE
+        if status not in ALL_HYPOTHESIS_STATUSES:
+            status = HypothesisStatus.ACTIVE
+        return cls(
+            text=text,
+            status=HypothesisStatus(status),
+            id=_json_str(item.get("id")) or "",
+            source=_source_from_json(item),
+            context=_json_str(item.get("context")) or "",
+        )
+
+
 class VerificationStatus(StrEnum):
     IDLE = "idle"
     REQUIRED = "required"
     DONE = "done"
     FAILED = "failed"
     BLOCKED = "blocked"
+
+
+class VerificationBlocker(StrEnum):
+    NONE = ""
+    USER = "user"
+    ENVIRONMENT = "environment"
+    TOOL = "tool"
+    UNKNOWN = "unknown"
+
+
+ALL_VERIFICATION_BLOCKERS = frozenset(VerificationBlocker)
 
 
 @dataclass
@@ -219,6 +283,7 @@ class Verification:
     method: str = ""
     criteria: list[str] = field(default_factory=list)
     context: str = ""
+    blocker: VerificationBlocker = VerificationBlocker.NONE
 
     def format(self, indent: str = "") -> str:
         lines = ["status: " + self.status]
@@ -233,6 +298,8 @@ class Verification:
             lines.extend("- " + item for item in self.criteria)
         if self.context:
             lines.append("context: " + self.context)
+        if self.blocker:
+            lines.append("blocker: " + self.blocker)
         return _format_lines(lines, indent)
 
     def reset(self) -> None:
@@ -242,9 +309,10 @@ class Verification:
         self.method = ""
         self.criteria = []
         self.context = ""
+        self.blocker = VerificationBlocker.NONE
 
     def has_context(self) -> bool:
-        return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.status != VerificationStatus.IDLE)
+        return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.blocker or self.status != VerificationStatus.IDLE)
 
 
 @dataclass
@@ -312,9 +380,11 @@ class UserRules:
 class Blackboard:
     user_input: str = ""
     task_code: TaskCode = TaskCode.DONE
+    work_mode: WorkMode = WorkMode.NORMAL
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
+    hypotheses: list[Hypothesis] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
     memory_checkpoint_tool_result_counter: int = 0
     stable_knowledge: dict[str, list[str]] = field(default_factory=dict)
@@ -331,6 +401,7 @@ class ProviderConfig:
     temperature: float | None = None
     reasoning: bool | None = True
     reasoning_effort: str = "medium"
+    reasoning_payload: str = ""
     stream: bool | None = True
     timeout: int | None = 90
     first_token_timeout: int | None = 60
@@ -346,10 +417,18 @@ class ProviderConfig:
             temperature=Config.float(data, "temperature", defaults.temperature),
             reasoning=Config.bool(data, "reasoning", defaults.reasoning),
             reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
+            reasoning_payload=cls._reasoning_payload(data, defaults.reasoning_payload),
             stream=Config.bool(data, "stream", defaults.stream),
             timeout=Config.int(data, "timeout", defaults.timeout),
             first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
         )
+
+    @classmethod
+    def _reasoning_payload(cls, data: Json, default: str) -> str:
+        value = Config.str(data, "reasoning_payload", default)
+        if value not in ("", "reasoning", "reasoning_effort"):
+            raise ConfigError("config provider.reasoning_payload must be one of: reasoning, reasoning_effort, empty")
+        return value
 
 
 @dataclass
@@ -517,6 +596,9 @@ available_models = []
 # temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
+# Optional reasoning payload shape: "" disables request payload, "reasoning" sends
+# {"reasoning":{"effort":...}}, and "reasoning_effort" sends a top-level effort.
+reasoning_payload = "reasoning"
 stream = true
 timeout = 90
 # Stream mode only: retry if no first content token arrives within this many seconds.
@@ -1570,6 +1652,7 @@ class SearchTool(Tool):
         "Case-insensitive regex search before Read; use A|B|C for alternatives.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
+        "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
         "Use at most one glob= per Search. For multiple extensions, run multiple Search actions or search path=. without glob.",
         "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
         "Only options are path=, glob=, context=; escape regex symbols for literal text.",
@@ -1598,13 +1681,11 @@ class SearchTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) < 1 or len(args) > 20:
-            raise ToolCallArgError("requires 1 to 20 args: pattern[, path=path][, glob=pattern][, context=N]")
+        args = cls._join_pattern_args_with_explicit_path(args)
+        if len(args) < 1 or len(args) > 4:
+            raise ToolCallArgError("requires 1 to 4 args: pattern[, path=path][, glob=pattern][, context=N]")
         if any(str(arg).startswith("ignore_case") or str(arg).startswith("case_sensitive") for arg in args[1:]):
             raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
-        args = cls._normalize_multi_pattern_args(session, args)
-        if len(args) not in (1, 2, 3, 4):
-            raise ToolCallArgError("requires 1 to 4 args after normalization: pattern[, path=path][, glob=pattern][, context=N]")
         raw_pattern = str(args[0])
         if not raw_pattern:
             raise ToolCallArgError("pattern cannot be empty")
@@ -1616,16 +1697,16 @@ class SearchTool(Tool):
         target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
-        positional_path_seen = False
+        path_set = False
         for raw_option in args[1:]:
             option = str(raw_option)
             if option.startswith("ignore_case") or option.startswith("case_sensitive"):
                 raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
             if option.startswith("path="):
-                if positional_path_seen and target_path_arg != ".":
+                if path_set:
                     raise ToolCallArgError("path option cannot be combined with positional path")
                 target_path_arg = option.split("=", 1)[1] or "."
-                positional_path_seen = True
+                path_set = True
                 continue
             if option.startswith("context=") or option.isdigit():
                 try:
@@ -1633,25 +1714,27 @@ class SearchTool(Tool):
                 except ValueError:
                     raise ToolCallArgError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
                 continue
-            named_glob = option.startswith("glob=") or option.startswith("glob_pattern=")
             if option.startswith("glob=") or option.startswith("glob_pattern="):
+                if glob_pattern:
+                    raise ToolCallArgError("unexpected search option: " + option)
                 option = option.split("=", 1)[1]
                 if not option:
                     raise ToolCallArgError("glob option cannot be empty")
-            if glob_pattern:
-                raise ToolCallArgError("unexpected search option: " + option)
-            if positional_path_seen:
                 glob_pattern = option
                 continue
             if not option:
+                if path_set:
+                    raise ToolCallArgError("unexpected search option: " + option)
                 target_path_arg = "."
-                positional_path_seen = True
+                path_set = True
                 continue
-            if named_glob or cls._search_option_kind(option) == "glob":
+            if path_set and not glob_pattern:
                 glob_pattern = option
                 continue
+            if path_set:
+                raise ToolCallArgError("unexpected search option: " + option)
             target_path_arg = option
-            positional_path_seen = True
+            path_set = True
         try:
             re.compile(pattern)
         except re.error as error:
@@ -1666,53 +1749,12 @@ class SearchTool(Tool):
         )
 
     @classmethod
-    def _normalize_multi_pattern_args(cls, session: Session, args: list[str]) -> list[str]:
+    def _join_pattern_args_with_explicit_path(cls, args: list[str]) -> list[str]:
         values = [str(arg) for arg in args]
-        if len(values) < 3 or values[0].startswith("re:"):
+        path_index = next((index for index, value in enumerate(values[1:], start=1) if value.startswith("path=")), None)
+        if path_index is None or path_index <= 1:
             return values
-        positional, options, has_glob_option, has_path_option = cls._split_search_positionals_and_options(values)
-        if has_path_option and len(positional) >= 2:
-            return ["|".join(positional), "."] + options
-        if len(positional) < 3:
-            return values
-        if has_glob_option and len(positional) == 2:
-            return values
-        if any(not item for item in positional):
-            return values
-        final = positional[-1]
-        if os.path.exists(session.resolve_path(final)):
-            pattern_parts = positional[:-1]
-            target_path_arg = final
-        else:
-            pattern_parts = positional
-            target_path_arg = "."
-        return ["|".join(pattern_parts), target_path_arg] + options
-
-    @classmethod
-    def _split_search_positionals_and_options(cls, values: list[str]) -> tuple[list[str], list[str], bool, bool]:
-        option_start = len(values)
-        has_glob_option = False
-        has_path_option = False
-        while option_start > 1:
-            option_kind = cls._search_option_kind(values[option_start - 1])
-            if option_kind is None:
-                break
-            has_glob_option = has_glob_option or option_kind == "glob"
-            has_path_option = has_path_option or option_kind == "path"
-            option_start -= 1
-        return values[:option_start], values[option_start:], has_glob_option, has_path_option
-
-    @classmethod
-    def _search_option_kind(cls, value: str) -> str | None:
-        if value.startswith("path="):
-            return "path"
-        if value.startswith("context=") or value.isdigit():
-            return "context"
-        if value.startswith("glob=") or value.startswith("glob_pattern="):
-            return "glob"
-        if any(marker in value for marker in ("*", "?", "[", "]")):
-            return "glob"
-        return None
+        return ["|".join(values[:path_index]), *values[path_index:]]
 
     @classmethod
     def _parse_context_arg(cls, value: str) -> int:
@@ -2856,7 +2898,7 @@ OUTPUT CONTRACT:
 - No native/function tool calls.
 - Separate multiple actions with __END_ACTION__.
 - Tool actions must include name, intention, and args.
-- Valid action types are chat, start, goal, plan, known, stable_knowledge, progress, user_rule, tool, verify, forget.
+- Valid action types are chat, start, goal, plan, hypothesis, known, stable_knowledge, progress, user_rule, tool, verify, forget.
 - Tool names like Read, Search, Edit, Git, and Recall are values for tool.name, not action types.
 
 LANGUAGE:
@@ -2884,6 +2926,7 @@ CORE RULES:
 MEMORY:
 - Known = durable current-task facts.
 - Evidence = selected bounded raw tool results retained by observe mode.
+- Hypotheses = investigation directions with active, ruled_out, or confirmed status.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
 - Tool results are volatile. Observe mode selects useful Evidence after tool batches.
 - Read Evidence as support context; do not output evidence in main mode.
@@ -2892,6 +2935,12 @@ MEMORY:
 - Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
 - Do not use Known as a scratchpad; use it only for facts that still matter after current tool results disappear.
 - If a fact is already in Known, do not restate it.
+
+INVESTIGATE MODE:
+- On start, set work_mode=investigate when the task needs competing explanations, root-cause reasoning, or branch elimination.
+- Maintain hypotheses for plausible root-cause directions.
+- Mark a hypothesis ruled_out when evidence eliminates it; mark confirmed before final root-cause completion.
+- Use forget only after the conclusion is preserved in Hypotheses, Plan, Known, or Verify.
 
 TASK CODE:
 - Current Task Code is authoritative.
@@ -2915,6 +2964,7 @@ Choose the main next action type; include tightly related state updates only whe
 
 4. known / plan
    Use Known/Plan only when the task direction, target, or verification path changes.
+   In investigate mode, use hypothesis for competing directions instead of Known.
    During investigation, prefer continuing with useful readonly tools over recording intermediate observations.
    If the next tool step is clear, do not stop after only Plan/Known; output the needed state update and tool actions in the same turn.
 
@@ -2934,7 +2984,7 @@ Choose the main next action type; include tightly related state updates only whe
    If verification failed, fix only the reported issue.
 
 9. goal
-   Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked with clear context.
+   Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked by the user.
 
 ACTION FRONTIER:
 - Before output, derive the current action frontier from Goal, Plan, Known, Evidence, Recent Tool Calls, and Errors.
@@ -2952,7 +3002,7 @@ PLANNING:
 - Do not repeat completed steps.
 - At most one item may be doing.
 - Each plan item must be one concrete outcome, not a bundle of unrelated checks or actions.
-- Done/blocked context must be result evidence, not intent, plan, or expectation.
+- Done context must be result evidence; blocked context must name the concrete blocker, not intent, plan, or expectation.
 - Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
 - Plan item schema:
   {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short evidence"}
@@ -2986,14 +3036,15 @@ VERIFICATION:
   - method
   - criteria
   - status: passed|failed|blocked
+  - blocker: user|environment|tool|unknown (required when status=blocked)
   - context: concrete evidence or blocker
 - Before verification, check User Rules and include required checks.
 - If a verification command fails, record failed and repair before completion.
 - Do not use pending verification status.
-- Passed/blocked verification context must cite concrete recent tool evidence or a concrete blocker.
+- Passed verification context must cite concrete recent tool evidence; blocked verification must set blocker and context.
 - After Plan is complete and verification passed/blocked, finish by default.
 - If more tools are still needed, first reopen Plan with a todo/doing item and context explaining why completion is insufficient.
-- Complete with verify blocked only when context explicitly says user/manual confirmation is needed.
+- Complete with verify blocked only when blocker=user; otherwise continue, repair, or ask the user.
 
 TOOLS:
 - Prefer dedicated tools over Bash.
@@ -3014,13 +3065,15 @@ ACTIONS:
 
 {"type":"chat","text":"<reply>"}
 
-{"type":"start","goal":"<current task goal>","plan":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null}]}
+{"type":"start","goal":"<current task goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null}]}
 
 {"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
 
 {"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
 
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"active|ruled_out|confirmed","source":["tr.1"],"context":null|"<short evidence>"}]}
 
 {"type":"known","items":["<new durable current-task fact>"]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by evidence>"}]}
@@ -3035,7 +3088,7 @@ ACTIONS:
 
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
 
-{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","context":null|"<evidence or blocker>"}
+{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","blocker":null|"user|environment|tool|unknown","context":null|"<evidence or blocker>"}
 
 TOOL SPECS:
 { __tools__ }
@@ -3049,7 +3102,7 @@ OUTPUT PROTOCOL
 - No prose outside JSON.
 - No native/function tool calls.
 - Separate multiple actions with __END_ACTION__.
-- Allowed action types: start, goal, plan, known, stable_knowledge, progress, tool, verify.
+- Allowed action types: start, goal, plan, hypothesis, known, stable_knowledge, progress, tool, verify.
 - Tool names such as Read, Search, Git, Recall, LineCount, and ListDir belong in tool.name, never in action type.
 - Every action must be a single valid JSON object.
 - Do not invent fields when a listed action shape already fits.
@@ -3199,8 +3252,9 @@ Before completing, ensure the plan answers:
 - What uncertainty remains?
 
 CORE ACTION SHAPES
-{"type":"start","goal":"<planning goal>","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
+{"type":"start","goal":"<planning goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence or reason>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"active|ruled_out|confirmed","source":["tr.1"],"context":"<evidence or reason>"}]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable fact from discovery>"}]}
 {"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
 {"type":"progress","message":"<brief user-facing progress update>"}
@@ -3226,11 +3280,17 @@ User Rules:
 Task Code:
 {task_code}
 
+Work Mode:
+{work_mode}
+
 Goal:
 {goal}
 
 Plan:
 {plan}
+
+Hypotheses:
+{hypotheses}
 
 Verification:
 {verification_state}
@@ -3289,6 +3349,9 @@ Goal:
 Plan:
 {plan}
 
+Hypotheses:
+{hypotheses}
+
 Known:
 {known}
 
@@ -3338,6 +3401,7 @@ Must:
 Allowed actions:
 - evidence: record useful source-backed findings from latest results.
 - known: record current-task facts from latest results.
+- hypothesis: update investigation directions when latest results create, eliminate, or confirm a root-cause direction.
 - stable_knowledge: record rare reusable session codebase facts by category.
 - discard: explicitly discard latest raw results as noise.
 - forget: remove old Evidence from future context by source key.
@@ -3349,6 +3413,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
 {"type": "known", "items": [{"source": ["tr.1"], "text": "<new durable fact from latest results>"}]} __END_ACTION__
+{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "active|ruled_out|confirmed", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
 {"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
@@ -3444,8 +3509,10 @@ class PromptBuilder:
                 set(RESULT_KEY_PATTERN.findall(recent_tool_calls)) | self.tool_context.evidence_keys()
             ),
             task_code=self.blackboard.task_code,
+            work_mode=self.blackboard.work_mode,
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             verification_state=current.verification.format(),
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
@@ -3459,6 +3526,7 @@ class PromptBuilder:
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             evidence=self.tool_context.evidence_context() or "(empty)",
@@ -3557,8 +3625,10 @@ class ModelClient:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
         timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
-        if config.reasoning is not False and "openrouter.ai" in config.url:
+        if config.reasoning is not False and config.reasoning_payload == "reasoning":
             payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
+        if config.reasoning is not False and config.reasoning_payload == "reasoning_effort":
+            payload["reasoning_effort"] = config.reasoning_effort or "medium"
         self._write_debug_prompt(activity=activity, messages=messages)
         url = config.url.rstrip("/")
 
@@ -4223,8 +4293,6 @@ class ToolCallRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             raise ToolCallArgError("tool not found: " + call.name)
-        if tool_class is ToolResultTool:
-            return ToolResultTool(keys=call.args, results=self.session.state.tool_result_store)
         return tool_class.make(self.session, call.args)
 
 
@@ -4262,6 +4330,7 @@ class AgentStateUpdater:
         actions = self._actions(response)
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
+        before_hypotheses = [item.format() for item in self.blackboard.hypotheses]
         before_known = [KnownItem.format_item(item) for item in self.blackboard.known]
         before_user_rules = self.session.state.user_rules.format()
         before_extra_state = self._before_extra_state()
@@ -4269,13 +4338,16 @@ class AgentStateUpdater:
         plan_replaced = self._apply_plan(actions)
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
+        self._apply_work_mode(actions)
         self._apply_known(actions)
+        self._apply_hypotheses(actions)
         self._apply_user_rules(actions)
         self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
         self._apply_task_code(actions)
         self.latest_report = self._format_state_report(
             before_goal,
             before_plan,
+            before_hypotheses,
             before_known,
             before_user_rules,
             before_extra_state,
@@ -4289,6 +4361,7 @@ class AgentStateUpdater:
         self,
         before_goal: str,
         before_plan: list[str],
+        before_hypotheses: list[str],
         before_known: list[str],
         before_user_rules: str,
         before_extra_state: str,
@@ -4302,6 +4375,9 @@ class AgentStateUpdater:
         if plan != before_plan:
             self.latest_compact_plan_rows = self._compact_changed_plan_rows(before_plan, plan)
             self._append_state_section(lines, "  Plan", self._format_plan_rows())
+        hypotheses = [item.format() for item in current.hypotheses]
+        if hypotheses != before_hypotheses:
+            self._append_state_section(lines, "  Hypotheses", self._format_hypothesis_rows())
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
             self._append_state_section(lines, "  Known", self._format_known_rows())
@@ -4333,18 +4409,39 @@ class AgentStateUpdater:
             rows.append("    " + str(index) + ". " + self._compact(KnownItem.format_item(item)))
         return rows
 
+    def _format_hypothesis_rows(self) -> list[str]:
+        items = self.blackboard.hypotheses
+        if not items:
+            return ["    (empty)"]
+        offset = max(0, len(items) - self.DISPLAY_LIMIT)
+        rows = ["    ... " + str(offset) + " older"] if offset else []
+        for index, item in enumerate(items[offset:], start=offset + 1):
+            rows.append("    " + str(index) + ". " + self._compact(item.format()))
+        return rows
+
     def compact_report(self) -> str:
         sections = []
         if "  Plan" in self.latest_report and self.blackboard.plan:
             sections.append("Plan")
+        if "  Hypotheses" in self.latest_report and self.blackboard.hypotheses:
+            sections.append("Hypotheses")
         if "  Known" in self.latest_report and self.blackboard.known:
             sections.append("Known")
         if not sections:
             return ""
         lines = [" + ".join(sections) + " Updated"]
+        grouped = len(sections) > 1
         if "Plan" in sections:
+            if grouped:
+                lines.append("Plan")
             lines.extend(self.latest_compact_plan_rows or self._compact_plan_rows())
+        if "Hypotheses" in sections:
+            if grouped:
+                lines.append("Hypotheses")
+            lines.extend(self._compact_hypothesis_rows())
         if "Known" in sections:
+            if grouped:
+                lines.append("Known")
             lines.extend(self._compact_known_rows())
         return "\n".join(lines)
 
@@ -4378,6 +4475,13 @@ class AgentStateUpdater:
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
         rows.extend("  " + str(index) + ". " + self._compact(KnownItem.format_item(item), 100) for index, item in enumerate(items[offset:], start=offset + 1))
+        return rows
+
+    def _compact_hypothesis_rows(self) -> list[str]:
+        items = self.blackboard.hypotheses
+        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
+        rows = ["  ... " + str(offset) + " older"] if offset else []
+        rows.extend("  " + str(index) + ". " + self._compact(item.format(), 100) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
@@ -4477,6 +4581,41 @@ class AgentStateUpdater:
                 item = KnownItem.from_json(raw)
                 if item is not None:
                     self._add_known_item(item.text, item.source)
+
+    def _apply_hypotheses(self, actions: list[Json]) -> None:
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "hypothesis" else []
+            for raw in values:
+                item = Hypothesis.from_json(raw)
+                if item is not None:
+                    self._add_hypothesis(item)
+
+    def _apply_work_mode(self, actions: list[Json]) -> None:
+        for action in actions:
+            if _json_str(action.get("type")) != "start":
+                continue
+            mode = _json_str(action.get("work_mode")) or WorkMode.NORMAL
+            self.blackboard.work_mode = WorkMode(mode) if mode in ALL_WORK_MODES else WorkMode.NORMAL
+
+    def _add_hypothesis(self, item: Hypothesis) -> None:
+        for index, existing in enumerate(self.blackboard.hypotheses):
+            same_id = item.id and item.id == existing.id
+            same_text = self._hypothesis_key(item.text) == self._hypothesis_key(existing.text)
+            if not same_id and not same_text:
+                continue
+            source = tuple(dict.fromkeys((*existing.source, *item.source)))
+            self.blackboard.hypotheses[index] = Hypothesis(
+                text=item.text or existing.text,
+                status=item.status,
+                id=item.id or existing.id,
+                source=source,
+                context=item.context or existing.context,
+            )
+            return
+        self.blackboard.hypotheses.append(item)
+
+    def _hypothesis_key(self, text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip(" \t\r\n。.;；").lower()
 
     def _apply_user_rules(self, actions: list[Json]) -> None:
         changed = False
@@ -4616,6 +4755,7 @@ class AgentStateUpdater:
                 self._compact(verification.method) if verification.method else "",
                 "criteria: " + self._compact("; ".join(verification.criteria)) if verification.criteria else "",
                 "context: " + self._compact(verification.context) if verification.context else "",
+                "blocker: " + verification.blocker if verification.blocker else "",
             )
             if part
         )
@@ -4638,6 +4778,11 @@ class AgentStateUpdater:
             if status is not None:
                 self.blackboard.verification.status = status
                 self.blackboard.verification_required = False
+                if status != VerificationStatus.BLOCKED:
+                    self.blackboard.verification.blocker = VerificationBlocker.NONE
+            blocker = _json_str(data.get("blocker"))
+            if blocker is not None:
+                self.blackboard.verification.blocker = VerificationBlocker(blocker) if blocker in ALL_VERIFICATION_BLOCKERS else VerificationBlocker.NONE
             context = _json_str(data.get("context"))
             if context is not None:
                 self.blackboard.verification.context = context
@@ -4771,6 +4916,7 @@ class Agent:
         "start",
         "goal",
         "plan",
+        "hypothesis",
         "known",
         "stable_knowledge",
         "progress",
@@ -4780,7 +4926,7 @@ class Agent:
         "forget",
     }
     PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule", "forget"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"discard", "evidence", "known", "stable_knowledge", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"discard", "evidence", "hypothesis", "known", "stable_knowledge", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
@@ -5001,6 +5147,7 @@ class Agent:
         if self._start_changes_goal(actions):
             self.tool_context.evidence = []
             self.tool_context.pending_observe = []
+            self.blackboard.hypotheses = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_evidence(ToolResultContext.forget_result_keys_from_actions(actions))
         if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
@@ -5024,6 +5171,8 @@ class Agent:
         for action in actions:
             action_type = _json_str(action.get("type"))
             if action_type == "evidence" and _json_list(action.get("items")):
+                return True
+            if action_type == "hypothesis" and _json_list(action.get("items")):
                 return True
             if action_type == "known" and any(_memory_fact_from_json(raw) for raw in _json_list(action.get("items"))):
                 return True
@@ -5260,26 +5409,9 @@ class Agent:
     def _blocked_verification_completion_error(self) -> str:
         if not self.blackboard.goal_reached or self.blackboard.verification.status != VerificationStatus.BLOCKED:
             return ""
-        context = self.blackboard.verification.context.lower()
-        manual_markers = (
-            "manual",
-            "human",
-            "user confirmation",
-            "user confirm",
-            "confirm with user",
-            "visual",
-            "appearance",
-            "用户确认",
-            "用户人工",
-            "人工",
-            "手动",
-            "确认",
-            "外观",
-            "视觉",
-        )
-        if any(marker in context for marker in manual_markers):
+        if self.blackboard.verification.blocker == VerificationBlocker.USER:
             return ""
-        return "verify blocked context does not say user/manual confirmation is needed"
+        return "verify blocked requires blocker=user before completion"
 
     def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
         rendered = []
@@ -5300,6 +5432,32 @@ class Agent:
         if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions):
             return "status=pending is not supported in single-agent mode"
         return ""
+
+    def _investigate_completion_error(self) -> str:
+        if self.blackboard.work_mode != WorkMode.INVESTIGATE or not self.blackboard.goal_reached:
+            return ""
+        return "" if any(item.status == HypothesisStatus.CONFIRMED for item in self.blackboard.hypotheses) else "investigate completion requires a confirmed hypothesis"
+
+    def _forget_active_hypothesis_error(self, actions: list[Json]) -> str:
+        forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
+        if not forgotten:
+            return ""
+        released = set()
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "hypothesis" else []
+            for raw in values:
+                item = Hypothesis.from_json(raw)
+                if item is not None and item.status != HypothesisStatus.ACTIVE:
+                    released.update(key for key in item.source if key.startswith("tr."))
+        protected = {
+            key
+            for item in self.blackboard.hypotheses
+            if item.status == HypothesisStatus.ACTIVE
+            for key in item.source
+            if key.startswith("tr.")
+        }
+        conflict = sorted((forgotten & protected) - released)
+        return "active hypothesis source: " + ", ".join(conflict) if conflict else ""
 
     def _plan_shape_error(self, actions: list[Json]) -> str:
         plan = [PlanItem(text=item.text, status=item.status, id=item.id, context=item.context) for item in self.blackboard.plan]
@@ -5367,6 +5525,7 @@ class Agent:
         has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
         has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
         has_forget_action = any(_json_str(action.get("type")) == "forget" for action in actions)
+        has_hypothesis_action = any(_json_str(action.get("type")) == "hypothesis" for action in actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
         return ResponseContext(
             response=response,
@@ -5386,7 +5545,7 @@ class Agent:
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
             has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
-            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action or has_forget_action),
+            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action or has_forget_action or has_hypothesis_action),
         )
 
     def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
@@ -5415,6 +5574,19 @@ class Agent:
                 on_message,
                 "Retrying: forget only existing evidence keys.",
                 "Evidence_Gate: " + forget_error + ".",
+            )
+            return True
+        forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
+        if forget_hypothesis_error:
+            self._remember_agent_error(
+                "Error: forget would remove evidence for an active hypothesis: "
+                + forget_hypothesis_error
+                + ". Rule: mark the hypothesis ruled_out or confirmed before forgetting its source."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: update hypothesis before forgetting its evidence.",
+                "Evidence_Gate: " + forget_hypothesis_error + ".",
             )
             return True
         plan_shape_error = self._plan_shape_error(ctx.actions)
@@ -5701,6 +5873,19 @@ class Agent:
                 "Evidence_Gate: " + forget_error + ".",
             )
             return AgentRunResult()
+        forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
+        if forget_hypothesis_error:
+            self._remember_observe_error(
+                "Error: forget would remove evidence for an active hypothesis: "
+                + forget_hypothesis_error
+                + ". Rule: mark the hypothesis ruled_out or confirmed before forgetting its source."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: update hypothesis before forgetting its evidence.",
+                "Evidence_Gate: " + forget_hypothesis_error + ".",
+            )
+            return AgentRunResult()
         plan_shape_error = self._plan_shape_error(ctx.actions)
         if plan_shape_error:
             self._remember_observe_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
@@ -5826,12 +6011,22 @@ class Agent:
             self._remember_agent_error(
                 "Error: returned goal.complete=true with verify blocked, but "
                 + blocked_completion_error
-                + ". Rule: continue verification if possible; only complete blocked verification when user/manual confirmation is explicitly needed."
+                + ". Rule: continue verification if possible; only complete blocked verification when blocker=user."
             )
             self._report_gate(
                 on_message,
-                "Retrying: blocked verification needs user/manual confirmation context.",
+                "Retrying: blocked verification needs blocker=user.",
                 "Verification_Gate: " + blocked_completion_error + ".",
+            )
+            return AgentRunResult()
+        investigate_completion_error = self._investigate_completion_error()
+        if investigate_completion_error:
+            self.blackboard.goal_reached = False
+            self._remember_agent_error("Error: " + investigate_completion_error + ". Rule: mark a hypothesis confirmed before completing.")
+            self._report_gate(
+                on_message,
+                "Retrying: confirm a hypothesis before completing.",
+                "Completion_Gate: " + investigate_completion_error + ".",
             )
             return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:
@@ -5897,6 +6092,9 @@ class Agent:
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         self.blackboard.user_input = user_input
+        previous_task_done = self.blackboard.task_code == TaskCode.DONE
+        if previous_task_done:
+            self.blackboard.work_mode = WorkMode.NORMAL
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -6003,7 +6201,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
-    CommandSpec("/knowledge", "Show or update stable knowledge", "Info", "/knowledge [update]"),
+    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
@@ -6306,6 +6504,7 @@ class CommandDispatcher:
                 "provider.available_models: " + (", ".join(provider_config.available_models) or "(empty)"),
                 "provider.reasoning: " + self._format_bool(provider_config.reasoning),
                 "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
+                "provider.reasoning_payload: " + (provider_config.reasoning_payload or "(empty)"),
                 "provider.stream: " + self._format_bool(provider_config.stream),
                 "provider.temperature: " + self._format_optional(provider_config.temperature),
                 "provider.timeout: " + self._format_optional(provider_config.timeout),
@@ -6326,18 +6525,11 @@ class CommandDispatcher:
         )
 
     def _knowledge(self, args: str) -> str:
-        if args == "update":
-            question = "Please perform a knowledge update: record stable knowledge about this project."
-            if self.run_agent is not None:
-                self.run_agent(question)
-            else:
-                self.agent.run(question)
-            return ""
         if args:
-            return "Usage: /knowledge [update]"
+            return "Usage: /knowledge"
         knowledge = self.agent.blackboard.stable_knowledge
         if not any(knowledge.values()):
-            return "No stable knowledge. Use /knowledge update to record some."
+            return "No stable knowledge stored."
         lines = ["Stable knowledge:"]
         for category in STABLE_KNOWLEDGE_CATEGORIES:
             items = knowledge.get(category, [])
@@ -6961,7 +7153,7 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
-        if message.startswith(("Plan Updated", "Known Updated", "Plan + Known Updated")):
+        if message.startswith(("Plan Updated", "Known Updated", "Hypotheses Updated", "Plan + Known Updated", "Plan + Hypotheses Updated", "Hypotheses + Known Updated", "Plan + Hypotheses + Known Updated")):
             self._emit_segments(self._compact_state_segments(message), message)
             return
         if message.startswith("Evidence Updated:"):
@@ -7112,6 +7304,8 @@ class AgentLoop:
                 segments.extend([("ansibrightblack", line[:10]), ("bold ansigreen", line[10:] + "\n")])
             elif line.startswith("  Plan"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
+            elif line.startswith("  Hypotheses"):
+                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
             elif line.startswith("  Known"):
                 segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
             elif line.startswith("  Verify"):
@@ -7130,6 +7324,8 @@ class AgentLoop:
         for line in message.splitlines():
             if line.endswith("Updated"):
                 segments.append(("bold ansicyan", line + "\n"))
+            elif line in {"Plan", "Hypotheses", "Known"}:
+                segments.append(("ansicyan", line + "\n"))
             elif line.startswith("  ..."):
                 segments.append(("ansibrightblack", line + "\n"))
             else:
@@ -7285,15 +7481,6 @@ class CommandCompleter(Completer):
             for value in ("on", "off"):
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
-            return
-        if text.startswith("/knowledge "):
-            text = text[len("/knowledge ") :]
-            if not text:
-                yield Completion("update", start_position=0)
-            else:
-                for sub in ("update",):
-                    if sub.startswith(text):
-                        yield Completion(sub, start_position=-len(text))
             return
         if text.startswith("/") and " " not in text:
             for spec in COMMANDS:

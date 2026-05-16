@@ -303,8 +303,8 @@ def test_knowledge_command_shows_stable_knowledge(tmp_path):
     }
     result = dispatcher.dispatch("/knowledge")
 
-    assert empty_result.message == "No stable knowledge. Use /knowledge update to record some."
-    assert usage_result.message == "Usage: /knowledge [update]"
+    assert empty_result.message == "No stable knowledge stored."
+    assert usage_result.message == "Usage: /knowledge"
     assert result.status == CommandStatus.HANDLED
     assert result.message == "\n".join(
         [
@@ -315,19 +315,6 @@ def test_knowledge_command_shows_stable_knowledge(tmp_path):
             "- Project test command is make test.",
         ]
     )
-
-
-def test_knowledge_update_command_runs_agent(tmp_path):
-    prompts = []
-    agent = Agent(Session(cwd=str(tmp_path)))
-    dispatcher = CommandDispatcher(agent, run_agent=prompts.append)
-
-    result = dispatcher.dispatch("/knowledge update")
-
-    assert result.status == CommandStatus.HANDLED
-    assert result.message == ""
-    assert prompts == ["Please perform a knowledge update: record stable knowledge about this project."]
-
 
 def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(tmp_path):
     session = make_session(tmp_path, compact_at=2)

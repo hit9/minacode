@@ -40,6 +40,7 @@ def _session(
     first_token_timeout: int | None = None,
     temperature: float | None = None,
     reasoning_effort: str = "",
+    reasoning_payload: str = "",
     yolo: bool = False,
     plan_mode: bool = False,
     debug: bool = False,
@@ -55,6 +56,8 @@ def _session(
         provider["temperature"] = temperature
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
+    if reasoning_payload:
+        provider["reasoning_payload"] = reasoning_payload
     data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
     return Session(
         cwd=str(tmp_path),
@@ -330,6 +333,7 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     agent.blackboard.user_input = "fix bug"
     agent.blackboard.goal = "fix bug goal"
     agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect failing path", status=nanocode.PlanStatus.DOING)]
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="cache branch", status=nanocode.HypothesisStatus.ACTIVE, source=("tr.1",))]
     agent.blackboard.known = ["known fact"]
     agent.blackboard.stable_knowledge = {"workflow": ["use pytest"]}
     agent.tool_context.evidence = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected evidence']
@@ -344,6 +348,7 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     assert "always run tests" not in prompt
     assert "fix bug goal" in prompt
     assert "inspect failing path" in prompt
+    assert "cache branch" in prompt
     assert "known fact" in prompt
     assert "use pytest" in prompt
     assert "selected evidence" in prompt
@@ -443,6 +448,88 @@ def test_forget_removes_selected_evidence_but_keeps_known_source(tmp_path):
     assert "tr.2" in agent.tool_context.evidence_context()
     assert nanocode.KnownItem.source_of(agent.blackboard.known[0]) == ("tr.1",)
     assert messages == ["Evidence Removed: tr.1"]
+
+
+def test_hypothesis_action_updates_blackboard_and_report(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "debug branch")
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "hypothesis",
+                    "items": [
+                        {
+                            "id": "h1",
+                            "text": "admin filtering drops history events",
+                            "status": "active",
+                            "source": ["tr.1"],
+                            "context": "feed search",
+                        }
+                    ],
+                }
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.blackboard.hypotheses == [
+        nanocode.Hypothesis(
+            text="admin filtering drops history events",
+            status=nanocode.HypothesisStatus.ACTIVE,
+            id="h1",
+            source=("tr.1",),
+            context="feed search",
+        )
+    ]
+    assert messages == ["Hypotheses Updated\n  1. [active] h1: admin filtering drops history events [tr.1] context: feed search"]
+
+
+def test_forget_rejects_active_hypothesis_source(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "debug branch")
+    agent.tool_context.evidence = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(text="branch still possible", source=("tr.1",))]
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "branch ruled out"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert "tr.1" in agent.tool_context.evidence_context()
+    assert any("active hypothesis source: tr.1" in error for error in agent.agent_feedback_errors)
+    assert messages == ["Evidence_Gate: active hypothesis source: tr.1."]
+
+
+def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "debug branch")
+    agent.tool_context.evidence = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="branch still possible", source=("tr.1",))]
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "hypothesis",
+                    "items": [{"id": "h1", "text": "branch ruled out", "status": "ruled_out", "source": ["tr.1"]}],
+                },
+                {"type": "forget", "source": ["tr.1"], "reason": "branch ruled out"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.RULED_OUT
+    assert "tr.1" not in agent.tool_context.evidence_context()
+    assert messages == [
+        "Hypotheses Updated\n  1. [ruled_out] h1: branch ruled out [tr.1]",
+        "Evidence Removed: tr.1",
+    ]
 
 
 def test_forget_rejects_missing_or_unknown_evidence_key(tmp_path):
@@ -1072,7 +1159,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     assert messages[-1] == "done"
 
 
-def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
+def test_agent_request_uses_configured_reasoning_payload(tmp_path, monkeypatch):
     captured = {}
 
     class FakeResponse:
@@ -1090,12 +1177,54 @@ def test_agent_request_uses_openrouter_reasoning_payload(tmp_path, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
-    session = _session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="model", reasoning_effort="high", stream=False)
+    session = _session(
+        tmp_path,
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        reasoning_effort="high",
+        reasoning_payload="reasoning",
+        stream=False,
+    )
 
     Agent(session).request("system", "user")
 
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert "reasoning_effort" not in captured["payload"]
+
+
+def test_agent_request_uses_configured_reasoning_effort_payload(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    session = _session(
+        tmp_path,
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        reasoning_effort="high",
+        reasoning_payload="reasoning_effort",
+        stream=False,
+    )
+
+    Agent(session).request("system", "user")
+
+    assert captured["payload"]["reasoning_effort"] == "high"
+    assert "reasoning" not in captured["payload"]
 
 
 def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
@@ -1545,12 +1674,39 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
 
     report = agent.state_updater.compact_report()
     assert report.startswith("Plan + Known Updated")
+    assert "\nPlan\n" in report
     assert "  ... 1 older\n  2. [✓ done] Read config\n  3. [◔ doing] Update code\n  4. [○ todo] Run tests" in report
+    assert "\nKnown\n" in report
     assert "  ... 1 older\n  2. fact two\n  3. fact three\n  4. fact four" in report
-    assert "\nPlan\n" not in report
-    assert "\nKnown\n" not in report
     assert "inspect project" not in report
     assert "State Updated" not in report
+
+
+def test_main_agent_compact_report_labels_combined_hypotheses_and_known(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "hypothesis",
+                    "items": [{"id": "h1", "text": "admin selector starves history mode", "status": "active", "source": ["tr.2"]}],
+                },
+                {"type": "known", "items": [{"fact": "feed SSE request path is shared by admin and normal users", "source": ["tr.3"]}]},
+            ]
+        }
+    )
+
+    report = agent.state_updater.compact_report()
+    assert report == "\n".join(
+        [
+            "Hypotheses + Known Updated",
+            "Hypotheses",
+            "  1. [active] h1: admin selector starves history mode [tr.2]",
+            "Known",
+            "  1. [tr.3] feed SSE request path is shared by admin and normal users",
+        ]
+    )
 
 
 def test_main_agent_compact_plan_report_shows_changed_rows(tmp_path):
@@ -2146,7 +2302,7 @@ def test_agent_plan_mode_rejects_chat_instead_of_completing(tmp_path):
 
     assert result.done is False
     assert agent.session.state.conversation == []
-    assert messages == ["ActionType_Gate: use action types: goal, known, plan, progress, stable_knowledge, start, tool, verify; got: chat."]
+    assert messages == ["ActionType_Gate: use action types: goal, hypothesis, known, plan, progress, stable_knowledge, start, tool, verify; got: chat."]
 
 
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
@@ -2920,11 +3076,11 @@ def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path)
     )
 
     assert result.done is False
-    assert messages[-1] == "Verification_Gate: verify blocked context does not say user/manual confirmation is needed."
+    assert messages[-1] == "Verification_Gate: verify blocked requires blocker=user before completion."
     assert not agent.session.state.conversation
 
 
-def test_agent_allows_verify_blocked_completion_with_manual_context(tmp_path):
+def test_agent_allows_verify_blocked_completion_with_user_blocker(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "verify")
     messages = []
@@ -2935,7 +3091,8 @@ def test_agent_allows_verify_blocked_completion_with_manual_context(tmp_path):
                 {
                     "type": "verify",
                     "status": "blocked",
-                    "context": "needs user confirmation of the visual appearance",
+                    "blocker": "user",
+                    "context": "needs user confirmation",
                 },
                 {"type": "goal", "text": "verify", "complete": True, "message_for_complete": "done"},
             ]
@@ -2944,6 +3101,7 @@ def test_agent_allows_verify_blocked_completion_with_manual_context(tmp_path):
     )
 
     assert result.done is True
+    assert agent.blackboard.verification.blocker == nanocode.VerificationBlocker.USER
     assert messages[-1] == "done"
 
 
@@ -3010,6 +3168,77 @@ def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
     assert len(agent.model_client.user_prompts) == 2
     assert any("before Plan was complete" in error for error in agent.agent_feedback_errors)
     assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
+
+
+def test_investigate_completion_requires_root_cause_hypothesis(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "find bug")
+    agent.blackboard.work_mode = nanocode.WorkMode.INVESTIGATE
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                _verify_passed_action(),
+                {"type": "goal", "text": "find bug", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.blackboard.goal_reached is False
+    assert any("confirmed hypothesis" in error for error in agent.agent_feedback_errors)
+    assert messages[-1] == "Completion_Gate: investigate completion requires a confirmed hypothesis."
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {
+                    "type": "hypothesis",
+                    "items": [{"id": "h1", "text": "bad admin filter", "status": "confirmed", "source": ["tr.1"]}],
+                },
+                _verify_passed_action(),
+                {"type": "goal", "text": "find bug", "complete": True, "message_for_complete": "done"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is True
+    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.CONFIRMED
+    assert messages[-1] == "done"
+
+
+def test_start_declares_investigate_work_mode(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return {
+                "actions": [
+                    {
+                        "type": "start",
+                        "goal": "find bug",
+                        "work_mode": "investigate",
+                        "plan": [{"id": "p1", "text": "identify root cause", "status": "done", "context": "reasoned"}],
+                    },
+                    {"type": "hypothesis", "items": [{"id": "h1", "text": "bad filter", "status": "confirmed", "source": ["tr.1"]}]},
+                    _verify_passed_action(),
+                    {"type": "goal", "text": "find bug", "complete": True, "message_for_complete": "done"},
+                ]
+            }
+
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    result = agent.run("为什么 admin history 不出现")
+
+    assert result["actions"][-1]["message_for_complete"] == "done"
+    assert agent.blackboard.work_mode == nanocode.WorkMode.INVESTIGATE
+    assert "Work Mode:\nnormal" in agent.model_client.user_prompts[0]
 
 
 def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path):
