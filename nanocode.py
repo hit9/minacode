@@ -51,7 +51,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.32"
+__version__ = "0.3.33"
 HTTP_USER_AGENT = "nanocode/" + __version__
 
 
@@ -1168,6 +1168,17 @@ class ToolResultContext:
 
         self.recent = [compact(block) for block in self.recent]
         self.latest = [compact(block) for block in self.latest]
+
+    def act_blocks(self) -> list[str]:
+        # Pending observe blocks are unresolved raw results. Keep them visible to
+        # ACT until observe explicitly keeps/forgets them; otherwise an older
+        # pending result can degrade to a compact recent summary before observe
+        # gets a chance to select it.
+        latest_keys = set(self.blocks_by_key(self.latest))
+        pending = [block for block in self.pending_observe if self.result_key(block) not in latest_keys]
+        raw_keys = set(self.blocks_by_key(pending)) | latest_keys
+        recent = [block for block in self.recent if self.result_key(block) not in raw_keys]
+        return recent + pending + self.latest
 
     def visible_counter(self, mode: AgentMode) -> int:
         if mode == AgentMode.OBSERVE and self.pending_observe:
@@ -5037,7 +5048,7 @@ class Agent:
     def _format_recent_tool_call_context(self) -> str:
         if self.mode == AgentMode.OBSERVE and self.tool_context.pending_observe:
             return "\n\n".join(self.tool_context.pending_observe)
-        return "\n\n".join(self.tool_context.recent + self.tool_context.latest)
+        return "\n\n".join(self.tool_context.act_blocks())
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()

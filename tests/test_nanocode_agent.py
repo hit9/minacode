@@ -281,6 +281,28 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert "recall=tr.2" in _blocks_text(agent.tool_context.latest)
 
 
+def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.PENDING_OBSERVE_TOOL_TURNS = 99
+    agent.RECENT_TOOL_CALL_CHARS = 300
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert "recall=tr.1" in _blocks_text(agent.tool_context.recent)
+    context = agent._format_recent_tool_call_context()
+    assert "one.txt" in context
+    assert "one\n" in context
+    assert "two.txt" in context
+    assert "two\n" in context
+    assert "recall=tr.1" not in context
+    assert context.count("key=tr.1") == 1
+    assert context.count("key=tr.2") == 1
+
+
 def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
