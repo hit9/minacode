@@ -3691,8 +3691,8 @@ class ModelClient:
         if index < len(text) and text[index] != "{":
             if text[index] == "[":
                 try:
-                    value, index = decoder.raw_decode(text, index)
-                except json.JSONDecodeError as error:
+                    value, index = self._decode_json_array_text(text, index)
+                except (json.JSONDecodeError, ValueError) as error:
                     return [], str(error)
                 parsed, error = self._actions_from_json_value(value)
                 if error:
@@ -3739,6 +3739,19 @@ class ModelClient:
                 if progress:
                     actions.append({"type": "progress", "text": progress})
                 index = next_action
+
+    def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
+        decoder = json.JSONDecoder()
+        value, end = decoder.raw_decode(text, index)
+        cursor = end
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            return value, cursor
+        value = json_repair.loads(text[index:])
+        if not isinstance(value, list):
+            raise ValueError("expected JSON action array")
+        return value, len(text)
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None

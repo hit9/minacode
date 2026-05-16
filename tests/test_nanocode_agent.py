@@ -1386,6 +1386,20 @@ def test_agent_request_accepts_unmarked_json_action_array(tmp_path):
     assert response == {"actions": [{"type": "tool", "name": "Read", "args": ["nanocode.py", "0,1"], "intention": "read source"}]}
 
 
+def test_agent_request_repairs_fenced_json_action_array_with_extra_brace(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '```json\n[{"type":"tool","name":"ListDir","intention":"Find the demo directory in the project root.","args":[""]}]}\n```'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "tool", "name": "ListDir", "intention": "Find the demo directory in the project root.", "args": [""]}
+        ]
+    }
+
+
 def test_agent_request_accepts_empty_actions_response_object(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
