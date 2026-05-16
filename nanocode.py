@@ -51,7 +51,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.25"
+__version__ = "0.3.26"
 
 
 JsonValue: TypeAlias = Any
@@ -611,9 +611,10 @@ model = ""
 # temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
-# Optional reasoning payload shape: "" disables request payload, "reasoning" sends
-# {"reasoning":{"effort":...}}, and "reasoning_effort" sends a top-level effort.
-reasoning_payload = "reasoning"
+# Optional reasoning payload shape. Leave unset for broad OpenAI-compatible
+# compatibility. Set only for providers that require it, for example OpenRouter:
+# reasoning_payload = "reasoning" sends {"reasoning":{"effort":...}}
+# reasoning_payload = "reasoning_effort" sends a top-level effort.
 stream = true
 timeout = 180
 # Stream mode only: retry if no first content token arrives within this many seconds.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.26 - 2026-05-16
+
+### Changed
+- Generated configs now leave `reasoning_payload` unset by default for broader provider compatibility.
+- Documented when to enable `reasoning_payload`, including OpenRouter-style reasoning providers.
+
 ## 0.3.25 - 2026-05-16
 
 ### Changed
