@@ -89,7 +89,7 @@ USE AT YOUR OWN RISK.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-`/model` groups configured `available_models` first, then any extra models automatically discovered from the provider. In selectors, use `j`/`k` or arrow keys to move, `/keyword` to filter choices, Enter to select, and Esc to step back or cancel. `/model <model_name>` sets a model directly. Changing model also opens a reasoning effort selector: choose `off` to disable reasoning, or choose an effort to enable reasoning and set it. Use `/reason` to change reasoning without changing model.
+Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
 
 ## Configuration
 
