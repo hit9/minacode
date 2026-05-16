@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from nanocode import Agent, Session, ToolCallError, ToolResultItem, ToolResultTool
@@ -21,7 +23,6 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
     assert result.startswith("RecallToolResult:")
     assert "- result_key: tr.1" in result
     assert "description: Read sample." in result
-    assert "log: .nanocode/sessions/test-session/tool_results/sample.log" in result
     assert "size: 2 lines, 13 chars" in result
     assert "<content>" in result
     assert "line 1\nline 2" in result
@@ -40,13 +41,35 @@ def test_tool_result_tool_bounds_large_recall_result(tmp_path):
     assert "original_chars:" in result
 
 
-def test_tool_result_item_details_hint_avoids_recall_call_syntax():
+def test_tool_result_tool_reads_internal_log_ranges_without_exposing_path(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    log_path = tmp_path / ".nanocode" / "sessions" / "test-session" / "tool_results" / "sample.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
+    session.state.tool_result_store["tr.1"] = ToolResultItem(
+        description="Read sample.",
+        value="[tool result excerpt]\nzero\nthree",
+        log_path=os.path.relpath(log_path, tmp_path),
+        original_lines=4,
+        original_chars=19,
+        excerpted=True,
+    )
+
+    result = ToolResultTool.make(session, ["tr.1", "1,3"]).call()
+
+    assert "one\ntwo" in result
+    assert "zero\nthree" not in result
+    assert "sample.log" not in result
+    assert "log:" not in result
+
+
+def test_tool_result_item_format_hides_log_path():
     item = ToolResultItem(description="Read sample.", value="line", excerpted=True)
 
-    result = item.format(result_key="tr.1", details_hint=True)
+    result = item.format(result_key="tr.1")
 
-    assert "details: full=tr.1 if excerpt insufficient" in result
-    assert "Recall(" not in result
+    assert "log:" not in result
+    assert "details:" not in result
 
 
 def test_known_action_accepts_string_items(tmp_path):

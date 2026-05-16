@@ -256,21 +256,17 @@ class ToolResultItem:
     original_chars: int = 0
     excerpted: bool = False
 
-    def format(self, indent: str = "", *, result_key: str = "", include_content: bool = False, details_hint: bool = False) -> str:
+    def format(self, indent: str = "", *, result_key: str = "", include_content: bool = False, content: str | None = None) -> str:
         lines = ["- result_key: " + result_key] if result_key else ["- result"]
         lines.append("  description: " + self.description)
-        if self.log_path:
-            lines.append("  log: " + self.log_path)
         if self.original_lines or self.original_chars:
             lines.append("  size: " + str(self.original_lines) + " lines, " + str(self.original_chars) + " chars")
         if self.excerpted:
             lines.append("  excerpted: true")
-            if details_hint and result_key:
-                lines.append("  details: full=" + result_key + " if excerpt insufficient")
         if include_content:
             lines.append("  content:")
             lines.append("  <content>")
-            lines.append(self.value)
+            lines.append(self.value if content is None else content)
             lines.append("  </content>")
         return _format_lines(lines, indent)
 
@@ -941,7 +937,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     header = (
         "[tool result excerpt]\n"
         "excerpted: true\n"
-        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + ("\nfull_log: " + log_path if log_path else "") + "\n"
+        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + "\n"
     )
     labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
     body_budget = max_chars - len(header) - sum(len(label) for label in labels)
@@ -2770,23 +2766,29 @@ class PlanModeGitTool(GitTool):
 class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by one or more tr.* keys; use Read(log_path, range) for full log details.",)
-    SIGNATURE: ClassVar[str] = "Recall(key...) -> RecallToolResult<content>"
+    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by tr.* key; pass optional 0-based line ranges to read exact slices from the stored full log.",)
+    SIGNATURE: ClassVar[str] = "Recall(key...[, range_token...]) -> RecallToolResult<content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["tr.1"]',
         'Batch keys: ["tr.1", "tr.2"]',
+        'Full-log slice: ["tr.1", "0,120"]',
     )
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
 
     keys: list[str]
     results: dict[str, ToolResultItem]
+    cwd: str = ""
+    ranges: list[tuple[int, int]] = field(default_factory=list)
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        return cls(keys=args, results=session.state.tool_result_store)
+        keys = [arg for arg in args if not re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
+        ranges = [ReadTool._parse_line_range_token(arg) for arg in args if re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
+        return cls(keys=keys, results=session.state.tool_result_store, cwd=session.cwd, ranges=ranges)
 
     def preview(self) -> str:
-        return "Recall " + ", ".join(self.keys)
+        ranges = [str(start) + ":" + str(end) for start, end in self.ranges]
+        return "Recall " + ", ".join([*self.keys, *ranges])
 
     def call(self) -> str:
         if not self.keys:
@@ -2797,9 +2799,28 @@ class ToolResultTool(Tool):
                 lines.append("- result_key: " + key)
                 lines.append("  status: missing")
                 continue
-            lines.append(self.results[key].format(result_key=key, include_content=True))
+            item = self.results[key]
+            lines.append(item.format(result_key=key, include_content=True, content=self._content(item)))
         result = "\n".join(lines)
         return _bound_tool_output(result).value
+
+    def _content(self, item: ToolResultItem) -> str:
+        if not self.ranges:
+            return item.value
+        path = item.log_path
+        if path and not os.path.isabs(path):
+            path = os.path.join(self.cwd, path)
+        try:
+            with open(path, encoding="utf-8") as file:
+                lines = file.read().splitlines()
+        except OSError:
+            return item.value
+        chunks = []
+        for start, end in self.ranges:
+            if end <= start:
+                continue
+            chunks.append("\n".join(lines[start:end]))
+        return "\n".join(chunks)
 
 
 ############################
@@ -3483,7 +3504,7 @@ class PromptBuilder:
         for key, item in self.session.state.tool_result_store.items():
             if key in hidden_keys:
                 continue
-            lines.append(item.format(result_key=key, details_hint=True))
+            lines.append(item.format(result_key=key))
         if not lines:
             return "(empty; current result keys are already shown in Recent Tool Calls)"
         return "\n".join(lines)
@@ -4235,6 +4256,7 @@ class AgentStateUpdater:
         self.blackboard = blackboard
         self.latest_report = ""
         self.latest_compact_plan_rows: list[str] = []
+        self.changed = False
 
     def apply(self, response: Json) -> None:
         actions = self._actions(response)
@@ -4258,6 +4280,7 @@ class AgentStateUpdater:
             before_user_rules,
             before_extra_state,
         )
+        self.changed = bool(self.latest_report)
 
     def _actions(self, response: Json) -> list[Json]:
         return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
@@ -5546,6 +5569,43 @@ class Agent:
                 on_message,
                 "Retrying: verification is done but goal is not complete.",
                 "Completion_Gate: verification is done but goal.complete is not true.",
+            )
+            return AgentRunResult()
+        if not ctx.tool_calls and not ctx.plan_was_complete and self._plan_is_complete() and not self.blackboard.goal_reached:
+            if not self._verification_is_settled():
+                self._remember_agent_error(
+                    'Error: Plan is complete but verification is not recorded. Rule: return verify status="passed"|"blocked" with context, or reopen Plan before more work.'
+                )
+                self._report_gate(
+                    on_message,
+                    "Retrying: record verification before completing.",
+                    "Completion_Gate: completed plan requires verification status.",
+                )
+                return AgentRunResult()
+            self._remember_agent_error(
+                "Error: Plan and verification are complete but goal.complete is not true. Rule: finish with goal.complete=true and message_for_complete."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: finish the completed task.",
+                "Completion_Gate: completed plan and verification require goal.complete=true.",
+            )
+            return AgentRunResult()
+        if (
+            ctx.state_or_work_requested
+            and not ctx.tool_calls
+            and not ctx.pending_verify_requested
+            and not ctx.progress_messages
+            and not ctx.completion_message
+            and not self.state_updater.changed
+        ):
+            self._remember_agent_error(
+                "Error: response made no effective state change. Rule: do not repeat state updates; continue with tool, verify, or goal."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: continue with tool, verify, or goal.",
+                "Progress_Gate: state-only response made no effective change.",
             )
             return AgentRunResult()
         return None

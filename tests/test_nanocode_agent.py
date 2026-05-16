@@ -205,7 +205,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert "excerpted: true" in item.value
     assert "original_lines: " + str(item.original_lines) in item.value
     assert "original_chars: " + str(item.original_chars) in item.value
-    assert "full_log: " + item.log_path in item.value
+    assert "full_log:" not in item.value
     assert "H" * 50 in item.value
     assert "M" * 50 in item.value
     assert "T" * 50 in item.value
@@ -2733,6 +2733,86 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
     assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: verification is done but goal is not complete." not in messages
     assert agent.blackboard.verification.status == VerificationStatus.DONE
+
+
+def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {
+                    "actions": [
+                        {
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "run tests", "status": "done", "context": "tests passed"}],
+                        }
+                    ]
+                },
+                {
+                    "actions": [
+                        {
+                            "type": "verify",
+                            "kind": "test",
+                            "method": "pytest",
+                            "criteria": ["tests pass"],
+                            "status": "passed",
+                            "context": "tests passed",
+                        }
+                    ]
+                },
+                {"actions": _final_actions("change file")},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "change file"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="run tests", status=nanocode.PlanStatus.DOING)]
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("change file")
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(agent.model_client.user_prompts) == 3
+    assert any("Plan is complete but verification is not recorded" in error for error in agent.agent_feedback_errors)
+    assert agent.blackboard.verification.status == VerificationStatus.DONE
+
+
+def test_agent_run_retries_noop_state_only_response(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "doing"}]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "read result is not needed"}]},
+                {
+                    "actions": [
+                        {"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "sample inspected"}]},
+                        {"type": "verify", "status": "passed", "context": "no code change"},
+                        {"type": "goal", "text": "inspect sample", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "inspect sample"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect sample", status=nanocode.PlanStatus.DOING)]
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("inspect sample")
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert any("response made no effective state change" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_blocks_tool_after_completed_plan_and_verification(tmp_path):
