@@ -2774,7 +2774,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.blackboard.goal = "answer"
+    agent.blackboard.goal = "read samples"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     agent.blackboard.known = ["keep this fact"]
     agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
@@ -2936,6 +2936,50 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
     assert agent.blackboard.goal == "new goal"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(session.state.tool_result_store) == 1
+
+
+def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {
+                    "actions": [
+                        {
+                            "type": "start",
+                            "goal": "run lint",
+                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                        },
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                    ]
+                },
+                {
+                    "actions": [
+                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                        *_final_actions("run lint"),
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "review dirty changes"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="Review dirty changes", status=nanocode.PlanStatus.DONE, context="reviewed")]
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("ruff", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert agent.blackboard.goal == "run lint"
+    assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
+    assert "previous task context is still present" in " ".join(agent.agent_feedback_errors)
+    assert not any("repeated start is invalid" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
@@ -3169,7 +3213,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -3411,7 +3455,7 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
     messages = []
 
@@ -3682,7 +3726,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    _seed_plan(agent)
+    _seed_plan(agent, "answer")
     agent.model_client = FakeModelClient()
 
     messages = []

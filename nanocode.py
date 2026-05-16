@@ -4921,6 +4921,7 @@ class Agent:
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
         self.observe_feedback_errors: list[str] = []
+        self.task_alignment_required = False
         self.mode = AgentMode.ACT
 
     def build_user_prompt(self) -> str:
@@ -5592,6 +5593,24 @@ class Agent:
                 "PlanMode_Gate: " + plan_mode_tool_error + ".",
             )
             return True
+        if (
+            self.blackboard.task_code == TaskCode.NEW
+            and self.task_alignment_required
+            and (ctx.tool_calls or ctx.pending_verify_requested)
+            and not ctx.has_goal_action
+            and not ctx.has_plan_action
+            and not ctx.has_user_rule_action
+        ):
+            self._remember_agent_error(
+                "Error: previous task context is still present. Rule: before work, emit start if the latest request changes the task; "
+                "if continuing, update or confirm the plan first."
+            )
+            self._report_gate(
+                on_message,
+                "Retrying: align this request with the task before work.",
+                "GoalPlan_Gate: work before task alignment with previous task context.",
+            )
+            return True
         if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
             self._remember_agent_error(
                 "Error: repeated start is invalid after the current task is active. Rule: follow Current Task Code and continue with plan/tool/verify/goal."
@@ -6073,10 +6092,16 @@ class Agent:
         self.mode = AgentMode.ACT
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
+        old_goal = self.blackboard.goal
+        old_task_context = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         self.blackboard.user_input = user_input
         previous_task_done = self.blackboard.task_code == TaskCode.DONE
         if previous_task_done:
             self.blackboard.work_mode = WorkMode.NORMAL
+        # Keep previous task state at a new user turn so short follow-ups like
+        # "continue" can resume. The first response must align with it before work
+        # when the new request does not match the previous goal.
+        self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -6098,6 +6123,9 @@ class Agent:
             ),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
         )
+
+    def _task_text_key(self, text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip(" \t\r\n。.;；").lower()
 
     def handle_response(
         self,
