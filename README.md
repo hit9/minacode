@@ -78,7 +78,7 @@ USE AT YOUR OWN RISK.
 ## Tools
 
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
-- Edit: `Edit`, `ReplaceRange`, `ApplyPatch`.
+- Edit: `Edit`, `ReplaceRange`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 

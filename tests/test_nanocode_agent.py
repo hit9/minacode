@@ -2107,8 +2107,8 @@ def test_agent_execute_tool_calls_skips_after_first_failure(tmp_path):
 
     latest = agent.execute_tool_calls(
         [
-            {"name": "ApplyPatch", "intention": "stale patch", "args": ["sample.txt", "@@ -1,1 +1,1 @@\n-missing\n+new\n"]},
-            {"name": "Bash", "intention": "should not run after failed edit", "args": ["touch should-not-exist"]},
+            {"name": "Bash", "intention": "fail first", "args": ["exit 7"]},
+            {"name": "Bash", "intention": "should not run after failure", "args": ["touch should-not-exist"]},
         ],
         confirm=lambda call, tool: True,
     )
@@ -2118,8 +2118,8 @@ def test_agent_execute_tool_calls_skips_after_first_failure(tmp_path):
     assert list(session.state.tool_result_store) == ["tr.1"]
     assert agent.tool_runner.skipped_after_failure_count == 1
     assert agent.tool_runner.skipped_after_failure_key == "tr.1"
-    assert "hunk context did not match" in latest
-    assert "Bash" not in latest
+    assert "exit_code: 7" in latest
+    assert "should not run after failure" not in latest
     assert "Skipped" not in latest
     assert not (tmp_path / "should-not-exist").exists()
 
@@ -2189,13 +2189,11 @@ def test_tool_arg_error_does_not_force_observe(tmp_path):
 
 
 def test_non_arg_tool_failure_forces_observe(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     agent.execute_tool_calls(
-        [{"name": "ApplyPatch", "intention": "stale patch", "args": ["sample.txt", "@@ -1,1 +1,1 @@\n-missing\n+new\n"]}],
+        [{"name": "Bash", "intention": "fail command", "args": ["exit 7"]}],
         confirm=lambda call, tool: True,
     )
 

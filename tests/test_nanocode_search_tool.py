@@ -40,7 +40,7 @@ def test_search_tool_rejects_many_plain_args_without_explicit_path(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="requires 1 to 4 args"):
-        SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ApplyPatch"])
+        SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ReplaceRange"])
 
 
 def test_search_tool_treats_second_plain_arg_as_path(tmp_path):

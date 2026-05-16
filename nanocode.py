@@ -1978,7 +1978,7 @@ class EditTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace/delete one unique exact literal text block in an existing file; best for tiny unambiguous edits, not regex.",
-        "If the target text is repeated or line ranges are clearer, use ReplaceRange; for multi-hunk or structural edits, use ApplyPatch.",
+        "If the target text is repeated, structural, or line ranges are clearer, use ReplaceRange.",
     )
     SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
@@ -2059,7 +2059,7 @@ class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Create a new UTF-8 file with short initial content; parent directory must exist and target file must not exist.",
-        "For substantial files, create a small skeleton first, then use ApplyPatch in focused chunks instead of embedding large content in JSON.",
+        "For substantial new files, create only a small skeleton first, then grow it with focused ReplaceRange edits.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
@@ -2119,6 +2119,7 @@ class ReplaceRangeTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one small Read-backed [start,end) range in an existing file; best when exact line range is known or target text is not unique.",
+        "Use several focused ReplaceRange calls for separate structural edits instead of one large rewrite.",
         "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
@@ -2335,259 +2336,6 @@ class ReplaceRangeTool(Tool):
         if content and has_following_line and not content.endswith("\n"):
             lines[-1] += "\n"
         return lines
-
-
-@dataclass
-class ApplyPatchTool(Tool):
-    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Apply one focused unified diff to one file; best for structural or multiple-hunk edits.",
-        "For local replacements or insertions after Read, prefer ReplaceRange; use ApplyPatch when a diff is clearer than a range edit.",
-    )
-    SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
-
-    filepath: str = ""
-    unified_diff: str = ""
-    cwd: str = ""
-
-    @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
-        return [cls.cli_token(args[0])] if args else []
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 2:
-            raise ToolCallArgError("requires exactly 2 args: filepath, unified_diff")
-        unified_diff = str(args[1])
-        if not unified_diff.strip():
-            raise ToolCallArgError("unified_diff cannot be empty")
-        return cls(filepath=session.resolve_path(args[0]), unified_diff=unified_diff, cwd=session.cwd)
-
-    def preview(self) -> str:
-        label = f"ApplyPatch({self.filepath}, unified_diff=...)"
-        try:
-            original = self._read_existing_or_empty()
-            unified_diff, allow_compatible = self._normalized_unified_diff()
-            new_content, _ = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
-        except (OSError, ToolCallError) as error:
-            return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
-
-    def call(self) -> str:
-        created = not os.path.exists(self.filepath)
-        original = self._read_existing_or_empty()
-        unified_diff, allow_compatible = self._normalized_unified_diff()
-        new_content, hunks = self._apply_unified_diff(original, unified_diff, allow_compatible=allow_compatible)
-        if new_content == original:
-            raise ToolCallError("patch produced no changes")
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        lines = [
-            "<ApplyPatchToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-            f"* hunks: {hunks}",
-        ]
-        if created:
-            lines.append("* created: true")
-        lines.append("</ApplyPatchToolResult>")
-        return "\n".join(lines)
-
-    def _read_existing_or_empty(self) -> str:
-        try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                return f.read()
-        except FileNotFoundError:
-            return ""
-
-    def _normalized_unified_diff(self) -> tuple[str, bool]:
-        lines = self.unified_diff.splitlines(keepends=True)
-        begin_index = next((index for index, line in enumerate(lines) if line.strip()), -1)
-        if begin_index < 0 or lines[begin_index].strip() != "*** Begin Patch":
-            return self.unified_diff, False
-        return self._codex_update_patch_to_unified_diff(lines, begin_index), True
-
-    def _codex_update_patch_to_unified_diff(self, lines: list[str], begin_index: int) -> str:
-        update_seen = False
-        end_seen = False
-        hunk_lines: list[str] = []
-        for line in lines[begin_index + 1 :]:
-            stripped = line.strip()
-            if stripped == "*** End Patch":
-                end_seen = True
-                break
-            if stripped.startswith("*** Update File: "):
-                if update_seen:
-                    raise ToolCallError("ApplyPatch supports one file per call")
-                self._validate_codex_patch_path(stripped[len("*** Update File: ") :].strip())
-                update_seen = True
-                continue
-            if stripped.startswith("*** Add File: "):
-                if update_seen:
-                    raise ToolCallError("ApplyPatch supports one file per call")
-                if os.path.exists(self.filepath):
-                    raise ToolCallError("Add File patch target already exists")
-                self._validate_codex_patch_path(stripped[len("*** Add File: ") :].strip())
-                update_seen = True
-                hunk_lines.append("@@ -0,0 +1,1 @@\n")
-                continue
-            if stripped.startswith(("*** Add File:", "*** Delete File:", "*** Move to:")):
-                raise ToolCallError("ApplyPatch supports only Update File or Add File patches")
-            if stripped == "*** End of File":
-                continue
-            if not update_seen:
-                if stripped:
-                    raise ToolCallError("invalid ApplyPatch wrapper")
-                continue
-            hunk_lines.append(self._normalize_codex_hunk_header(line))
-        if not update_seen:
-            raise ToolCallArgError("ApplyPatch wrapper missing Update File")
-        if not end_seen:
-            raise ToolCallArgError("ApplyPatch wrapper missing End Patch")
-        return "".join(hunk_lines)
-
-    def _validate_codex_patch_path(self, patch_path: str) -> None:
-        if not patch_path:
-            raise ToolCallArgError("ApplyPatch wrapper missing Update File path")
-        candidate = patch_path if os.path.isabs(patch_path) else os.path.join(self.cwd, patch_path)
-        if os.path.realpath(candidate) != os.path.realpath(self.filepath):
-            raise ToolCallArgError("patch target does not match filepath: " + patch_path)
-
-    @staticmethod
-    def _normalize_codex_hunk_header(line: str) -> str:
-        body = line.rstrip("\r\n")
-        newline = line[len(body) :]
-        if body.startswith("@@ ") and not body.startswith("@@ -"):
-            return "@@" + newline
-        return line
-
-    @staticmethod
-    def _apply_unified_diff(content: str, unified_diff: str, *, allow_compatible: bool = False) -> tuple[str, int]:
-        lines = content.splitlines(keepends=True)
-        patch_lines = unified_diff.splitlines(keepends=True)
-        offset = 0
-        hunks = 0
-        hunk_number = 0
-        i = 0
-
-        while i < len(patch_lines):
-            header = patch_lines[i].strip()
-            if header == "@@":
-                old_start = 0
-                fuzzy = True
-            elif header.startswith("@@ "):
-                fuzzy = False
-                parts = header.split()
-                if len(parts) < 3 or not parts[1].startswith("-"):
-                    raise ToolCallArgError("invalid hunk header")
-                try:
-                    old_start = int(parts[1][1:].split(",", 1)[0])
-                except ValueError:
-                    raise ToolCallArgError("invalid hunk header")
-            elif header.startswith("@@"):
-                raise ToolCallArgError("invalid hunk header")
-            else:
-                i += 1
-                continue
-            hunk_number += 1
-
-            i += 1
-            hunk_lines = []
-            while i < len(patch_lines):
-                next_header = patch_lines[i].strip()
-                if next_header == "@@" or next_header.startswith("@@ "):
-                    break
-                if next_header.startswith("@@"):
-                    raise ToolCallArgError("invalid hunk header")
-                hunk_lines.append(patch_lines[i])
-                i += 1
-
-            expected = []
-            replacement = []
-            for raw in hunk_lines:
-                if raw.startswith("\\"):
-                    continue
-                if not raw:
-                    continue
-                marker = raw[0]
-                text = raw[1:]
-                if marker == " ":
-                    expected.append(text)
-                    replacement.append(text)
-                elif marker == "-":
-                    expected.append(text)
-                elif marker == "+":
-                    replacement.append(text)
-                else:
-                    raise ToolCallArgError("invalid hunk line")
-
-            target = -1 if fuzzy else max(old_start - 1, 0) + offset
-            try:
-                index = ApplyPatchTool._find_hunk_position(lines, expected, target)
-            except ToolCallError as error:
-                if allow_compatible and str(error) == "hunk context did not match":
-                    applied_index = ApplyPatchTool._find_already_applied_hunk(lines, replacement)
-                    if applied_index is not None:
-                        hunks += 1
-                        continue
-                raise ToolCallError(ApplyPatchTool._format_hunk_error(hunk_number, str(error), expected, replacement))
-            lines[index : index + len(expected)] = replacement
-            offset += len(replacement) - len(expected)
-            hunks += 1
-
-        if hunks == 0:
-            raise ToolCallArgError("patch has no hunks")
-        return "".join(lines), hunks
-
-    @staticmethod
-    def _find_already_applied_hunk(lines: list[str], replacement: list[str]) -> int | None:
-        if not replacement:
-            return None
-        matches = []
-        last_start = len(lines) - len(replacement)
-        for position in range(max(0, last_start + 1)):
-            if lines[position : position + len(replacement)] == replacement:
-                matches.append(position)
-                if len(matches) > 1:
-                    return None
-        return matches[0] if len(matches) == 1 else None
-
-    @staticmethod
-    def _format_hunk_error(hunk_number: int, reason: str, expected: list[str], replacement: list[str]) -> str:
-        lines = ["hunk " + str(hunk_number) + ": " + reason]
-        if expected:
-            lines.append("expected:")
-            lines.extend(ApplyPatchTool._format_hunk_lines("-", expected))
-        if replacement:
-            lines.append("replacement:")
-            lines.extend(ApplyPatchTool._format_hunk_lines("+", replacement))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_hunk_lines(marker: str, lines: list[str]) -> list[str]:
-        return [marker + _shorten(line.rstrip("\n"), 160) for line in lines[:6]]
-
-    @staticmethod
-    def _find_hunk_position(lines: list[str], expected: list[str], target: int) -> int:
-        if not expected:
-            if target < 0 or target > len(lines):
-                raise ToolCallError("hunk insertion target outside file")
-            return target
-        if 0 <= target <= len(lines) and lines[target : target + len(expected)] == expected:
-            return target
-        matches = []
-        last_start = len(lines) - len(expected)
-        for position in range(max(0, last_start + 1)):
-            if lines[position : position + len(expected)] == expected:
-                matches.append(position)
-                if len(matches) > 1:
-                    break
-        if not matches:
-            raise ToolCallError("hunk context did not match")
-        if len(matches) > 1:
-            raise ToolCallError("hunk context matched multiple locations; add more context")
-        return matches[0]
 
 
 @dataclass
@@ -2901,7 +2649,6 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     CreateFileTool.name(): CreateFileTool,
     EditTool.name(): EditTool,
     ReplaceRangeTool.name(): ReplaceRangeTool,
-    ApplyPatchTool.name(): ApplyPatchTool,
     BashTool.name(): BashTool,
     GitTool.name(): GitTool,
     ToolResultTool.name(): ToolResultTool,
@@ -3037,13 +2784,13 @@ PLANNING:
 EDITING:
 - Edit incrementally.
 - One edit = one small coherent change.
-- New file: create minimal skeleton first.
-- Do not put large file contents in one CreateFile JSON action; use CreateFile for a short skeleton, then ApplyPatch focused chunks.
+- New file: create only a minimal skeleton first.
+- Do not put large file contents in one CreateFile JSON action; grow new files with focused ReplaceRange chunks after the skeleton exists.
 - Existing file: inspect exact target before editing.
 - Never rewrite a large file in one action.
 - Use Edit when changing one tiny exact literal block that appears once.
-- Use ReplaceRange after Read when replacing a known continuous range, especially if text is repeated.
-- Prefer ReplaceRange for local insertions/replacements after Read; use ApplyPatch for structural edits or multiple focused hunks.
+- Use ReplaceRange after Read for known continuous ranges, repeated text, insertions, and structural edits split into focused ranges.
+- Use multiple ReplaceRange calls when separate ranges are already known and independent.
 - Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
@@ -5290,8 +5037,8 @@ class Agent:
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
             rule = "Rule: use the tool signature exactly."
-            if execution.call.name in {EditTool.name(), ReplaceRangeTool.name(), ApplyPatchTool.name()}:
-                rule = "Rule: use ReplaceRange for read ranges, ApplyPatch for structural edits, and the exact tool signature."
+            if execution.call.name in {EditTool.name(), ReplaceRangeTool.name()}:
+                rule = "Rule: use ReplaceRange for read ranges or repeated text, and use the exact tool signature."
             self._remember_agent_error(
                 "Error: tool call args invalid: "
                 + _format_tool_call_summary(execution.call)
