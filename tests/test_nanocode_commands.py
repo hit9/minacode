@@ -248,6 +248,35 @@ def test_model_command_can_disable_reasoning(tmp_path):
     assert session.config.provider.reasoning is False
 
 
+def test_model_command_reasoning_back_cancels_direct_model_change(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: nanocode.SELECTION_BACK)
+
+    result = dispatcher.dispatch("/model new-model")
+
+    assert result.message == "No change"
+    assert session.config.provider.model == "old"
+
+
+def test_model_command_reasoning_back_returns_to_model_selection(tmp_path):
+    session = make_session(tmp_path, model="old")
+    session.config.provider.available_models = ("first", "second")
+    selected_models = iter(["first", "second"])
+    selected_reasoning = iter([nanocode.SELECTION_BACK, "high"])
+    dispatcher = CommandDispatcher(
+        Agent(session),
+        select_model=lambda models, current: next(selected_models),
+        select_reasoning=lambda: next(selected_reasoning),
+    )
+
+    result = dispatcher.dispatch("/model")
+
+    assert result.message == "Set provider.model = second\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert session.config.provider.model == "second"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "high"
+
+
 def test_reason_command_selects_reasoning_effort(tmp_path):
     session = make_session(tmp_path, model="old")
     dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "high")
@@ -259,6 +288,17 @@ def test_reason_command_selects_reasoning_effort(tmp_path):
     assert usage_result.message == "Usage: /reason"
     assert session.config.provider.reasoning is True
     assert session.config.provider.reasoning_effort == "high"
+
+
+def test_reason_command_back_keeps_current_reasoning(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: nanocode.SELECTION_BACK)
+
+    result = dispatcher.dispatch("/reason")
+
+    assert result.message == "No change"
+    assert session.config.provider.reasoning is True
+    assert session.config.provider.reasoning_effort == "medium"
 
 
 def test_model_command_selects_from_available_models(tmp_path):

@@ -548,22 +548,14 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     captured = {}
 
     class FakeApplication:
-        erase_when_done = False
-
-        def run(self):
-            captured["erase_when_done"] = self.erase_when_done
-            return "low"
-
-    class FakeChoiceInput:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-        @staticmethod
-        def _create_application():
-            return FakeApplication()
+        def run(self):
+            return "low"
 
     monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
-    monkeypatch.setattr(nanocode, "ChoiceInput", FakeChoiceInput)
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
 
     loop = AgentLoop(FakeAgent(), prompt_session=object())
 
@@ -573,13 +565,42 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     assert attrs.color == "0f4c5c"
     assert attrs.bold is True
     assert captured["erase_when_done"] is True
-    assert captured["default"] == "medium"
+    assert captured["layout"] is not None
+    assert loop._choice_initial_index(("off", "minimal", "low", "medium"), "medium") == 3
 
     loop._select_model(("old", "new"), "new")
-    assert captured["default"] == "new"
+    assert loop._choice_initial_index(("old", "new"), "new") == 1
 
     loop._select_provider(("one", "two"), "two")
-    assert captured["default"] == "two"
+    assert loop._choice_initial_index(("one", "two"), "two") == 1
+
+
+def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    inputs = iter(["/remote", "1"])
+    outputs = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=outputs.append)
+
+    selected = loop._select_choice(
+        "Model",
+        (
+            nanocode.CommandDispatcher.MODEL_CONFIGURED_LABEL,
+            "old",
+            "manual",
+            nanocode.CommandDispatcher.MODEL_DISCOVERED_LABEL,
+            "remote-a",
+            "remote-b",
+        ),
+        disabled=set(nanocode.CommandDispatcher.MODEL_LABELS),
+    )
+
+    assert selected == "remote-a"
+    assert "Model /remote:" in outputs[-1]
+    assert "remote-a" in outputs[-1]
+    assert "old" not in outputs[-1]
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.25 - 2026-05-16
+
+### Changed
+- Added Vim-style selector search with `/keyword`, `j`/`k` navigation, and step-back Esc behavior.
+- Made `/model` reasoning selection transactional so Esc returns to model selection instead of applying a partial change.
+
 ## 0.3.24 - 2026-05-16
 
 ### Changed

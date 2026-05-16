@@ -35,16 +35,23 @@ from enum import StrEnum
 from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
 
 import json_repair
+from prompt_toolkit.application import Application
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.24"
+__version__ = "0.3.25"
 
 
 JsonValue: TypeAlias = Any
@@ -1225,9 +1232,17 @@ ToolLiveDoneCallback: TypeAlias = Callable[[ParsedToolCall], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
-ReasoningSelector: TypeAlias = Callable[[], str | None]
-ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
-ProviderSelector: TypeAlias = Callable[[tuple[str, ...], str], str | None]
+
+
+class SelectionBack:
+    pass
+
+
+SELECTION_BACK = SelectionBack()
+SelectionResult: TypeAlias = str | None | SelectionBack
+ReasoningSelector: TypeAlias = Callable[[], SelectionResult]
+ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], SelectionResult]
+ProviderSelector: TypeAlias = Callable[[tuple[str, ...], str], SelectionResult]
 
 
 class SessionLock:
@@ -6188,9 +6203,18 @@ class CommandDispatcher:
             provider = self.agent.session.config.provider
             models = self._model_choices(provider)
             if models and self.select_model is not None:
-                selected = self.select_model(models, provider.model)
-                if selected and selected not in self.MODEL_LABELS:
-                    return self._set_model(selected)
+                while True:
+                    selected = self.select_model(models, provider.model)
+                    if selected is SELECTION_BACK:
+                        return "No change"
+                    if not isinstance(selected, str):
+                        return self._set("provider.model")
+                    if selected in self.MODEL_LABELS:
+                        continue
+                    result = self._set_model(selected, back_to_model=True)
+                    if result is SELECTION_BACK:
+                        continue
+                    return result
             return self._set("provider.model")
         if " " in model:
             return "Usage: /model [model_name]"
@@ -6228,13 +6252,13 @@ class CommandDispatcher:
                 ids.append(model_id)
         return tuple(dict.fromkeys(sorted(ids)))
 
-    def _set_model(self, model: str) -> str:
-        self.agent.session.config.provider.model = model
+    def _set_model(self, model: str, *, back_to_model: bool = False) -> str | SelectionBack:
         message = "Set provider.model = " + model
-        if self.select_reasoning is None:
-            return message
-        choice = self.select_reasoning()
-        return message + (("\n" + self._apply_reasoning_choice(choice)) if choice else "")
+        choice = self.select_reasoning() if self.select_reasoning is not None else None
+        if choice is SELECTION_BACK:
+            return SELECTION_BACK if back_to_model else "No change"
+        self.agent.session.config.provider.model = model
+        return message + (("\n" + self._apply_reasoning_choice(choice)) if isinstance(choice, str) else "")
 
     def _reason(self, args: str) -> str:
         if args.strip():
@@ -6242,7 +6266,7 @@ class CommandDispatcher:
         if self.select_reasoning is None:
             return "Reasoning selection not available"
         choice = self.select_reasoning()
-        if choice is None:
+        if not isinstance(choice, str):
             return "No change"
         return self._apply_reasoning_choice(choice)
 
@@ -6264,7 +6288,7 @@ class CommandDispatcher:
         if not name:
             if self.select_provider is not None:
                 selected = self.select_provider(tuple(config.providers), config.active_provider)
-                if selected is not None:
+                if isinstance(selected, str):
                     return self._set_provider(selected)
             return "provider: " + config.active_provider + "\nproviders: " + providers
         if " " in name:
@@ -6743,6 +6767,7 @@ class AgentLoop:
         return Style.from_dict(
             {
                 "selected-option": "bold #0f4c5c bg:#e6f2f3",
+                "choice-hint": "#6b7280",
                 "bottom-toolbar": "noreverse bg:default fg:default",
                 "bottom-toolbar.text": "noreverse bg:default fg:default",
             }
@@ -6756,6 +6781,203 @@ class AgentLoop:
             show_elapsed=False,
         )
 
+    def _visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
+        if not query:
+            return choices
+        needle = query.lower()
+        visible: list[str] = []
+        header = ""
+        section: list[str] = []
+
+        def flush() -> None:
+            if section:
+                if header:
+                    visible.append(header)
+                visible.extend(section)
+            section.clear()
+
+        for choice in choices:
+            if choice in disabled:
+                flush()
+                header = choice
+                continue
+            text = (choice + " " + labels.get(choice, choice)).lower()
+            if needle in text:
+                section.append(choice)
+        flush()
+        return tuple(visible)
+
+    def _choice_enabled(self, choices: tuple[str, ...], disabled: set[str]) -> tuple[str, ...]:
+        return tuple(choice for choice in choices if choice not in disabled)
+
+    def _choice_initial_index(self, enabled_choices: tuple[str, ...], current: str) -> int:
+        return enabled_choices.index(current) if current in enabled_choices else 0
+
+    def _run_choice_application(
+        self,
+        title: str,
+        choices: tuple[str, ...],
+        labels: dict[str, str],
+        current: str,
+        disabled: set[str],
+    ) -> SelectionResult:
+        state: dict[str, str | int | bool] = {"query": "", "selected": 0, "searching": False}
+
+        def enabled() -> tuple[str, ...]:
+            return self._choice_enabled(self._visible_choices(choices, labels, disabled, str(state["query"])), disabled)
+
+        def clamp_selection() -> None:
+            options = enabled()
+            if not options:
+                state["selected"] = 0
+                return
+            state["selected"] = min(max(int(state["selected"]), 0), len(options) - 1)
+
+        def choice_fragments():
+            query = str(state["query"])
+            visible = self._visible_choices(choices, labels, disabled, query)
+            options = self._choice_enabled(visible, disabled)
+            clamp_selection()
+            suffix = (" /" + query) if query else ""
+            if query and not state["searching"]:
+                suffix += " (filtered)"
+            fragments = [
+                ("", title + suffix + "\n"),
+                ("class:choice-hint", "  j/k move, / search, Esc back/cancel\n"),
+            ]
+            if query and not options:
+                fragments.append(("", "  No matches\n"))
+                return fragments[:-1]
+            number = 1
+            for choice in visible:
+                label = labels.get(choice, choice)
+                if choice in disabled:
+                    fragments.append(("", "  " + label + "\n"))
+                    continue
+                selected = number - 1 == int(state["selected"])
+                style = "class:selected-option" if selected else ""
+                if selected:
+                    fragments.append(("[SetCursorPosition]", ""))
+                fragments.append((style, ("> " if selected else "  ") + f"{number:2d}. " + label + "\n"))
+                number += 1
+            if state["searching"]:
+                fragments.append(("", "/" + query))
+            return fragments[:-1] if fragments and fragments[-1][1] == "\n" else fragments
+
+        bindings = KeyBindings()
+        searching = Condition(lambda: bool(state["searching"]))
+
+        @bindings.add("up", eager=True)
+        def _up(event):
+            state["selected"] = max(0, int(state["selected"]) - 1)
+            event.app.invalidate()
+
+        @bindings.add("k", filter=~searching, eager=True)
+        def _k(event):
+            state["selected"] = max(0, int(state["selected"]) - 1)
+            event.app.invalidate()
+
+        @bindings.add("down", eager=True)
+        def _down(event):
+            options = enabled()
+            if options:
+                state["selected"] = min(len(options) - 1, int(state["selected"]) + 1)
+            event.app.invalidate()
+
+        @bindings.add("j", filter=~searching, eager=True)
+        def _j(event):
+            options = enabled()
+            if options:
+                state["selected"] = min(len(options) - 1, int(state["selected"]) + 1)
+            event.app.invalidate()
+
+        @bindings.add("/", eager=True)
+        def _search(event):
+            state["query"] = ""
+            state["searching"] = True
+            state["selected"] = 0
+            event.app.invalidate()
+
+        @bindings.add("backspace", filter=searching, eager=True)
+        @bindings.add("c-h", filter=searching, eager=True)
+        def _backspace(event):
+            state["query"] = str(state["query"])[:-1]
+            state["selected"] = 0
+            event.app.invalidate()
+
+        @bindings.add("escape", eager=True)
+        def _cancel_search(event):
+            if state["searching"]:
+                state["searching"] = False
+                event.app.invalidate()
+                return
+            if state["query"]:
+                state["query"] = ""
+                state["selected"] = 0
+                event.app.invalidate()
+                return
+            event.app.exit(result=SELECTION_BACK)
+
+        @bindings.add("enter", eager=True)
+        def _accept(event):
+            options = enabled()
+            if options:
+                event.app.exit(result=options[int(state["selected"])])
+
+        for index in range(1, 10):
+
+            @bindings.add(str(index), eager=True)
+            def _select_number(event, number: int = index):
+                if state["searching"]:
+                    state["query"] = str(state["query"]) + event.data
+                    state["selected"] = 0
+                    event.app.invalidate()
+                    return
+                options = enabled()
+                if number <= len(options):
+                    state["selected"] = number - 1
+                    event.app.invalidate()
+
+        @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
+        def _interrupt(event):
+            event.app.exit(exception=KeyboardInterrupt())
+
+        @bindings.add(Keys.Any, filter=searching)
+        def _type(event):
+            if not event.data or event.data in "\r\n":
+                return
+            state["query"] = str(state["query"]) + event.data
+            state["selected"] = 0
+            event.app.invalidate()
+
+        options = enabled()
+        state["selected"] = self._choice_initial_index(options, current) if options else 0
+        content = FormattedTextControl(choice_fragments, focusable=True)
+        choice_window = Window(content, dont_extend_height=True)
+        app = Application(
+            layout=Layout(
+                HSplit(
+                    [
+                        choice_window,
+                        Window(
+                            FormattedTextControl(lambda: self._choice_bottom_toolbar(), style="class:bottom-toolbar.text"),
+                            style="class:bottom-toolbar",
+                            dont_extend_height=True,
+                            height=Dimension(min=1),
+                        ),
+                    ]
+                ),
+                focused_element=choice_window,
+            ),
+            style=self._choice_style(),
+            full_screen=False,
+            key_bindings=bindings,
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
+        )
+        return app.run()
+
     def _select_choice(
         self,
         title: str,
@@ -6763,37 +6985,37 @@ class AgentLoop:
         labels: dict[str, str] | None = None,
         current: str = "",
         disabled: set[str] | None = None,
-    ) -> str | None:
+    ) -> SelectionResult:
         labels = labels or {}
         disabled = disabled or set()
-        default = current if current in choices else None
-        if self.prompt_session is not None and sys.stdin.isatty():
-            try:
-                choice = ChoiceInput(
-                    message=title,
-                    options=[(value, labels.get(value, value)) for value in choices],
-                    default=default,
-                    style=self._choice_style(),
-                    bottom_toolbar=self._choice_bottom_toolbar,
-                )
-                application = choice._create_application()
-                application.erase_when_done = True
-                return application.run()
-            except (EOFError, KeyboardInterrupt):
-                self._emit("Cancelled")
-                return None
-        enabled_choices = tuple(choice for choice in choices if choice not in disabled)
-        lines = []
-        index = 1
-        for choice in choices:
-            if choice in disabled:
-                lines.append("  " + labels.get(choice, choice))
-                continue
-            lines.append("  " + str(index) + ". " + labels.get(choice, choice))
-            index += 1
-        self._emit(title + ":\n" + "\n".join(lines))
-        prompt = "Select " + title.lower() + " [1-" + str(len(enabled_choices)) + "] "
+        query = ""
         while True:
+            visible_choices = self._visible_choices(choices, labels, disabled, query)
+            enabled_choices = tuple(choice for choice in visible_choices if choice not in disabled)
+            if query and not enabled_choices:
+                self._emit("No matches: " + query)
+                query = ""
+                continue
+            if self.prompt_session is not None and sys.stdin.isatty():
+                try:
+                    selected = self._run_choice_application(title, choices, labels, current, disabled)
+                except (EOFError, KeyboardInterrupt):
+                    self._emit("Cancelled")
+                    return None
+                if not isinstance(selected, str) or selected not in disabled:
+                    return selected
+                continue
+
+            lines = []
+            index = 1
+            for choice in visible_choices:
+                if choice in disabled:
+                    lines.append("  " + labels.get(choice, choice))
+                    continue
+                lines.append("  " + str(index) + ". " + labels.get(choice, choice))
+                index += 1
+            self._emit(title + ((" /" + query) if query else "") + ":\n" + "\n".join(lines))
+            prompt = "Select " + title.lower() + " [1-" + str(len(enabled_choices)) + "] or /keyword "
             try:
                 raw_choice = self._read_input(prompt).strip()
                 choice = raw_choice.lower()
@@ -6802,6 +7024,9 @@ class AgentLoop:
                 return None
             if not choice:
                 return None
+            if raw_choice.startswith("/"):
+                query = raw_choice[1:].strip()
+                continue
             if choice.isdigit() and 1 <= int(choice) <= len(enabled_choices):
                 return enabled_choices[int(choice) - 1]
             if raw_choice in enabled_choices:
@@ -6810,21 +7035,21 @@ class AgentLoop:
                 return choice
             self._emit("Invalid selection: " + raw_choice)
 
-    def _select_model(self, models: tuple[str, ...], current_model: str) -> str | None:
+    def _select_model(self, models: tuple[str, ...], current_model: str) -> SelectionResult:
         labels = {current_model: current_model + " (current)"} if current_model in models else {}
         for label in CommandDispatcher.MODEL_LABELS:
             if label in models:
                 labels[label] = label
         while True:
             selected = self._select_choice("Model", models, labels, current=current_model, disabled=set(CommandDispatcher.MODEL_LABELS))
-            if selected not in CommandDispatcher.MODEL_LABELS:
+            if not isinstance(selected, str) or selected not in CommandDispatcher.MODEL_LABELS:
                 return selected
 
-    def _select_provider(self, providers: tuple[str, ...], current_provider: str) -> str | None:
+    def _select_provider(self, providers: tuple[str, ...], current_provider: str) -> SelectionResult:
         labels = {current_provider: current_provider + " (current)"}
         return self._select_choice("Provider", providers, labels, current=current_provider)
 
-    def _select_reasoning(self) -> str | None:
+    def _select_reasoning(self) -> SelectionResult:
         provider = self.agent.session.config.provider
         current = provider.reasoning_effort if provider.reasoning else "off"
         labels = {"off": "off - disable reasoning"}
