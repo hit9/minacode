@@ -1473,6 +1473,22 @@ def test_agent_request_converts_interleaved_unmarked_text_to_progress_action(tmp
     }
 
 
+def test_agent_request_ignores_fence_only_interleaved_progress(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content(
+        '{"type":"plan","items":[{"id":"p1","text":"Inspect","status":"doing"}]}\n```json\n'
+        '{"type":"tool","name":"Read","intention":"read source","args":["demo/astar_demo.cpp"]}'
+    )
+
+    assert response == {
+        "actions": [
+            {"type": "plan", "items": [{"id": "p1", "text": "Inspect", "status": "doing"}]},
+            {"type": "tool", "name": "Read", "intention": "read source", "args": ["demo/astar_demo.cpp"]},
+        ],
+    }
+
+
 def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 

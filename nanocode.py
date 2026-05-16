@@ -3709,7 +3709,7 @@ class ModelClient:
                 except json.JSONDecodeError as error:
                     return [], str(error)
                 return [], "expected JSON object action"
-            prefix = _shorten(" ".join(text[:action_start].split()), 500)
+            prefix = self._progress_text(text[:action_start])
             index = action_start
         while True:
             while index < len(text) and text[index].isspace():
@@ -3735,10 +3735,15 @@ class ModelClient:
                 next_action = text.find("{", index)
                 if next_action < 0:
                     return [], "unexpected text after JSON action"
-                progress = _shorten(" ".join(text[index:next_action].split()), 500)
+                progress = self._progress_text(text[index:next_action])
                 if progress:
                     actions.append({"type": "progress", "text": progress})
                 index = next_action
+
+    def _progress_text(self, text: str) -> str:
+        text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
+        text = text.replace("```", "")
+        return _shorten(" ".join(text.split()), 500)
 
     def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
         decoder = json.JSONDecoder()
