@@ -2239,7 +2239,7 @@ def test_agent_task_code_returns_to_working_after_verification_result(tmp_path):
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
-def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
+def test_agent_accepts_combined_verification_kind_and_ignores_pending(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.apply_response(
@@ -2259,9 +2259,10 @@ def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
     assert agent.blackboard.verification.kind == "syntax_check+test"
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
-    assert (
-        agent._pending_verification_error(
-            [
+    agent.blackboard.verification.reset()
+    result = agent.handle_response(
+        {
+            "actions": [
                 {
                     "type": "verify",
                     "kind": "syntax_check+test",
@@ -2270,9 +2271,13 @@ def test_agent_accepts_combined_verification_kind_and_rejects_pending(tmp_path):
                     "status": "pending",
                 }
             ]
-        )
-        == "status=pending is not supported in single-agent mode"
+        }
     )
+
+    assert result.done is False
+    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.verification.kind == ""
+    assert any('ignored verify status="pending"' in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path):

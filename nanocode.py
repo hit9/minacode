@@ -5138,6 +5138,9 @@ class Agent:
 
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
+        if self._has_pending_verification(actions):
+            response = {**response, "actions": [action for action in actions if not self._is_pending_verify_action(action)]}
+            actions = self._response_actions(response)
         if self._start_changes_goal(actions):
             self.tool_context.kept_results = []
             self.tool_context.pending_observe = []
@@ -5439,10 +5442,12 @@ class Agent:
                 return _json_str(action.get("message")) or "Rule saved."
         return None
 
-    def _pending_verification_error(self, actions: list[Json]) -> str:
-        if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions):
-            return "status=pending is not supported in single-agent mode"
-        return ""
+    def _has_pending_verification(self, actions: list[Json]) -> bool:
+        return any(self._is_pending_verify_action(action) for action in actions)
+
+    @staticmethod
+    def _is_pending_verify_action(action: Json) -> bool:
+        return _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"
 
     def _investigate_completion_error(self) -> str:
         if self.blackboard.work_mode != WorkMode.INVESTIGATE or not self.blackboard.goal_reached:
@@ -5508,7 +5513,7 @@ class Agent:
     def _build_response_context(self, response: Json) -> ResponseContext:
         actions = self._response_actions(response)
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
-        pending_verify_requested = any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in actions)
+        pending_verify_requested = self._has_pending_verification(actions)
         progress_messages = self._progress_messages_from_actions(actions)
         has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
         has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
@@ -5637,19 +5642,10 @@ class Agent:
                 "GoalPlan_Gate: goal rewrite while task code is " + self.blackboard.task_code + ".",
             )
             return True
-        pending_verification_error = self._pending_verification_error(ctx.actions)
-        if pending_verification_error:
+        if ctx.pending_verify_requested:
             self._remember_agent_error(
-                "Error: pending verify is invalid: "
-                + pending_verification_error
-                + '. Rule: run verification with tool actions directly, then return verify status="passed"|"failed"|"blocked".'
+                'Error: ignored verify status="pending". Rule: run verification with tool actions directly, then return verify status="passed"|"failed"|"blocked".'
             )
-            self._report_gate(
-                on_message,
-                "Retrying: run verification tools directly.",
-                "Verification_Gate: pending verify is invalid: " + pending_verification_error + ".",
-            )
-            return True
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
             self._remember_agent_error(
                 "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools."
