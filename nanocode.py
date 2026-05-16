@@ -820,6 +820,8 @@ class RuntimeState:
     current_model_call_started_at: float = 0.0
     current_model_call_label: str = ""
     current_model_call_reasoning_label: str = ""
+    status_notice: str = ""
+    status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
     user_rules: UserRules = field(default_factory=UserRules)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
@@ -3382,9 +3384,10 @@ class ModelClient:
 
     def __init__(self, session: Session):
         self.session = session
+        self._timeout_reason = "request model timeout"
 
     def _timeout_handler(self, signum: int, frame: Any) -> None:
-        raise ModelRequestTimeout()
+        raise ModelRequestTimeout(self._timeout_reason)
 
     def request(
         self,
@@ -3440,6 +3443,7 @@ class ModelClient:
             request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
+            self._timeout_reason = "request model timeout"
             signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -3458,8 +3462,8 @@ class ModelClient:
                 self.session.state.current_model_call_started_at = 0.0
                 self.session.state.current_model_call_label = ""
                 self.session.state.current_model_call_reasoning_label = ""
-        except ModelRequestTimeout:
-            raise LLMError("request model timeout")
+        except ModelRequestTimeout as error:
+            raise LLMError(str(error) or "request model timeout")
         except (socket.timeout, TimeoutError):
             raise LLMError("request model timeout")
         except urllib.error.HTTPError as error:
@@ -3530,9 +3534,12 @@ class ModelClient:
     def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
         remaining = request_deadline - time.monotonic()
         if remaining <= 0:
-            raise ModelRequestTimeout()
+            raise ModelRequestTimeout("request model timeout")
+        self._timeout_reason = "request model timeout"
         if not first_content_seen and first_token_timeout is not None and first_token_timeout > 0:
-            remaining = min(remaining, first_token_timeout)
+            if first_token_timeout < remaining:
+                remaining = first_token_timeout
+                self._timeout_reason = "request first token timeout"
         signal.setitimer(signal.ITIMER_REAL, remaining)
 
     def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
@@ -4791,12 +4798,14 @@ class Agent:
                 self.session.state.turn_model_calls += 1
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except LLMError as error:
-                if str(error) != "request model timeout" or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
+                timeout_reason = str(error)
+                if timeout_reason not in ("request model timeout", "request first token timeout") or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
                     raise
                 delay = self.MODEL_TIMEOUT_RETRY_DELAYS[attempt]
+                self._set_status_notice("err:first_token" if timeout_reason == "request first token timeout" else "err:timeout")
                 if on_message is not None and self.session.settings.debug:
                     on_message(
-                        "Retrying: request model timeout; retry "
+                        "Retrying: " + timeout_reason + "; retry "
                         + str(attempt + 1)
                         + "/"
                         + str(len(self.MODEL_TIMEOUT_RETRY_DELAYS))
@@ -4806,6 +4815,10 @@ class Agent:
                     )
                 time.sleep(delay)
         raise LLMError("request model timeout")
+
+    def _set_status_notice(self, text: str, ttl: float = 5.0) -> None:
+        self.session.state.status_notice = text
+        self.session.state.status_notice_until = time.monotonic() + ttl
 
     def compact_history(self) -> int:
         return self.compactor.compact()
@@ -4832,6 +4845,7 @@ class Agent:
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
+                    self._set_status_notice("err:format")
                     remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
                     remember_error(
                         self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: return valid JSON action frames only."
@@ -4917,6 +4931,8 @@ class Agent:
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         if on_message is None:
             return
+        if message.startswith(("Retrying:", "Continuing:")):
+            self._set_status_notice("err:gate")
         if self.session.settings.debug:
             on_message(debug_message)
             return
@@ -6646,6 +6662,8 @@ class StatusBar:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
             parts.append("calling(" + str(session.state.turn_model_calls) + "):" + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s")
+        if session.state.status_notice and session.state.status_notice_until > now:
+            parts.append(session.state.status_notice)
         return " | ".join(parts)
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:

@@ -181,6 +181,19 @@ def test_status_bar_shows_active_modes(tmp_path):
     assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tools:0 | tok:last:- session:-"
 
 
+def test_status_bar_shows_recent_status_notice(tmp_path):
+    session = make_session(tmp_path, model="provider/model")
+    session.state.status_notice = "err:format"
+    session.state.status_notice_until = time.monotonic() + 5
+    bar = StatusBar(session)
+
+    assert bar.snapshot().endswith(" | err:format")
+
+    session.state.status_notice_until = 0
+
+    assert "err:format" not in bar.snapshot()
+
+
 def test_agent_loop_highlights_only_diff_previews(tmp_path):
     class FakeAgent:
         def __init__(self):

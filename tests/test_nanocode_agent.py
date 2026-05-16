@@ -925,6 +925,29 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
     assert sleeps == [3, 10, 20]
 
 
+def test_agent_request_marks_first_token_timeout_notice(tmp_path, monkeypatch):
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMError("request first token timeout")
+            return {"actions": [{"type": "message", "text": "ok"}]}
+
+    sleeps = []
+    monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    response = agent.request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert agent.session.state.status_notice == "err:first_token"
+    assert sleeps == [3]
+
+
 def test_agent_request_hides_model_timeout_retries_without_debug(tmp_path, monkeypatch):
     class FakeModelClient:
         def __init__(self):
@@ -949,6 +972,7 @@ def test_agent_request_hides_model_timeout_retries_without_debug(tmp_path, monke
     assert agent.session.state.turn_model_calls == 3
     assert sleeps == [3, 10]
     assert messages == []
+    assert agent.session.state.status_notice == "err:timeout"
 
     debug_messages = []
     debug_agent = Agent(_session(tmp_path, debug=True))
@@ -971,6 +995,7 @@ def test_agent_gate_hides_retry_messages_without_debug(tmp_path):
     agent._report_gate(messages.append, "Retrying: sample gate.", "Sample_Gate: third")
 
     assert messages == []
+    assert agent.session.state.status_notice == "err:gate"
 
 
 def test_agent_gate_reports_immediately_in_debug(tmp_path):
