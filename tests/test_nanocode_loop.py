@@ -3,7 +3,7 @@ from prompt_toolkit.document import Document
 import time
 
 import nanocode
-from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar
+from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
@@ -221,6 +221,12 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     assert ("ansigreen", 'Search "sse|feed|history" glob=*.py path=.') in keyed_segments
     assert ("ansibrightblack", " -> tr.2") in keyed_segments
     assert ("ansibrightblack", " | excerpt") in keyed_segments
+
+
+def test_tool_call_report_compacts_interrupted_bash_result():
+    output = "<BashToolResult>\n* exit_code: -1\n* interrupted: true\n* reason: user_ctrl_c\n</BashToolResult>"
+
+    assert ToolCallDisplayFormatter._compact_tool_error(output) == "interrupted by user"
 
 
 def test_agent_loop_indents_top_level_tool_report(tmp_path):

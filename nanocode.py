@@ -2669,12 +2669,7 @@ class BashTool(Tool):
                 if proc.returncode is None:
                     self._kill_process_group(proc)
                     proc.wait()
-                self._drain_selector(selector, stdout_parts, stderr_parts, None)
-                stdout_text = "".join(stdout_parts)
-                stderr_text = "".join(stderr_parts)
-                if stderr_text:
-                    stderr_text += "\n"
-                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + "interrupted by user")
+                return self._interrupted_result("".join(stdout_parts), "".join(stderr_parts))
             except BaseException:
                 if proc.returncode is None:
                     self._kill_process_group(proc)
@@ -2692,6 +2687,21 @@ class BashTool(Tool):
             return _format_process_result("BashToolResult", proc.returncode, stdout_text, stderr_text)
         except OSError as error:
             raise ToolCallError(str(error))
+
+    @staticmethod
+    def _interrupted_result(stdout: str, stderr: str) -> str:
+        lines = [
+            "<BashToolResult>",
+            "* exit_code: -1",
+            "* interrupted: true",
+            "* reason: user_ctrl_c",
+        ]
+        if stdout:
+            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+        if stderr:
+            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+        lines.append("</BashToolResult>")
+        return "\n".join(lines)
 
     @staticmethod
     def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -4057,6 +4067,8 @@ class ToolCallDisplayFormatter:
 
     @staticmethod
     def _compact_tool_error(output: str) -> str:
+        if "* reason: user_ctrl_c" in output or "* interrupted: true" in output:
+            return "interrupted by user"
         text = " ".join(output.split())
         prefix = "ToolCallError: "
         if text.startswith(prefix):

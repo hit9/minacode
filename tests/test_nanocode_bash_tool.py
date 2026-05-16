@@ -57,7 +57,8 @@ def test_bash_tool_kills_process_group_on_interrupt(tmp_path):
     try:
         result = tool.call_live(interrupt_on_output)
         assert "* exit_code: -1" in result
-        assert "interrupted by user" in result
+        assert "* interrupted: true" in result
+        assert "* reason: user_ctrl_c" in result
         pid = int(pid_file.read_text(encoding="utf-8").strip())
         for _ in range(20):
             try:
