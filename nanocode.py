@@ -52,6 +52,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
 __version__ = "0.3.26"
+HTTP_USER_AGENT = "nanocode/" + __version__
 
 
 JsonValue: TypeAlias = Any
@@ -3431,6 +3432,7 @@ class ModelClient:
             headers={
                 "Authorization": "Bearer " + config.key,
                 "Content-Type": "application/json",
+                "User-Agent": HTTP_USER_AGENT,
             },
         )
         try:
@@ -6239,7 +6241,7 @@ class CommandDispatcher:
             base_url = base_url[: -len("/chat/completions")]
         request = urllib.request.Request(
             base_url + "/models",
-            headers={"Authorization": "Bearer " + provider.key},
+            headers={"Authorization": "Bearer " + provider.key, "User-Agent": HTTP_USER_AGENT},
         )
         try:
             with urllib.request.urlopen(request, timeout=3) as response:
