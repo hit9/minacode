@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.32 - 2026-05-16
+
+### Changed
+- Removed the pending tool-result character threshold for observe mode; observe now triggers from failures, pending result count, or consecutive tool turns.
+
 ## 0.3.31 - 2026-05-16
 
 ### Changed
