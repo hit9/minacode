@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.27 - 2026-05-16
+
+### Fixed
+- Added a nanocode `User-Agent` header to provider requests so OpenAI-compatible gateways that reject Python urllib defaults can accept chat and model-list requests.
+
 ## 0.3.26 - 2026-05-16
 
 ### Changed
