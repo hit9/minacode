@@ -36,8 +36,6 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
     model_result = dispatcher.dispatch("/set provider.model new-model")
-    url_result = dispatcher.dispatch("/set provider.url https://example.test/v1")
-    key_result = dispatcher.dispatch("/set provider.key secret")
     effort_result = dispatcher.dispatch("/set provider.effort high")
     reason_result = dispatcher.dispatch("/set provider.reasoning off")
     stream_result = dispatcher.dispatch("/set provider.stream off")
@@ -48,10 +46,6 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
     assert model_result.status == CommandStatus.HANDLED
     assert session.config.provider.model == "new-model"
-    assert url_result.message == "Set provider.url = https://example.test/v1"
-    assert session.config.provider.url == "https://example.test/v1"
-    assert key_result.message == "Set provider.key = (set)"
-    assert session.config.provider.key == "secret"
     assert effort_result.message == "Set provider.effort = high"
     assert session.config.provider.reasoning_effort == "high"
     assert reason_result.message == "Set provider.reasoning = off"
@@ -105,8 +99,8 @@ def test_set_command_shows_and_validates_runtime_config(tmp_path):
     temperature_off_result = dispatcher.dispatch("/set provider.temperature off")
     invalid_temperature_result = dispatcher.dispatch("/set provider.temperature nope")
 
-    assert url_status_result.message == "Usage: /set provider.url <value>"
-    assert key_status_result.message == "Usage: /set provider.key <value>"
+    assert url_status_result.message == "Unknown config key: provider.url"
+    assert key_status_result.message == "Unknown config key: provider.key"
     assert status_result.message == "Current provider.stream is on"
     assert off_result.message == "Set provider.stream = off"
     assert off_status_result.message == "Current provider.stream is off"

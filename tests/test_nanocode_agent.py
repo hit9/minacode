@@ -171,33 +171,6 @@ def test_agent_merges_adjacent_recall_calls(tmp_path):
     assert agent.tool_runner.latest_executions[0].call.args == ["tr.1", "tr.2"]
 
 
-def test_agent_accepts_recall_action_alias(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Read a", value="alpha")
-    agent = Agent(session)
-    _seed_plan(agent, "recall result")
-
-    result = agent.handle_response({"actions": [{"type": "recall", "key": "tr.1"}]})
-
-    assert result.done is False
-    assert len(agent.tool_runner.latest_executions) == 1
-    assert agent.tool_runner.latest_executions[0].call.name == "Recall"
-    assert agent.tool_runner.latest_executions[0].call.args == ["tr.1"]
-    assert "alpha" in agent.tool_context.latest[0]
-
-
-def test_agent_accepts_tool_name_action_alias_with_args(tmp_path):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    agent = Agent(Session(cwd=str(tmp_path)))
-    _seed_plan(agent, "read sample")
-
-    result = agent.handle_response({"actions": [{"type": "read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]})
-
-    assert result.done is False
-    assert agent.tool_runner.latest_executions[0].call.name == "Read"
-    assert "alpha" in agent.tool_context.latest[0]
-
-
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
@@ -1286,10 +1259,8 @@ def test_agent_keeps_known_items_structured_in_current(tmp_path):
         {
             "actions": [
                 {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "known": [
+                    "type": "known",
+                    "items": [
                         "Search only supports rg and Python fallback.",
                         "Search only supports rg and Python fallback.",
                     ],
@@ -1309,10 +1280,8 @@ def test_agent_dedupes_normalized_known_facts(tmp_path):
         {
             "actions": [
                 {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "known": [
+                    "type": "known",
+                    "items": [
                         "Preview logic exists in _preview_segments.",
                         "Preview logic exists in _preview_segments.",
                         "Preview logic exists in _preview_segments!",
@@ -1350,7 +1319,7 @@ def test_agent_keeps_latest_500_known_items(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [], "known": ["fact " + str(index) for index in range(501)]}]})
+    agent.apply_response({"actions": [{"type": "known", "items": ["fact " + str(index) for index in range(501)]}]})
 
     assert len(agent.blackboard.known) == 500
     assert agent.blackboard.known[0] == "fact 1"
@@ -1534,10 +1503,8 @@ def test_agent_ignores_known_items_without_fact(tmp_path):
         {
             "actions": [
                 {
-                    "type": "plan",
-                    "mode": "patch",
-                    "items": [],
-                    "known": [
+                    "type": "known",
+                    "items": [
                         "",
                         "Parser notes exist.",
                         "Parser notes were captured.",
@@ -1572,8 +1539,8 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
                 "type": "plan",
                 "mode": "replace",
                 "items": [{"id": "p1", "text": "Inspect file", "status": "todo"}],
-                "known": ["Search uses rg."],
             },
+            {"type": "known", "items": ["Search uses rg."]},
         ]
     }
 
@@ -2026,8 +1993,8 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                             "method": "unit",
                             "status": "passed",
                             "context": "checked",
-                            "known": ["Read sample.txt and found alpha."],
                         },
+                        {"type": "known", "items": ["Read sample.txt and found alpha."]},
                         {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"},
                     ],
                 },
@@ -2999,7 +2966,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "plan", "mode": "patch", "items": [], "progress": "progress"}]},
+                {"actions": [{"type": "progress", "text": "progress"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -3031,7 +2998,8 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"], "progress": "reading sample"},
+                        {"type": "progress", "text": "reading sample"},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
                     ]
                 },
                 {"actions": [{"type": "discard", "source": ["tr.1"], "reason": "progress-only read result is not needed"}]},
@@ -3267,12 +3235,12 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
             self.responses = [
                 {
                     "actions": [
+                        {"type": "progress", "text": "explicit progress"},
                         {
                             "type": "goal",
                             "text": "answer",
                             "complete": True,
                             "message_for_complete": "fallback message",
-                            "progress": "explicit progress",
                         },
                     ]
                 },
@@ -3290,7 +3258,7 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][0]["message_for_complete"] == "fallback message"
+    assert response["actions"][1]["message_for_complete"] == "fallback message"
     assert "explicit progress" in messages
     assert messages[-1] == "fallback message"
     assert len(agent.model_client.user_prompts) == 1
@@ -3304,7 +3272,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": False, "message_for_complete": "should be ignored"}]},
-                {"actions": [{"type": "plan", "mode": "patch", "items": [], "progress": "done without goal"}]},
+                {"actions": [{"type": "progress", "text": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 

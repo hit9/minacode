@@ -182,25 +182,25 @@ class KnownItem:
             return self.text == other
         return False
 
+    @staticmethod
+    def text_of(item: "KnownItem | str") -> str:
+        return item.text if isinstance(item, KnownItem) else str(item)
 
-def _known_item_text(item: KnownItem | str) -> str:
-    return item.text if isinstance(item, KnownItem) else str(item)
+    @staticmethod
+    def source_of(item: "KnownItem | str") -> tuple[str, ...]:
+        return item.source if isinstance(item, KnownItem) else ()
 
+    @staticmethod
+    def format_item(item: "KnownItem | str") -> str:
+        return item.format() if isinstance(item, KnownItem) else str(item)
 
-def _known_item_source(item: KnownItem | str) -> tuple[str, ...]:
-    return item.source if isinstance(item, KnownItem) else ()
-
-
-def _format_known_item(item: KnownItem | str) -> str:
-    return item.format() if isinstance(item, KnownItem) else str(item)
-
-
-def _known_item_from_json(value: JsonValue) -> KnownItem | None:
-    fact = _memory_fact_from_json(value)
-    if fact is None:
-        return None
-    item = _json_dict(value)
-    return KnownItem(text=fact, source=_source_from_json(item) if item else ())
+    @classmethod
+    def from_json(cls, value: JsonValue) -> "KnownItem | None":
+        fact = _memory_fact_from_json(value)
+        if fact is None:
+            return None
+        item = _json_dict(value)
+        return cls(text=fact, source=_source_from_json(item) if item else ())
 
 
 class VerificationStatus(StrEnum):
@@ -583,8 +583,6 @@ class AgentMode(StrEnum):
 
 @dataclass
 class AgentRuntime:
-    last_readonly_call_key: tuple[str, tuple[str, ...]] | None = None
-    last_readonly_result_key: str = ""
     recent_edits: list[str] = field(default_factory=list)
 
 
@@ -843,25 +841,6 @@ class ToolEffect(StrEnum):
 MAX_TOOL_OUTPUT_CHARS = 12_000
 
 
-def _cli_content_summary(value: str) -> str:
-    line_count = _tool_output_line_count(value)
-    if line_count > 1:
-        return "<" + str(line_count) + " lines>"
-    return "<" + str(len(value)) + " chars>"
-
-
-def _cli_token(value: str) -> str:
-    text = str(value)
-    if "\n" in text:
-        return _cli_content_summary(text)
-    text = _shorten(text, 100)
-    if not text:
-        return '""'
-    if re.fullmatch(r"[A-Za-z0-9_./:@=,+%~*{}-]+", text):
-        return text
-    return json.dumps(text, ensure_ascii=False)
-
-
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
@@ -876,7 +855,26 @@ class Tool:
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
-        return [_cli_token(arg) for arg in args]
+        return [cls.cli_token(arg) for arg in args]
+
+    @staticmethod
+    def cli_content_summary(value: str) -> str:
+        line_count = _tool_output_line_count(value)
+        if line_count > 1:
+            return "<" + str(line_count) + " lines>"
+        return "<" + str(len(value)) + " chars>"
+
+    @staticmethod
+    def cli_token(value: str) -> str:
+        text = str(value)
+        if "\n" in text:
+            return Tool.cli_content_summary(text)
+        text = _shorten(text, 100)
+        if not text:
+            return '""'
+        if re.fullmatch(r"[A-Za-z0-9_./:@=,+%~*{}-]+", text):
+            return text
+        return json.dumps(text, ensure_ascii=False)
 
     @classmethod
     def effect(cls) -> ToolEffect:
@@ -1103,7 +1101,6 @@ class ToolResultContext:
         keys: list[str] = []
         for action in actions:
             values = _json_list(action.get("items")) if _json_str(action.get("type")) == "evidence" else []
-            values += _json_list(action.get("evidence"))
             for raw in values:
                 item = _json_dict(raw)
                 source = _source_from_json(item) if item else ()
@@ -1276,7 +1273,7 @@ class ReadTool(Tool):
     def cli_args(cls, args: list[str]) -> list[str]:
         if not args:
             return []
-        tokens = [_cli_token(args[0])]
+        tokens = [cls.cli_token(args[0])]
         if len(args) == 3 and args[1].isdigit() and args[2].isdigit():
             return tokens + [args[1] + ":" + args[2]]
         return tokens + [str(arg) for arg in args[1:]]
@@ -1932,7 +1929,7 @@ class EditTool(Tool):
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
-        return [_cli_token(args[0])] if args else []
+        return [cls.cli_token(args[0])] if args else []
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2010,8 +2007,8 @@ class CreateFileTool(Tool):
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
         if len(args) < 2:
-            return [_cli_token(arg) for arg in args]
-        return [_cli_token(args[0]), _cli_content_summary(args[1])]
+            return [cls.cli_token(arg) for arg in args]
+        return [cls.cli_token(args[0]), cls.cli_content_summary(args[1])]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2078,8 +2075,8 @@ class ReplaceRangeTool(Tool):
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
         if len(args) < 3:
-            return [_cli_token(arg) for arg in args]
-        return [_cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
+            return [cls.cli_token(arg) for arg in args]
+        return [cls.cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
 
     @classmethod
     def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
@@ -2292,7 +2289,7 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
-        return [_cli_token(args[0])] if args else []
+        return [cls.cli_token(args[0])] if args else []
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -2552,7 +2549,7 @@ class BashTool(Tool):
     @staticmethod
     def _cli_command_arg(value: str) -> str:
         if "\n" in value:
-            return _cli_content_summary(value)
+            return Tool.cli_content_summary(value)
         return _shorten(" ".join(value.split()), 120)
 
     @classmethod
@@ -3311,7 +3308,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 ############################
 
 
-SUMMARIZER_AGENT_COMPACT_PROMPT = """You are nanocode's conversation-history compactor.
+COMPACTOR_PROMPT = """You are nanocode's conversation-history compactor.
 
 Compress conversation history and Known facts so the coding agent can continue later.
 Do not solve the task or add unsupported facts.
@@ -3387,7 +3384,7 @@ class PromptBuilder:
             environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
-            known="\n".join(_format_known_item(item) for item in current.known) if current.known else "(empty)",
+            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             evidence=self.tool_context.evidence_context() or "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             tool_result_store=self._format_tool_result_store(
@@ -3409,7 +3406,7 @@ class PromptBuilder:
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            known="\n".join(_format_known_item(item) for item in current.known) if current.known else "(empty)",
+            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             evidence=self.tool_context.evidence_context() or "(empty)",
             errors=errors or "(empty)",
@@ -3910,7 +3907,7 @@ class ToolCallDisplayFormatter:
     @classmethod
     def _format_call(cls, call: ParsedToolCall) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        tokens = tool_class.cli_args(call.args) if tool_class is not None else [_cli_token(arg) for arg in call.args]
+        tokens = tool_class.cli_args(call.args) if tool_class is not None else [Tool.cli_token(arg) for arg in call.args]
         return " ".join([call.name] + tokens)
 
     @staticmethod
@@ -3925,10 +3922,8 @@ class ToolCallDisplayFormatter:
 class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
-    def __init__(self, session: Session, runtime: AgentRuntime, *, reuse_readonly_results: bool = False):
+    def __init__(self, session: Session):
         self.session = session
-        self.runtime = runtime
-        self.reuse_readonly_results = reuse_readonly_results
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -3954,10 +3949,6 @@ class ToolCallRunner:
                     tool = item.tool
                 else:
                     call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
-                    cached = self._cached_readonly_execution(call)
-                    if cached is not None:
-                        executions.append(cached)
-                        continue
                     tool = self._make_tool(call)
                 requires_verification = tool.effect() == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
@@ -4011,38 +4002,12 @@ class ToolCallRunner:
                 requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
-            self._remember_last_readonly_result(call, outcome, result_key)
             if error_type is Cancellation:
                 break
 
         self.latest_executions = executions
 
-    def _cached_readonly_execution(self, call: ParsedToolCall) -> ToolCallExecution | None:
-        if not self.reuse_readonly_results:
-            return None
-        key = self._readonly_result_cache_key(call)
-        if key is None:
-            return None
-        if self.runtime.last_readonly_call_key != key or not self.runtime.last_readonly_result_key:
-            return None
-        result_key = self.runtime.last_readonly_result_key
-        item = self.session.state.tool_result_store.get(result_key)
-        if item is None or not item.description.startswith("success "):
-            return None
-        return ToolCallExecution(call=call, outcome="success", output=item.value, result_key=result_key, result_excerpted=item.excerpted)
-
-    def _remember_last_readonly_result(self, call: ParsedToolCall, outcome: str, result_key: str) -> None:
-        if not self.reuse_readonly_results:
-            return
-        key = self._readonly_result_cache_key(call)
-        if key is not None and outcome == "success" and result_key:
-            self.runtime.last_readonly_call_key = key
-            self.runtime.last_readonly_result_key = result_key
-            return
-        self.runtime.last_readonly_call_key = None
-        self.runtime.last_readonly_result_key = ""
-
-    def _readonly_result_cache_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
+    def _readonly_call_key(self, call: ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
             return None
@@ -4080,8 +4045,8 @@ class ToolCallRunner:
             except ToolCallArgError:
                 filtered.append(item)
                 continue
-            key = self._readonly_result_cache_key(call)
-            if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_result_cache_key(filtered[-1]) == key:
+            key = self._readonly_call_key(call)
+            if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_call_key(filtered[-1]) == key:
                 filtered[-1] = call
                 continue
             if call.name == ToolResultTool.name() and filtered and isinstance(filtered[-1], ParsedToolCall) and filtered[-1].name == call.name:
@@ -4241,7 +4206,7 @@ class AgentStateUpdater:
         actions = self._actions(response)
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
-        before_known = [_format_known_item(item) for item in self.blackboard.known]
+        before_known = [KnownItem.format_item(item) for item in self.blackboard.known]
         before_user_rules = self.session.state.user_rules.format()
         before_extra_state = self._before_extra_state()
         goal_changed = self._apply_goal(actions)
@@ -4280,7 +4245,7 @@ class AgentStateUpdater:
         if plan != before_plan:
             self.latest_compact_plan_rows = self._compact_changed_plan_rows(before_plan, plan)
             self._append_state_section(lines, "  Plan", self._format_plan_rows())
-        known = [_format_known_item(item) for item in current.known]
+        known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
             self._append_state_section(lines, "  Known", self._format_known_rows())
         user_rules = self.session.state.user_rules.format()
@@ -4308,7 +4273,7 @@ class AgentStateUpdater:
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(_format_known_item(item)))
+            rows.append("    " + str(index) + ". " + self._compact(KnownItem.format_item(item)))
         return rows
 
     def compact_report(self) -> str:
@@ -4355,7 +4320,7 @@ class AgentStateUpdater:
         items = self.blackboard.known
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend("  " + str(index) + ". " + self._compact(_format_known_item(item), 100) for index, item in enumerate(items[offset:], start=offset + 1))
+        rows.extend("  " + str(index) + ". " + self._compact(KnownItem.format_item(item), 100) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
@@ -4450,9 +4415,9 @@ class AgentStateUpdater:
 
     def _apply_known(self, actions: list[Json]) -> None:
         for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else _json_list(action.get("known"))
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else []
             for raw in values:
-                item = _known_item_from_json(raw)
+                item = KnownItem.from_json(raw)
                 if item is not None:
                     self._add_known_item(item.text, item.source)
 
@@ -4470,11 +4435,11 @@ class AgentStateUpdater:
         fact = _shorten(" ".join(fact.split()))
         for index, existing in enumerate(self.blackboard.known):
             if self._known_facts_overlap(existing, fact):
-                text = _known_item_text(existing)
-                merged_source = tuple(dict.fromkeys((*_known_item_source(existing), *source)))
+                text = KnownItem.text_of(existing)
+                merged_source = tuple(dict.fromkeys((*KnownItem.source_of(existing), *source)))
                 if len(fact) > len(text):
                     self.blackboard.known[index] = KnownItem(text=fact, source=merged_source)
-                elif merged_source != _known_item_source(existing):
+                elif merged_source != KnownItem.source_of(existing):
                     self.blackboard.known[index] = KnownItem(text=text, source=merged_source)
                 return
         self.blackboard.known.append(KnownItem(text=fact, source=source))
@@ -4488,7 +4453,7 @@ class AgentStateUpdater:
         return min(len(left_key), len(right_key)) >= 32 and (left_key in right_key or right_key in left_key)
 
     def _known_fact_key(self, fact: KnownItem | str) -> str:
-        return re.sub(r"\s+", " ", _known_item_text(fact)).strip(" \t\r\n。.;；").lower()
+        return re.sub(r"\s+", " ", KnownItem.text_of(fact)).strip(" \t\r\n。.;；").lower()
 
     def _before_extra_state(self) -> str:
         return json.dumps(
@@ -4558,7 +4523,7 @@ class AgentStateUpdater:
 
     def _apply_stable_knowledge(self, actions: list[Json]) -> None:
         for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else _json_list(action.get("stable_knowledge"))
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else []
             for raw in values:
                 category, fact = self._stable_knowledge_item_from_json(raw)
                 if fact:
@@ -4684,15 +4649,15 @@ class ConversationCompactor:
 
     def _summarize(self, items: list[ConversationItem]) -> tuple[str, list[KnownItem]]:
         user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(
-            known="\n".join(_format_known_item(item) for item in self.blackboard.known) or "(empty)",
+            known="\n".join(KnownItem.format_item(item) for item in self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
         kwargs = {"parse_actions": False} if isinstance(self.model_client, ModelClient) else {}
-        response = self.model_client.request(SUMMARIZER_AGENT_COMPACT_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
+        response = self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
-        known = [item for item in (_known_item_from_json(raw) for raw in _json_list(response.get("known"))) if item]
+        known = [item for item in (KnownItem.from_json(raw) for raw in _json_list(response.get("known"))) if item]
         if not known:
             known = list(self.blackboard.known)
         return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
@@ -4777,7 +4742,7 @@ class Agent:
             tool_context=self.tool_context,
         )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session, runtime=self.runtime)
+        self.tool_runner = ToolCallRunner(session)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
@@ -4896,7 +4861,7 @@ class Agent:
         return self.tool_context.act_context()
 
     def _prune_tool_result_store(self) -> None:
-        keep = {key for item in self.blackboard.known for key in _known_item_source(item) if key.startswith("tr.")}
+        keep = {key for item in self.blackboard.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
         keep.update(self.tool_context.evidence_keys())
         while len(self.session.state.tool_result_store) > self.MAX_COMPLETED_GOAL_TOOL_RESULTS:
             key = next((item for item in self.session.state.tool_result_store if item not in keep), "")
@@ -5000,8 +4965,7 @@ class Agent:
             action_type = _json_str(action.get("type"))
             if action_type == "evidence" and _json_list(action.get("items")):
                 return True
-            values = _json_list(action.get("items")) if action_type == "known" else _json_list(action.get("known"))
-            if any(_memory_fact_from_json(raw) for raw in values):
+            if action_type == "known" and any(_memory_fact_from_json(raw) for raw in _json_list(action.get("items"))):
                 return True
             if action_type == "stable_knowledge" and _json_list(action.get("items")):
                 return True
@@ -5139,32 +5103,7 @@ class Agent:
         return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
-        return [self._normalize_action_alias(action) for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
-
-    def _normalize_action_alias(self, action: Json) -> Json:
-        alias_name = self._tool_name_for_action_alias(action)
-        if not alias_name:
-            return action
-        normalized = dict(action)
-        normalized["type"] = "tool"
-        normalized["name"] = alias_name
-        if "args" not in normalized:
-            keys = _json_list(normalized.get("keys"))
-            key = _json_str(normalized.get("key"))
-            normalized["args"] = keys if keys else ([key] if key else [])
-        normalized["intention"] = _json_str(normalized.get("intention")) or (
-            "recall stored tool result" if alias_name == ToolResultTool.name() else "run " + alias_name
-        )
-        return normalized
-
-    def _tool_name_for_action_alias(self, action: Json) -> str:
-        action_type = _json_str(action.get("type")) or ""
-        name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == action_type.lower()), "")
-        if not name:
-            return ""
-        if name == ToolResultTool.name() or "args" in action:
-            return name
-        return ""
+        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
     def _gate_action_types(
         self,
@@ -5201,7 +5140,7 @@ class Agent:
             if _json_str(action.get("type")) == "progress":
                 message = _json_str(action.get("text")) or _json_str(action.get("message")) or ""
             else:
-                message = _json_str(action.get("progress")) or ""
+                message = ""
             if message:
                 messages.append(message)
         return messages
@@ -5955,8 +5894,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
 
 CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 CONFIG_PROVIDER_ATTRS: dict[str, str] = {
-    "provider.url": "url",
-    "provider.key": "key",
     "provider.model": "model",
     "provider.reasoning": "reasoning",
     "provider.effort": "reasoning_effort",
@@ -5982,7 +5919,6 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "runtime.yolo": ("on", "off"),
 }
 CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
-CONFIG_WRITE_ONLY_KEYS: set[str] = {"provider.key", "provider.url"}
 CONFIG_INT_KEYS: set[str] = {
     "provider.timeout",
     "provider.first_token_timeout",
@@ -6287,8 +6223,6 @@ class CommandDispatcher:
         if key not in CONFIG_SET_KEYS:
             return "Unknown config key: " + key
         if value is None:
-            if key in CONFIG_WRITE_ONLY_KEYS:
-                return "Usage: /set " + key + " <value>"
             return "Current " + key + " is " + self._config_value(key)
         error = self._apply_config_value(key, value)
         if error:
@@ -6308,9 +6242,7 @@ class CommandDispatcher:
         value = getattr(target, attr)
         if key in CONFIG_BOOL_KEYS:
             return self._format_bool(value)
-        if key == "provider.key":
-            return "(set)" if value else "(empty)"
-        if key in {"provider.url", "provider.model"}:
+        if key == "provider.model":
             return value or "(empty)"
         if key == "provider.temperature":
             return self._format_optional(value)
