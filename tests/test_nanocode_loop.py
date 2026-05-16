@@ -79,11 +79,11 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["available_models"] == []
     assert "temperature" not in config["provider"]["default"]
     assert config["provider"]["default"]["reasoning_payload"] == "reasoning"
-    assert config["provider"]["default"]["timeout"] == 90
-    assert config["provider"]["default"]["first_token_timeout"] == 60
+    assert config["provider"]["default"]["timeout"] == 180
+    assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
-    assert config["runtime"]["plan_timeout"] == 180
-    assert config["runtime"]["plan_first_token_timeout"] == 120
+    assert config["runtime"]["plan_timeout"] == 360
+    assert config["runtime"]["plan_first_token_timeout"] == 180
     assert config["runtime"]["auto_clean_recent"] == "3d"
     assert config["runtime"]["yolo"] is False
     assert config["runtime"]["plan_mode"] is False
@@ -235,7 +235,7 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
-def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
+def test_agent_loop_renders_kept_tool_results_as_weak_status(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
@@ -243,12 +243,12 @@ def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
 
-    loop._print_message("Evidence Updated: tr.12 tr.15")
+    loop._print_message("Tool Results Kept: tr.12 tr.15")
 
-    assert captured == ["  evidence: +tr.12 +tr.15"]
+    assert captured == ["  results: +tr.12 +tr.15"]
 
 
-def test_agent_loop_renders_evidence_removal_as_weak_status(tmp_path):
+def test_agent_loop_renders_forgotten_tool_results_as_weak_status(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
@@ -256,9 +256,9 @@ def test_agent_loop_renders_evidence_removal_as_weak_status(tmp_path):
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
 
-    loop._print_message("Evidence Removed: tr.12 tr.15")
+    loop._print_message("Tool Results Forgotten: tr.12 tr.15")
 
-    assert captured == ["  evidence: -tr.12 -tr.15"]
+    assert captured == ["  results: -tr.12 -tr.15"]
 
 
 def test_agent_loop_styles_compact_state_section_labels(tmp_path):

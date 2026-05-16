@@ -125,14 +125,14 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
     assert "provider.available_models: config-model, other-model" in result.message
-    assert "provider.first_token_timeout: 60" in result.message
+    assert "provider.first_token_timeout: 90" in result.message
     assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message
     assert "paths.project_dir: " in result.message
     assert "paths.session_dir: " in result.message
     assert "paths.history: " + str(tmp_path / ".nanocode" / "history") in result.message
     assert "runtime.max_agent_steps: 100" in result.message
-    assert "runtime.plan_timeout: 180" in result.message
-    assert "runtime.plan_first_token_timeout: 120" in result.message
+    assert "runtime.plan_timeout: 360" in result.message
+    assert "runtime.plan_first_token_timeout: 180" in result.message
     assert "runtime.auto_clean_recent: 3d" in result.message
     assert "runtime.plan_mode: off" in result.message
 

@@ -44,7 +44,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.22"
+__version__ = "0.3.23"
 
 
 JsonValue: TypeAlias = Any
@@ -411,8 +411,8 @@ class ProviderConfig:
     reasoning_effort: str = "medium"
     reasoning_payload: str = ""
     stream: bool | None = True
-    timeout: int | None = 90
-    first_token_timeout: int | None = 60
+    timeout: int | None = 180
+    first_token_timeout: int | None = 90
 
     @classmethod
     def from_dict(cls, data: Json) -> "ProviderConfig":
@@ -463,8 +463,8 @@ class RuntimeSettings:
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 100
-    plan_timeout: int = 180
-    plan_first_token_timeout: int = 120
+    plan_timeout: int = 360
+    plan_first_token_timeout: int = 180
     auto_clean_recent: str = "3d"
     yolo: bool = False
     plan_mode: bool = False
@@ -477,8 +477,8 @@ class RuntimeSettings:
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             compact_at=Config.int(runtime, "compact_at", 50),
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
-            plan_timeout=max(1, Config.int(runtime, "plan_timeout", 180) or 0),
-            plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 120) or 0),
+            plan_timeout=max(1, Config.int(runtime, "plan_timeout", 360) or 0),
+            plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 180) or 0),
             auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "3d")),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
             plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
@@ -608,9 +608,9 @@ reasoning_effort = "medium"
 # {"reasoning":{"effort":...}}, and "reasoning_effort" sends a top-level effort.
 reasoning_payload = "reasoning"
 stream = true
-timeout = 90
+timeout = 180
 # Stream mode only: retry if no first content token arrives within this many seconds.
-first_token_timeout = 60
+first_token_timeout = 90
 
 [paths]
 # Global nanocode data directory. Project/session data is stored below this directory.
@@ -620,8 +620,8 @@ data_dir = "~/.nanocode"
 shell_timeout = 60
 compact_at = 50
 max_agent_steps = 100
-plan_timeout = 180
-plan_first_token_timeout = 120
+plan_timeout = 360
+plan_first_token_timeout = 180
 # Automatically delete tool-result logs older than this from inactive sessions. Use "off" to disable.
 auto_clean_recent = "3d"
 yolo = false
@@ -670,6 +670,7 @@ class AgentMode(StrEnum):
 @dataclass
 class AgentRuntime:
     recent_edits: list[str] = field(default_factory=list)
+    consecutive_tool_turns: int = 0
 
 
 @dataclass
@@ -1054,34 +1055,59 @@ class ToolResultContext:
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
     pending_observe: list[str] = field(default_factory=list)
-    evidence: list[str] = field(default_factory=list)
+    kept_results: list[str] = field(default_factory=list)
 
-    def act_context(self) -> str:
-        return "\n\n".join(self.recent + [self.compact_block(block) for block in self.latest])
-
-    def observe_context(self) -> str:
-        return "\n\n".join(self.pending_observe)
-
-    def evidence_context(self) -> str:
-        return "\n\n".join(self.evidence)
-
-    def evidence_keys(self) -> set[str]:
-        return set(self.blocks_by_key(self.evidence))
-
-    def forget_evidence(self, keys: list[str]) -> list[str]:
+    def forget_results(self, keys: list[str]) -> list[str]:
         wanted = set(keys)
         if not wanted:
             return []
-        kept = []
         removed = []
-        for block in self.evidence:
-            key = self.result_key(block)
-            if key in wanted:
-                removed.append(key)
-            else:
-                kept.append(block)
-        self.evidence = kept
+
+        def remove_blocks(blocks: list[str]) -> list[str]:
+            kept = []
+            for block in blocks:
+                key = self.result_key(block)
+                if key in wanted:
+                    removed.append(key)
+                else:
+                    kept.append(block)
+            return kept
+
+        def compact_blocks(blocks: list[str]) -> list[str]:
+            compacted = []
+            for block in blocks:
+                key = self.result_key(block)
+                if key in wanted:
+                    removed.append(key)
+                    compacted.append(self.compact_block(block))
+                else:
+                    compacted.append(block)
+            return compacted
+
+        self.kept_results = remove_blocks(self.kept_results)
+        self.pending_observe = remove_blocks(self.pending_observe)
+        self.latest = compact_blocks(self.latest)
+        self.recent = compact_blocks(self.recent)
         return list(dict.fromkeys(removed))
+
+    def keep_results(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
+        wanted = []
+        for action in actions:
+            if _json_str(action.get("type")) == "keep":
+                wanted.extend(key for key in _source_from_json(action) if key.startswith("tr."))
+        wanted = list(dict.fromkeys(wanted))
+        if not wanted:
+            return []
+        by_key = self.blocks_by_key(observed_blocks)
+        selected = {key: by_key[key] for key in wanted if key in by_key}
+        if not selected:
+            return []
+        existing = self.blocks_by_key(self.kept_results)
+        self.kept_results = [block for key, block in existing.items() if key not in selected] + [selected[key] for key in wanted if key in selected]
+        while self.kept_results and len("\n\n".join(self.kept_results)) > max_chars:
+            del self.kept_results[0]
+        retained = self.blocks_by_key(self.kept_results)
+        return [key for key in wanted if key in selected and key in retained]
 
     def append_latest(self, executions: list[ToolCallExecution], *, max_summaries: int, max_chars: int) -> None:
         if not executions:
@@ -1111,21 +1137,6 @@ class ToolResultContext:
                 self.pending_observe.append(block)
                 queued.add(counter)
         return bool(self.pending_observe)
-
-    def select_evidence(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
-        wanted = self.evidence_result_keys_from_actions(actions)
-        if not wanted:
-            return []
-        by_key = self.blocks_by_key(observed_blocks)
-        selected = {key: by_key[key] for key in wanted if key in by_key}
-        if not selected:
-            return []
-        existing = self.blocks_by_key(self.evidence)
-        self.evidence = [block for key, block in existing.items() if key not in selected] + [selected[key] for key in wanted if key in selected]
-        while self.evidence and len("\n\n".join(self.evidence)) > max_chars:
-            del self.evidence[0]
-        retained = self.blocks_by_key(self.evidence)
-        return [key for key in wanted if key in selected and key in retained]
 
     def mark_checkpoint(self, checkpoint: int) -> None:
         self.pending_observe = [block for block in self.pending_observe if self.result_counter(block) > checkpoint]
@@ -1196,25 +1207,6 @@ class ToolResultContext:
     @classmethod
     def max_counter(cls, blocks: list[str]) -> int:
         return max((cls.result_counter(block) for block in blocks), default=0)
-
-    @staticmethod
-    def evidence_result_keys_from_actions(actions: list[Json]) -> list[str]:
-        keys: list[str] = []
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "evidence" else []
-            for raw in values:
-                item = _json_dict(raw)
-                source = _source_from_json(item) if item else ()
-                keys.extend(key for key in source if key.startswith("tr."))
-        return list(dict.fromkeys(keys))
-
-    @classmethod
-    def covered_observe_keys_from_actions(cls, actions: list[Json]) -> set[str]:
-        covered = set(cls.evidence_result_keys_from_actions(actions))
-        for action in actions:
-            if _json_str(action.get("type")) == "discard":
-                covered.update(key for key in _source_from_json(action) if key.startswith("tr."))
-        return covered
 
     @staticmethod
     def forget_result_keys_from_actions(actions: list[Json]) -> list[str]:
@@ -2065,7 +2057,10 @@ class EditTool(Tool):
 @dataclass
 class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Create a new UTF-8 file with initial content; parent directory must exist and target file must not exist.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Create a new UTF-8 file with short initial content; parent directory must exist and target file must not exist.",
+        "For substantial files, create a small skeleton first, then use ApplyPatch in focused chunks instead of embedding large content in JSON.",
+    )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
 
@@ -2346,8 +2341,8 @@ class ReplaceRangeTool(Tool):
 class ApplyPatchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Apply one focused unified diff to one file; best for complex, structural, or multiple-hunk edits.",
-        "Use after Edit/ReplaceRange args keep failing; do not dump or rewrite a whole large file.",
+        "Apply one focused unified diff to one file; best for structural or multiple-hunk edits.",
+        "For local replacements or insertions after Read, prefer ReplaceRange; use ApplyPatch when a diff is clearer than a range edit.",
     )
     SIGNATURE: ClassVar[str] = "ApplyPatch(filepath, unified_diff) -> ApplyPatchToolResult<path, hunks>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "@@ -1,2 +1,2 @@\\n-old line\\n+new line\\n"]',)
@@ -2925,20 +2920,21 @@ CORE RULES:
 - Latest User Request overrides stale Goal.
 - Never answer by repeating a previous completion.
 - Never claim edit/test/build/commit success unless recent tool results prove it.
-- Never mark complete unless the goal is achieved and required verification passed, or verification is blocked with clear evidence.
-- Never mark complete while a Plan item is todo/doing or missing context evidence.
+- Never mark complete unless the goal is achieved and required verification passed, or verification is blocked with clear result context.
+- Never mark complete while a Plan item is todo/doing or missing result context.
 - User Rules are mandatory long-term behavior rules.
 - Add User Rules only when the latest user request explicitly asks to remember future behavior.
 - Do not store task facts, project facts, tool results, or temporary errors as User Rules.
 
 MEMORY:
 - Known = durable current-task facts.
-- Evidence = selected bounded raw tool results retained by observe mode.
+- Kept Tool Results = selected bounded raw tool results retained in context.
 - Hypotheses = investigation directions with status: { __hypothesis_status_text__ }.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
-- Tool results are volatile. Observe mode selects useful Evidence after tool batches.
-- Read Evidence as support context; do not output evidence in main mode.
-- Use forget to remove old Evidence from future context after a branch is ruled out; it does not delete stored results, and needed conclusions must first be in Plan, Known, or Verify.
+- Tool results are volatile. ACT sees latest/recent raw results directly; small results can stay there until observe mode is triggered.
+- Read Kept Tool Results and Recent Tool Calls as support context; do not restate raw results in main mode.
+- Observe is the primary path for batch result cleanup: it keeps useful pending results and forgets noise.
+- ACT must not keep tool results. In ACT, use forget only when the current decision already proves a visible result is no longer useful; it does not delete stored results, logs, or Recall ability, and needed conclusions must first be in Plan, Known, or Verify.
 - Save only settled decision-changing facts into Known.
 - Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
 - Do not use Known as a scratchpad; use it only for facts that still matter after current tool results disappear.
@@ -2948,7 +2944,7 @@ INVESTIGATE MODE:
 - On start, set work_mode=investigate when the task needs competing explanations, root-cause reasoning, or branch elimination.
 - Maintain hypotheses for plausible root-cause directions.
 - If several plausible directions exist, track them separately; each should imply a concrete check.
-- Mark a hypothesis ruled_out when evidence eliminates it; mark confirmed before final root-cause completion.
+- Mark a hypothesis ruled_out when result context eliminates it; mark confirmed before final root-cause completion.
 - Use forget only after the conclusion is preserved in Hypotheses, Plan, Known, or Verify.
 
 TASK CODE:
@@ -2978,7 +2974,9 @@ Choose the main next action type; include tightly related state updates only whe
    If the next tool step is clear, do not stop after only Plan/Known; output the needed state update and tool actions in the same turn.
 
 5. forget
-   Use only when old Evidence is no longer useful because the branch was ruled out, superseded, or no longer affects the next decision.
+   Use only when a visible tool result is already proven irrelevant because the branch was ruled out, superseded, or no longer affects the next decision.
+   Do not use it routinely; observe mode handles batch cleanup.
+   In investigation, pair forget with hypothesis/known/plan updates when the discarded branch has an important conclusion.
 
 6. tool
    Execute only the next unfinished plan step.
@@ -2996,7 +2994,7 @@ Choose the main next action type; include tightly related state updates only whe
    Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked by the user.
 
 ACTION FRONTIER:
-- Before output, derive the current action frontier from Goal, Plan, Known, Evidence, Recent Tool Calls, and Errors.
+- Before output, derive the current action frontier from Goal, Plan, Known, Kept Tool Results, Recent Tool Calls, and Errors.
 - Frontier = all useful next actions whose arguments are already known and do not depend on each other.
 - Output the whole frontier in one turn.
 - Include state updates in the same turn when they enable or describe the frontier.
@@ -3011,20 +3009,21 @@ PLANNING:
 - Do not repeat completed steps.
 - At most one item may be doing.
 - Each plan item must be one concrete outcome, not a bundle of unrelated checks or actions.
-- Done context must be result evidence; blocked context must name the concrete blocker, not intent, plan, or expectation.
+- Done context must cite result context; blocked context must name the concrete blocker, not intent, plan, or expectation.
 - Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
 - Plan item schema:
-  {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short evidence"}
+  {"id": "p1", "text": "...", "status": "todo|doing|done|blocked", "context": null|"short result context"}
 
 EDITING:
 - Edit incrementally.
 - One edit = one small coherent change.
 - New file: create minimal skeleton first.
+- Do not put large file contents in one CreateFile JSON action; use CreateFile for a short skeleton, then ApplyPatch focused chunks.
 - Existing file: inspect exact target before editing.
 - Never rewrite a large file in one action.
 - Use Edit when changing one tiny exact literal block that appears once.
 - Use ReplaceRange after Read when replacing a known continuous range, especially if text is repeated.
-- Use ApplyPatch for structural edits, multiple focused hunks, or when Edit/ReplaceRange args keep failing.
+- Prefer ReplaceRange for local insertions/replacements after Read; use ApplyPatch for structural edits or multiple focused hunks.
 - Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
@@ -3046,11 +3045,12 @@ VERIFICATION:
   - criteria
   - status: passed|failed|blocked
   - blocker: user|environment|tool|unknown (required when status=blocked)
-  - context: concrete evidence or blocker
+  - context: concrete result context or blocker
 - Before verification, check User Rules and include required checks.
 - If a verification command fails, record failed and repair before completion.
+- A build/test after a failed edit in the same tool batch does not verify that edit; repair or confirm the edit first.
 - Do not use pending verification status.
-- Passed verification context must cite concrete recent tool evidence; blocked verification must set blocker and context.
+- Passed verification context must cite concrete recent tool result context; blocked verification must set blocker and context.
 - After Plan is complete and verification passed/blocked, finish by default.
 - If more tools are still needed, first reopen Plan with a todo/doing item and context explaining why completion is insufficient.
 - Complete with verify blocked only when blocker=user; otherwise continue, repair, or ask the user.
@@ -3078,14 +3078,14 @@ ACTIONS:
 
 {"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
 
-{"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+{"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short result context>"}]}
 
-{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short result context>"}]}
 
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":null|"<short evidence>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":null|"<short result context>"}]}
 
 {"type":"known","items":["<new durable current-task fact>"]}
-{"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by evidence>"}]}
+{"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by a tool result>"}]}
 
 {"type":"stable_knowledge","items":[{"category":"stack|structure|workflow|convention|gotcha","text":"<rare reusable codebase fact>"}]}
 
@@ -3093,11 +3093,11 @@ ACTIONS:
 
 {"type":"user_rule","text":"<long-term user behavior rule>","message":"<short acknowledgement>"}
 
-{"type":"forget","source":["tr.1"],"reason":"<why this Evidence no longer matters>"}
+{"type":"forget","source":["tr.1"],"reason":"<why this visible tool result no longer matters>"}
 
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
 
-{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","blocker":null|"user|environment|tool|unknown","context":null|"<evidence or blocker>"}
+{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","blocker":null|"user|environment|tool|unknown","context":null|"<tool result context or blocker>"}
 
 TOOL SPECS:
 { __tools__ }
@@ -3216,8 +3216,8 @@ Verification:
 DISCOVERY STRATEGY
 1. For a new Task Code, start with one concise planning goal and 2-4 discovery steps.
 2. Search for owners before reading large files.
-3. Prefer evidence from code, tests, docs, and recent relevant Git history.
-4. After tool results, use the Evidence context selected by observe mode; use known only for settled durable conclusions.
+3. Prefer support from code, tests, docs, and recent relevant Git history.
+4. After tool results, use latest raw results and Kept Tool Results; use known only for settled durable conclusions.
 5. Use stable_knowledge sparingly for broadly true technical facts that are not repository-specific.
 6. Update plan status as discovery progresses.
 7. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
@@ -3262,8 +3262,8 @@ Before completing, ensure the plan answers:
 
 CORE ACTION SHAPES
 {"type":"start","goal":"<planning goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
-{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence or reason>"}]}
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":"<evidence or reason>"}]}
+{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<result context or reason>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":"<result context or reason>"}]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable fact from discovery>"}]}
 {"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
 {"type":"progress","message":"<brief user-facing progress update>"}
@@ -3306,8 +3306,8 @@ Verification:
 
 --- Working Memory ---
 
-Evidence:
-{evidence}
+Kept Tool Results:
+{kept_tool_results}
 
 Recent Tool Calls:
 {recent_tool_calls}
@@ -3367,8 +3367,8 @@ Known:
 Stable Knowledge:
 {stable_knowledge}
 
-Evidence:
-{evidence}
+Kept Tool Results:
+{kept_tool_results}
 
 Observe Errors:
 {errors}
@@ -3379,41 +3379,41 @@ Latest Raw Tool Results:
 --- Output ---
 
 Return JSON action frames only.
-Extract new evidence only from Latest Raw Tool Results.
+Keep or forget Latest Raw Tool Results.
 
 YOUR OUTPUT:
 """
 
 
 AGENT_OBSERVE_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
-Your ONLY job: extract evidence from the latest raw tool results and forget stale Evidence.
+Your main job: batch-clean latest raw tool results by keeping useful ones and forgetting noise.
+You may record known, hypothesis, or stable_knowledge only when preserving a necessary conclusion before forgetting.
 
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
 - Do NOT call tools.
-- Record useful support facts in evidence with source result keys.
+- Keep useful raw tool results by source key.
 - Use known only for settled durable task facts, not routine observations.
 - Record stable_knowledge only for new long-term reusable facts not already present in Stable Knowledge.
-- Use recent tool calls as volatile input; keep only evidence that affects the next ACT frontier: target selection, edit choice, verification, error repair, or completion decision.
-- Use forget to remove old Evidence from future context after a branch is ruled out; it does not delete stored results, does not cover latest raw results, and needed conclusions must be preserved first.
-- Discard routine success, duplicate listings, no-match searches, and other low-value noise unless it changes the next ACT frontier.
-- Verification pass/fail/block results are decision-changing; keep them as evidence until Verify has been recorded.
-- Most ordinary successful outputs should be discard, not evidence.
-- Do not duplicate existing Evidence; keep each source key only once unless the new item replaces a weaker one.
+- Use Latest Raw Tool Results as volatile input; keep only results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion decision.
+- Use forget to remove visible tool results from future context after a branch is ruled out or the result is noise; it does not delete stored results, logs, or Recall ability, and needed conclusions must be preserved first.
+- Forget routine success, duplicate listings, no-match searches, and other low-value noise unless it changes the next ACT frontier.
+- Verification pass/fail/block results are decision-changing; keep them until Verify has been recorded.
+- Most ordinary successful outputs should be forgotten, not kept.
+- Do not duplicate existing Kept Tool Results; keep each source key only once.
 - Do not update Plan, Verify, or Goal; the main agent will decide next.
 - Known must contain facts only, not intentions, TODOs, guesses, user requests, or next steps.
-- If there is nothing useful to retain, return discard with a clear reason.
-- Every latest result key must be covered by evidence or discard.
-- Discard permanently compacts the latest raw results; use it only when they are definitely noise.
+- If there is nothing useful to retain, return forget with a clear reason.
+- Every latest result key must be covered by keep or forget.
+- Forget compacts raw result content out of future context but preserves stored logs and Recall by key.
 - Do not return {"actions":[]}.
 
 Allowed actions:
-- evidence: record useful source-backed findings from latest results.
+- keep: retain useful raw tool results in context by source key.
 - known: record current-task facts from latest results.
 - hypothesis: update investigation directions when latest results create, eliminate, or confirm a root-cause direction.
 - stable_knowledge: record rare reusable session codebase facts by category.
-- discard: explicitly discard latest raw results as noise.
-- forget: remove old Evidence from future context by source key.
+- forget: remove visible tool results from future context by source key.
 
 Output format (Strict)
 
@@ -3422,11 +3422,10 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
 {"type": "known", "items": [{"source": ["tr.1"], "text": "<new durable fact from latest results>"}]} __END_ACTION__
-{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "{ __hypothesis_statuses__ }", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
-{"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
+{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "{ __hypothesis_statuses__ }", "source": ["tr.1"], "context": "<result context or reason>"}]} __END_ACTION__
+{"type": "keep", "source": ["tr.1"], "reason": "<why this raw result should remain in context>"} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
-{"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
-{"type": "forget", "source": ["tr.3"], "reason": "<why this old Evidence no longer matters>"} __END_ACTION__
+{"type": "forget", "source": ["tr.2"], "reason": "<why this visible raw result no longer matters>"} __END_ACTION__
 """
 
 
@@ -3514,10 +3513,10 @@ class PromptBuilder:
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
-            evidence=self.tool_context.evidence_context() or "(empty)",
+            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             tool_result_store=self._format_tool_result_store(
-                set(RESULT_KEY_PATTERN.findall(recent_tool_calls)) | self.tool_context.evidence_keys()
+                set(RESULT_KEY_PATTERN.findall(recent_tool_calls)) | set(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
             ),
             task_code=self.blackboard.task_code,
             work_mode=self.blackboard.work_mode,
@@ -3540,7 +3539,7 @@ class PromptBuilder:
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
-            evidence=self.tool_context.evidence_context() or "(empty)",
+            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             errors=errors or "(empty)",
             recent_tool_calls=recent_tool_calls or "(empty)",
             user_request=self._format_user_request(),
@@ -3706,7 +3705,7 @@ class ModelClient:
         return self._parse_model_content(content)
 
     def _request_timeouts(self, config: ProviderConfig, *, activity: str) -> tuple[int, int | None]:
-        timeout = config.timeout if config.timeout is not None else 90
+        timeout = config.timeout if config.timeout is not None else 180
         first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
         if activity == "agent" and self.session.settings.plan_mode:
             return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
@@ -4062,6 +4061,8 @@ class ToolCallRunner:
         self.session = session
         self.protected_result_keys = protected_result_keys or (lambda: set())
         self.latest_executions: list[ToolCallExecution] = []
+        self.skipped_after_failure_count = 0
+        self.skipped_after_failure_key = ""
 
     def execute(
         self,
@@ -4073,7 +4074,10 @@ class ToolCallRunner:
         on_live_done: ToolLiveDoneCallback | None = None,
     ) -> None:
         executions = []
-        for item in self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls)):
+        self.skipped_after_failure_count = 0
+        self.skipped_after_failure_key = ""
+        items = self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls))
+        for index, item in enumerate(items):
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
@@ -4139,6 +4143,10 @@ class ToolCallRunner:
                 requires_verification=outcome == "success" and requires_verification,
             )
             executions.append(execution)
+            if outcome == "failure" and error_type is not Cancellation:
+                self.skipped_after_failure_count = len(items) - index - 1
+                self.skipped_after_failure_key = result_key or _format_tool_call_summary(call)
+                break
             if error_type is Cancellation:
                 break
 
@@ -4940,13 +4948,16 @@ class Agent:
         "forget",
     }
     PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule", "forget"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"discard", "evidence", "hypothesis", "known", "stable_knowledge", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "stable_knowledge", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
     RECENT_TOOL_CALL_CHARS: ClassVar[int] = 72_000
-    EVIDENCE_TOOL_CALL_CHARS: ClassVar[int] = 96_000
-    RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 20
+    KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
+    RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 40
+    PENDING_OBSERVE_RESULTS: ClassVar[int] = 8
+    PENDING_OBSERVE_CHAR_RATIO: ClassVar[float] = 0.4
+    PENDING_OBSERVE_TOOL_TURNS: ClassVar[int] = 2
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
     def __init__(self, session: Session):
@@ -5076,8 +5087,8 @@ class Agent:
 
     def _format_recent_tool_call_context(self) -> str:
         if self.mode == AgentMode.OBSERVE and self.tool_context.pending_observe:
-            return self.tool_context.observe_context()
-        return self.tool_context.act_context()
+            return "\n\n".join(self.tool_context.pending_observe)
+        return "\n\n".join(self.tool_context.recent + self.tool_context.latest)
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()
@@ -5089,7 +5100,7 @@ class Agent:
 
     def _protected_tool_result_keys(self) -> set[str]:
         keys = self.blackboard.source_result_keys()
-        keys.update(self.tool_context.evidence_keys())
+        keys.update(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
         return keys
 
     def _remember_feedback_error(self, errors: list[str], text: str) -> None:
@@ -5164,11 +5175,11 @@ class Agent:
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
         if self._start_changes_goal(actions):
-            self.tool_context.evidence = []
+            self.tool_context.kept_results = []
             self.tool_context.pending_observe = []
             self.blackboard.hypotheses = []
         self.state_updater.apply(response)
-        forgotten = self.tool_context.forget_evidence(ToolResultContext.forget_result_keys_from_actions(actions))
+        forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
         if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
             self._mark_memory_checkpoint()
         return forgotten
@@ -5189,7 +5200,7 @@ class Agent:
     def _has_memory_update_action(self, actions: list[Json]) -> bool:
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "evidence" and _json_list(action.get("items")):
+            if action_type == "keep" and _source_from_json(action):
                 return True
             if action_type == "hypothesis" and _json_list(action.get("items")):
                 return True
@@ -5224,12 +5235,33 @@ class Agent:
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
-        if self.tool_context.queue_observation(
+        self.runtime.consecutive_tool_turns += 1
+        queued = self.tool_context.queue_observation(
             [block for block in self.tool_context.latest if ToolResultContext.is_full_block(block)],
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
-        ):
+        )
+        if queued and self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
+
+    def _should_observe_after_tools(self) -> bool:
+        pending = self.tool_context.pending_observe
+        if not pending:
+            return False
+        if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
+            return True
+        if len(pending) >= self.PENDING_OBSERVE_RESULTS:
+            return True
+        if len("\n\n".join(pending)) >= int(self.RECENT_TOOL_CALL_CHARS * self.PENDING_OBSERVE_CHAR_RATIO):
+            return True
+        return self.runtime.consecutive_tool_turns >= self.PENDING_OBSERVE_TOOL_TURNS
+
+    def _tool_failure_needs_observe(self, execution: ToolCallExecution) -> bool:
+        if execution.outcome == "success":
+            return False
+        if execution.error_type is not None and issubclass(execution.error_type, (ToolCallArgError, Cancellation)):
+            return False
+        return True
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)
@@ -5237,7 +5269,7 @@ class Agent:
             detail = self._format_tool_arg_error(execution)
             rule = "Rule: use the tool signature exactly."
             if execution.call.name in {EditTool.name(), ReplaceRangeTool.name(), ApplyPatchTool.name()}:
-                rule = "Rule: switch to ApplyPatch if edit args keep failing; otherwise use the tool signature exactly."
+                rule = "Rule: use ReplaceRange for read ranges, ApplyPatch for structural edits, and the exact tool signature."
             self._remember_agent_error(
                 "Error: tool call args invalid: "
                 + _format_tool_call_summary(execution.call)
@@ -5586,26 +5618,26 @@ class Agent:
         )
         if action_gate is not None:
             return True
-        forget_error = self._forget_evidence_error(ctx.actions)
+        forget_error = self._forget_tool_result_error(ctx.actions)
         if forget_error:
-            self._remember_agent_error("Error: forget is invalid: " + forget_error + ". Rule: forget only existing Evidence source keys.")
+            self._remember_agent_error("Error: forget is invalid: " + forget_error + ". Rule: forget only visible tool result source keys.")
             self._report_gate(
                 on_message,
-                "Retrying: forget only existing evidence keys.",
-                "Evidence_Gate: " + forget_error + ".",
+                "Retrying: forget only visible tool result keys.",
+                "ToolResult_Gate: " + forget_error + ".",
             )
             return True
         forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
         if forget_hypothesis_error:
             self._remember_agent_error(
-                "Error: forget would remove evidence for an active hypothesis: "
+                "Error: forget would remove a tool result used by an active hypothesis: "
                 + forget_hypothesis_error
                 + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
             )
             self._report_gate(
                 on_message,
-                "Retrying: close hypothesis before forgetting its evidence.",
-                "Evidence_Gate: " + forget_hypothesis_error + ".",
+                "Retrying: close hypothesis before forgetting its source result.",
+                "ToolResult_Gate: " + forget_hypothesis_error + ".",
             )
             return True
         plan_shape_error = self._plan_shape_error(ctx.actions)
@@ -5622,7 +5654,7 @@ class Agent:
             self._remember_agent_error(
                 "Error: repeated failed tool call is blocked: "
                 + repeated_tool_retry_error
-                + ". Rule: correct the args or switch tools; for edit failures, prefer ApplyPatch."
+                + ". Rule: correct the args or switch tools; for local edit failures, prefer ReplaceRange after Read."
             )
             self._report_gate(
                 on_message,
@@ -5850,6 +5882,14 @@ class Agent:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
             if report:
                 on_message(report)
+            if self.session.settings.debug and self.tool_runner.skipped_after_failure_count:
+                on_message(
+                    "Tool Calls Skipped: "
+                    + str(self.tool_runner.skipped_after_failure_count)
+                    + " after "
+                    + self.tool_runner.skipped_after_failure_key
+                    + " failed"
+                )
         self.compactor.maybe_compact()
         return True
 
@@ -5883,26 +5923,26 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
-        forget_error = self._forget_evidence_error(ctx.actions)
+        forget_error = self._forget_tool_result_error(ctx.actions)
         if forget_error:
-            self._remember_observe_error("Error: forget is invalid: " + forget_error + ". Rule: forget only existing Evidence source keys.")
+            self._remember_observe_error("Error: forget is invalid: " + forget_error + ". Rule: forget only visible tool result source keys.")
             self._report_gate(
                 on_message,
-                "Retrying: forget only existing evidence keys.",
-                "Evidence_Gate: " + forget_error + ".",
+                "Retrying: forget only visible tool result keys.",
+                "ToolResult_Gate: " + forget_error + ".",
             )
             return AgentRunResult()
         forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
         if forget_hypothesis_error:
             self._remember_observe_error(
-                "Error: forget would remove evidence for an active hypothesis: "
+                "Error: forget would remove a tool result used by an active hypothesis: "
                 + forget_hypothesis_error
                 + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
             )
             self._report_gate(
                 on_message,
-                "Retrying: close hypothesis before forgetting its evidence.",
-                "Evidence_Gate: " + forget_hypothesis_error + ".",
+                "Retrying: close hypothesis before forgetting its source result.",
+                "ToolResult_Gate: " + forget_hypothesis_error + ".",
             )
             return AgentRunResult()
         plan_shape_error = self._plan_shape_error(ctx.actions)
@@ -5915,7 +5955,7 @@ class Agent:
             )
             return AgentRunResult()
         if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
-            self._remember_observe_error("Error: cannot request new verification before observing latest results. Rule: extract evidence first.")
+            self._remember_observe_error("Error: cannot request new verification before observing latest results. Rule: keep or forget latest results first.")
             self._report_gate(
                 on_message,
                 "Retrying: observe latest results before new verification.",
@@ -5923,37 +5963,46 @@ class Agent:
             )
             return AgentRunResult()
         if not ctx.actions:
-            self._remember_observe_error("Error: observe returned no actions. Rule: select useful evidence or explicitly discard latest raw results with a reason.")
+            self._remember_observe_error("Error: observe returned no actions. Rule: keep useful tool results or forget latest raw results with a reason.")
             self._report_gate(
                 on_message,
-                "Retrying: select evidence or discard latest results.",
-                "Observe_Gate: empty actions are not a checkpoint; return evidence or discard.",
+                "Retrying: keep or forget latest results.",
+                "Observe_Gate: empty actions are not a checkpoint; return keep or forget.",
             )
             return AgentRunResult()
         observed_blocks = list(self.tool_context.pending_observe)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
-        missing_observe_keys = self._missing_observe_keys(ctx.actions, observed_blocks)
+        covered = {
+            key
+            for action in ctx.actions
+            if _json_str(action.get("type")) in {"keep", "forget"}
+            for key in _source_from_json(action)
+            if key.startswith("tr.")
+        }
+        missing_observe_keys = [key for key in ToolResultContext.blocks_by_key(observed_blocks) if key not in covered]
         if missing_observe_keys:
             self._remember_observe_error(
                 "Error: observe did not cover latest result keys: "
                 + ", ".join(missing_observe_keys)
-                + ". Rule: every latest result key must be covered by evidence or discard."
+                + ". Rule: every latest result key must be covered by keep or forget."
             )
             self._report_gate(
                 on_message,
-                "Retrying: cover every latest result key with evidence or discard.",
+                "Retrying: cover every latest result key with keep or forget.",
                 "Observe_Gate: missing coverage for result keys: " + ", ".join(missing_observe_keys) + ".",
             )
             return AgentRunResult()
         self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
-        self._emit_evidence_removed(forgotten_keys, on_message)
-        if self._has_observation_checkpoint_action(ctx.actions):
+        if forgotten_keys and on_message is not None:
+            on_message("Tool Results Forgotten: " + " ".join(forgotten_keys))
+        if any(_json_str(action.get("type")) in {"keep", "forget", "known", "stable_knowledge"} for action in ctx.actions):
             self.mode = AgentMode.ACT
-            evidence_keys = self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.EVIDENCE_TOOL_CALL_CHARS)
-            if evidence_keys and on_message is not None:
-                on_message("Evidence Updated: " + " ".join(evidence_keys))
+            self.runtime.consecutive_tool_turns = 0
+            kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
+            if kept_keys and on_message is not None:
+                on_message("Tool Results Kept: " + " ".join(kept_keys))
             self.tool_context.compact_observed(observed_blocks)
             self._mark_memory_checkpoint(observed_counter)
             self.observe_feedback_errors = []
@@ -5962,26 +6011,19 @@ class Agent:
         self._promote_required_verification(ctx)
         return AgentRunResult()
 
-    def _has_observation_checkpoint_action(self, actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) in {"discard", "evidence", "known", "stable_knowledge"} for action in actions)
-
-    def _missing_observe_keys(self, actions: list[Json], observed_blocks: list[str]) -> list[str]:
-        observed = list(ToolResultContext.blocks_by_key(observed_blocks))
-        covered = ToolResultContext.covered_observe_keys_from_actions(actions)
-        return [key for key in observed if key not in covered]
-
-    def _forget_evidence_error(self, actions: list[Json]) -> str:
+    def _forget_tool_result_error(self, actions: list[Json]) -> str:
         keys = ToolResultContext.forget_result_keys_from_actions(actions)
         if not any(_json_str(action.get("type")) == "forget" for action in actions):
             return ""
         if not keys:
             return "missing tr.* source"
-        missing = [key for key in keys if key not in self.tool_context.evidence_keys()]
-        return "not in Evidence: " + ", ".join(missing) if missing else ""
-
-    def _emit_evidence_removed(self, keys: list[str], on_message: MessageCallback | None) -> None:
-        if keys and on_message is not None:
-            on_message("Evidence Removed: " + " ".join(keys))
+        visible_keys = set(
+            ToolResultContext.blocks_by_key(
+                self.tool_context.kept_results + self.tool_context.pending_observe + self.tool_context.latest + self.tool_context.recent
+            )
+        )
+        missing = [key for key in keys if key not in visible_keys]
+        return "not in visible tool results: " + ", ".join(missing) if missing else ""
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
@@ -6016,7 +6058,7 @@ class Agent:
         if completion_plan_error:
             self.blackboard.goal_reached = False
             self._remember_agent_error(
-                "Error: returned goal.complete=true before Plan was complete. Rule: every existing Plan item must be done or blocked with context evidence before completion."
+                "Error: returned goal.complete=true before Plan was complete. Rule: every existing Plan item must be done or blocked with result context before completion."
             )
             self._report_gate(
                 on_message,
@@ -6102,6 +6144,7 @@ class Agent:
         self.agent_feedback_errors = []
         self.failed_tool_call_key = None
         self.failed_tool_call_count = 0
+        self.runtime.consecutive_tool_turns = 0
         self.tool_context.prune_recent(max_summaries=self.RECENT_TOOL_CALL_SUMMARIES, max_chars=self.RECENT_TOOL_CALL_CHARS)
         self.tool_context.pending_observe = []
         self._prune_tool_result_store()
@@ -6164,7 +6207,8 @@ class Agent:
         self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
-        self._emit_evidence_removed(forgotten_keys, on_message)
+        if forgotten_keys and on_message is not None:
+            on_message("Tool Results Forgotten: " + " ".join(forgotten_keys))
         if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
             message = ctx.user_rule_message or "Rule saved."
             self.session.append_conversation(AssistantMessage(content=message))
@@ -6188,6 +6232,7 @@ class Agent:
         ):
             return AgentRunResult()
 
+        self.runtime.consecutive_tool_turns = 0
         return self._finish_or_continue(ctx, on_message)
 
 
@@ -7175,12 +7220,16 @@ class AgentLoop:
         if message.startswith(("Plan Updated", "Known Updated", "Hypotheses Updated", "Plan + Known Updated", "Plan + Hypotheses Updated", "Hypotheses + Known Updated", "Plan + Hypotheses + Known Updated")):
             self._emit_segments(self._compact_state_segments(message), message)
             return
-        if message.startswith("Evidence Updated:"):
-            plain = "  evidence: " + " ".join("+" + key for key in message.removeprefix("Evidence Updated:").split())
+        if message.startswith("Tool Results Kept:"):
+            plain = "  results: " + " ".join("+" + key for key in message.removeprefix("Tool Results Kept:").split())
             self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
-        if message.startswith("Evidence Removed:"):
-            plain = "  evidence: " + " ".join("-" + key for key in message.removeprefix("Evidence Removed:").split())
+        if message.startswith("Tool Results Forgotten:"):
+            plain = "  results: " + " ".join("-" + key for key in message.removeprefix("Tool Results Forgotten:").split())
+            self._emit_segments([("ansibrightblack", plain + "\n")], plain)
+            return
+        if message.startswith("Tool Calls Skipped:"):
+            plain = "  skipped: " + message.removeprefix("Tool Calls Skipped:").strip()
             self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
         if self._is_tool_report(message):
@@ -7442,7 +7491,7 @@ def _memory_fact_from_json(value: JsonValue) -> str | None:
         return None
     if fact.startswith("<") and fact.endswith(">"):
         inner = fact[1:-1].strip().lower()
-        if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "evidence", "result", "context", "message", "goal")):
+        if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "result", "context", "message", "goal")):
             return None
     return fact
 
