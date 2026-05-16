@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.31 - 2026-05-16
+
+### Changed
+- Require a new user turn with retained task context to align via `start`, `goal`, or `plan` before running more tools.
+
+### Fixed
+- Removed an unused pytest import from bash tool tests.
+
 ## 0.3.30 - 2026-05-16
 
 ### Changed
