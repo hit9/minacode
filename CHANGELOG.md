@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.21 - 2026-05-16
+
+### Added
+- Added investigation hypotheses, including `dropped` for branches that are no longer worth tracking.
+- Added evidence forgetting so ruled-out or dropped branches can release old tool results from context.
+
+### Changed
+- Tightened completion gates, verification blockers, and compact state update grouping.
+- Simplified Search argument parsing and removed legacy `/knowledge update` behavior.
+- Made provider reasoning payload shape configurable.
+
 ## 0.3.20 - 2026-05-15
 
 ### Changed

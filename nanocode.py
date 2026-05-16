@@ -44,7 +44,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.20"
+__version__ = "0.3.21"
 
 
 JsonValue: TypeAlias = Any
