@@ -796,6 +796,20 @@ def test_tool_result_store_keeps_latest_256_items(tmp_path):
     assert session.state.tool_result_counter == 257
 
 
+def test_tool_result_store_trim_keeps_hypothesis_source_keys(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="kept branch", source=("tr.1",))]
+
+    for index in range(257):
+        agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
+
+    assert len(session.state.tool_result_store) == 256
+    assert "tr.1" in session.state.tool_result_store
+    assert "tr.2" not in session.state.tool_result_store
+    assert "tr.257" in session.state.tool_result_store
+
+
 def test_agent_prunes_tool_result_store_but_keeps_evidence_result_keys(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -804,12 +818,13 @@ def test_agent_prunes_tool_result_store_but_keeps_evidence_result_keys(tmp_path)
         key = "tr." + str(index + 1)
         session.state.tool_result_store[key] = nanocode.ToolResultItem(description=key, value="value")
     agent.tool_context.evidence = ['- ok tool=Read args=["sample.txt"] key=tr.1\n  output:\nvalue']
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="kept branch", source=("tr.2",))]
 
     agent._prune_tool_result_store()
 
     assert len(session.state.tool_result_store) == 50
     assert "tr.1" in session.state.tool_result_store
-    assert "tr.2" not in session.state.tool_result_store
+    assert "tr.2" in session.state.tool_result_store
     assert "tr.3" not in session.state.tool_result_store
     assert "tr.52" in session.state.tool_result_store
 

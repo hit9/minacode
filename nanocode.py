@@ -165,6 +165,8 @@ class HypothesisStatus(StrEnum):
 
 
 ALL_HYPOTHESIS_STATUSES = frozenset(HypothesisStatus)
+HYPOTHESIS_STATUS_SCHEMA = "|".join(status.value for status in HypothesisStatus)
+HYPOTHESIS_STATUS_TEXT = ", ".join(status.value for status in HypothesisStatus)
 
 
 @dataclass
@@ -391,6 +393,11 @@ class Blackboard:
     stable_knowledge: dict[str, list[str]] = field(default_factory=dict)
     verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
+
+    def source_result_keys(self) -> set[str]:
+        keys = {key for item in self.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
+        keys.update(key for item in self.hypotheses for key in item.source if key.startswith("tr."))
+        return keys
 
 
 @dataclass
@@ -2927,7 +2934,7 @@ CORE RULES:
 MEMORY:
 - Known = durable current-task facts.
 - Evidence = selected bounded raw tool results retained by observe mode.
-- Hypotheses = investigation directions with active, ruled_out, dropped, or confirmed status.
+- Hypotheses = investigation directions with status: { __hypothesis_status_text__ }.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
 - Tool results are volatile. Observe mode selects useful Evidence after tool batches.
 - Read Evidence as support context; do not output evidence in main mode.
@@ -3075,7 +3082,7 @@ ACTIONS:
 
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short evidence>"}]}
 
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"active|ruled_out|dropped|confirmed","source":["tr.1"],"context":null|"<short evidence>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":null|"<short evidence>"}]}
 
 {"type":"known","items":["<new durable current-task fact>"]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by evidence>"}]}
@@ -3223,7 +3230,7 @@ ACTION SEMANTICS
 - stable_knowledge: record stable external/technical knowledge. Use sparingly.
 - progress: brief user-facing status update in the latest user language.
 - tool: request one readonly discovery tool call.
-- verify: record planned verification logic or update verification confidence.
+- verify: record only concrete verification status from readonly discovery; put planned checks in the final proposed plan.
 - goal: complete the planning task with the final proposed plan.
 
 FINAL MESSAGE CONTRACT
@@ -3256,12 +3263,12 @@ Before completing, ensure the plan answers:
 CORE ACTION SHAPES
 {"type":"start","goal":"<planning goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
 {"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<evidence or reason>"}]}
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"active|ruled_out|dropped|confirmed","source":["tr.1"],"context":"<evidence or reason>"}]}
+{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":"<evidence or reason>"}]}
 {"type":"known","items":[{"source":["tr.1"],"text":"<durable fact from discovery>"}]}
 {"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
 {"type":"progress","message":"<brief user-facing progress update>"}
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question being answered>","args":["<arg>"]}
-{"type":"verify","items":[{"text":"<verification idea or check>","status":"todo|planned|blocked","context":"<why this check matters>"}]}
+{"type":"verify","kind":"other","method":"<check label>","criteria":["<what should pass>"],"status":"blocked","blocker":"user|environment|tool|unknown","context":"<why verification cannot run in plan mode>"}
 {"type":"goal","text":"<planning goal>","complete":true,"message_for_complete":"<proposed_plan>...</proposed_plan>"}
 
 TOOL SPECS:
@@ -3415,7 +3422,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 
 {"type": "known", "items": ["<new durable fact from latest results>"]} __END_ACTION__
 {"type": "known", "items": [{"source": ["tr.1"], "text": "<new durable fact from latest results>"}]} __END_ACTION__
-{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "active|ruled_out|dropped|confirmed", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
+{"type": "hypothesis", "items": [{"id": "h1", "text": "<possible direction>", "status": "{ __hypothesis_statuses__ }", "source": ["tr.1"], "context": "<evidence or reason>"}]} __END_ACTION__
 {"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
@@ -3494,6 +3501,8 @@ class PromptBuilder:
             (template or self.system_prompt_template)
             .replace("{ __tools__ }", self._format_tools(tool_classes))
             .replace("{ __tool_names__ }", "|".join(tool.name() for tool in tool_classes))
+            .replace("{ __hypothesis_statuses__ }", HYPOTHESIS_STATUS_SCHEMA)
+            .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
             .strip()
         )
 
@@ -4049,8 +4058,9 @@ class ToolCallDisplayFormatter:
 class ToolCallRunner:
     MAX_TOOL_RESULT_STORE_ITEMS: ClassVar[int] = 256
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, protected_result_keys: Callable[[], set[str]] | None = None):
         self.session = session
+        self.protected_result_keys = protected_result_keys or (lambda: set())
         self.latest_executions: list[ToolCallExecution] = []
 
     def execute(
@@ -4267,10 +4277,12 @@ class ToolCallRunner:
         return ""
 
     def _trim_tool_result_store(self) -> None:
-        overflow = len(self.session.state.tool_result_store) - self.MAX_TOOL_RESULT_STORE_ITEMS
-        if overflow <= 0:
-            return
-        for old_key in list(self.session.state.tool_result_store)[:overflow]:
+        keep = self.protected_result_keys()
+        for old_key in list(self.session.state.tool_result_store):
+            if len(self.session.state.tool_result_store) <= self.MAX_TOOL_RESULT_STORE_ITEMS:
+                return
+            if old_key in keep:
+                continue
             self.session.state.tool_result_store.pop(old_key)
 
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -4948,7 +4960,7 @@ class Agent:
             tool_context=self.tool_context,
         )
         self.model_client = ModelClient(session)
-        self.tool_runner = ToolCallRunner(session)
+        self.tool_runner = ToolCallRunner(session, self._protected_tool_result_keys)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
         self.compactor = ConversationCompactor(session, self.model_client, self.blackboard)
         self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
@@ -5067,13 +5079,17 @@ class Agent:
         return self.tool_context.act_context()
 
     def _prune_tool_result_store(self) -> None:
-        keep = {key for item in self.blackboard.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
-        keep.update(self.tool_context.evidence_keys())
+        keep = self._protected_tool_result_keys()
         while len(self.session.state.tool_result_store) > self.MAX_COMPLETED_GOAL_TOOL_RESULTS:
             key = next((item for item in self.session.state.tool_result_store if item not in keep), "")
             if not key:
                 return
             self.session.state.tool_result_store.pop(key)
+
+    def _protected_tool_result_keys(self) -> set[str]:
+        keys = self.blackboard.source_result_keys()
+        keys.update(self.tool_context.evidence_keys())
+        return keys
 
     def _remember_feedback_error(self, errors: list[str], text: str) -> None:
         text = " ".join(text.split())
@@ -5128,7 +5144,7 @@ class Agent:
 
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
         if self.mode == AgentMode.OBSERVE:
-            system_prompt = AGENT_OBSERVE_SYSTEM_PROMPT.strip()
+            system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT, tools=())
             user_prompt = self.build_observe_prompt()
         else:
             system_prompt = self.prompt_builder.system_prompt(
