@@ -3735,6 +3735,9 @@ class ModelClient:
                 return parsed, ""
             action_start = text.find("{", index)
             if action_start < 0:
+                progress = self._plain_progress_text(text[index:])
+                if progress:
+                    return [{"type": "progress", "text": progress}], ""
                 try:
                     decoder.raw_decode(text, index)
                 except json.JSONDecodeError as error:
@@ -3752,6 +3755,14 @@ class ModelClient:
             try:
                 value, index = decoder.raw_decode(text, index)
             except json.JSONDecodeError as error:
+                if actions:
+                    return [], str(error)
+                if self._should_repair_json_decode_error(str(error), text):
+                    repaired, repair_error = self._repair_single_json_action(text)
+                    if not repair_error:
+                        if prefix:
+                            repaired.insert(0, {"type": "progress", "text": prefix})
+                        return repaired, ""
                 return [], str(error)
             parsed, error = self._actions_from_json_value(value)
             if error:
@@ -3765,6 +3776,10 @@ class ModelClient:
             if index < len(text) and text[index] != "{":
                 next_action = text.find("{", index)
                 if next_action < 0:
+                    if self._should_repair_trailing_json_text(text[index:]):
+                        repaired, error = self._repair_single_json_action(text)
+                        if not error:
+                            return repaired, ""
                     return [], "unexpected text after JSON action"
                 progress = self._progress_text(text[index:next_action])
                 if progress:
@@ -3775,6 +3790,25 @@ class ModelClient:
         text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
         text = text.replace("```", "")
         return _shorten(" ".join(text.split()), 500)
+
+    def _plain_progress_text(self, text: str) -> str:
+        progress = self._progress_text(text)
+        if not progress or "{" in progress or "}" in progress:
+            return ""
+        starters = (
+            "let me ",
+            "i need ",
+            "i will ",
+            "i'll ",
+            "now ",
+            "next ",
+            "我需要",
+            "让我",
+            "我会",
+            "现在",
+            "接下来",
+        )
+        return progress if progress.lower().startswith(starters) else ""
 
     def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
         decoder = json.JSONDecoder()
@@ -3788,6 +3822,21 @@ class ModelClient:
         if not isinstance(value, list):
             raise ValueError("expected JSON action array")
         return value, len(text)
+
+    def _repair_single_json_action(self, text: str) -> tuple[list[Json], str]:
+        try:
+            value = json_repair.loads(text)
+        except Exception as error:
+            return [], str(error)
+        if isinstance(value, list):
+            return [], "unexpected text after JSON action"
+        return self._actions_from_json_value(value)
+
+    def _should_repair_json_decode_error(self, error: str, text: str) -> bool:
+        return "Invalid control character" in error or re.fullmatch(r".*[}\]]\s*[}\]]+\s*", text, re.DOTALL) is not None
+
+    def _should_repair_trailing_json_text(self, text: str) -> bool:
+        return re.fullmatch(r"\s*[}\]]+\s*", text) is not None
 
     def _has_action_frame_end(self, line: str) -> bool:
         return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None

@@ -1457,6 +1457,45 @@ def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_pa
     }
 
 
+def test_agent_request_converts_plain_unmarked_text_to_progress_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content("Let me read the StatusBar class and the streaming content logic.")
+
+    assert response == {
+        "actions": [
+            {"type": "progress", "text": "Let me read the StatusBar class and the streaming content logic."},
+        ]
+    }
+
+    response = client._parse_model_content("让我读取 `_format_line` 的当前状态，以找到确切插入点。")
+
+    assert response == {
+        "actions": [
+            {"type": "progress", "text": "让我读取 `_format_line` 的当前状态，以找到确切插入点。"},
+        ]
+    }
+
+
+def test_agent_request_rejects_cli_context_transcript_as_plain_progress(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content("}")
+
+    assert response["actions"] == []
+    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
+
+    response = client._parse_model_content("Now }")
+
+    assert response["actions"] == []
+    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
+
+    response = client._parse_model_content("  ctx: -tr.61 -tr.62")
+
+    assert response["actions"] == []
+    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
+
+
 def test_agent_request_converts_interleaved_unmarked_text_to_progress_action(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -1498,6 +1537,26 @@ def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path)
 
     assert response["actions"] == []
     assert "unexpected text after JSON action" in response["_format_error"]
+
+
+def test_agent_request_repairs_unescaped_newlines_in_unmarked_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('{"type":"chat","text":"line 1\n\n1. item\n2. item"}')
+
+    assert response == {
+        "actions": [
+            {"type": "chat", "text": "line 1\n\n1. item\n2. item"},
+        ]
+    }
+
+
+def test_agent_request_repairs_extra_closing_brace_after_unmarked_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('{"type":"progress","text":"ok"}}')
+
+    assert response == {"actions": [{"type": "progress", "text": "ok"}]}
 
 
 def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
