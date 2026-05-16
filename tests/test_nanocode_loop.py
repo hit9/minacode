@@ -212,9 +212,13 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
     segments = loop._tool_segments("[success] Read sample.txt 0:1")
+    keyed_segments = loop._tool_segments('[success] Search "sse|feed|history" glob=*.py path=. -> tr.2 | excerpt')
 
     assert ("ansigreen", "Read sample.txt 0:1\n") in segments
     assert all("ok " not in text for _, text in segments)
+    assert ("ansigreen", 'Search "sse|feed|history" glob=*.py path=.') in keyed_segments
+    assert ("ansibrightblack", " -> tr.2") in keyed_segments
+    assert ("ansibrightblack", " | excerpt") in keyed_segments
 
 
 def test_agent_loop_indents_top_level_tool_report(tmp_path):
@@ -240,7 +244,20 @@ def test_agent_loop_renders_evidence_update_as_weak_status(tmp_path):
 
     loop._print_message("Evidence Updated: tr.12 tr.15")
 
-    assert captured == ["  evidence: tr.12 tr.15"]
+    assert captured == ["  evidence: +tr.12 +tr.15"]
+
+
+def test_agent_loop_renders_evidence_removal_as_weak_status(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    captured = []
+    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
+
+    loop._print_message("Evidence Removed: tr.12 tr.15")
+
+    assert captured == ["  evidence: -tr.12 -tr.15"]
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):

@@ -426,6 +426,79 @@ def test_observe_reports_evidence_updated_keys(tmp_path):
     assert "Evidence Updated: tr.1" in messages
 
 
+def test_forget_removes_selected_evidence_but_keeps_known_source(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "debug branch")
+    agent.tool_context.evidence = [
+        '- ok tool=Read args=["a"] key=tr.1\n  output:\na',
+        '- ok tool=Read args=["b"] key=tr.2\n  output:\nb',
+    ]
+    agent.blackboard.known = [nanocode.KnownItem(text="a was ruled out.", source=("tr.1",))]
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "branch ruled out"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert "tr.1" not in agent.tool_context.evidence_context()
+    assert "tr.2" in agent.tool_context.evidence_context()
+    assert nanocode.KnownItem.source_of(agent.blackboard.known[0]) == ("tr.1",)
+    assert messages == ["Evidence Removed: tr.1"]
+
+
+def test_forget_rejects_missing_or_unknown_evidence_key(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "debug branch")
+    agent.tool_context.evidence = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.2"], "reason": "branch ruled out"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert "tr.1" in agent.tool_context.evidence_context()
+    assert any("not in Evidence: tr.2" in error for error in agent.agent_feedback_errors)
+    assert messages == ["Evidence_Gate: not in Evidence: tr.2."]
+
+
+def test_observe_forget_does_not_cover_latest_result_key(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.evidence = ['- ok tool=Read args=["old"] key=tr.1\n  output:\nold']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew']
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "old branch ruled out"}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "tr.1" in agent.tool_context.evidence_context()
+    assert any("tr.2" in error for error in agent.observe_feedback_errors)
+    assert messages == ["Observe_Gate: missing coverage for result keys: tr.2."]
+
+
+def test_observe_can_forget_old_evidence_while_discarding_latest(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.evidence = ['- ok tool=Read args=["old"] key=tr.1\n  output:\nold']
+    agent.tool_context.pending_observe = ['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew']
+    messages = []
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "forget", "source": ["tr.1"], "reason": "old branch ruled out"},
+                {"type": "discard", "source": ["tr.2"], "reason": "new result is not useful"},
+            ]
+        },
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.tool_context.evidence == []
+    assert agent.tool_context.pending_observe == []
+    assert messages == ["Evidence Removed: tr.1"]
+
+
 def test_evidence_tool_results_ignore_non_tool_sources(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -994,7 +1067,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
     assert len(captured_payloads) == 3
     assert [payload["stream"] for payload in captured_payloads] == [True, True, True]
-    assert messages[0].startswith("[success] Read sample.txt 0:1")
+    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
     assert "why:" not in messages[0]
     assert messages[-1] == "done"
 
@@ -2014,8 +2087,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert messages[0].startswith("[success] Read sample.txt 0:1")
-    assert "tr.1" not in messages[0]
+    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
     assert "why:" not in messages[0]
     assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"

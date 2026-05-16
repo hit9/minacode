@@ -982,6 +982,21 @@ class ToolResultContext:
     def evidence_keys(self) -> set[str]:
         return set(self.blocks_by_key(self.evidence))
 
+    def forget_evidence(self, keys: list[str]) -> list[str]:
+        wanted = set(keys)
+        if not wanted:
+            return []
+        kept = []
+        removed = []
+        for block in self.evidence:
+            key = self.result_key(block)
+            if key in wanted:
+                removed.append(key)
+            else:
+                kept.append(block)
+        self.evidence = kept
+        return list(dict.fromkeys(removed))
+
     def append_latest(self, executions: list[ToolCallExecution], *, max_summaries: int, max_chars: int) -> None:
         if not executions:
             return
@@ -1114,6 +1129,14 @@ class ToolResultContext:
             if _json_str(action.get("type")) == "discard":
                 covered.update(key for key in _source_from_json(action) if key.startswith("tr."))
         return covered
+
+    @staticmethod
+    def forget_result_keys_from_actions(actions: list[Json]) -> list[str]:
+        keys: list[str] = []
+        for action in actions:
+            if _json_str(action.get("type")) == "forget":
+                keys.extend(key for key in _source_from_json(action) if key.startswith("tr."))
+        return list(dict.fromkeys(keys))
 
 
 ConfirmationResult: TypeAlias = bool | str
@@ -2812,7 +2835,7 @@ OUTPUT CONTRACT:
 - No native/function tool calls.
 - Separate multiple actions with __END_ACTION__.
 - Tool actions must include name, intention, and args.
-- Valid action types are chat, start, goal, plan, known, stable_knowledge, progress, user_rule, tool, verify.
+- Valid action types are chat, start, goal, plan, known, stable_knowledge, progress, user_rule, tool, verify, forget.
 - Tool names like Read, Search, Edit, Git, and Recall are values for tool.name, not action types.
 
 LANGUAGE:
@@ -2843,6 +2866,7 @@ MEMORY:
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
 - Tool results are volatile. Observe mode selects useful Evidence after tool batches.
 - Read Evidence as support context; do not output evidence in main mode.
+- Use forget to remove old Evidence from future context after a branch is ruled out; it does not delete stored results, and needed conclusions must first be in Plan, Known, or Verify.
 - Save only settled decision-changing facts into Known.
 - Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
 - Do not use Known as a scratchpad; use it only for facts that still matter after current tool results disappear.
@@ -2873,19 +2897,22 @@ Choose the main next action type; include tightly related state updates only whe
    During investigation, prefer continuing with useful readonly tools over recording intermediate observations.
    If the next tool step is clear, do not stop after only Plan/Known; output the needed state update and tool actions in the same turn.
 
-5. tool
+5. forget
+   Use only when old Evidence is no longer useful because the branch was ruled out, superseded, or no longer affects the next decision.
+
+6. tool
    Execute only the next unfinished plan step.
    During ACT investigation, default to one broad but related readonly tool batch; go serial only when later args depend on earlier results.
    The batch should materially expand the information surface for the current plan step.
 
-6. verify
+7. verify
    After edits or explicit check/test/build requests, verify with the smallest relevant check.
    If the exact requested check already succeeded in recent results, record passed instead of rerunning.
 
-7. tool / plan
+8. tool / plan
    If verification failed, fix only the reported issue.
 
-8. goal
+9. goal
    Complete only when the goal is done, every Plan item is done/blocked with context, and verification passed or is blocked with clear context.
 
 ACTION FRONTIER:
@@ -2982,6 +3009,8 @@ ACTIONS:
 {"type":"progress","text":"<short progress update>"}
 
 {"type":"user_rule","text":"<long-term user behavior rule>","message":"<short acknowledgement>"}
+
+{"type":"forget","source":["tr.1"],"reason":"<why this Evidence no longer matters>"}
 
 {"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
 
@@ -3257,14 +3286,14 @@ Latest Raw Tool Results:
 --- Output ---
 
 Return JSON action frames only.
-Extract evidence only from Latest Raw Tool Results.
+Extract new evidence only from Latest Raw Tool Results.
 
 YOUR OUTPUT:
 """
 
 
 AGENT_OBSERVE_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
-Your ONLY job: extract evidence from the latest raw tool results.
+Your ONLY job: extract evidence from the latest raw tool results and forget stale Evidence.
 
 Must:
 - Return JSON action frames ONLY. Native/function tool calls are FORBIDDEN.
@@ -3273,6 +3302,7 @@ Must:
 - Use known only for settled durable task facts, not routine observations.
 - Record stable_knowledge only for new long-term reusable facts not already present in Stable Knowledge.
 - Use recent tool calls as volatile input; keep only evidence that affects the next ACT frontier: target selection, edit choice, verification, error repair, or completion decision.
+- Use forget to remove old Evidence from future context after a branch is ruled out; it does not delete stored results, does not cover latest raw results, and needed conclusions must be preserved first.
 - Discard routine success, duplicate listings, no-match searches, and other low-value noise unless it changes the next ACT frontier.
 - Verification pass/fail/block results are decision-changing; keep them as evidence until Verify has been recorded.
 - Most ordinary successful outputs should be discard, not evidence.
@@ -3289,6 +3319,7 @@ Allowed actions:
 - known: record current-task facts from latest results.
 - stable_knowledge: record rare reusable session codebase facts by category.
 - discard: explicitly discard latest raw results as noise.
+- forget: remove old Evidence from future context by source key.
 
 Output format (Strict)
 
@@ -3300,6 +3331,7 @@ If the entire output is one JSON action object, __END_ACTION__ may be omitted.
 {"type": "evidence", "items": [{"source": ["tr.1"], "text": "<useful support fact from latest results>"}]} __END_ACTION__
 {"type": "stable_knowledge", "items": [{"category": "stack|structure|workflow|convention|gotcha", "text": "<stable reusable session codebase fact>"}]} __END_ACTION__
 {"type": "discard", "source": ["tr.2"], "reason": "<why this latest raw result is not useful>"} __END_ACTION__
+{"type": "forget", "source": ["tr.3"], "reason": "<why this old Evidence no longer matters>"} __END_ACTION__
 """
 
 
@@ -3896,6 +3928,8 @@ class ToolCallDisplayFormatter:
     def _format_execution(cls, execution: ToolCallExecution) -> str:
         marker = "[success]" if execution.outcome == "success" else "[failure]"
         text = marker + " " + cls._format_call(execution.call)
+        if execution.result_key:
+            text += " -> " + execution.result_key
         if execution.outcome != "success":
             error = cls._compact_tool_error(execution.output)
             if error:
@@ -4720,9 +4754,10 @@ class Agent:
         "tool",
         "verify",
         "user_rule",
+        "forget",
     }
-    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"discard", "evidence", "known", "stable_knowledge"}
+    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"discard", "evidence", "known", "stable_knowledge", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
@@ -4938,14 +4973,16 @@ class Agent:
             return invalid_response
         return response
 
-    def apply_response(self, response: Json) -> None:
+    def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
         if self._start_changes_goal(actions):
             self.tool_context.evidence = []
             self.tool_context.pending_observe = []
         self.state_updater.apply(response)
+        forgotten = self.tool_context.forget_evidence(ToolResultContext.forget_result_keys_from_actions(actions))
         if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
             self._mark_memory_checkpoint()
+        return forgotten
 
     def _start_changes_goal(self, actions: list[Json]) -> bool:
         return any(
@@ -5306,6 +5343,7 @@ class Agent:
         progress_messages = self._progress_messages_from_actions(actions)
         has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
         has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
+        has_forget_action = any(_json_str(action.get("type")) == "forget" for action in actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
         return ResponseContext(
             response=response,
@@ -5325,7 +5363,7 @@ class Agent:
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
             has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
-            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action),
+            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action or has_forget_action),
         )
 
     def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
@@ -5346,6 +5384,15 @@ class Agent:
             feedback_message="Error: this step only accepts agent work actions.",
         )
         if action_gate is not None:
+            return True
+        forget_error = self._forget_evidence_error(ctx.actions)
+        if forget_error:
+            self._remember_agent_error("Error: forget is invalid: " + forget_error + ". Rule: forget only existing Evidence source keys.")
+            self._report_gate(
+                on_message,
+                "Retrying: forget only existing evidence keys.",
+                "Evidence_Gate: " + forget_error + ".",
+            )
             return True
         plan_shape_error = self._plan_shape_error(ctx.actions)
         if plan_shape_error:
@@ -5585,6 +5632,15 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
+        forget_error = self._forget_evidence_error(ctx.actions)
+        if forget_error:
+            self._remember_observe_error("Error: forget is invalid: " + forget_error + ". Rule: forget only existing Evidence source keys.")
+            self._report_gate(
+                on_message,
+                "Retrying: forget only existing evidence keys.",
+                "Evidence_Gate: " + forget_error + ".",
+            )
+            return AgentRunResult()
         plan_shape_error = self._plan_shape_error(ctx.actions)
         if plan_shape_error:
             self._remember_observe_error("Error: Plan is invalid: " + plan_shape_error + ". Rule: at most one Plan item may be doing.")
@@ -5626,8 +5682,9 @@ class Agent:
             )
             return AgentRunResult()
         self._emit_debug_frame_errors(response, on_message)
-        self.apply_response(response)
+        forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
+        self._emit_evidence_removed(forgotten_keys, on_message)
         if self._has_observation_checkpoint_action(ctx.actions):
             self.mode = AgentMode.ACT
             evidence_keys = self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.RECENT_TOOL_CALL_CHARS)
@@ -5648,6 +5705,19 @@ class Agent:
         observed = list(ToolResultContext.blocks_by_key(observed_blocks))
         covered = ToolResultContext.covered_observe_keys_from_actions(actions)
         return [key for key in observed if key not in covered]
+
+    def _forget_evidence_error(self, actions: list[Json]) -> str:
+        keys = ToolResultContext.forget_result_keys_from_actions(actions)
+        if not any(_json_str(action.get("type")) == "forget" for action in actions):
+            return ""
+        if not keys:
+            return "missing tr.* source"
+        missing = [key for key in keys if key not in self.tool_context.evidence_keys()]
+        return "not in Evidence: " + ", ".join(missing) if missing else ""
+
+    def _emit_evidence_removed(self, keys: list[str], on_message: MessageCallback | None) -> None:
+        if keys and on_message is not None:
+            on_message("Evidence Removed: " + " ".join(keys))
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
@@ -5815,8 +5885,9 @@ class Agent:
             return chat_result
 
         self._emit_debug_frame_errors(response, on_message)
-        self.apply_response(response)
+        forgotten_keys = self.apply_response(response)
         self._emit_state_and_progress(ctx, on_message)
+        self._emit_evidence_removed(forgotten_keys, on_message)
         if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
             message = ctx.user_rule_message or "Rule saved."
             self.session.append_conversation(AssistantMessage(content=message))
@@ -6834,7 +6905,11 @@ class AgentLoop:
             self._emit_segments(self._compact_state_segments(message), message)
             return
         if message.startswith("Evidence Updated:"):
-            plain = "  evidence: " + message.removeprefix("Evidence Updated:").strip()
+            plain = "  evidence: " + " ".join("+" + key for key in message.removeprefix("Evidence Updated:").split())
+            self._emit_segments([("ansibrightblack", plain + "\n")], plain)
+            return
+        if message.startswith("Evidence Removed:"):
+            plain = "  evidence: " + " ".join("-" + key for key in message.removeprefix("Evidence Removed:").split())
             self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
         if self._is_tool_report(message):
@@ -7008,9 +7083,22 @@ class AgentLoop:
             if self._is_tool_call_line(line):
                 marker, _, tail = line.partition(" ")
                 status_style = "ansigreen" if marker == "[success]" else "ansired"
-                segments.append((status_style, tail + "\n"))
+                segments.extend(self._tool_call_segments(tail, status_style))
             else:
                 segments.extend([("ansibrightblack", line + "\n")])
+        return segments
+
+    def _tool_call_segments(self, tail: str, status_style: str) -> list[tuple[str, str]]:
+        head, sep, rest = tail.partition(" -> ")
+        if not sep:
+            return [(status_style, tail + "\n")]
+        key, detail_sep, detail = rest.partition(" | ")
+        detail_text = detail_sep + detail if detail_sep else ""
+        detail_style = "ansibrightblack" if detail == "excerpt" else status_style
+        segments = [(status_style, head), ("ansibrightblack", sep + key)]
+        if detail_text:
+            segments.append((detail_style, detail_text))
+        segments.append(("", "\n"))
         return segments
 
     def _verify_style(self, badge: str) -> str:
