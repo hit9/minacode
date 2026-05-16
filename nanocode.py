@@ -823,6 +823,8 @@ class RuntimeState:
     current_model_call_reasoning_label: str = ""
     current_model_call_activity: str = ""
     current_model_call_has_content: bool = False
+    current_model_call_streaming_chars: int = 0
+    last_model_call_rate: float = 0.0
     status_notice: str = ""
     status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
@@ -3472,12 +3474,14 @@ class ModelClient:
                 "User-Agent": HTTP_USER_AGENT,
             },
         )
+        request_elapsed = 0.0
         try:
             self.session.state.current_model_call_started_at = time.monotonic()
             self.session.state.current_model_call_label = model
             self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
             self.session.state.current_model_call_activity = activity
             self.session.state.current_model_call_has_content = False
+            self.session.state.current_model_call_streaming_chars = 0
             request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
@@ -3497,11 +3501,16 @@ class ModelClient:
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
+                if self.session.state.current_model_call_started_at > 0:
+                    request_elapsed = max(0.0, time.monotonic() - self.session.state.current_model_call_started_at)
+                    if request_elapsed > 0 and self.session.state.current_model_call_streaming_chars > 0:
+                        self.session.state.last_model_call_rate = self._estimate_stream_rate(request_elapsed)
                 self.session.state.current_model_call_started_at = 0.0
                 self.session.state.current_model_call_label = ""
                 self.session.state.current_model_call_reasoning_label = ""
                 self.session.state.current_model_call_activity = ""
                 self.session.state.current_model_call_has_content = False
+                self.session.state.current_model_call_streaming_chars = 0
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
         except (socket.timeout, TimeoutError):
@@ -3522,7 +3531,7 @@ class ModelClient:
             except json.JSONDecodeError:
                 raise LLMError("API response is not JSON: " + _shorten(body))
 
-        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config)
+        self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
         if not stream:
             content = self._message_content(result)
         if content is None:
@@ -3570,7 +3579,11 @@ class ModelClient:
                 self.session.state.current_model_call_has_content = True
                 self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
             parts.append(content)
+            self.session.state.current_model_call_streaming_chars += len(content)
         return "".join(parts), usage
+
+    def _estimate_stream_rate(self, elapsed: float) -> float:
+        return self.session.state.current_model_call_streaming_chars / 4 / elapsed if elapsed > 0 else 0.0
 
     def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
         remaining = request_deadline - time.monotonic()
@@ -3908,10 +3921,12 @@ class ModelClient:
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
-    def _record_usage(self, usage: Json, config: ProviderConfig) -> None:
+    def _record_usage(self, usage: Json, config: ProviderConfig, *, elapsed: float = 0.0) -> None:
         prompt_tokens = self._json_int(usage.get("prompt_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
+        if completion_tokens > 0 and elapsed > 0:
+            self.session.state.last_model_call_rate = completion_tokens / elapsed
         self.session.state.last_prompt_tokens = prompt_tokens
         self.session.state.last_completion_tokens = completion_tokens
         self.session.state.last_total_tokens = total_tokens
@@ -6752,21 +6767,27 @@ class StatusBar:
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)
         session_tokens = _format_count(session.state.session_total_tokens)
-        tokens = "last:" + last_tokens + " session:" + session_tokens
-        parts = [model + " (" + reasoning + ")" + modes, "ctx:" + context, "tools:" + str(session.state.turn_tool_calls), "tok:" + tokens]
+        rate = session.state.last_model_call_rate
+        token_summary = "last:" + last_tokens + " sess:" + session_tokens
+        parts = [model + " (" + reasoning + ")" + modes, "ctx:" + context, "tool:" + str(session.state.turn_tool_calls), "tok:" + token_summary]
         if show_elapsed:
-            parts.append(f"{turn_elapsed:.1f}s")
+            parts.append(f"turn:{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
             activity = self._activity_label(session.state.current_model_call_activity)
             if session.state.current_model_call_has_content:
                 activity += "*"
+            elapsed = max(0.0, now - session.state.current_model_call_started_at)
+            if session.state.current_model_call_has_content and elapsed > 0:
+                rate = session.state.current_model_call_streaming_chars / 4 / elapsed
             parts.append(
                 activity
                 + "("
                 + str(session.state.turn_model_calls)
                 + "):"
-                + f"{max(0.0, now - session.state.current_model_call_started_at):.1f}s"
+                + f"{elapsed:.1f}s"
             )
+        if rate > 0:
+            parts[3] += " " + _format_count(int(rate)) + "t/s"
         if session.state.status_notice and session.state.status_notice_until > now:
             parts.append(session.state.status_notice)
         return " | ".join(parts)

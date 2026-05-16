@@ -1143,6 +1143,30 @@ def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, m
     assert timers[-1] == 0
 
 
+def test_agent_request_records_stream_rate_from_usage(tmp_path, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            yield ("data: " + json.dumps({"choices": [{"delta": {"content": '{"type":"message","text":"ok"}'}}]}) + "\n").encode("utf-8")
+            yield ("data: " + json.dumps({"choices": [], "usage": {"completion_tokens": 20, "total_tokens": 30}}) + "\n").encode("utf-8")
+            yield b"data: [DONE]\n"
+
+    times = [100.0, 100.0, 100.0, 102.0]
+    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(nanocode.time, "monotonic", lambda: times.pop(0) if times else 102.0)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+
+    response = Agent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert session.state.last_model_call_rate == 10.0
+
+
 def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monkeypatch):
     class FakeResponse:
         def __enter__(self):
