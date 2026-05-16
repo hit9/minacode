@@ -3677,9 +3677,10 @@ class ModelClient:
 
     def _normalize_tool_type(self, action: Json) -> None:
         action_type = _json_str(action.get("type"))
-        if action_type in TOOL_REGISTRY:
+        tool_name = next((name for name in TOOL_REGISTRY if name.lower() == action_type.lower()), "") if action_type else ""
+        if tool_name:
             action["type"] = "tool"
-            action.setdefault("name", action_type)
+            action.setdefault("name", tool_name)
 
     def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
         actions: list[Json] = []

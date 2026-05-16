@@ -1428,13 +1428,15 @@ def test_agent_request_normalizes_tool_name_as_action_type(tmp_path):
 
     response = client._parse_model_content(
         '{"type":"ListDir","intention":"list root","args":["."]}\n'
-        '{"type":"Search","intention":"find tests","args":["pytest","path=.", "context=2"]}'
+        '{"type":"search","intention":"find tests","args":["pytest","path=.", "context=2"]}\n'
+        '{"type":"recall","intention":"recall result","args":["tr.1"]}'
     )
 
     assert response == {
         "actions": [
             {"type": "tool", "name": "ListDir", "intention": "list root", "args": ["."]},
             {"type": "tool", "name": "Search", "intention": "find tests", "args": ["pytest", "path=.", "context=2"]},
+            {"type": "tool", "name": "Recall", "intention": "recall result", "args": ["tr.1"]},
         ]
     }
 
