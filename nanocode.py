@@ -4898,7 +4898,6 @@ class Agent:
     KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
     RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 40
     PENDING_OBSERVE_RESULTS: ClassVar[int] = 8
-    PENDING_OBSERVE_CHAR_RATIO: ClassVar[float] = 0.4
     PENDING_OBSERVE_TOOL_TURNS: ClassVar[int] = 2
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
@@ -5205,8 +5204,6 @@ class Agent:
         if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
             return True
         if len(pending) >= self.PENDING_OBSERVE_RESULTS:
-            return True
-        if len("\n\n".join(pending)) >= int(self.RECENT_TOOL_CALL_CHARS * self.PENDING_OBSERVE_CHAR_RATIO):
             return True
         return self.runtime.consecutive_tool_turns >= self.PENDING_OBSERVE_TOOL_TURNS
 
