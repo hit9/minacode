@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.29 - 2026-05-16
+
+### Fixed
+- Ignored code-fence-only text when converting interleaved model output into progress actions.
+
 ## 0.3.28 - 2026-05-16
 
 ### Changed
