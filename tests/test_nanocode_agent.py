@@ -218,6 +218,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.RECENT_TOOL_CALL_SUMMARIES = 2
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 4
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
@@ -2446,7 +2447,7 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
 
     assert result.done is False
     assert session.state.tool_result_counter == 2
-    assert any("repeated failed tool call is blocked" in error for error in agent.observe_feedback_errors)
+    assert any("repeated failed tool call is blocked" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_execute_bash_does_not_require_verification(tmp_path):
