@@ -352,11 +352,19 @@ def test_search_tool_defaults_to_regex(tmp_path):
     assert "* sample.py:1: class SearchTool:" in result
 
 
-def test_search_tool_rejects_multiline_regex(tmp_path):
+def test_search_tool_supports_multiline_regex(tmp_path, monkeypatch):
+    (tmp_path / "sample.py").write_text("@dataclass\nclass State:\n    pass\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
-    with pytest.raises(ToolCallError, match="multiline regex is not supported"):
-        SearchTool.make(session, ["^@dataclass\nclass Session", "nanocode.py", "context=2"])
+    tool = SearchTool.make(session, [r"@dataclass.*\nclass.*State", "sample.py", "context=1"])
+    result = tool.call()
+
+    assert tool.pattern == "@dataclass.*\nclass.*State"
+    assert "* engine: python-multiline" in result
+    assert "* sample.py:1: @dataclass class State" in result
+    assert "  > 1: @dataclass" in result
+    assert "    2: class State:" in result
 
 
 def test_search_tool_rejects_invalid_context(tmp_path):

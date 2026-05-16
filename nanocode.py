@@ -1670,7 +1670,7 @@ class SearchTool(Tool):
     MAX_CONTEXT_LINES: ClassVar[int] = 30
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Case-insensitive regex search before Read; use A|B|C for alternatives.",
+        "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
@@ -1713,8 +1713,7 @@ class SearchTool(Tool):
         pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
         if not pattern:
             raise ToolCallArgError("pattern cannot be empty")
-        if "\n" in pattern:
-            raise ToolCallArgError("multiline regex is not supported; Search is line-oriented. Search each line separately or Read a nearby range.")
+        pattern = pattern.replace("\\n", "\n").replace("\\r", "\r")
         target_path_arg = "."
         glob_pattern = ""
         context_lines = cls.CONTEXT_LINES
@@ -1863,7 +1862,9 @@ class SearchTool(Tool):
                     yield path
 
     def _make_match(self, path: str, line_number: int, text: str) -> Match:
-        return self.Match(path=path, line_number=line_number, text=text[:300], context=self._read_match_context(path, line_number))
+        text = text.rstrip("\n")
+        preview = _shorten(" ".join(text.split()), 300) if "\n" in text or "\r" in text else text[:300]
+        return self.Match(path=path, line_number=line_number, text=preview, context=self._read_match_context(path, line_number))
 
     def _read_match_context(self, path: str, line_number: int) -> list[tuple[int, str]]:
         if line_number <= 0:
@@ -1902,6 +1903,8 @@ class SearchTool(Tool):
 
     def _rg_command(self, rg: str, *, pcre2: bool = False) -> list[str]:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
+        if self._is_multiline():
+            cmd.extend(["-U", "--multiline-dotall"])
         if pcre2:
             cmd.append("--pcre2")
         cmd.append("-i")
@@ -1955,8 +1958,13 @@ class SearchTool(Tool):
         text = stderr.lower()
         return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
+    def _is_multiline(self) -> bool:
+        return "\n" in self.pattern or "\r" in self.pattern
+
     def _call_python(self) -> str:
         matches = []
+        if self._is_multiline():
+            return self._call_python_multiline()
         for path in self._iter_files():
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
@@ -1973,6 +1981,28 @@ class SearchTool(Tool):
                 continue
 
         return self._format_result("python", matches, False)
+
+    def _call_python_multiline(self) -> str:
+        matches = []
+        flags = re.IGNORECASE | re.MULTILINE | re.DOTALL
+        try:
+            regex = re.compile(self.pattern, flags)
+        except re.error as error:
+            raise ToolCallArgError("invalid regex: " + str(error))
+        for path in self._iter_files():
+            try:
+                if os.path.getsize(path) > self.MAX_FILE_BYTES:
+                    continue
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                for match in regex.finditer(content):
+                    line_number = content.count("\n", 0, match.start()) + 1
+                    matches.append(self._make_match(path, line_number, match.group(0)))
+                    if len(matches) >= self.MAX_MATCHES:
+                        return self._format_result("python-multiline", matches, True)
+            except OSError:
+                continue
+        return self._format_result("python-multiline", matches, False)
 
     def _line_matches(self, text: str) -> bool:
         try:
