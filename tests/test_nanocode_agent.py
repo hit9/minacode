@@ -702,7 +702,7 @@ def test_observe_known_source_does_not_cover_result_key(tmp_path):
 def test_evidence_tool_results_respect_char_budget(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.mode = nanocode.AgentMode.OBSERVE
-    agent.RECENT_TOOL_CALL_CHARS = 100
+    agent.EVIDENCE_TOOL_CALL_CHARS = 100
     agent.tool_context.pending_observe = [
         '- ok tool=Read args=["a"] key=tr.1\n  output:\n' + ("a" * 30),
         '- ok tool=Read args=["b"] key=tr.2\n  output:\n' + ("b" * 30),

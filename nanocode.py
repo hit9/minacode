@@ -4944,7 +4944,8 @@ class Agent:
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
-    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 96_000
+    RECENT_TOOL_CALL_CHARS: ClassVar[int] = 72_000
+    EVIDENCE_TOOL_CALL_CHARS: ClassVar[int] = 96_000
     RECENT_TOOL_CALL_SUMMARIES: ClassVar[int] = 20
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
 
@@ -5950,7 +5951,7 @@ class Agent:
         self._emit_evidence_removed(forgotten_keys, on_message)
         if self._has_observation_checkpoint_action(ctx.actions):
             self.mode = AgentMode.ACT
-            evidence_keys = self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.RECENT_TOOL_CALL_CHARS)
+            evidence_keys = self.tool_context.select_evidence(ctx.actions, observed_blocks, max_chars=self.EVIDENCE_TOOL_CALL_CHARS)
             if evidence_keys and on_message is not None:
                 on_message("Evidence Updated: " + " ".join(evidence_keys))
             self.tool_context.compact_observed(observed_blocks)
