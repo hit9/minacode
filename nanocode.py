@@ -822,6 +822,7 @@ class RuntimeState:
     current_model_call_label: str = ""
     current_model_call_reasoning_label: str = ""
     current_model_call_activity: str = ""
+    current_model_call_has_content: bool = False
     status_notice: str = ""
     status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
@@ -3444,6 +3445,7 @@ class ModelClient:
             self.session.state.current_model_call_label = model
             self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
             self.session.state.current_model_call_activity = activity
+            self.session.state.current_model_call_has_content = False
             request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
             previous_handler = signal.getsignal(signal.SIGALRM)
             signal.signal(signal.SIGALRM, self._timeout_handler)
@@ -3467,6 +3469,7 @@ class ModelClient:
                 self.session.state.current_model_call_label = ""
                 self.session.state.current_model_call_reasoning_label = ""
                 self.session.state.current_model_call_activity = ""
+                self.session.state.current_model_call_has_content = False
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
         except (socket.timeout, TimeoutError):
@@ -3532,6 +3535,7 @@ class ModelClient:
                 continue
             if not first_content_seen:
                 first_content_seen = True
+                self.session.state.current_model_call_has_content = True
                 self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
             parts.append(content)
         return "".join(parts), usage
@@ -6644,8 +6648,11 @@ class StatusBar:
         if show_elapsed:
             parts.append(f"{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
+            activity = self._activity_label(session.state.current_model_call_activity)
+            if session.state.current_model_call_has_content:
+                activity += "*"
             parts.append(
-                self._activity_label(session.state.current_model_call_activity)
+                activity
                 + "("
                 + str(session.state.turn_model_calls)
                 + "):"

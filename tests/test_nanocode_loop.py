@@ -174,6 +174,10 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     assert "active-model (low)" in text
     assert "working(2):0.6s" in text
 
+    session.state.current_model_call_has_content = True
+    assert "working*(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+    session.state.current_model_call_has_content = False
+
     session.state.current_model_call_activity = "observe"
     assert "observing(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
