@@ -5515,6 +5515,15 @@ class Agent:
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)
+        if execution.error_type is Cancellation:
+            detail = " ".join(execution.output.split())
+            detail = detail.removeprefix("Cancelled: ")
+            self._remember_agent_error(
+                self._error(
+                    "tool call was cancelled: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".",
+                    "do not repeat it unchanged; follow the cancellation or refusal reason.",
+                )
+            )
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
             rule = self.RULE_TOOL_SIGNATURE

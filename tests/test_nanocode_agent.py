@@ -2602,6 +2602,8 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     assert path.read_text(encoding="utf-8") == "old\n"
     assert session.state.conversation == []
     assert os.path.isdir(session.tool_results_dir())
+    assert any("please inspect tests first" in error for error in agent.agent_feedback_errors)
+    assert "please inspect tests first" in agent.build_user_prompt()
 
 
 def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
