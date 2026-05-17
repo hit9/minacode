@@ -1073,7 +1073,6 @@ def _tool_call_args_key(args: list[JsonValue]) -> tuple[str, ...]:
 class ToolResultContext:
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
-    pending_observe: list[str] = field(default_factory=list)
     kept_results: list[str] = field(default_factory=list)
 
     def forget_results(self, keys: list[str]) -> list[str]:
@@ -1104,7 +1103,6 @@ class ToolResultContext:
             return compacted
 
         self.kept_results = remove_blocks(self.kept_results)
-        self.pending_observe = remove_blocks(self.pending_observe)
         self.latest = compact_blocks(self.latest)
         self.recent = compact_blocks(self.recent)
         return list(dict.fromkeys(removed))
@@ -1128,37 +1126,35 @@ class ToolResultContext:
         retained = self.blocks_by_key(self.kept_results)
         return [key for key in wanted if key in selected and key in retained]
 
-    def append_latest(self, executions: list[ToolCallExecution], *, max_summaries: int, max_chars: int) -> None:
+    def append_latest(self, executions: list[ToolCallExecution], *, max_summaries: int, max_chars: int, checkpoint: int) -> None:
         if not executions:
             return
-        self.append_recent(self.latest, max_summaries=max_summaries, max_chars=max_chars)
+        self.append_recent(self.latest, max_summaries=max_summaries, max_chars=max_chars, checkpoint=checkpoint)
         self.latest = [self.format_execution(execution) for execution in executions]
-        self.prune_recent(max_summaries=max_summaries, max_chars=max_chars)
+        self.prune_recent(max_summaries=max_summaries, max_chars=max_chars, checkpoint=checkpoint)
 
-    def append_recent(self, blocks: list[str], *, max_summaries: int, max_chars: int) -> None:
+    def append_recent(self, blocks: list[str], *, max_summaries: int, max_chars: int, checkpoint: int) -> None:
         if not blocks:
             return
         self.recent.extend(blocks)
-        self.prune_recent(max_summaries=max_summaries, max_chars=max_chars)
+        self.prune_recent(max_summaries=max_summaries, max_chars=max_chars, checkpoint=checkpoint)
 
-    def prune_recent(self, *, max_summaries: int, max_chars: int) -> None:
-        self.recent = [self.compact_block(block) for block in self.recent]
-        del self.recent[: max(0, len(self.recent) - max_summaries)]
-        latest = [self.compact_block(block) for block in self.latest]
+    def prune_recent(self, *, max_summaries: int, max_chars: int, checkpoint: int) -> None:
+        def compact_if_observed(block: str) -> str:
+            return block if self._needs_reduction(block, checkpoint) else self.compact_block(block)
+
+        self.recent = [compact_if_observed(block) for block in self.recent]
+        while len(self.recent) > max_summaries:
+            index = next((i for i, block in enumerate(self.recent) if not self._needs_reduction(block, checkpoint)), -1)
+            if index < 0:
+                break
+            del self.recent[index]
+        latest = [compact_if_observed(block) for block in self.latest]
         while self.recent and len("\n\n".join(self.recent + latest)) > max_chars:
-            del self.recent[0]
-
-    def queue_observation(self, blocks: list[str], *, checkpoint: int) -> bool:
-        queued = {self.result_counter(block) for block in self.pending_observe}
-        for block in blocks:
-            counter = self.result_counter(block)
-            if counter > checkpoint and counter not in queued:
-                self.pending_observe.append(block)
-                queued.add(counter)
-        return bool(self.pending_observe)
-
-    def mark_checkpoint(self, checkpoint: int) -> None:
-        self.pending_observe = [block for block in self.pending_observe if self.result_counter(block) > checkpoint]
+            index = next((i for i, block in enumerate(self.recent) if not self._needs_reduction(block, checkpoint)), -1)
+            if index < 0:
+                break
+            del self.recent[index]
 
     def compact_observed(self, observed_blocks: list[str]) -> None:
         observed = {self.result_counter(block) for block in observed_blocks}
@@ -1174,20 +1170,25 @@ class ToolResultContext:
         self.latest = [compact(block) for block in self.latest]
 
     def act_blocks(self) -> list[str]:
-        # Pending observe blocks are unresolved raw results. Keep them visible to
-        # ACT until observe explicitly keeps/forgets them; otherwise an older
-        # pending result can degrade to a compact recent summary before observe
-        # gets a chance to select it.
         latest_keys = set(self.blocks_by_key(self.latest))
-        pending = [block for block in self.pending_observe if self.result_key(block) not in latest_keys]
-        raw_keys = set(self.blocks_by_key(pending)) | latest_keys
-        recent = [block for block in self.recent if self.result_key(block) not in raw_keys]
-        return recent + pending + self.latest
+        return [block for block in self.recent if self.result_key(block) not in latest_keys] + self.latest
 
-    def visible_counter(self, mode: AgentMode) -> int:
-        if mode == AgentMode.OBSERVE and self.pending_observe:
-            return self.max_counter(self.pending_observe)
+    def unreduced_blocks(self, checkpoint: int) -> list[str]:
+        seen: set[str] = set()
+        blocks = []
+        for block in self.recent + self.latest:
+            key = self.result_key(block)
+            if key and key not in seen and self._needs_reduction(block, checkpoint):
+                blocks.append(block)
+                seen.add(key)
+        return blocks
+
+    def visible_counter(self) -> int:
         return self.max_counter(self.recent + self.latest)
+
+    @classmethod
+    def _needs_reduction(cls, block: str, checkpoint: int) -> bool:
+        return cls.is_full_block(block) and cls.result_counter(block) > checkpoint
 
     @classmethod
     def blocks_by_key(cls, blocks: list[str]) -> dict[str, str]:
@@ -2777,13 +2778,13 @@ CORE RULES:
 - Do not store task facts, project facts, tool results, or temporary errors as User Rules.
 
 MEMORY:
-- Known = durable current-task facts.
+- Known = settled current-task facts that affect the current goal.
 - Kept Tool Results = selected bounded raw tool results retained in context.
 - Hypotheses = investigation directions with status: { __hypothesis_status_text__ }.
 - Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
-- Tool results are volatile. ACT sees latest/recent raw results directly; small results can stay there until observe mode is triggered.
+- Tool results are volatile. ACT sees latest/recent raw results directly; small results can stay there until the result reducer runs.
 - Read Kept Tool Results and Recent Tool Calls as support context; do not restate raw results in main mode.
-- Observe is the primary path for batch result cleanup: it keeps useful pending results and forgets noise.
+- Observe is a result reducer: it keeps useful raw results and forgets noise.
 - ACT must not keep tool results. In ACT, use forget only when the current decision already proves a visible result is no longer useful; it does not delete stored results, logs, or Recall ability, and needed conclusions must first be in Plan, Known, or Verify.
 - Save only settled decision-changing facts into Known.
 - Do not store intentions, TODOs, guesses, user requests, or next steps in Known.
@@ -2834,6 +2835,8 @@ Choose the main next action type; include tightly related state updates only whe
    The batch should materially expand the information surface for the current plan step.
 
 7. verify
+   Match verification strength to the task:
+   none = simple chat or explanation; light = static/read confirmation; tool = test/lint/build/search; user = visual or manual confirmation.
    After edits or explicit check/test/build requests, verify with the smallest relevant check.
    If the exact requested check already succeeded in recent results, record passed instead of rerunning.
 
@@ -2889,6 +2892,7 @@ TARGET DISCOVERY:
 VERIFICATION:
 - Verify directly. There is no separate verification agent.
 - Use the smallest relevant tool call.
+- Verification strength should match risk: none for simple answers, light for read/static confirmation, tool for code changes or requested checks, user when human confirmation is required.
 - Verify action must include:
   - kind
   - method
@@ -3067,7 +3071,7 @@ DISCOVERY STRATEGY
 1. For a new Task Code, start with one concise planning goal and 2-4 discovery steps.
 2. Search for owners before reading large files.
 3. Prefer support from code, tests, docs, and recent relevant Git history.
-4. After tool results, use latest raw results and Kept Tool Results; use known only for settled durable conclusions.
+4. After tool results, use latest raw results and Kept Tool Results; use known for settled current-task facts and stable_knowledge only for rare reusable codebase facts.
 5. Use stable_knowledge sparingly for broadly true technical facts that are not repository-specific.
 6. Update plan status as discovery progresses.
 7. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
@@ -3237,8 +3241,8 @@ YOUR OUTPUT:
 """
 
 
-AGENT_OBSERVE_SYSTEM_PROMPT = """You are the coding agent in an AI coding assistant.
-Your main job: batch-clean latest raw tool results by keeping useful ones and forgetting noise.
+AGENT_OBSERVE_SYSTEM_PROMPT = """You are nanocode's tool-result reducer.
+Your job: batch-clean latest raw tool results by keeping useful ones and forgetting noise.
 You may record known, hypothesis, or stable_knowledge only when preserving a necessary conclusion before forgetting.
 
 Must:
@@ -5095,8 +5099,10 @@ class Agent:
         self.blackboard.verification_required = False
 
     def _format_recent_tool_call_context(self) -> str:
-        if self.mode == AgentMode.OBSERVE and self.tool_context.pending_observe:
-            return "\n\n".join(self.tool_context.pending_observe)
+        if self.mode == AgentMode.OBSERVE:
+            blocks = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
+            if blocks:
+                return "\n\n".join(blocks)
         return "\n\n".join(self.tool_context.act_blocks())
 
     def _prune_tool_result_store(self) -> None:
@@ -5229,7 +5235,8 @@ class Agent:
             actions = self._response_actions(response)
         if self._start_changes_goal(actions):
             self.tool_context.kept_results = []
-            self.tool_context.pending_observe = []
+            self.tool_context.compact_observed(self.tool_context.recent + self.tool_context.latest)
+            self._mark_memory_checkpoint()
             self.blackboard.hypotheses = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
@@ -5246,9 +5253,8 @@ class Agent:
         )
 
     def _mark_memory_checkpoint(self, counter: int = 0) -> None:
-        checkpoint = counter or self.tool_context.visible_counter(self.mode) or self.session.state.tool_result_counter
+        checkpoint = counter or self.tool_context.visible_counter() or self.session.state.tool_result_counter
         self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
-        self.tool_context.mark_checkpoint(self.blackboard.memory_checkpoint_tool_result_counter)
 
     def _has_memory_update_action(self, actions: list[Json]) -> bool:
         for action in actions:
@@ -5283,22 +5289,19 @@ class Agent:
             self.tool_runner.latest_executions,
             max_summaries=self.RECENT_TOOL_CALL_SUMMARIES,
             max_chars=self.RECENT_TOOL_CALL_CHARS,
+            checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
         self.runtime.consecutive_tool_turns += 1
-        queued = self.tool_context.queue_observation(
-            [block for block in self.tool_context.latest if ToolResultContext.is_full_block(block)],
-            checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
-        )
-        if queued and self._should_observe_after_tools():
+        if self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
 
     def _should_observe_after_tools(self) -> bool:
-        pending = self.tool_context.pending_observe
+        pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
         if not pending:
             return False
         if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
@@ -5923,7 +5926,7 @@ class Agent:
                 "Retrying: keep or forget latest results.",
                 "Observe_Gate: empty actions are not a checkpoint; return keep or forget.",
             )
-        observed_blocks = list(self.tool_context.pending_observe)
+        observed_blocks = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
         covered = {
             key
@@ -5968,7 +5971,7 @@ class Agent:
             return "missing tr.* source"
         visible_keys = set(
             ToolResultContext.blocks_by_key(
-                self.tool_context.kept_results + self.tool_context.pending_observe + self.tool_context.latest + self.tool_context.recent
+                self.tool_context.kept_results + self.tool_context.latest + self.tool_context.recent
             )
         )
         missing = [key for key in keys if key not in visible_keys]
@@ -6073,8 +6076,11 @@ class Agent:
         self.failed_tool_call_key = None
         self.failed_tool_call_count = 0
         self.runtime.consecutive_tool_turns = 0
-        self.tool_context.prune_recent(max_summaries=self.RECENT_TOOL_CALL_SUMMARIES, max_chars=self.RECENT_TOOL_CALL_CHARS)
-        self.tool_context.pending_observe = []
+        self.tool_context.prune_recent(
+            max_summaries=self.RECENT_TOOL_CALL_SUMMARIES,
+            max_chars=self.RECENT_TOOL_CALL_CHARS,
+            checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
+        )
         self._prune_tool_result_store()
         # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
         self.session.state.range_fingerprints.clear()
