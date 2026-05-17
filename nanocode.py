@@ -43,6 +43,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -6296,13 +6297,16 @@ class CommandDispatcher:
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
-        command, _, args = user_input.strip().partition(" ")
-        args = args.strip()
-        if command in {"/exit", "/quit", "exit", "quit"}:
+        stripped = user_input.strip()
+        if stripped in {"/exit", "/quit", "exit", "quit"}:
             return CommandResult(CommandStatus.EXIT, "Exit")
+        if not user_input.startswith("/"):
+            return CommandResult(CommandStatus.UNHANDLED, "")
+        command, _, args = user_input.partition(" ")
+        args = args.strip()
         handler = self.handlers.get(command)
         if handler is None:
-            return CommandResult(CommandStatus.UNHANDLED, "")
+            return CommandResult(CommandStatus.HANDLED, "Unknown command: " + command)
         return CommandResult(CommandStatus.HANDLED, handler(args))
 
     def _help(self, args: str) -> str:
@@ -7247,9 +7251,11 @@ class AgentLoop:
                     lambda: self.agent.session.config.provider.available_models,
                 ),
             ),
+            lexer=CommandLexer(),
             complete_while_typing=True,
             style=Style.from_dict(
                 {
+                    "command-input": "#3b82f6 bold",
                     "bottom-toolbar": "noreverse bg:default fg:default",
                     "bottom-toolbar.text": "noreverse bg:default fg:default",
                 }
@@ -7791,6 +7797,22 @@ class CommandCompleter(Completer):
             for spec in COMMANDS:
                 if spec.name.startswith(text):
                     yield Completion(spec.name, start_position=-len(text))
+
+
+class CommandLexer(Lexer):
+    command_names: ClassVar[frozenset[str]] = frozenset(spec.name for spec in COMMANDS)
+
+    def lex_document(self, document):
+        def get_line(lineno: int):
+            line = document.lines[lineno]
+            if not line.startswith("/"):
+                return [("", line)]
+            command, separator, rest = line.partition(" ")
+            if command not in self.command_names:
+                return [("", line)]
+            return [("class:command-input", command), ("", separator + rest)]
+
+        return get_line
 
 
 class ReferenceFileCompleter(Completer):

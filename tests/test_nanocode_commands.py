@@ -387,8 +387,8 @@ def test_blackboard_command_is_not_registered(tmp_path):
 
     result = dispatcher.dispatch("/blackboard")
 
-    assert result.status == CommandStatus.UNHANDLED
-    assert result.message == ""
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "Unknown command: /blackboard"
 
 
 def test_rules_command_shows_rules_content(tmp_path):
@@ -516,9 +516,24 @@ def test_command_dispatcher_reports_unhandled_input(tmp_path):
     dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
 
     result = dispatcher.dispatch("regular user request")
+    spaced_command_result = dispatcher.dispatch(" /status")
 
     assert result.status == CommandStatus.UNHANDLED
     assert result.message == ""
+    assert spaced_command_result.status == CommandStatus.UNHANDLED
+    assert spaced_command_result.message == ""
+
+
+def test_command_dispatcher_reports_unknown_slash_commands(tmp_path):
+    dispatcher = CommandDispatcher(Agent(Session(cwd=str(tmp_path))))
+
+    slash_result = dispatcher.dispatch("/")
+    unknown_result = dispatcher.dispatch("/somecommand")
+
+    assert slash_result.status == CommandStatus.HANDLED
+    assert slash_result.message == "Unknown command: /"
+    assert unknown_result.status == CommandStatus.HANDLED
+    assert unknown_result.message == "Unknown command: /somecommand"
 
 
 def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):

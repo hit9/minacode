@@ -3,7 +3,7 @@ from prompt_toolkit.document import Document
 import time
 
 import nanocode
-from nanocode import AgentLoop, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
+from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
@@ -392,6 +392,19 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
+
+
+def test_command_lexer_highlights_known_command_prefix_only():
+    lexer = CommandLexer()
+
+    known = lexer.lex_document(Document("/plan how?"))(0)
+    unknown = lexer.lex_document(Document("/somecommand"))(0)
+    spaced = lexer.lex_document(Document(" /plan how?"))(0)
+
+    assert known == [("class:command-input", "/plan"), ("", " how?")]
+    assert unknown == [("", "/somecommand")]
+    assert spaced == [("", " /plan how?")]
+
 
 def test_agent_loop_command_completer_completes_provider_names():
     completer = nanocode.CommandCompleter(["qwen", "openai"])
