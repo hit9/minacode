@@ -17,7 +17,7 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
         )
     }
 
-    assert ToolResultTool.name() == "Recall"
+    assert ToolResultTool.NAME == "Recall"
     result = ToolResultTool.make(session, ["tr.1", "missing"]).call()
 
     assert result.startswith("RecallToolResult:")

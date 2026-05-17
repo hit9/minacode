@@ -353,11 +353,10 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
             self.session = make_session(tmp_path, model="model", yolo=True)
 
     class FakeTool:
+        EFFECT = nanocode.ToolEffect.EDIT
+
         def preview(self):
             return "preview"
-
-        def effect(self):
-            return nanocode.ToolEffect.EDIT
 
     outputs = []
     loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
@@ -518,7 +517,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
-            return {"actions": [{"type": "chat", "text": "assistant response"}]}
+            return {"actions": [], "_assistant_text": "assistant response"}
 
     inputs = iter(["/status", "hello", "/exit"])
     outputs = []

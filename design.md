@@ -17,6 +17,18 @@ The agent has a work path and a cleanup path:
 
 Conversation compaction is a background maintenance path. It summarizes old conversation history when the conversation list grows too large.
 
+## Model Output Protocol
+
+Model decisions use function tools:
+
+- state tools update goal, plan, hypotheses, known facts, verification, and result retention
+- repository tools read, search, edit, run commands, and recall stored results
+- compaction uses a dedicated `compact` function tool
+
+Assistant text is optional user-facing text. It must not replace the next useful
+function tool. Completing work still requires a `goal` function tool call with
+`complete=true`.
+
 ## Task State
 
 The main task state lives in the blackboard:
@@ -33,14 +45,14 @@ The main task state lives in the blackboard:
 
 New user input keeps the previous task state available for follow-ups like "continue".
 
-Old task state is cleared only when the model explicitly starts a different goal. When that happens, transient investigation state such as hypotheses and selected tool-result context is reset, while durable knowledge is kept.
+Old task state is cleared only when the model explicitly sets a different goal. When that happens, transient investigation state such as hypotheses and selected tool-result context is reset, while durable knowledge is kept.
 
 ## New Goal Handling
 
 New user input does not immediately clear the previous task. This keeps short
 follow-ups such as "continue" usable.
 
-When the model outputs `start` with a different goal:
+When the model outputs `goal` with a different current-task goal:
 
 - goal and plan are replaced
 - hypotheses are cleared

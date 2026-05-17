@@ -32,7 +32,6 @@ from enum import StrEnum
 from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
 from urllib.parse import urlparse
 
-import json_repair
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 from prompt_toolkit.application import Application
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -175,7 +174,6 @@ class HypothesisStatus(StrEnum):
 
 
 ALL_HYPOTHESIS_STATUSES = frozenset(HypothesisStatus)
-HYPOTHESIS_STATUS_SCHEMA = "|".join(status.value for status in HypothesisStatus)
 HYPOTHESIS_STATUS_TEXT = ", ".join(status.value for status in HypothesisStatus)
 
 
@@ -1034,6 +1032,27 @@ class Session:
 ############################
 
 
+def _tool_object_schema(properties: Json, required: list[str]) -> Json:
+    return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
+
+
+def _function_tool_schema(name: str, description: str, parameters: Json) -> Json:
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+
+
+def _json_value_schema(depth: int = 3) -> Json:
+    values: list[Json] = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]
+    if depth > 0:
+        child = _json_value_schema(depth - 1)
+        values.extend(
+            [
+                {"type": "array", "items": child},
+                {"type": "object", "additionalProperties": child},
+            ]
+        )
+    return {"anyOf": values}
+
+
 class ToolEffect(StrEnum):
     READONLY = "readonly"
     EDIT = "edit"
@@ -1041,19 +1060,16 @@ class ToolEffect(StrEnum):
 
 
 MAX_TOOL_OUTPUT_CHARS = 12_000
+TOOL_JSON_VALUE_SCHEMA: Json = _json_value_schema()
 
 
 class Tool:
-    NAME: ClassVar[str] = ""
+    NAME: ClassVar[str]
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
     SIGNATURE: ClassVar[str]
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = None
-
-    @classmethod
-    def name(cls) -> str:
-        return cls.NAME or cls.__name__.removesuffix("Tool")
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
@@ -1079,11 +1095,21 @@ class Tool:
         return json.dumps(text, ensure_ascii=False)
 
     @classmethod
-    def effect(cls) -> ToolEffect:
-        return cls.EFFECT
+    def tool_schema(cls) -> Json:
+        return _function_tool_schema(
+            cls.NAME,
+            " ".join((*cls.DESCRIPTION, cls.SIGNATURE, *cls.EXAMPLE)),
+            _tool_object_schema(
+                {
+                    "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
+                    "args": {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA, "description": "Arguments exactly matching the tool signature."},
+                },
+                ["intention", "args"],
+            ),
+        )
 
     def requires_confirmation(self, session: Session) -> bool:
-        return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.effect() == ToolEffect.EDIT
+        return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.EFFECT == ToolEffect.EDIT
 
     def call_live(self, sink: Callable[[str], None] | None = None) -> str:
         return self.call()
@@ -1505,6 +1531,7 @@ def _range_fingerprint(content: str) -> str:
 
 @dataclass
 class ReadTool(Tool):
+    NAME: ClassVar[str] = "Read"
     MAX_LINES: ClassVar[int] = 600
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -1692,6 +1719,7 @@ class ReadTool(Tool):
 
 @dataclass
 class LineCountTool(Tool):
+    NAME: ClassVar[str] = "LineCount"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
     SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
@@ -1732,6 +1760,7 @@ class LineCountTool(Tool):
 
 @dataclass
 class ListDirTool(Tool):
+    NAME: ClassVar[str] = "ListDir"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "List one directory non-recursively; optional glob filters immediate entry names.",
@@ -1797,6 +1826,7 @@ class ListDirTool(Tool):
 
 @dataclass
 class SearchTool(Tool):
+    NAME: ClassVar[str] = "Search"
     MAX_MATCHES: ClassVar[int] = 100
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
@@ -2160,6 +2190,7 @@ class SearchTool(Tool):
 
 @dataclass
 class EditTool(Tool):
+    NAME: ClassVar[str] = "Edit"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace/delete one unique exact literal text block in an existing file; best for tiny unambiguous edits, not regex.",
@@ -2241,6 +2272,7 @@ class EditTool(Tool):
 
 @dataclass
 class CreateFileTool(Tool):
+    NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Create a new UTF-8 file with short initial content; target file must not exist.",
@@ -2306,20 +2338,18 @@ class ReplaceRangeEdit:
 
 @dataclass
 class ReplaceRangeTool(Tool):
+    NAME: ClassVar[str] = "ReplaceRange"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
-        "For several independent ranges in the same file, pass a batch as ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]).",
+        "Pass ranges as [[start,end,fingerprint,before_context,after_context,content], ...].",
         "Pass exact before_context and after_context when known; empty boundary context is allowed for non-empty replacements.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
-    SIGNATURE: ClassVar[str] = (
-        "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) "
-        "or ReplaceRange(filepath, ranges) -> ReplaceRangeToolResult<path, range>"
-    )
+    SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]) -> ReplaceRangeToolResult<path, range>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',
-        'Batch args: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"]]]',
+        'Single range: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"]]]',
+        'Two ranges: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"], ["20", "20", "d4e5f6", "prev\\n", "next\\n", "inserted\\n"]]]',
     )
 
     filepath: str = ""
@@ -2370,7 +2400,7 @@ class ReplaceRangeTool(Tool):
             if call.intention:
                 intentions.append(call.intention)
         tool = cls._from_edits(session, filepath=filepath, edits=edits)
-        call = ParsedToolCall(name=cls.name(), intention="; ".join(intentions), args=list(calls[0].args))
+        call = ParsedToolCall(name=cls.NAME, intention="; ".join(intentions), args=list(calls[0].args))
         return PreparedToolCall(call=call, tool=tool)
 
     @classmethod
@@ -2381,7 +2411,7 @@ class ReplaceRangeTool(Tool):
                 raise ToolCallArgError("ranges cannot be empty")
             return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(_json_list(item)) for item in ranges])
         if len(args) != 7:
-            raise ToolCallArgError("requires exactly 7 args or batch args: filepath, ranges")
+            raise ToolCallArgError("requires args: filepath, ranges where each range is [start,end,fingerprint,before_context,after_context,content]")
         return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(args[1:])])
 
     @staticmethod
@@ -2490,7 +2520,7 @@ class ReplaceRangeTool(Tool):
         for edit in self.edits:
             if file_missing:
                 if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint or edit.before_context or edit.after_context:
-                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, "0", "0", "", "", "", content) to create')
+                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, [["0", "0", "", "", "", content]]) to create')
                 resolved = RangeFingerprintStore.Resolved(start=0, end=0, fingerprint=_range_fingerprint(""))
             else:
                 resolved = self.range_fingerprints.resolve(
@@ -2546,6 +2576,7 @@ class ReplaceRangeTool(Tool):
 
 @dataclass
 class BashTool(Tool):
+    NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",
     )
@@ -2713,6 +2744,7 @@ GIT_READONLY_COMMANDS = frozenset({"status", "diff", "log", "show", "rev-parse",
 
 @dataclass
 class GitTool(Tool):
+    NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run git without a shell for repository state, history, status, diff, and changed files.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
@@ -2848,19 +2880,83 @@ class ToolResultTool(Tool):
 
 
 TOOL_REGISTRY: dict[str, ToolClass] = {
-    ReadTool.name(): ReadTool,
-    LineCountTool.name(): LineCountTool,
-    ListDirTool.name(): ListDirTool,
-    SearchTool.name(): SearchTool,
-    CreateFileTool.name(): CreateFileTool,
-    EditTool.name(): EditTool,
-    ReplaceRangeTool.name(): ReplaceRangeTool,
-    BashTool.name(): BashTool,
-    GitTool.name(): GitTool,
-    ToolResultTool.name(): ToolResultTool,
+    ReadTool.NAME: ReadTool,
+    LineCountTool.NAME: LineCountTool,
+    ListDirTool.NAME: ListDirTool,
+    SearchTool.NAME: SearchTool,
+    CreateFileTool.NAME: CreateFileTool,
+    EditTool.NAME: EditTool,
+    ReplaceRangeTool.NAME: ReplaceRangeTool,
+    BashTool.NAME: BashTool,
+    GitTool.NAME: GitTool,
+    ToolResultTool.NAME: ToolResultTool,
 }
 PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListDirTool, SearchTool, PlanModeGitTool, ToolResultTool)
 
+
+TOOL_STRING_SCHEMA: Json = {"type": "string"}
+TOOL_NULLABLE_STRING_SCHEMA: Json = {"type": ["string", "null"]}
+TOOL_ITEMS_SCHEMA: Json = {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA}
+TOOL_STRING_LIST_SCHEMA: Json = {"type": "array", "items": {"type": "string"}}
+
+
+STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
+    "goal": (
+        "Set, update, or complete the current goal. Use work_mode=investigate for root-cause/debug work; use message_for_complete for the final user message.",
+        {
+            "text": TOOL_STRING_SCHEMA,
+            "work_mode": {"type": ["string", "null"], "enum": ["normal", "investigate", None]},
+            "complete": {"type": "boolean"},
+            "message_for_complete": TOOL_NULLABLE_STRING_SCHEMA,
+        },
+        ["text", "complete", "message_for_complete"],
+    ),
+    "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "hypothesis": ("Update investigation hypotheses.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "stable_knowledge": ("Record rare reusable codebase facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "user_rule": (
+        "Remember an explicit future behavior rule from the user.",
+        {"text": TOOL_STRING_SCHEMA, "message": TOOL_STRING_SCHEMA},
+        ["text", "message"],
+    ),
+    "forget": (
+        "Remove visible tool result keys from active context while keeping them recallable.",
+        {"source": TOOL_STRING_LIST_SCHEMA, "reason": TOOL_STRING_SCHEMA},
+        ["source", "reason"],
+    ),
+    "verify": (
+        "Record concrete verification status.",
+        {
+            "kind": TOOL_STRING_SCHEMA,
+            "method": TOOL_NULLABLE_STRING_SCHEMA,
+            "criteria": TOOL_STRING_LIST_SCHEMA,
+            "status": {"type": "string", "enum": ["passed", "failed", "blocked"]},
+            "blocker": {"type": ["string", "null"], "enum": ["user", "environment", "tool", "unknown", None]},
+            "context": TOOL_NULLABLE_STRING_SCHEMA,
+        },
+        ["kind", "method", "criteria", "status", "blocker", "context"],
+    ),
+    "keep": ("Keep visible raw tool result keys in context during observe.", {"source": TOOL_STRING_LIST_SCHEMA, "reason": TOOL_STRING_SCHEMA}, ["source", "reason"]),
+}
+
+
+def _state_tool_schema(name: str) -> Json:
+    description, properties, required = STATE_TOOL_PARAMS[name]
+    return _function_tool_schema(name, description, _tool_object_schema(properties, required))
+
+
+COMPACT_TOOL_SCHEMA = _function_tool_schema(
+    "compact",
+    "Return a compact continuation summary and retained known facts.",
+    _tool_object_schema(
+        {
+            "summary": TOOL_STRING_SCHEMA,
+            "known": TOOL_ITEMS_SCHEMA,
+        },
+        ["summary", "known"],
+    ),
+)
 
 ############################
 # Agent Prompt
@@ -2869,18 +2965,19 @@ PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListDirTool, 
 AGENT_SYSTEM_PROMPT = """You are nanocode, a coding agent.
 
 OUTPUT
-- Return JSON action frames only: no prose, no native/function tool calls.
-- Separate multiple actions with __END_ACTION__.
-- Valid action types: chat, start, goal, plan, hypothesis, known, stable_knowledge, progress, user_rule, tool, verify, forget.
-- Tool names such as Read, Search, Edit, Git, and Recall belong in tool.name, never in action type.
-- Tool actions require name, intention, and args.
+- Use function tools for state updates and repository actions.
+- Assistant text is optional; never use it instead of the next useful function tool.
+- A completed task still needs goal.complete=true; assistant text alone does not complete work.
+- State tools: goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget.
+- Repository tools: { __tool_names__ }.
+- Repository tool calls require intention and args.
 - Use the latest user language for user-facing text; keep it plain, concise, and direct.
 
 PRIORITY AND STATE
 - Priority: Latest User Request > User Rules > Current Goal > Plan/Known/Stable Knowledge > Conversation History.
-- Latest User Request overrides stale Goal, but Task Code decides whether to start a new task.
-- Task Code: new = align latest request with start; working = continue current Goal; verifying = run/record verification; done = wait for next request.
-- If Task Code is working or verifying, do not output start or rewrite Goal.
+- Latest User Request overrides stale Goal, but Task Code decides whether to begin a new task.
+- Task Code: new = align latest request with goal/plan or readonly discovery; working = continue current Goal; verifying = run/record verification; done = wait for next request.
+- If Task Code is working or verifying, do not rewrite Goal unless the user changed the task.
 - Never repeat a previous completion as the answer.
 - User Rules are mandatory long-term behavior rules; add them only when the user explicitly asks to remember future behavior.
 
@@ -2893,16 +2990,18 @@ MEMORY AND TOOL RESULTS
 - OBSERVE keeps useful raw results and forgets noise. ACT must not keep results.
 - In ACT, use forget only when a visible result is already irrelevant; first preserve any needed conclusion in Plan, Known, Hypotheses, or Verify. Forget preserves logs and Recall.
 
-DECISION ORDER
-Choose the main next action and include tightly related state updates in the same turn.
-1. chat: casual chat or direct non-coding answers.
-2. user_rule: only explicit future-behavior memory requests.
-3. start: only when Task Code is new; set goal, work_mode normal|investigate, and a short plan.
-4. plan/known/hypothesis: only when direction, target, hypothesis status, or verification path changes. If a frontier tool/verify/goal is already known, include it in the same turn instead of stopping on state updates.
-5. tool: execute the current action frontier. Frontier = useful next actions with known args and no dependency between them. Batch broad related searches/reads/recalls/checks; serialize only when later args depend on earlier results.
-   When context is missing, emit the first broad readonly tool batch quickly instead of spending a long turn speculating.
-6. verify: after edits or explicit check/test/build requests, use the smallest relevant check; if the exact check already passed in recent results, record passed.
-7. goal: complete only when the goal is done, all Plan items are done/blocked with result context, and verification passed or is blocked by the user.
+WORKFLOW
+- No Goal: set goal. If enough context is known, also set plan or call the first useful readonly tools.
+- Goal but no Plan: set a short plan, or call readonly discovery first when planning needs context.
+- Goal and Plan: execute the next useful frontier with tools. Batch independent searches/reads/recalls/checks; serialize only when later args depend on earlier results.
+- After edits or explicit checks: verify with the smallest relevant test/build/lint/static check.
+- Complete only when the goal is done, Plan items are done/blocked with context, and verification passed or is blocked by the user.
+- Never repeat an unchanged goal, unchanged plan, or no-op state update. Move to the next workflow state.
+
+STATE UPDATES
+- user_rule: only explicit future-behavior memory requests.
+- known/hypothesis: only when facts or investigation status changed.
+- Pair state updates with the next frontier action when its args are known.
 
 PLANNING
 - Use plans only for real tasks; usually 2-5 concrete outcome steps.
@@ -2944,52 +3043,19 @@ TOOLS
 - Git is for status, diff, history, and changed files.
 - Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
 - Every tool intention must state the question being answered or concrete outcome needed.
-
-ACTIONS:
-
-{"type":"chat","text":"<reply>"}
-
-{"type":"start","goal":"<current task goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null}]}
-
-{"type":"goal","text":"<current task goal>","complete":true|false,"message_for_complete":null|"<final user message>"}
-
-{"type":"plan","items":[{"id":"p1","text":"<step>","status":"todo|doing|done|blocked","context":null|"<short result context>"}]}
-
-{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":null|"<short result context>"}]}
-
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible root-cause direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":null|"<short result context>"}]}
-
-{"type":"known","items":["<new durable current-task fact>"]}
-{"type":"known","items":[{"source":["tr.1"],"text":"<durable current-task fact supported by a tool result>"}]}
-
-{"type":"stable_knowledge","items":[{"category":"stack|structure|workflow|convention|gotcha","text":"<rare reusable codebase fact>"}]}
-
-{"type":"progress","text":"<short progress update>"}
-
-{"type":"user_rule","text":"<long-term user behavior rule>","message":"<short acknowledgement>"}
-
-{"type":"forget","source":["tr.1"],"reason":"<why this visible tool result no longer matters>"}
-
-{"type":"tool","name":"{ __tool_names__ }","intention":"<question or concrete outcome>","args":["<arg>"]}
-
-{"type":"verify","kind":"syntax_check|change_syntax_check|lint|test|build|change_check|other|kind+kind","method":null|"<short target label>","criteria":["<explicit pass/block criterion>"],"status":"passed|failed|blocked","blocker":null|"user|environment|tool|unknown","context":null|"<tool result context or blocker>"}
-
-TOOL SPECS:
-{ __tools__ }
 """
 AGENT_PLAN_SYSTEM_PROMPT = """You are nanocode in PLAN MODE.
 
 You are a planning agent, not an implementation agent.
 
 OUTPUT PROTOCOL
-- Return JSON action frames only.
-- No prose outside JSON.
-- No native/function tool calls.
-- Separate multiple actions with __END_ACTION__.
-- Allowed action types: start, goal, plan, hypothesis, known, stable_knowledge, progress, tool, verify.
-- Tool names such as Read, Search, Git, Recall, LineCount, and ListDir belong in tool.name, never in action type.
-- Every action must be a single valid JSON object.
-- Do not invent fields when a listed action shape already fits.
+- Use function tools for state updates and readonly repository actions.
+- Assistant text is optional; never use it instead of the next useful function tool.
+- A completed plan-mode task still needs goal.complete=true.
+- Allowed state tools: goal, plan, hypothesis, known, stable_knowledge, verify.
+- Allowed repository tools: Read, LineCount, ListDir, Search, Recall, and readonly Git.
+- Repository tool calls require intention and args.
+- Do not invent fields when a tool schema already fits.
 
 MODE BOUNDARIES
 - Produce an implementation plan for the latest user request.
@@ -3006,7 +3072,7 @@ LANGUAGE
 READONLY DISCOVERY
 - Allowed tools: Read, LineCount, ListDir, Search, Recall.
 - Git is allowed only for readonly inspection: status, diff, log, show, rev-parse, ls-files, grep, blame.
-- Use only the readonly tools listed in TOOL SPECS. Do not request any other tools.
+- Use only the provided readonly function tools. Do not request any other tools.
 - Use the smallest useful discovery batch.
 - Prefer targeted Search/Read over broad surveys.
 - Prefer reading the owning file and nearby tests over unrelated code.
@@ -3026,7 +3092,7 @@ Fit the existing system:
 - Respect existing naming, style, dependency direction, error handling, and data flow.
 - Do not introduce a new architectural style when a local change fits the current one.
 
-Start from concerns:
+Begin from concerns:
 - Identify relevant functional concerns.
 - Identify relevant non-functional concerns when they may affect design: performance, consistency, availability, latency, scalability, compatibility, maintainability, security, debuggability, and migration cost.
 - State tradeoffs only when they affect the proposed implementation.
@@ -3042,7 +3108,7 @@ Keep it simple:
 
 Module and layer judgment:
 - Decompose top-down for broad changes: subsystem -> module -> file -> symbol.
-- For local changes, start at the owning symbol and expand only as needed.
+- For local changes, begin at the owning symbol and expand only as needed.
 - Keep modules focused on one topic.
 - Keep high-cohesion logic together and low-coupling boundaries explicit.
 - Prefer dependency flow from higher-level orchestration toward lower-level capabilities.
@@ -3089,7 +3155,7 @@ Verification:
 - Verification steps must be executable by a coding agent, but you must not run them.
 
 DISCOVERY STRATEGY
-1. For a new Task Code, start with one concise planning goal and 2-4 discovery steps.
+1. For a new Task Code, set one concise planning goal and 2-4 discovery steps when enough context is known.
 2. Search for owners before reading large files.
 3. Prefer support from code, tests, docs, and recent relevant Git history.
 4. After tool results, use Latest Tool Results, Unreduced Tool Results, and Kept Tool Results; use known for settled current-task facts and stable_knowledge only for rare reusable codebase facts.
@@ -3098,13 +3164,13 @@ DISCOVERY STRATEGY
 7. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
 8. Complete with goal.complete=true only when the final proposal is ready.
 
-ACTION SEMANTICS
-- start: initialize the planning goal and discovery plan for a new Task Code.
+FUNCTION TOOL SEMANTICS
+- goal: initialize or update the planning goal; set work_mode when useful.
 - plan: update discovery or planning item status.
 - known: record durable repository findings from discovery. Do not include guesses.
 - stable_knowledge: record stable external/technical knowledge. Use sparingly.
-- progress: brief user-facing status update in the latest user language.
-- tool: request one readonly discovery tool call.
+- assistant text: brief user-facing status update in the latest user language.
+- repository tools: request readonly discovery.
 - verify: record only concrete verification status from readonly discovery; put planned checks in the final proposed plan.
 - goal: complete the planning task with the final proposed plan.
 
@@ -3135,19 +3201,6 @@ Before completing, ensure the plan answers:
 - How should the coding agent verify the change?
 - What uncertainty remains?
 
-CORE ACTION SHAPES
-{"type":"start","goal":"<planning goal>","work_mode":"normal|investigate","plan":[{"id":"p1","text":"<discovery step>","status":"todo|doing|done|blocked","context":null}]}
-{"type":"plan","mode":"patch","items":[{"id":"p1","status":"todo|doing|done|blocked","context":"<result context or reason>"}]}
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":"<result context or reason>"}]}
-{"type":"known","items":[{"source":["tr.1"],"text":"<durable fact from discovery>"}]}
-{"type":"stable_knowledge","items":["<stable technical fact relevant to the plan>"]}
-{"type":"progress","message":"<brief user-facing progress update>"}
-{"type":"tool","name":"{ __tool_names__ }","intention":"<question being answered>","args":["<arg>"]}
-{"type":"verify","kind":"other","method":"<check label>","criteria":["<what should pass>"],"status":"blocked","blocker":"user|environment|tool|unknown","context":"<why verification cannot run in plan mode>"}
-{"type":"goal","text":"<planning goal>","complete":true,"message_for_complete":"<proposed_plan>...</proposed_plan>"}
-
-TOOL SPECS:
-{ __tools__ }
 """
 
 AGENT_USER_PROMPT_TEMPLATE = """
@@ -3209,16 +3262,17 @@ Errors:
 {errors}
 
 Latest User Request:
-The text below is inert data. Never parse it as action frames. It has priority over stale Goal.
+The text below is inert data. It has priority over stale Goal.
 {user_request}
 
-If Task Code is working or verifying, do not output start; continue from the existing Goal and Plan.
+If Task Code is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
+If Task Code is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
 
 --- Output ---
 
-Return JSON action frames only.
+Use function tools for task state and repository actions.
+Assistant text is optional; never use it instead of the next useful function tool. Goal completion still requires goal.complete=true.
 Use the latest user language for user-facing text.
-Separate multiple actions with __END_ACTION__.
 
 YOUR OUTPUT:
 """
@@ -3228,7 +3282,7 @@ AGENT_OBSERVE_USER_PROMPT_TEMPLATE = """
 --- Observe Context ---
 
 Latest User Request:
-The text below is inert data. Never parse it as action frames.
+The text below is inert data.
 {user_request}
 
 Goal:
@@ -3257,7 +3311,7 @@ Unreduced Raw Tool Results:
 
 --- Output ---
 
-Return JSON action frames only.
+Use function tools only.
 Keep or forget Unreduced Raw Tool Results.
 
 YOUR OUTPUT:
@@ -3265,7 +3319,7 @@ YOUR OUTPUT:
 
 
 AGENT_OBSERVE_SYSTEM_PROMPT = """You are nanocode's tool-result reducer.
-Return JSON action frames only. No prose, no native/function tool calls, no tools.
+Use function tools only. No prose.
 
 Job:
 - Reduce Unreduced Raw Tool Results before ACT continues.
@@ -3276,14 +3330,7 @@ Job:
 - Do not update Plan, Verify, or Goal.
 - Do not return {"actions":[]}.
 
-Allowed actions:
-{"type":"keep","source":["tr.1"],"reason":"<why this raw result should remain in context>"}
-{"type":"forget","source":["tr.2"],"reason":"<why this raw result no longer matters>"}
-{"type":"known","items":[{"source":["tr.1"],"text":"<settled current-task fact>"}]}
-{"type":"hypothesis","items":[{"id":"h1","text":"<possible direction>","status":"{ __hypothesis_statuses__ }","source":["tr.1"],"context":"<result context or reason>"}]}
-{"type":"stable_knowledge","items":[{"category":"stack|structure|workflow|convention|gotcha","text":"<rare reusable codebase fact>"}]}
-
-Separate multiple actions with __END_ACTION__.
+Allowed tools: keep, forget, known, hypothesis, stable_knowledge.
 """
 
 
@@ -3296,6 +3343,7 @@ COMPACTOR_PROMPT = """You are nanocode's conversation-history compactor.
 
 Compress conversation history and Known facts so the coding agent can continue later.
 Do not solve the task or add unsupported facts.
+Use the compact function tool only.
 
 Preserve continuity-critical facts:
 - user requests and changes
@@ -3317,9 +3365,6 @@ Omit noise:
 
 Write the shortest complete continuation summary.
 Compress Known to concise durable facts.
-
-Output strict JSON only: {"summary": "<summary>", "known": [{"text": "<stable fact>", "source": ["tr.1"]}]}
-Known may use strings only when no source exists.
 """
 
 
@@ -3356,9 +3401,7 @@ class PromptBuilder:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
         return (
             (template or self.system_prompt_template)
-            .replace("{ __tools__ }", self._format_tools(tool_classes))
-            .replace("{ __tool_names__ }", "|".join(tool.name() for tool in tool_classes))
-            .replace("{ __hypothesis_statuses__ }", HYPOTHESIS_STATUS_SCHEMA)
+            .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
             .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
             .strip()
         )
@@ -3414,16 +3457,6 @@ class PromptBuilder:
         fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
         return fence + "text\n" + user_request + "\n" + fence
 
-    def _format_tools(self, tools: Iterable[ToolClass]) -> str:
-        lines = []
-        for tool in tools:
-            lines.append("- " + tool.SIGNATURE)
-            for item in tool.DESCRIPTION:
-                lines.append("  - " + item)
-            for item in tool.EXAMPLE:
-                lines.append("  - " + item)
-        return "\n".join(lines)
-
     def _format_stable_knowledge(self) -> str:
         knowledge = self.blackboard.stable_knowledge
         if not any(knowledge.values()):
@@ -3459,42 +3492,6 @@ HTTP_USER_AGENT = "nanocode/" + __version__
 
 
 class ModelClient:
-    ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
-    ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
-
-    class ActionStreamParser:
-        def __init__(self, client: "ModelClient"):
-            self.client = client
-            self.buffer = ""
-            self.frame_number = 0
-            self.committed = 0
-            self.stopped = False
-
-        def feed(self, text: str, on_action: Callable[[Json], bool]) -> bool:
-            self.buffer += text
-            while True:
-                match = self.client.ACTION_FRAME_END_SPLIT_PATTERN.search(self.buffer)
-                if match is None:
-                    return False
-                frame = self.client._strip_fence_marker_lines(self.buffer[: match.start()])
-                self.buffer = self.buffer[match.end() :]
-                self.frame_number += 1
-                actions, error = self.client._parse_action_frame(frame, self.frame_number)
-                if error:
-                    self.buffer = frame + self.client.ACTION_FRAME_END + self.buffer
-                    return False
-                for action in actions:
-                    self.committed += 1
-                    if on_action(action):
-                        self.stopped = True
-                        return True
-
-        def trailing_error(self) -> str:
-            if self.stopped:
-                return ""
-            trailing = self.client._strip_fence_marker_lines(self.buffer).strip()
-            return "unexpected text after committed action frame" if trailing else ""
-
     def __init__(self, session: Session):
         self.session = session
         self._timeout_reason = "request model timeout"
@@ -3508,8 +3505,9 @@ class ModelClient:
         user_prompt: str,
         *,
         activity: str = "agent",
-        parse_actions: bool = True,
         on_stream_action: Callable[[Json], bool] | None = None,
+        tool_schemas: list[Json] | None = None,
+        required_tool: str | None = None,
     ) -> Json:
         config = self.session.config.provider
         if not config.url:
@@ -3528,14 +3526,21 @@ class ModelClient:
         timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
         api = config.resolved_api()
         params = (
-            self._responses_params(config, model=model, system_prompt=system_prompt, user_prompt=user_prompt, stream=stream)
+            self._responses_params(
+                config,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                stream=stream,
+                tool_schemas=tool_schemas,
+                required_tool=required_tool,
+            )
             if api == "responses"
-            else self._chat_completion_params(config, model=model, messages=messages, stream=stream)
+            else self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas, required_tool=required_tool)
         )
         self._write_debug_prompt(activity=activity, messages=messages)
         client = self._client(config, timeout=timeout)
         request_elapsed = 0.0
-        stream_parser = self.ActionStreamParser(self) if stream and parse_actions and on_stream_action is not None else None
         try:
             with ModelRetryShortcut(self.session):
                 self.session.state.current_model_call_started_at = time.monotonic()
@@ -3550,39 +3555,62 @@ class ModelClient:
                 self._timeout_reason = "request model timeout"
                 signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
                 try:
-                    completion = (
-                        client.responses.create(**params, timeout=timeout)
-                        if api == "responses"
-                        else client.chat.completions.create(**params, timeout=timeout)
-                    )
-                    if stream:
-                        content, usage = (
-                            self._read_responses_stream(
-                                completion,
-                                request_deadline=request_deadline,
-                                first_token_timeout=first_token_timeout,
-                                stream_parser=stream_parser,
-                                on_stream_action=on_stream_action,
-                            )
-                            if api == "responses"
-                            else self._read_streaming_content(
-                                completion,
-                                request_deadline=request_deadline,
-                                first_token_timeout=first_token_timeout,
-                                stream_parser=stream_parser,
-                                on_stream_action=on_stream_action,
-                            )
+                    if api == "chat" and stream and tool_schemas:
+                        response, usage = self._read_chat_tool_stream(
+                            client,
+                            params,
+                            timeout=timeout,
+                            request_deadline=request_deadline,
+                            first_token_timeout=first_token_timeout,
+                            on_stream_action=on_stream_action,
                         )
-                        result: Json = {"usage": usage}
+                        result = {"usage": usage, **response}
+                        content = ""
+                    elif api == "responses" and stream and tool_schemas:
+                        response, usage = self._read_responses_tool_stream(
+                            client,
+                            params,
+                            timeout=timeout,
+                            request_deadline=request_deadline,
+                            first_token_timeout=first_token_timeout,
+                            on_stream_action=on_stream_action,
+                        )
+                        result = {"usage": usage, **response}
+                        content = ""
                     else:
-                        result = self._sdk_json(completion)
+                        completion = (
+                            client.responses.create(**params, timeout=timeout)
+                            if api == "responses"
+                            else client.chat.completions.create(**params, timeout=timeout)
+                        )
+                        if stream:
+                            content, usage = (
+                                self._read_responses_stream(
+                                    completion,
+                                    request_deadline=request_deadline,
+                                    first_token_timeout=first_token_timeout,
+                                )
+                                if api == "responses"
+                                else self._read_streaming_content(
+                                    completion,
+                                    request_deadline=request_deadline,
+                                    first_token_timeout=first_token_timeout,
+                                )
+                            )
+                            result = {"usage": usage}
+                        else:
+                            result = self._sdk_json(completion)
+                            if api == "chat" and tool_schemas:
+                                result = {"usage": _json_dict(result.get("usage")), **self._chat_tool_response(result)}
+                            elif api == "responses" and tool_schemas:
+                                result = {"usage": _json_dict(result.get("usage")), **self._responses_tool_response(result)}
                 finally:
                     signal.setitimer(signal.ITIMER_REAL, 0)
                     signal.signal(signal.SIGALRM, previous_handler)
                     if self.session.state.current_model_call_started_at > 0:
                         request_elapsed = max(0.0, time.monotonic() - self.session.state.current_model_call_started_at)
                         if request_elapsed > 0 and self.session.state.current_model_call_streaming_chars > 0:
-                            self.session.state.last_model_call_rate = self._estimate_stream_rate(request_elapsed)
+                            self.session.state.last_model_call_rate = self.session.state.current_model_call_streaming_chars / 4 / request_elapsed
                     self.session.state.current_model_call_started_at = 0.0
                     self.session.state.current_model_call_label = ""
                     self.session.state.current_model_call_reasoning_label = ""
@@ -3611,20 +3639,13 @@ class ModelClient:
             raise LLMError(str(error))
 
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
-        if stream_parser is not None and stream_parser.committed:
-            response: Json = {"actions": [], "_stream_committed": True}
-            error = stream_parser.trailing_error()
-            if error:
-                response["_format_bad_output"] = content
-                response["_format_error"] = "Invalid model output: " + error + ". Return action frames only. Bad output: " + _shorten(content)
-            return response
+        if tool_schemas and isinstance(result.get("actions"), list):
+            return self._action_response(_json_list(result.get("actions")), _json_str(result.get("_assistant_text")) or "")
         if not stream:
             content = self._responses_content(result) if api == "responses" else self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
-        if not parse_actions:
-            return self._parse_json_content(content)
-        return self._parse_model_content(content)
+        return {"actions": [], "_assistant_text": content}
 
     def _client(self, config: ProviderConfig, *, timeout: int) -> OpenAI:
         return OpenAI(
@@ -3639,13 +3660,26 @@ class ModelClient:
     def _reasoning_effort(config: ProviderConfig) -> str:
         return config.reasoning_effort or "medium"
 
-    def _chat_completion_params(self, config: ProviderConfig, *, model: str, messages: list[Json], stream: bool) -> Json:
+    def _chat_completion_params(
+        self,
+        config: ProviderConfig,
+        *,
+        model: str,
+        messages: list[Json],
+        stream: bool,
+        tool_schemas: list[Json] | None = None,
+        required_tool: str | None = None,
+    ) -> Json:
         params: Json = {"model": model, "messages": messages, "stream": stream}
         extra_body: Json = {}
         if config.temperature is not None:
             params["temperature"] = config.temperature
         if stream:
             params["stream_options"] = {"include_usage": True}
+        if tool_schemas:
+            params["tools"] = tool_schemas
+            params["tool_choice"] = {"type": "function", "function": {"name": required_tool}} if required_tool else "auto"
+            params["parallel_tool_calls"] = True
         chat_reasoning_payload = config.resolved_chat_reasoning_payload()
         if config.reasoning is not False and chat_reasoning_payload == "reasoning":
             extra_body["reasoning"] = {"effort": self._reasoning_effort(config)}
@@ -3663,8 +3697,216 @@ class ModelClient:
             params["extra_body"] = extra_body
         return params
 
-    def _responses_params(self, config: ProviderConfig, *, model: str, system_prompt: str, user_prompt: str, stream: bool) -> Json:
+    def _responses_tool_schemas(self, tool_schemas: list[Json] | None) -> list[Json]:
+        converted = []
+        for schema in tool_schemas or []:
+            function = _json_dict(schema.get("function"))
+            if not function:
+                converted.append(schema)
+                continue
+            converted.append({"type": "function", **function})
+        return converted
+
+    def _read_chat_tool_stream(
+        self,
+        client: OpenAI,
+        params: Json,
+        *,
+        timeout: int,
+        request_deadline: float,
+        first_token_timeout: int | None,
+        on_stream_action: Callable[[Json], bool] | None = None,
+    ) -> tuple[Json, Json]:
+        usage: Json = {}
+        actions: list[Json] = []
+        text_parts: list[str] = []
+        first_output_seen = False
+
+        stream_params = dict(params)
+        stream_params.pop("stream", None)
+        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
+        stopped = False
+        with client.beta.chat.completions.stream(**stream_params, timeout=timeout) as stream:
+            for event in stream:
+                data = self._sdk_json(event)
+                event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
+                if event_type == "content.delta":
+                    text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
+                    first_output_seen = self._mark_stream_output(
+                        len(text),
+                        first_output_seen,
+                        request_deadline=request_deadline,
+                        first_token_timeout=first_token_timeout,
+                    )
+                    if text:
+                        text_parts.append(text)
+                    continue
+                if event_type == "tool_calls.function.arguments.delta":
+                    first_output_seen = self._mark_stream_output(
+                        len(str(getattr(event, "arguments_delta", "") or _json_str(data.get("arguments_delta")) or "")),
+                        first_output_seen,
+                        request_deadline=request_deadline,
+                        first_token_timeout=first_token_timeout,
+                    )
+                    continue
+                if event_type != "tool_calls.function.arguments.done":
+                    continue
+                action = self._action_from_function_call(
+                    str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
+                    str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
+                )
+                if text_parts and on_stream_action is not None:
+                    action["_assistant_text"] = "".join(text_parts).strip()
+                    text_parts.clear()
+                actions.append(action)
+                stopped, request_deadline = self._call_stream_action(
+                    on_stream_action,
+                    action,
+                    request_deadline=request_deadline,
+                    first_token_timeout=first_token_timeout,
+                )
+                if stopped:
+                    break
+            if not stopped:
+                final = self._sdk_json(stream.get_final_completion())
+                usage = _json_dict(final.get("usage"))
+                if not actions:
+                    return self._chat_tool_response(final), usage
+        return self._action_response(actions, "".join(text_parts)), usage
+
+    def _read_responses_tool_stream(
+        self,
+        client: OpenAI,
+        params: Json,
+        *,
+        timeout: int,
+        request_deadline: float,
+        first_token_timeout: int | None,
+        on_stream_action: Callable[[Json], bool] | None = None,
+    ) -> tuple[Json, Json]:
+        usage: Json = {}
+        actions: list[Json] = []
+        text_parts: list[str] = []
+        first_output_seen = False
+
+        stream_params = dict(params)
+        stream_params.pop("stream", None)
+        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
+        stopped = False
+        with client.responses.stream(**stream_params, timeout=timeout) as stream:
+            for event in stream:
+                data = self._sdk_json(event)
+                event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
+                if event_type in ("response.output_text.delta", "response.reasoning.delta"):
+                    text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
+                    first_output_seen = self._mark_stream_output(
+                        len(text),
+                        first_output_seen,
+                        request_deadline=request_deadline,
+                        first_token_timeout=first_token_timeout,
+                    )
+                    if event_type == "response.output_text.delta" and text:
+                        text_parts.append(text)
+                    continue
+                if event_type == "response.function_call_arguments.delta":
+                    first_output_seen = self._mark_stream_output(
+                        len(str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")),
+                        first_output_seen,
+                        request_deadline=request_deadline,
+                        first_token_timeout=first_token_timeout,
+                    )
+                    continue
+                if event_type != "response.function_call_arguments.done":
+                    continue
+                action = self._action_from_function_call(
+                    str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
+                    str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
+                )
+                if text_parts and on_stream_action is not None:
+                    action["_assistant_text"] = "".join(text_parts).strip()
+                    text_parts.clear()
+                actions.append(action)
+                stopped, request_deadline = self._call_stream_action(
+                    on_stream_action,
+                    action,
+                    request_deadline=request_deadline,
+                    first_token_timeout=first_token_timeout,
+                )
+                if stopped:
+                    break
+            if not stopped:
+                final = self._sdk_json(stream.get_final_response())
+                usage = _json_dict(final.get("usage"))
+                if not actions:
+                    return self._responses_tool_response(final), usage
+        return self._action_response(actions, "".join(text_parts)), usage
+
+    def _chat_tool_response(self, result: JsonValue) -> Json:
+        data = _json_dict(result)
+        choices = _json_list(data.get("choices"))
+        if not choices:
+            raise LLMError("API response missing choices")
+        message = _json_dict(_json_dict(choices[0]).get("message"))
+        actions = [
+            self._action_from_function_call(
+                _json_str(_json_dict(call.get("function")).get("name")) or "",
+                _json_str(_json_dict(call.get("function")).get("arguments")) or "{}",
+            )
+            for call in (_json_dict(raw) for raw in _json_list(message.get("tool_calls")))
+            if call
+        ]
+        if actions:
+            content = message.get("content")
+            return self._action_response(actions, content if isinstance(content, str) else "")
+        content = message.get("content")
+        return self._action_response([], content if isinstance(content, str) else "")
+
+    def _responses_tool_response(self, result: JsonValue) -> Json:
+        actions = [
+            self._action_from_function_call(_json_str(item.get("name")) or "", _json_str(item.get("arguments")) or "{}")
+            for item in (_json_dict(raw) for raw in _json_list(_json_dict(result).get("output")))
+            if _json_str(item.get("type")) == "function_call"
+        ]
+        if actions:
+            return self._action_response(actions, self._responses_content(result) or "")
+        return self._action_response([], self._responses_content(result) or "")
+
+    @staticmethod
+    def _action_response(actions: list[Json], assistant_text: str = "") -> Json:
+        response: Json = {"actions": actions}
+        assistant_text = assistant_text.strip()
+        if assistant_text:
+            response["_assistant_text"] = assistant_text
+        return response
+
+    def _action_from_function_call(self, name: str, arguments: str) -> Json:
+        try:
+            value = json.loads(arguments or "{}")
+        except Exception as error:
+            return {"type": name or "invalid_tool_call", "_format_error": "invalid tool arguments: " + str(error)}
+        args = _json_dict(value)
+        if name in TOOL_REGISTRY:
+            return {"type": "tool", "name": name, "intention": _json_str(args.get("intention")) or "", "args": _json_list(args.get("args"))}
+        action = {"type": name}
+        action.update(args)
+        return action
+
+    def _responses_params(
+        self,
+        config: ProviderConfig,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        stream: bool,
+        tool_schemas: list[Json] | None = None,
+        required_tool: str | None = None,
+    ) -> Json:
         params: Json = {"model": model, "instructions": system_prompt, "input": user_prompt, "stream": stream, "store": False}
+        if tool_schemas:
+            params["tools"] = self._responses_tool_schemas(tool_schemas)
+            params["tool_choice"] = {"type": "function", "name": required_tool} if required_tool else "auto"
+            params["parallel_tool_calls"] = True
         if config.temperature is not None:
             params["temperature"] = config.temperature
         if config.reasoning is not False:
@@ -3679,14 +3921,40 @@ class ModelClient:
             return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
         return timeout, first_token_timeout
 
+    def _mark_stream_output(self, chars: int, seen: bool, *, request_deadline: float, first_token_timeout: int | None) -> bool:
+        if chars <= 0:
+            return seen
+        if not seen:
+            self.session.state.current_model_call_has_content = True
+            self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
+        self.session.state.current_model_call_streaming_chars += chars
+        return True
+
+    def _call_stream_action(
+        self,
+        callback: Callable[[Json], bool] | None,
+        action: Json,
+        *,
+        request_deadline: float,
+        first_token_timeout: int | None,
+    ) -> tuple[bool, float]:
+        if callback is None:
+            return False, request_deadline
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        callback_started = time.monotonic()
+        try:
+            stopped = callback(action)
+        finally:
+            request_deadline += max(0.0, time.monotonic() - callback_started)
+            self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
+        return stopped, request_deadline
+
     def _read_streaming_content(
         self,
         stream: Any,
         *,
         request_deadline: float,
         first_token_timeout: int | None,
-        stream_parser: "ModelClient.ActionStreamParser | None" = None,
-        on_stream_action: Callable[[Json], bool] | None = None,
     ) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
@@ -3705,22 +3973,14 @@ class ModelClient:
             output_chars = self._stream_output_chars(delta)
             if output_chars <= 0:
                 continue
-            if not first_output_seen:
-                first_output_seen = True
-                self.session.state.current_model_call_has_content = True
-                self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
-            self.session.state.current_model_call_streaming_chars += output_chars
+            first_output_seen = self._mark_stream_output(
+                output_chars,
+                first_output_seen,
+                request_deadline=request_deadline,
+                first_token_timeout=first_token_timeout,
+            )
             if isinstance(content, str) and content:
                 parts.append(content)
-                if stream_parser is not None and on_stream_action is not None:
-                    signal.setitimer(signal.ITIMER_REAL, 0)
-                    callback_started = time.monotonic()
-                    try:
-                        if stream_parser.feed(content, on_stream_action):
-                            break
-                    finally:
-                        request_deadline += max(0.0, time.monotonic() - callback_started)
-                        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
         return "".join(parts), usage
 
     def _read_responses_stream(
@@ -3729,23 +3989,11 @@ class ModelClient:
         *,
         request_deadline: float,
         first_token_timeout: int | None,
-        stream_parser: "ModelClient.ActionStreamParser | None" = None,
-        on_stream_action: Callable[[Json], bool] | None = None,
     ) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
         completed_content = ""
         first_output_seen = False
-
-        def mark_output(chars: int) -> None:
-            nonlocal first_output_seen
-            if chars <= 0:
-                return
-            if not first_output_seen:
-                first_output_seen = True
-                self.session.state.current_model_call_has_content = True
-                self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
-            self.session.state.current_model_call_streaming_chars += chars
 
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         for event in stream:
@@ -3761,28 +4009,34 @@ class ModelClient:
                 response_content = self._responses_content(response)
                 if response_content and not parts and not completed_content:
                     completed_content = response_content
-                    mark_output(len(response_content))
+                    first_output_seen = self._mark_stream_output(
+                        len(response_content),
+                        first_output_seen,
+                        request_deadline=request_deadline,
+                        first_token_timeout=first_token_timeout,
+                    )
                 continue
             fallback_content = self._responses_event_content(data)
             if fallback_content and not parts and not completed_content:
                 completed_content = fallback_content
-                mark_output(len(fallback_content))
+                first_output_seen = self._mark_stream_output(
+                    len(fallback_content),
+                    first_output_seen,
+                    request_deadline=request_deadline,
+                    first_token_timeout=first_token_timeout,
+                )
                 continue
             output = self._responses_stream_output(data)
             if not output:
                 continue
-            mark_output(len(output[1]))
+            first_output_seen = self._mark_stream_output(
+                len(output[1]),
+                first_output_seen,
+                request_deadline=request_deadline,
+                first_token_timeout=first_token_timeout,
+            )
             if output[0] == "content":
                 parts.append(output[1])
-                if stream_parser is not None and on_stream_action is not None:
-                    signal.setitimer(signal.ITIMER_REAL, 0)
-                    callback_started = time.monotonic()
-                    try:
-                        if stream_parser.feed(output[1], on_stream_action):
-                            break
-                    finally:
-                        request_deadline += max(0.0, time.monotonic() - callback_started)
-                        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
         return "".join(parts) or completed_content, usage
 
     def _raise_responses_stream_error(self, event: Json) -> None:
@@ -3837,9 +4091,6 @@ class ModelClient:
         details = _json_list(delta.get("reasoning_details"))
         return len(json.dumps(details, ensure_ascii=False)) if details else 0
 
-    def _estimate_stream_rate(self, elapsed: float) -> float:
-        return self.session.state.current_model_call_streaming_chars / 4 / elapsed if elapsed > 0 else 0.0
-
     def _arm_stream_timeout(self, *, request_deadline: float, first_output_seen: bool, first_token_timeout: int | None) -> None:
         remaining = request_deadline - time.monotonic()
         if remaining <= 0:
@@ -3876,300 +4127,11 @@ class ModelClient:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def _parse_model_content(self, content: str) -> Json:
-        text = content.strip()
-        text = self._strip_leaked_think_tags(text)
-        text = self._strip_leaked_tool_code(text)
-        text = self._strip_json_fence(text)
-        text = self._strip_fence_marker_lines(text)
-        text = self._strip_leaked_think_tags(text)
-        text = self._strip_leaked_tool_code(text)
-        if not self._has_action_frame_end(text):
-            actions, error = self._parse_unmarked_actions(text)
-            if actions:
-                return {"actions": actions}
-            if error == "":
-                return {"actions": []}
-            return self._invalid_model_response(content, "expected one JSON action object or action frames ending with " + self.ACTION_FRAME_END + "; " + error)
-        actions: list[Json] = []
-        frame_errors: list[str] = []
-        for frame_number, frame in enumerate(self._action_frames(text), start=1):
-            parsed_actions, error = self._parse_action_frame(frame, frame_number)
-            if parsed_actions:
-                actions.extend(parsed_actions)
-                continue
-            if error:
-                frame_errors.append(error)
-        if not actions:
-            if not frame_errors:
-                return {"actions": []}
-            reason = "expected at least one valid action frame ending with " + self.ACTION_FRAME_END
-            if frame_errors:
-                reason += "; " + "; ".join(frame_errors[:3])
-            return self._invalid_model_response(content, reason)
-        response: Json = {"actions": actions}
-        if frame_errors:
-            response["_format_frame_errors"] = frame_errors
-        return response
-
-    def _parse_json_content(self, content: str) -> Json:
-        text = content.strip()
-        text = self._strip_leaked_think_tags(text)
-        text = self._strip_json_fence(text)
-        text = self._strip_leaked_think_tags(text)
-        try:
-            value = json_repair.loads(text)
-        except Exception as error:
-            raise LLMError("model returned invalid JSON: " + str(error))
-        if not isinstance(value, dict):
-            raise LLMError("model returned JSON that is not an object")
-        return value
-
-    def _action_frames(self, text: str) -> list[str]:
-        frames: list[str] = []
-        current: list[str] = []
-        for line in text.splitlines():
-            if not self._has_action_frame_end(line):
-                current.append(line)
-                continue
-            parts = self.ACTION_FRAME_END_SPLIT_PATTERN.split(line)
-            for index, part in enumerate(parts):
-                if part:
-                    current.append(part)
-                if index < len(parts) - 1:
-                    frames.append("\n".join(current).strip())
-                    current = []
-        trailing = "\n".join(current).strip()
-        if trailing:
-            frames.append(trailing)
-        return frames
-
-    def _parse_action_frame(self, frame: str, frame_number: int) -> tuple[list[Json], str]:
-        frame = frame.strip()
-        if not frame:
-            return [], ""
-        try:
-            value = json_repair.loads(frame)
-        except Exception as error:
-            return [], "frame " + str(frame_number) + ": " + str(error)
-        actions, error = self._actions_from_json_value(value)
-        if error:
-            return [], "frame " + str(frame_number) + ": " + error
-        return actions, ""
-
-    def _actions_from_json_value(self, value: JsonValue) -> tuple[list[Json], str]:
-        if isinstance(value, dict):
-            if "actions" in value:
-                return self._actions_from_json_value(value.get("actions"))
-            self._normalize_tool_type(value)
-            if not _json_str(value.get("type")):
-                return [], "action missing type"
-            return [value], ""
-        if isinstance(value, list):
-            actions = []
-            for index, raw in enumerate(value, start=1):
-                action = _json_dict(raw)
-                if not action:
-                    return [], "array item " + str(index) + ": expected JSON object action"
-                self._normalize_tool_type(action)
-                if not _json_str(action.get("type")):
-                    return [], "array item " + str(index) + ": action missing type"
-                actions.append(action)
-            return actions, ""
-        return [], "expected JSON object action"
-
-    def _normalize_tool_type(self, action: Json) -> None:
-        action_type = _json_str(action.get("type"))
-        tool_name = next((name for name in TOOL_REGISTRY if name.lower() == action_type.lower()), "") if action_type else ""
-        if tool_name:
-            action["type"] = "tool"
-            action.setdefault("name", tool_name)
-
-    def _parse_unmarked_actions(self, text: str) -> tuple[list[Json], str]:
-        actions: list[Json] = []
-        decoder = json.JSONDecoder()
-        index = 0
-        while index < len(text) and text[index].isspace():
-            index += 1
-        prefix = ""
-        if index < len(text) and text[index] != "{":
-            if text[index] == "[":
-                try:
-                    value, index = self._decode_json_array_text(text, index)
-                except (json.JSONDecodeError, ValueError) as error:
-                    return [], str(error)
-                parsed, error = self._actions_from_json_value(value)
-                if error:
-                    return [], error
-                while index < len(text) and text[index].isspace():
-                    index += 1
-                if index < len(text):
-                    progress = self._trailing_progress_text(text[index:])
-                    if progress:
-                        parsed.append({"type": "progress", "text": progress})
-                        return parsed, ""
-                    return [], "unexpected text after JSON action array"
-                return parsed, ""
-            action_start = text.find("{", index)
-            if action_start < 0:
-                progress = self._plain_progress_text(text[index:])
-                if progress:
-                    return [{"type": "progress", "text": progress}], ""
-                try:
-                    decoder.raw_decode(text, index)
-                except json.JSONDecodeError as error:
-                    return [], str(error)
-                return [], "expected JSON object action"
-            prefix = self._progress_text(text[:action_start])
-            index = action_start
-        while True:
-            while index < len(text) and text[index].isspace():
-                index += 1
-            if index >= len(text):
-                if prefix and actions:
-                    actions.insert(0, {"type": "progress", "text": prefix})
-                return actions, ""
-            try:
-                value, index = decoder.raw_decode(text, index)
-            except json.JSONDecodeError as error:
-                if actions:
-                    return [], str(error)
-                if self._should_repair_json_decode_error(str(error), text):
-                    repaired, repair_error = self._repair_single_json_action(text)
-                    if not repair_error:
-                        if prefix:
-                            repaired.insert(0, {"type": "progress", "text": prefix})
-                        return repaired, ""
-                return [], str(error)
-            parsed, error = self._actions_from_json_value(value)
-            if error:
-                return [], error
-            actions.extend(parsed)
-            while index < len(text) and text[index].isspace():
-                index += 1
-            if index < len(text) and text[index] == ",":
-                index += 1
-                continue
-            if index < len(text) and text[index] != "{":
-                next_action = text.find("{", index)
-                if next_action < 0:
-                    if self._should_repair_trailing_json_text(text[index:]):
-                        repaired, error = self._repair_single_json_action(text)
-                        if not error:
-                            return repaired, ""
-                    progress = self._trailing_progress_text(text[index:])
-                    if progress:
-                        actions.append({"type": "progress", "text": progress})
-                        return actions, ""
-                    return [], "unexpected text after JSON action"
-                progress = self._progress_text(text[index:next_action])
-                if progress:
-                    actions.append({"type": "progress", "text": progress})
-                index = next_action
-
-    def _progress_text(self, text: str) -> str:
-        text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
-        text = text.replace("```", "")
-        return _shorten(" ".join(text.split()), 500)
-
-    def _plain_progress_text(self, text: str) -> str:
-        progress = self._progress_text(text)
-        if not progress or "{" in progress or "}" in progress:
-            return ""
-        starters = (
-            "let me ",
-            "i need ",
-            "i will ",
-            "i'll ",
-            "now ",
-            "next ",
-            "我需要",
-            "让我",
-            "我会",
-            "现在",
-            "接下来",
-        )
-        return progress if progress.lower().startswith(starters) else ""
-
-    def _trailing_progress_text(self, text: str) -> str:
-        progress = self._progress_text(text)
-        if not progress or "{" in progress or "}" in progress:
-            return ""
-        return progress
-
-    def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
-        decoder = json.JSONDecoder()
-        value, end = decoder.raw_decode(text, index)
-        cursor = end
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
-        if cursor >= len(text):
-            return value, cursor
-        if not self._should_repair_trailing_json_text(text[cursor:]):
-            return value, cursor
-        value = json_repair.loads(text[index:])
-        if not isinstance(value, list):
-            raise ValueError("expected JSON action array")
-        return value, len(text)
-
-    def _repair_single_json_action(self, text: str) -> tuple[list[Json], str]:
-        try:
-            value = json_repair.loads(text)
-        except Exception as error:
-            return [], str(error)
-        if isinstance(value, list):
-            return [], "unexpected text after JSON action"
-        return self._actions_from_json_value(value)
-
-    def _should_repair_json_decode_error(self, error: str, text: str) -> bool:
-        return "Invalid control character" in error or re.fullmatch(r".*[}\]]\s*[}\]]+\s*", text, re.DOTALL) is not None
-
-    def _should_repair_trailing_json_text(self, text: str) -> bool:
-        return re.fullmatch(r"\s*[}\]]+\s*", text) is not None
-
-    def _has_action_frame_end(self, line: str) -> bool:
-        return self.ACTION_FRAME_END_SPLIT_PATTERN.search(line) is not None
-
-    def _strip_json_fence(self, text: str) -> str:
-        if not text.startswith("```"):
-            return text
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
-
-    def _strip_fence_marker_lines(self, text: str) -> str:
-        return re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$\n?", "", text).strip()
-
-    def _strip_leaked_think_tags(self, text: str) -> str:
-        text = text.strip()
-        while text.startswith("</think>"):
-            text = text[len("</think>") :].lstrip()
-        while text.startswith("<think>"):
-            end = text.find("</think>")
-            if end < 0:
-                return text
-            text = text[end + len("</think>") :].lstrip()
-            while text.startswith("</think>"):
-                text = text[len("</think>") :].lstrip()
-        return text
-
-    def _strip_leaked_tool_code(self, text: str) -> str:
-        return re.sub(r"<tool_code>.*?</tool_code>", "", text, flags=re.DOTALL).strip()
-
-    def _invalid_model_response(self, content: str, reason: str = "expected one JSON object matching the Output JSON schema") -> Json:
-        guidance = ""
-        if self._strip_leaked_think_tags(content.strip()).startswith("<tool_call>"):
-            guidance = (
-                " Native tool_call syntax is not supported; return an action frame like "
-                '{"type":"tool","name":"Read","intention":"...","args":["nanocode.py","0,100"]}\n__END_ACTION__.'
-            )
+    def _invalid_model_response(self, content: str, reason: str = "expected a function tool call") -> Json:
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": "Invalid model output: " + reason + ". Return action frames only. Bad output: " + _shorten(content) + guidance,
+            "_format_error": "Invalid function-tool response: " + reason + ". Use the provided function tools. Bad output: " + _shorten(content),
         }
 
     def _message_content(self, result: JsonValue) -> str | None:
@@ -4328,7 +4290,7 @@ class ToolCallRunner:
                 else:
                     call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
                     tool = self._make_tool(call)
-                requires_verification = tool.effect() == ToolEffect.EDIT
+                requires_verification = tool.EFFECT == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
                 if callable(preview_error):
                     preview_error_text = str(preview_error())
@@ -4364,7 +4326,7 @@ class ToolCallRunner:
                 call = self._invalid_tool_call(item)
             result_key = ""
             result_excerpted = False
-            if call.name != ToolResultTool.name():
+            if call.name != ToolResultTool.NAME:
                 result_key = self._store_tool_result(call, outcome, output)
                 item = self.session.state.tool_result_store[result_key]
                 output = item.value
@@ -4431,7 +4393,7 @@ class ToolCallRunner:
             if key is not None and filtered and isinstance(filtered[-1], ParsedToolCall) and self._readonly_call_key(filtered[-1]) == key:
                 filtered[-1] = call
                 continue
-            if call.name == ToolResultTool.name() and filtered and isinstance(filtered[-1], ParsedToolCall) and filtered[-1].name == call.name:
+            if call.name == ToolResultTool.NAME and filtered and isinstance(filtered[-1], ParsedToolCall) and filtered[-1].name == call.name:
                 merged_args = list(filtered[-1].args)
                 merged_args.extend(arg for arg in call.args if arg not in merged_args)
                 filtered[-1] = ParsedToolCall(name=call.name, intention=call.intention, args=merged_args)
@@ -4471,7 +4433,7 @@ class ToolCallRunner:
         return merged
 
     def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
-        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.name():
+        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.NAME:
             return None
         key = ReplaceRangeTool.merge_key(item)
         if key is None:
@@ -4482,7 +4444,7 @@ class ToolCallRunner:
         parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
         if len(parsed_group) != len(group):
             return None
-        if parsed_group[0].name != ReplaceRangeTool.name():
+        if parsed_group[0].name != ReplaceRangeTool.NAME:
             return None
         return ReplaceRangeTool.merge_calls(self.session, parsed_group)
 
@@ -4539,7 +4501,7 @@ class ToolCallRunner:
             name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == name), name)
         intention = _json_str(item.get("intention")) or ""
         raw_args = _json_list(item.get("args"))
-        args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.name() else [_json_str(arg) or "" for arg in raw_args]
+        args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.NAME else [_json_str(arg) or "" for arg in raw_args]
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -4752,13 +4714,6 @@ class AgentStateUpdater:
         changed = False
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "start":
-                update = _json_str(action.get("goal"))
-                if update:
-                    goal_changed = update != self.blackboard.goal
-                    changed = changed or goal_changed
-                    self.blackboard.goal = update
-                    self.blackboard.goal_reached = False
             if action_type == "goal":
                 update = _json_str(action.get("text"))
                 complete = action.get("complete")
@@ -4772,12 +4727,6 @@ class AgentStateUpdater:
 
     def _apply_plan(self, actions: list[Json]) -> bool:
         replaced = False
-        for start in [action for action in actions if _json_str(action.get("type")) == "start"]:
-            items = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(start.get("plan"))) if item]
-            if items:
-                self._normalize_doing_items(items)
-                self.blackboard.plan = items
-                replaced = True
         for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
             items = _json_list(update.get("items"))
             if update.get("mode") != "patch":
@@ -4867,7 +4816,9 @@ class AgentStateUpdater:
 
     def _apply_work_mode(self, actions: list[Json]) -> None:
         for action in actions:
-            if _json_str(action.get("type")) != "start":
+            if _json_str(action.get("type")) != "goal":
+                continue
+            if "work_mode" not in action:
                 continue
             mode = _json_str(action.get("work_mode")) or WorkMode.NORMAL
             self.blackboard.work_mode = WorkMode(mode) if mode in ALL_WORK_MODES else WorkMode.NORMAL
@@ -4951,10 +4902,7 @@ class AgentStateUpdater:
         if "verify" in action_types:
             self.blackboard.task_code = TaskCode.WORKING
             return
-        if "start" in action_types:
-            self.blackboard.task_code = TaskCode.WORKING
-            return
-        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "progress", "tool")) and not self.blackboard.goal_reached:
+        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "tool")) and not self.blackboard.goal_reached:
             self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
@@ -5129,8 +5077,13 @@ class ConversationCompactor:
             known="\n".join(KnownItem.format_item(item) for item in self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        kwargs = {"parse_actions": False} if isinstance(self.model_client, ModelClient) else {}
+        kwargs = {"tool_schemas": [COMPACT_TOOL_SCHEMA], "required_tool": "compact"} if isinstance(self.model_client, ModelClient) else {}
         response = self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
+        if "actions" in response:
+            response = next(
+                (_json_dict(action) for action in _json_list(response.get("actions")) if _json_str(_json_dict(action).get("type")) == "compact"),
+                {},
+            )
         summary = _json_str(response.get("summary"))
         if not summary:
             raise LLMError("compact response missing summary")
@@ -5157,15 +5110,14 @@ VALID_VERIFICATION_KINDS: set[str] = {"syntax_check", "change_syntax_check", "li
 class ResponseContext:
     response: Json
     actions: list[Json]
+    assistant_text: str
     goal_was_empty: bool
     plan_was_empty: bool
     plan_was_complete: bool
     verification_was_settled: bool
     goal_will_change: bool
-    chat_message: str | None
     tool_calls: list[JsonValue]
     pending_verify_requested: bool
-    progress_messages: list[str]
     user_rule_message: str | None
     completion_message: str
     has_goal_action: bool
@@ -5188,20 +5140,17 @@ class Agent:
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
     blackboard: Blackboard
     ACT_ACTION_TYPES: ClassVar[set[str]] = {
-        "chat",
-        "start",
         "goal",
         "plan",
         "hypothesis",
         "known",
         "stable_knowledge",
-        "progress",
         "tool",
         "verify",
         "user_rule",
         "forget",
     }
-    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"chat", "user_rule", "forget"}
+    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"user_rule", "forget"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "stable_knowledge", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
@@ -5225,7 +5174,7 @@ class Agent:
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
     RULE_FINAL_ACTION: ClassVar[str] = "continue with a useful action or finish with goal.complete=true."
-    RULE_ACTION_FRAMES: ClassVar[str] = "return valid JSON action frames only."
+    RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
 
     def __init__(self, session: Session):
         self.session = session
@@ -5274,13 +5223,20 @@ class Agent:
         activity: str = "agent",
         on_message: MessageCallback | None = None,
         on_stream_action: Callable[[Json], bool] | None = None,
+        tool_schemas: list[Json] | None = None,
     ) -> Json:
         attempt = 0
         while attempt <= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
             try:
                 self.session.state.turn_model_calls += 1
-                if on_stream_action is not None and isinstance(self.model_client, ModelClient):
-                    return self.model_client.request(system_prompt, user_prompt, activity=activity, on_stream_action=on_stream_action)
+                if isinstance(self.model_client, ModelClient):
+                    return self.model_client.request(
+                        system_prompt,
+                        user_prompt,
+                        activity=activity,
+                        on_stream_action=on_stream_action,
+                        tool_schemas=tool_schemas,
+                    )
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except ModelRequestRetry:
                 if on_message is not None and self.session.settings.debug:
@@ -5335,30 +5291,11 @@ class Agent:
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
-                    self._set_status_notice("err:format")
-                    remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
-                    remember_error(
-                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: " + self.RULE_ACTION_FRAMES
-                    )
                     if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                         if on_format_error_limit is not None:
+                            self._remember_format_gate(format_error)
                             return on_format_error_limit(response, format_error)
-                        self._report_gate(
-                            on_message,
-                            "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
-                            "Format_Gate: stopped after "
-                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                            + " consecutive invalid model outputs. "
-                            + self._format_gate_debug_details(response, format_error),
-                        )
-                        raise LLMError(
-                            "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
-                        )
-                    self._report_gate(
-                        on_message,
-                        self._format_gate_user_message("Retrying: model returned invalid output", format_error),
-                        "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
-                    )
+                    self._handle_format_gate(response, format_error, consecutive_format_errors, on_message)
                     continue
                 consecutive_format_errors = 0
                 result = on_step(response)
@@ -5393,28 +5330,7 @@ class Agent:
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
-                    self._set_status_notice("err:format")
-                    remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
-                    remember_error(
-                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: " + self.RULE_ACTION_FRAMES
-                    )
-                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
-                        self._report_gate(
-                            on_message,
-                            "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
-                            "Format_Gate: stopped after "
-                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                            + " consecutive invalid model outputs. "
-                            + self._format_gate_debug_details(response, format_error),
-                        )
-                        raise LLMError(
-                            "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
-                        )
-                    self._report_gate(
-                        on_message,
-                        self._format_gate_user_message("Retrying: model returned invalid output", format_error),
-                        "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
-                    )
+                    self._handle_format_gate(response, format_error, consecutive_format_errors, on_message)
                     continue
                 if not committed:
                     consecutive_format_errors = 0
@@ -5424,6 +5340,29 @@ class Agent:
         except KeyboardInterrupt:
             self.cancel_current_goal()
             raise
+
+    def _remember_format_gate(self, format_error: str) -> None:
+        remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
+        remember_error(self._format_gate_user_message("Error: invalid function/tool response", format_error) + " Rule: " + self.RULE_FUNCTION_TOOLS)
+
+    def _handle_format_gate(self, response: Json, format_error: str, consecutive_errors: int, on_message: MessageCallback | None) -> None:
+        self._set_status_notice("err:format")
+        self._remember_format_gate(format_error)
+        if consecutive_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+            self._report_gate(
+                on_message,
+                "Stopped: invalid function/tool response " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
+                "Format_Gate: stopped after "
+                + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                + " consecutive invalid function/tool responses. "
+                + self._format_gate_debug_details(response, format_error),
+            )
+            raise LLMError("invalid function/tool response " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300))
+        self._report_gate(
+            on_message,
+            self._format_gate_user_message("Retrying: invalid function/tool response", format_error),
+            "Format_Gate: retrying function/tool response. " + self._format_gate_debug_details(response, format_error),
+        )
 
     def _finish_current_goal(self) -> None:
         self.blackboard.task_code = TaskCode.DONE
@@ -5550,8 +5489,9 @@ class Agent:
             if marker in detail:
                 detail = detail.split(marker, 1)[0]
                 break
-        if detail.startswith("Invalid model output: "):
-            detail = detail[len("Invalid model output: ") :]
+        marker = "Invalid function-tool response: "
+        if detail.startswith(marker):
+            detail = detail[len(marker) :]
         return prefix + ": " + _shorten(detail, 180)
 
     def _format_gate_debug_details(self, response: Json, format_error: str) -> str:
@@ -5562,7 +5502,7 @@ class Agent:
 
     def _step_prompts(self) -> tuple[str, str, str]:
         if self.mode == AgentMode.OBSERVE:
-            system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT, tools=())
+            system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT)
             user_prompt = self.build_observe_prompt()
             activity = "observe"
         else:
@@ -5574,9 +5514,22 @@ class Agent:
             activity = "agent"
         return system_prompt, user_prompt, activity
 
+    def _tool_schemas(self) -> list[Json]:
+        if self.mode == AgentMode.OBSERVE:
+            action_names = self.OBSERVE_ACTION_TYPES
+            tool_classes: Iterable[ToolClass] = ()
+        elif self.session.settings.plan_mode:
+            action_names = self.PLAN_ACTION_TYPES - {"tool"}
+            tool_classes = PLAN_MODE_TOOLS
+        else:
+            action_names = self.ACT_ACTION_TYPES - {"tool"}
+            tool_classes = TOOL_REGISTRY.values()
+        actions = [_state_tool_schema(name) for name in STATE_TOOL_PARAMS if name in action_names]
+        return actions + [tool.tool_schema() for tool in tool_classes]
+
     def step(self, *, on_message: MessageCallback | None = None) -> Json:
         system_prompt, user_prompt, activity = self._step_prompts()
-        response = self.request(system_prompt, user_prompt, activity=activity, on_message=on_message)
+        response = self.request(system_prompt, user_prompt, activity=activity, on_message=on_message, tool_schemas=self._tool_schemas())
         if _json_str(response.get("_format_error")):
             return response
         invalid_response = self._validate_action_response(response)
@@ -5593,7 +5546,7 @@ class Agent:
         on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> tuple[AgentRunResult, Json, bool]:
-        if not self._can_stream_action_frames():
+        if not self._can_stream_tools():
             response = self.step(on_message=on_message)
             if _json_str(response.get("_format_error")):
                 return AgentRunResult(), response, False
@@ -5613,7 +5566,10 @@ class Agent:
             nonlocal committed, latest_result
             committed = True
             self.stream_stop_requested = False
+            assistant_text = _json_str(action.pop("_assistant_text", None)) or ""
             response = {"actions": [action]}
+            if assistant_text:
+                response["_assistant_text"] = assistant_text
             invalid_response = self._validate_action_response(response)
             latest_result = (
                 self.handle_response(
@@ -5646,6 +5602,7 @@ class Agent:
             activity=activity,
             on_message=on_message,
             on_stream_action=on_stream_action,
+            tool_schemas=self._tool_schemas(),
         )
         if committed:
             return latest_result, response, True
@@ -5663,15 +5620,15 @@ class Agent:
             on_message=on_message,
         ), response, False
 
-    def _can_stream_action_frames(self) -> bool:
+    def _can_stream_tools(self) -> bool:
         return self.mode == AgentMode.ACT and isinstance(self.model_client, ModelClient) and self.session.config.provider.stream is not False
 
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
-        if self._has_pending_verification(actions):
+        if any(self._is_pending_verify_action(action) for action in actions):
             response = {**response, "actions": [action for action in actions if not self._is_pending_verify_action(action)]}
             actions = self._response_actions(response)
-        if self._start_changes_goal(actions):
+        if self._goal_changes_task(actions):
             self.tool_context.kept_results = []
             self.tool_context.compact_observed(self.tool_context.recent + self.tool_context.latest)
             self._mark_memory_checkpoint()
@@ -5682,10 +5639,13 @@ class Agent:
             self._mark_memory_checkpoint()
         return forgotten
 
-    def _start_changes_goal(self, actions: list[Json]) -> bool:
+    def _goal_changes_task(self, actions: list[Json]) -> bool:
+        if not self.blackboard.goal:
+            return False
         return any(
-            _json_str(action.get("type")) == "start"
-            and bool(goal := _json_str(action.get("goal")))
+            _json_str(action.get("type")) == "goal"
+            and action.get("complete") is not True
+            and bool(goal := _json_str(action.get("text")))
             and goal != self.blackboard.goal
             for action in actions
         )
@@ -5761,7 +5721,7 @@ class Agent:
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
             rule = self.RULE_TOOL_SIGNATURE
-            if execution.call.name in {EditTool.name(), ReplaceRangeTool.name()}:
+            if execution.call.name in {EditTool.NAME, ReplaceRangeTool.NAME}:
                 rule = self.RULE_EDIT_SIGNATURE
             self._remember_agent_error(
                 self._error(
@@ -5802,7 +5762,7 @@ class Agent:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return execution.output
-        params = self._exact_signature_params(tool_class.SIGNATURE)
+        params = ["filepath", "ranges"] if call.name == ReplaceRangeTool.NAME else self._exact_signature_params(tool_class.SIGNATURE)
         if not params or len(call.args) == len(params):
             return execution.output
         detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
@@ -5836,26 +5796,19 @@ class Agent:
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
             "actions": [],
-            "_format_error": "Invalid model output: "
+            "_format_error": "Invalid function-tool response: "
             + reason
-            + ". Return action frames only. Bad output: "
+            + ". Use the provided function tools. Bad output: "
             + _shorten(json.dumps(response, ensure_ascii=False)),
         }
 
     def _validate_action_response(self, response: Json) -> Json | None:
         if not isinstance(response.get("actions"), list):
             return self._invalid_action_response(response, "expected actions array")
-        extra_keys = sorted(str(key) for key in response.keys() if key != "actions" and not str(key).startswith("_format_"))
+        extra_keys = sorted(str(key) for key in response.keys() if key not in {"actions", "_assistant_text"} and not str(key).startswith("_format_"))
         if extra_keys:
             return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
         return None
-
-    def _format_frame_error_report(self, response: Json) -> str:
-        errors = [_json_str(error) or "" for error in _json_list(response.get("_format_frame_errors"))]
-        errors = [error for error in errors if error]
-        if not errors:
-            return ""
-        return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
         actions = [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
@@ -5868,13 +5821,6 @@ class Agent:
         if not action_type:
             return
         lowered = action_type.lower()
-        if lowered == "message":
-            action["type"] = "chat"
-            if _json_str(action.get("text")) is None:
-                text = _json_str(action.get("message")) or _json_str(action.get("content"))
-                if text is not None:
-                    action["text"] = text
-            return
         if lowered in (self.ACT_ACTION_TYPES | self.OBSERVE_ACTION_TYPES):
             action["type"] = lowered
 
@@ -5895,59 +5841,29 @@ class Agent:
         self._report_gate(
             on_message,
             retry_message,
-            "ActionType_Gate: invalid action type(s): " + ", ".join(invalid) + ".",
+            "Protocol_Gate: invalid action type(s): " + ", ".join(invalid) + ".",
         )
         return AgentRunResult()
-
-    def _chat_message_from_actions(self, actions: list[Json]) -> str | None:
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "chat":
-                return _json_str(action.get("text")) or ""
-            return None
-        return None
-
-    def _progress_messages_from_actions(self, actions: list[Json]) -> list[str]:
-        messages = []
-        for action in actions:
-            if _json_str(action.get("type")) == "progress":
-                message = _json_str(action.get("text")) or _json_str(action.get("message")) or ""
-            else:
-                message = ""
-            if message:
-                messages.append(message)
-        return messages
-
-    def _completion_message_from_actions(self, actions: list[Json]) -> str:
-        for action in reversed(actions):
-            if _json_str(action.get("type")) == "goal" and action.get("complete") is True:
-                return _json_str(action.get("message_for_complete")) or ""
-        return ""
 
     def _completion_fallback_message(self, ctx: ResponseContext) -> str:
         if ctx.completion_message:
             return ctx.completion_message
-        return next((message for message in reversed(ctx.progress_messages) if message.strip()), "Done.")
+        if ctx.assistant_text:
+            return ctx.assistant_text
+        return "Done."
 
     def _incomplete_goal_update_from_actions(self, actions: list[Json]) -> str:
         update = ""
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "start":
-                update = _json_str(action.get("goal")) or update
-            elif action_type == "goal" and action.get("complete") is not True:
+            if action_type == "goal" and action.get("complete") is not True:
                 update = _json_str(action.get("text")) or update
         return update
 
     def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
-        def has_items(value: JsonValue) -> bool:
-            return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
-
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "start" and has_items(action.get("plan")):
-                return True
-            if action_type == "plan" and action.get("mode") != "patch" and has_items(action.get("items")):
+            if action_type == "plan" and action.get("mode") != "patch" and any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(action.get("items"))):
                 return True
         return False
 
@@ -5993,13 +5909,6 @@ class Agent:
             if _json_str(action.get("type")) == "user_rule":
                 return _json_str(action.get("message")) or "Rule saved."
         return None
-
-    def _has_pending_verification(self, actions: list[Json]) -> bool:
-        return any(self._is_pending_verify_action(action) for action in actions)
-
-    @staticmethod
-    def _has_state_update_action(actions: list[Json]) -> bool:
-        return any(_json_str(action.get("type")) in {"plan", "known", "hypothesis", "stable_knowledge"} for action in actions)
 
     @staticmethod
     def _is_pending_verify_action(action: Json) -> bool:
@@ -6054,7 +5963,7 @@ class Agent:
             tool_class = TOOL_REGISTRY.get(call.name)
             if tool_class is None:
                 return "plan mode allows registered readonly tools only; blocked " + _format_tool_call_summary(call)
-            if tool_class.effect() == ToolEffect.READONLY:
+            if tool_class.EFFECT == ToolEffect.READONLY:
                 continue
             if tool_class is GitTool:
                 args = call.args[1:] if call.args and isinstance(call.args[0], str) and call.args[0].startswith("cwd=") else call.args
@@ -6070,36 +5979,43 @@ class Agent:
             except ToolCallArgError:
                 return True
             tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None or tool_class.effect() != ToolEffect.READONLY:
+            if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
                 return True
         return False
 
     def _build_response_context(self, response: Json) -> ResponseContext:
         raw_actions = self._response_actions(response)
-        pending_verify_requested = self._has_pending_verification(raw_actions)
+        assistant_text = _json_str(response.get("_assistant_text")) or ""
+        pending_verify_requested = any(self._is_pending_verify_action(action) for action in raw_actions)
         actions = [action for action in raw_actions if not self._is_pending_verify_action(action)]
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
-        progress_messages = self._progress_messages_from_actions(actions)
-        has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
-        has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
+        has_goal_action = any(_json_str(action.get("type")) == "goal" for action in actions)
+        has_plan_action = any(_json_str(action.get("type")) == "plan" for action in actions)
         has_forget_action = any(_json_str(action.get("type")) == "forget" for action in actions)
         has_hypothesis_action = any(_json_str(action.get("type")) == "hypothesis" for action in actions)
-        has_state_update_action = self._has_state_update_action(actions)
+        has_state_update_action = any(_json_str(action.get("type")) in {"goal", "plan", "known", "hypothesis", "stable_knowledge"} for action in actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
+        completion_message = next(
+            (
+                _json_str(action.get("message_for_complete")) or ""
+                for action in reversed(actions)
+                if _json_str(action.get("type")) == "goal" and action.get("complete") is True
+            ),
+            "",
+        )
         return ResponseContext(
             response=response,
             actions=actions,
+            assistant_text=assistant_text,
             goal_was_empty=not self.blackboard.goal,
             plan_was_empty=not self.blackboard.plan,
             plan_was_complete=self._plan_is_complete(),
             verification_was_settled=self._verification_is_settled(),
             goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
-            chat_message=self._chat_message_from_actions(actions),
             tool_calls=tool_calls,
             pending_verify_requested=pending_verify_requested,
-            progress_messages=progress_messages,
             user_rule_message=self._user_rule_message_from_actions(actions),
-            completion_message=self._completion_message_from_actions(actions),
+            completion_message=completion_message,
             has_goal_action=has_goal_action,
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
@@ -6108,7 +6024,8 @@ class Agent:
             state_or_work_requested=bool(
                 tool_calls
                 or pending_verify_requested
-                or progress_messages
+                or (assistant_text and actions and not completion_message)
+                or has_goal_action
                 or has_plan_action
                 or has_forget_action
                 or has_hypothesis_action
@@ -6116,26 +6033,31 @@ class Agent:
             ),
         )
 
-    def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if ctx.chat_message is None:
-            return None
-        if ctx.completion_message:
+    def _handle_text_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+        if ctx.actions or not ctx.assistant_text:
             return None
         if ctx.state_or_work_requested or self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
             return self._reject_result(
                 self._remember_agent_error,
                 on_message,
-                self._error("chat cannot finish an active task.", self.RULE_FINAL_ACTION),
+                self._error("assistant text cannot finish an active task.", self.RULE_FINAL_ACTION),
                 "Retrying: active task is not complete.",
-                "Completion_Gate: chat before task completion.",
+                "Completion_Gate: assistant text before task completion.",
             )
         self.blackboard.task_code = TaskCode.DONE
-        self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
+        self.session.append_conversation(AssistantMessage(content=ctx.assistant_text))
         if on_message is not None:
-            on_message(ctx.chat_message)
+            on_message(ctx.assistant_text)
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
+        return (
+            self._gate_protocol_actions(ctx, on_message)
+            or self._gate_tool_actions(ctx, on_message)
+            or self._gate_task_state(ctx, on_message)
+        )
+
+    def _gate_protocol_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         action_gate = self._gate_action_types(
             ctx.actions,
             allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
@@ -6145,22 +6067,11 @@ class Agent:
         )
         if action_gate is not None:
             return True
-        forget_error = self._forget_tool_result_error(ctx.actions)
-        if forget_error:
-            return self._reject_agent(
-                on_message,
-                self._error("invalid forget: " + forget_error + ".", self.RULE_VISIBLE_RESULTS),
-                "Retrying: forget only visible tool result keys.",
-                "ToolResult_Gate: " + forget_error + ".",
-            )
-        forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
-        if forget_hypothesis_error:
-            return self._reject_agent(
-                on_message,
-                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
-                "Retrying: close hypothesis before forgetting its source result.",
-                "ToolResult_Gate: " + forget_hypothesis_error + ".",
-            )
+        return False
+
+    def _gate_tool_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
+        if self._gate_forget_actions(ctx.actions, on_message, self._remember_agent_error) is not None:
+            return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
             return self._reject_agent(
@@ -6177,6 +6088,9 @@ class Agent:
                 "Retrying: plan mode only allows readonly discovery.",
                 "PlanMode_Gate: " + plan_mode_tool_error + ".",
             )
+        return False
+
+    def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if (
             self.blackboard.task_code == TaskCode.NEW
             and self.task_alignment_required
@@ -6188,7 +6102,7 @@ class Agent:
             self._remember_agent_error(
                 self._error(
                     "previous task context is still present.",
-                    "emit start for a new task; otherwise update or confirm the current plan.",
+                    "emit goal for a new task; otherwise update or confirm the current plan.",
                 )
             )
             self._report_gate(
@@ -6197,8 +6111,6 @@ class Agent:
                 "GoalPlan_Gate: work before task alignment with previous task context.",
             )
             return True
-        if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
-            self._warn_agent("ignored repeated start after the current task became active.")
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
             self._remember_agent_error(
                 self._error("cannot rewrite Goal after the task is active.", "continue the existing Goal/Plan.")
@@ -6223,8 +6135,8 @@ class Agent:
                 "Retrying: set goal and plan before tools.",
                 "GoalPlan_Gate: Goal is empty before task state/work.",
             )
-        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error(self._error("changed Goal without replacing Plan.", "include start.plan or a full plan action."))
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls)):
+            self._remember_agent_error(self._error("changed Goal without replacing Plan.", "include a full plan action before mutating work."))
             self._report_gate(
                 on_message,
                 "Retrying: new goal requires a fresh plan.",
@@ -6233,23 +6145,16 @@ class Agent:
             return True
         return False
 
-    def _emit_debug_frame_errors(self, response: Json, on_message: MessageCallback | None) -> None:
-        if not self.session.settings.debug or on_message is None:
-            return
-        frame_error_report = self._format_frame_error_report(response)
-        if frame_error_report:
-            on_message(frame_error_report)
-
-    def _emit_state_and_progress(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
+    def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
             report = self.state_updater.latest_report if self.session.settings.debug else self.state_updater.compact_report()
             if report:
                 on_message(report)
-        if on_message is not None:
-            for message in ctx.progress_messages:
-                on_message(message)
+        if on_message is not None and ctx.assistant_text and ctx.actions and not ctx.completion_message:
+            on_message(ctx.assistant_text)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+        has_progress_text = bool(ctx.assistant_text and ctx.actions and not ctx.completion_message)
         if (
             ctx.plan_was_empty
             and not self.blackboard.plan
@@ -6285,20 +6190,29 @@ class Agent:
             ctx.state_or_work_requested
             and not ctx.tool_calls
             and not ctx.pending_verify_requested
-            and not ctx.progress_messages
+            and not has_progress_text
             and not ctx.completion_message
             and not self.state_updater.changed
+            and not self.blackboard.goal_reached
         ):
-            self._warn_agent("response made no effective state change; continue with tool, verify, or goal.")
+            rule = "do not repeat unchanged state; call readonly discovery if context is missing, set plan if ready, verify, or finish."
+            if self.blackboard.goal and not self.blackboard.plan:
+                rule = "Goal is already set; do not repeat it. Call readonly discovery if context is missing, or set plan if ready."
+            return self._reject_result(
+                self._remember_agent_error,
+                on_message,
+                self._error("response made no effective state change.", rule),
+                "Retrying: move to the next workflow state.",
+                "Progress_Gate: no effective state change.",
+            )
         if (
             not self.session.settings.plan_mode
             and ctx.has_state_update_action
             and self.state_updater.changed
-            and not ctx.has_goal_action
+            and not ctx.goal_was_empty
             and not ctx.tool_calls
             and not ctx.pending_verify_requested
             and not ctx.completion_message
-            and ctx.chat_message is None
             and ctx.user_rule_message is None
         ):
             self._warn_agent("state update-only turn; include frontier tool, verify, or goal when arguments are known.")
@@ -6392,24 +6306,9 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
-        forget_error = self._forget_tool_result_error(ctx.actions)
-        if forget_error:
-            return self._reject_result(
-                self._remember_observe_error,
-                on_message,
-                self._error("invalid forget: " + forget_error + ".", self.RULE_VISIBLE_RESULTS),
-                "Retrying: forget only visible tool result keys.",
-                "ToolResult_Gate: " + forget_error + ".",
-            )
-        forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
-        if forget_hypothesis_error:
-            return self._reject_result(
-                self._remember_observe_error,
-                on_message,
-                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
-                "Retrying: close hypothesis before forgetting its source result.",
-                "ToolResult_Gate: " + forget_hypothesis_error + ".",
-            )
+        forget_gate = self._gate_forget_actions(ctx.actions, on_message, self._remember_observe_error)
+        if forget_gate is not None:
+            return forget_gate
         if not ctx.actions:
             return self._reject_result(
                 self._remember_observe_error,
@@ -6438,9 +6337,8 @@ class Agent:
                 "Observe_Gate: missing coverage for result keys: " + ", ".join(missing_observe_keys) + ".",
             )
             return AgentRunResult()
-        self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
-        self._emit_state_and_progress(ctx, on_message)
+        self._emit_state_and_text(ctx, on_message)
         kept_keys: list[str] = []
         if any(_json_str(action.get("type")) in {"keep", "forget", "known", "stable_knowledge"} for action in ctx.actions):
             self.mode = AgentMode.ACT
@@ -6469,6 +6367,32 @@ class Agent:
         missing = [key for key in keys if key not in visible_keys]
         return "not in visible tool results: " + ", ".join(missing) if missing else ""
 
+    def _gate_forget_actions(
+        self,
+        actions: list[Json],
+        on_message: MessageCallback | None,
+        remember_error: Callable[[str], None],
+    ) -> AgentRunResult | None:
+        forget_error = self._forget_tool_result_error(actions)
+        if forget_error:
+            return self._reject_result(
+                remember_error,
+                on_message,
+                self._error("invalid forget: " + forget_error + ".", self.RULE_VISIBLE_RESULTS),
+                "Retrying: forget only visible tool result keys.",
+                "ToolResult_Gate: " + forget_error + ".",
+            )
+        forget_hypothesis_error = self._forget_active_hypothesis_error(actions)
+        if forget_hypothesis_error:
+            return self._reject_result(
+                remember_error,
+                on_message,
+                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
+                "Retrying: close hypothesis before forgetting its source result.",
+                "ToolResult_Gate: " + forget_hypothesis_error + ".",
+            )
+        return None
+
     def _emit_tool_context_update(self, kept: list[str], forgotten: list[str], on_message: MessageCallback | None) -> None:
         if on_message is None or not (kept or forgotten):
             return
@@ -6480,6 +6404,31 @@ class Agent:
         on_message("Tool Result Context: " + " / ".join(parts))
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
+        completion_gate = self._gate_completion(ctx, on_message)
+        if completion_gate is not None:
+            return completion_gate
+        if self.blackboard.goal_reached and not ctx.completion_message:
+            self._warn_agent("filled missing message_for_complete with a fallback completion message.")
+        completion_message = self._completion_fallback_message(ctx) if self.blackboard.goal_reached else ""
+        if self.blackboard.goal_reached:
+            self.session.append_conversation(AssistantMessage(content=completion_message))
+            if on_message is not None:
+                on_message(completion_message)
+            self._finish_current_goal()
+            return AgentRunResult(done=True, value=ctx.response)
+        self.blackboard.goal_reached = False
+        if not ctx.actions:
+            self._remember_agent_error(
+                self._error("no actions while goal is incomplete.", self.RULE_FINAL_ACTION)
+            )
+            self._report_gate(
+                on_message,
+                "Continuing: assistant must set current task's goal.",
+                "GoalPlan_Gate: goal not reached; retrying next useful action.",
+            )
+        return AgentRunResult()
+
+    def _gate_completion(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             if self.blackboard.verification_required:
                 return self._reject_completion(
@@ -6525,8 +6474,6 @@ class Agent:
                 "Retrying: confirm a hypothesis before completing.",
                 "Completion_Gate: " + investigate_completion_error + ".",
             )
-        if self.blackboard.goal_reached and not ctx.completion_message:
-            self._warn_agent("filled missing message_for_complete with a fallback completion message.")
         completion_message = self._completion_fallback_message(ctx) if self.blackboard.goal_reached else ""
         plan_mode_completion_error = self._plan_mode_completion_error(completion_message) if self.blackboard.goal_reached else ""
         if plan_mode_completion_error:
@@ -6536,23 +6483,7 @@ class Agent:
                 "Retrying: finish plan mode with a proposed_plan block.",
                 "PlanMode_Gate: " + plan_mode_completion_error + ".",
             )
-        if self.blackboard.goal_reached:
-            self.session.append_conversation(AssistantMessage(content=completion_message))
-            if on_message is not None:
-                on_message(completion_message)
-            self._finish_current_goal()
-            return AgentRunResult(done=True, value=ctx.response)
-        self.blackboard.goal_reached = False
-        if not ctx.actions:
-            self._remember_agent_error(
-                self._error("no actions while goal is incomplete.", self.RULE_FINAL_ACTION)
-            )
-            self._report_gate(
-                on_message,
-                "Continuing: assistant must set current task's goal.",
-                "GoalPlan_Gate: goal not reached; retrying next useful action.",
-            )
-        return AgentRunResult()
+        return None
 
     def run(
         self,
@@ -6597,7 +6528,7 @@ class Agent:
         self.compactor.maybe_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
-        if self._can_stream_action_frames():
+        if self._can_stream_tools():
             return self.run_stream_loop(
                 max_steps=self.session.settings.max_agent_steps,
                 on_message=on_message,
@@ -6646,13 +6577,12 @@ class Agent:
         if self._gate_before_apply(ctx, on_message):
             return AgentRunResult()
 
-        chat_result = self._handle_chat_response(ctx, on_message)
-        if chat_result is not None:
-            return chat_result
+        text_result = self._handle_text_response(ctx, on_message)
+        if text_result is not None:
+            return text_result
 
-        self._emit_debug_frame_errors(response, on_message)
         forgotten_keys = self.apply_response(response)
-        self._emit_state_and_progress(ctx, on_message)
+        self._emit_state_and_text(ctx, on_message)
         self._emit_tool_context_update([], forgotten_keys, on_message)
         if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
             message = ctx.user_rule_message or "Rule saved."
@@ -8004,7 +7934,7 @@ class AgentLoop:
                 [("ansibrightblack", "  Why     "), ("ansimagenta", call.intention + "\n")],
                 "  Why     " + call.intention,
             )
-        if tool.effect() == ToolEffect.EDIT:
+        if tool.EFFECT == ToolEffect.EDIT:
             preview = tool.preview()
             if preview:
                 self._emit_segments(self._preview_segments(preview), "  Preview\n" + preview)

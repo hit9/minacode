@@ -27,7 +27,6 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-    "json-repair>=0.39",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",
     "socksio>=1.0.0",

@@ -14,7 +14,7 @@ Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, confi
 
 ## Features
 
-- **Constrained Output**: Force model replies into auditable action frames.
+- **Function Tools**: Route model decisions through auditable tools.
 - **Verified Edits**: Reject stale range edits before they touch files.
 - **Autonomous Loop**: Chain reading, editing, running, and verification.
 - **Live Telemetry**: Stream tool intent, token use, and status.

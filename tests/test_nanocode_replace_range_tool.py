@@ -21,7 +21,7 @@ def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     display = tool.preview()
     result = tool.call()
 
-    assert ReplaceRangeTool.name() == "ReplaceRange"
+    assert ReplaceRangeTool.NAME == "ReplaceRange"
     assert tool.requires_confirmation(session) is True
     assert display.startswith("--- ")
     assert "-beta\n" in display
@@ -324,7 +324,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
 
     class FakeModelClient:
         def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return {"actions": [{"type": "chat", "text": "done"}]}
+            return {"actions": [], "_assistant_text": "done"}
 
     agent.model_client = FakeModelClient()
     agent.run("next task")
@@ -335,7 +335,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
 def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
     class FakeModelClient:
         def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return {"actions": [{"type": "chat", "text": "done"}]}
+            return {"actions": [], "_assistant_text": "done"}
 
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")

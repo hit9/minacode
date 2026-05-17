@@ -64,7 +64,7 @@ def _session(
     )
 
 
-def _chat_response(content: str = '{"type":"message","text":"ok"}', usage: dict | None = None) -> dict:
+def _chat_response(content: str = "ok", usage: dict | None = None) -> dict:
     return {"choices": [{"message": {"content": content}}], "usage": usage or {}}
 
 
@@ -72,7 +72,7 @@ def _stream_chunk(delta: dict | None = None, usage: dict | None = None, choices:
     return {"choices": [{"delta": delta or {}}] if choices else [], "usage": usage}
 
 
-def _responses_response(content: str = '{"type":"message","text":"ok"}', usage: dict | None = None) -> dict:
+def _responses_response(content: str = "ok", usage: dict | None = None) -> dict:
     return {"output": [{"type": "message", "content": [{"type": "output_text", "text": content}]}], "usage": usage or {}}
 
 
@@ -367,7 +367,7 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     assert "output:\n<ReadToolResult>" not in index
 
 
-def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
+def test_observe_text_does_not_checkpoint_tool_results(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -377,7 +377,7 @@ def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
 
-    agent.handle_response({"actions": [{"type": "progress", "text": "checking result"}]})
+    agent.handle_response({"actions": [], "_assistant_text": "checking result"})
 
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
     assert agent.mode == nanocode.AgentMode.OBSERVE
@@ -386,12 +386,12 @@ def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     assert "two.txt" in unreduced
 
 
-def test_progress_does_not_mark_memory_checkpoint(tmp_path):
+def test_assistant_text_does_not_mark_memory_checkpoint(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
 
-    agent.apply_response({"actions": [{"type": "progress", "text": "reading sample"}]})
+    agent.apply_response({"actions": [], "_assistant_text": "reading sample"})
 
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
 
@@ -722,13 +722,13 @@ def test_keep_action_is_observe_only(tmp_path):
     assert any("Invalid action(s): keep" in error for error in agent.agent_feedback_errors)
 
 
-def test_observe_rejects_progress_and_empty_actions(tmp_path):
+def test_observe_rejects_invalid_action_and_empty_actions(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
 
-    agent.handle_response({"actions": [{"type": "progress", "text": "checking"}]})
+    agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": False}]})
     agent.handle_response({"actions": []})
 
     assert any("latest results must be observed" in error for error in agent.observe_feedback_errors)
@@ -900,14 +900,14 @@ def test_agent_prunes_tool_result_store_but_keeps_referenced_result_keys(tmp_pat
     assert "tr.52" in session.state.tool_result_store
 
 
-def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
+def test_agent_request_calls_chat_completions_and_returns_text(tmp_path, monkeypatch):
     calls, _response_calls, client_kwargs = _patch_openai(monkeypatch, _chat_response(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, stream=False)
 
     response = Agent(session).request("system", "user")
     payload = _sdk_payload(calls[0])
 
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert response == {"actions": [], "_assistant_text": "ok"}
     assert client_kwargs[0]["base_url"] == "https://example.test/v1"
     assert client_kwargs[0]["api_key"] == "key"
     assert client_kwargs[0]["timeout"] == 12
@@ -958,7 +958,7 @@ def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypa
 
 def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypatch):
     class FakeResponse:
-        output_text = '{"type":"message","text":"ok"}'
+        output_text = "ok"
 
         def model_dump(self, mode="json"):
             return {"output": [], "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}
@@ -977,7 +977,7 @@ def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypa
     response = Agent(session).request("system", "user")
     payload = _sdk_payload(response_calls[0])
 
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert response == {"actions": [], "_assistant_text": "ok"}
     assert calls == []
     assert payload["model"] == "model"
     assert payload["instructions"] == "system"
@@ -1180,151 +1180,182 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
     assert sleeps == []
 
 
-def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypatch):
-    stream = [
-        _stream_chunk({"content": '{"type":"tool","name":"Read",'}),
-        _stream_chunk({"content": '"intention":"read sample","args":["sample.txt"]}__END_ACTION__'}),
-        _stream_chunk({"content": '{"type":"message","text":"done"}__END_ACTION__'}),
-        _stream_chunk(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, choices=False),
-    ]
-    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+def test_agent_request_sends_function_tool_schema_and_parses_tool_call(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(
+        monkeypatch,
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Reading the file.",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "Read",
+                                    "arguments": '{"intention":"read sample","args":["sample.txt","0","1"]}',
+                                }
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        },
+    )
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
-    response = Agent(session).request("system", "user")
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode.ReadTool.tool_schema()])
     payload = _sdk_payload(calls[0])
 
-    assert payload["stream"] is True
-    assert payload["stream_options"] == {"include_usage": True}
-    assert response["actions"] == [
-        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
-        {"type": "message", "text": "done"},
-    ]
-    assert session.state.last_prompt_tokens == 2
-    assert session.state.last_completion_tokens == 3
+    assert payload["tools"][0]["function"]["name"] == "Read"
+    assert payload["tool_choice"] == "auto"
+    assert payload["parallel_tool_calls"] is True
+    assert response == {
+        "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}],
+        "_assistant_text": "Reading the file.",
+    }
     assert session.state.last_total_tokens == 5
-    assert session.state.session_total_tokens == 5
 
 
-def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, monkeypatch):
-    timers = []
-    _patch_openai(
+def test_function_tool_schemas_define_items_for_every_array():
+    def walk(value, path="schema"):
+        if isinstance(value, dict):
+            schema_type = value.get("type")
+            if schema_type == "array" or (isinstance(schema_type, list) and "array" in schema_type):
+                assert "items" in value, path
+            for key, child in value.items():
+                walk(child, path + "." + str(key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, path + "[" + str(index) + "]")
+
+    state_schemas = [nanocode._state_tool_schema(name) for name in nanocode.STATE_TOOL_PARAMS]
+    repo_schemas = [tool.tool_schema() for tool in nanocode.TOOL_REGISTRY.values()]
+    for schema in [*state_schemas, *repo_schemas, nanocode.COMPACT_TOOL_SCHEMA]:
+        walk(schema)
+
+
+def test_agent_request_responses_api_parses_function_call(tmp_path, monkeypatch):
+    _calls, response_calls, _client_kwargs = _patch_openai(
         monkeypatch,
-        [
-            _stream_chunk({"role": "assistant"}),
-            _stream_chunk({"content": '{"type":"message","text":"ok"}__END_ACTION__'}),
-        ],
+        {
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "known",
+                    "arguments": '{"items":["Project uses pytest."]}',
+                }
+            ],
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        },
     )
-    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", stream=False)
 
-    response = Agent(session).request("system", "user")
-
-    assert response["actions"][0]["text"] == "ok"
-    assert timers[0] == 90
-    assert 4 in timers
-    assert timers[-1] == 0
-
-
-def test_agent_request_stream_reasoning_chunks_count_as_first_output(tmp_path, monkeypatch):
-    timers = []
-    _patch_openai(
-        monkeypatch,
-        [
-            _stream_chunk({"reasoning_content": "thinking"}),
-            _stream_chunk({"reasoning_details": [{"type": "reasoning.text", "text": "more"}]}),
-            _stream_chunk({"content": '{"type":"message","text":"ok"}__END_ACTION__'}),
-        ],
-    )
-    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
-
-    response = Agent(session).request("system", "user")
-
-    assert response["actions"][0]["text"] == "ok"
-    assert timers[0] == 90
-    assert 4 in timers
-    assert timers[-1] == 0
-
-
-def test_agent_request_responses_stream_reasoning_counts_as_first_output(tmp_path, monkeypatch):
-    timers = []
-    stream = [
-        _responses_reasoning_delta("thinking"),
-        _responses_text_delta('{"type":"message","text":"ok"}__END_ACTION__'),
-        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}),
-    ]
-    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
-    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
-    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", timeout=90, first_token_timeout=4)
-
-    response = Agent(session).request("system", "user")
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode._state_tool_schema("known")])
     payload = _sdk_payload(response_calls[0])
 
-    assert response["actions"][0]["text"] == "ok"
-    assert calls == []
-    assert payload["stream"] is True
-    assert payload["reasoning"] == {"effort": "medium"}
-    assert timers[0] == 90
-    assert 4 in timers
-    assert timers[-1] == 0
-    assert session.state.last_prompt_tokens == 2
-    assert session.state.last_completion_tokens == 3
+    assert payload["tools"][0]["name"] == "known"
+    assert payload["tool_choice"] == "auto"
+    assert response == {"actions": [{"type": "known", "items": ["Project uses pytest."]}]}
     assert session.state.last_total_tokens == 5
 
 
-def test_agent_request_responses_stream_uses_completed_output_when_no_delta(tmp_path, monkeypatch):
-    stream = [
-        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})
-        | {"response": _responses_response(usage={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})},
-    ]
-    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
-    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
+def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypatch):
+    calls = []
 
-    response = Agent(session).request("system", "user")
+    class FakeStream:
+        def __enter__(self):
+            return self
 
-    assert response["actions"][0]["text"] == "ok"
-    assert calls == []
-    assert response_calls[0]["stream"] is True
-    assert session.state.last_prompt_tokens == 2
-    assert session.state.last_completion_tokens == 3
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return iter(
+                [
+                    {"type": "content.delta", "delta": "Reading."},
+                    {
+                        "type": "tool_calls.function.arguments.done",
+                        "name": "Read",
+                        "arguments": '{"intention":"read sample","args":["sample.txt","0","1"]}',
+                    },
+                ]
+            )
+
+        def get_final_completion(self):
+            return {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, "choices": [{"message": {}}]}
+
+    class FakeStreamCompletions:
+        def stream(self, **kwargs):
+            calls.append(kwargs)
+            return FakeStream()
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.beta = type("FakeBeta", (), {"chat": type("FakeChat", (), {"completions": FakeStreamCompletions()})()})()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode.ReadTool.tool_schema()])
+
+    assert calls[0]["tools"][0]["function"]["name"] == "Read"
+    assert response == {
+        "actions": [
+            {
+                "type": "tool",
+                "name": "Read",
+                "intention": "read sample",
+                "args": ["sample.txt", "0", "1"],
+            }
+        ],
+        "_assistant_text": "Reading.",
+    }
     assert session.state.last_total_tokens == 5
 
 
-def test_agent_request_responses_stream_uses_output_text_done_when_no_delta(tmp_path, monkeypatch):
-    timers = []
-    stream = [
-        {"type": "response.output_text.done", "text": '{"type":"message","text":"ok"}__END_ACTION__'},
-        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}),
-    ]
-    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
-    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
-    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", timeout=90, first_token_timeout=4)
+def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, monkeypatch):
+    response_calls = []
 
-    response = Agent(session).request("system", "user")
+    class FakeStream:
+        def __enter__(self):
+            return self
 
-    assert response["actions"][0]["text"] == "ok"
-    assert calls == []
-    assert response_calls[0]["stream"] is True
-    assert 4 in timers
-    assert timers[-2] > 80
+        def __exit__(self, *_args):
+            return False
 
+        def __iter__(self):
+            return iter(
+                [
+                    {"type": "response.output_text.delta", "delta": "Recording."},
+                    {
+                        "type": "response.function_call_arguments.done",
+                        "name": "known",
+                        "arguments": '{"items":["Project uses pytest."]}',
+                    },
+                ]
+            )
 
-def test_agent_request_responses_stream_does_not_count_done_after_delta_twice(tmp_path, monkeypatch):
-    chars_seen = []
-    delta = '{"type":"message","text":"ok"}__END_ACTION__'
-    stream = [
-        _responses_text_delta(delta),
-        {"type": "response.output_text.done", "text": delta},
-        _responses_completed(),
-    ]
-    _patch_openai(monkeypatch, stream)
-    monkeypatch.setattr(nanocode.ModelClient, "_estimate_stream_rate", lambda self, elapsed: chars_seen.append(self.session.state.current_model_call_streaming_chars) or 0)
+        def get_final_response(self):
+            return {"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}, "output": []}
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            response_calls.append(kwargs)
+            return FakeStream()
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
     session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
 
-    response = Agent(session).request("system", "user")
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode._state_tool_schema("known")])
 
-    assert response["actions"][0]["text"] == "ok"
-    assert chars_seen == [len(delta)]
+    assert response_calls[0]["tools"][0]["name"] == "known"
+    assert response == {"actions": [{"type": "known", "items": ["Project uses pytest."]}], "_assistant_text": "Recording."}
+    assert session.state.last_total_tokens == 5
 
 
 def test_agent_request_responses_stream_error_event_raises_llm_error(tmp_path, monkeypatch):
@@ -1344,7 +1375,7 @@ def test_agent_request_records_stream_rate_from_usage(tmp_path, monkeypatch):
     _patch_openai(
         monkeypatch,
         [
-            _stream_chunk({"content": '{"type":"message","text":"ok"}'}),
+            _stream_chunk({"content": "ok"}),
             _stream_chunk(usage={"completion_tokens": 20, "total_tokens": 30}, choices=False),
         ],
     )
@@ -1353,7 +1384,7 @@ def test_agent_request_records_stream_rate_from_usage(tmp_path, monkeypatch):
 
     response = Agent(session).request("system", "user")
 
-    assert response["actions"][0]["text"] == "ok"
+    assert response == {"actions": [], "_assistant_text": "ok"}
     assert session.state.last_model_call_rate == 10.0
 
 
@@ -1379,88 +1410,6 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
 
     assert session.state.current_model_call_started_at == 0.0
     assert sleeps == [3, 10, 20, 30, 60, 120]
-
-
-def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monkeypatch):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    (tmp_path / "other.txt").write_text("beta\n", encoding="utf-8")
-    responses = [
-        [
-            '{"type":"tool","name":"Read",',
-            '"intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__',
-            '{"type":"tool","name":"Read",',
-            '"intention":"read other","args":["other.txt","0","1"]}__END_ACTION__',
-        ],
-        [
-            '{"type":"keep","source":["tr.1","tr.2"],"reason":"sample and other reads remain useful"}__END_ACTION__',
-        ],
-        [
-            '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__',
-            '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__',
-        ],
-    ]
-    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple([_stream_chunk({"content": chunk}) for chunk in chunks] for chunks in responses))
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
-    agent = Agent(session)
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 1
-    _seed_plan(agent, "read sample")
-    messages = []
-
-    response = agent.run("read sample", on_message=messages.append)
-    captured_payloads = [_sdk_payload(call) for call in calls]
-
-    assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
-    assert len(captured_payloads) == 3
-    assert [payload["stream"] for payload in captured_payloads] == [True, True, True]
-    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
-    assert "why:" not in messages[0]
-    assert messages[-1] == "done"
-
-
-def test_agent_run_executes_action_frame_before_stream_finishes(tmp_path, monkeypatch):
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
-    agent = Agent(session)
-    _seed_plan(agent, "read sample")
-
-    def stream():
-        yield _stream_chunk({"content": '{"type":"tool","name":"Read","intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__'})
-        assert session.state.tool_result_counter == 1
-        yield _stream_chunk({"content": '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__'})
-        yield _stream_chunk({"content": '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__'})
-
-    _patch_openai(monkeypatch, stream)
-    messages = []
-
-    response = agent.run("read sample", on_message=messages.append)
-
-    assert response["actions"][0]["message_for_complete"] == "done"
-    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
-    assert session.state.tool_result_counter == 1
-
-
-def test_agent_run_stops_stream_after_tool_failure(tmp_path, monkeypatch):
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
-    agent = Agent(session)
-    _seed_plan(agent, "read sample")
-
-    def stream():
-        yield _stream_chunk({"content": '{"type":"tool","name":"Read","intention":"read missing","args":["missing.txt","0","1"]}__END_ACTION__'})
-        raise AssertionError("stream should stop after failed tool")
-
-    _patch_openai(
-        monkeypatch,
-        (
-            stream(),
-            [_stream_chunk({"content": '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__'})],
-        ),
-    )
-
-    response = agent.run("read sample")
-
-    assert response["actions"][0]["message_for_complete"] == "done"
-    assert session.state.tool_result_counter == 1
-    assert session.state.tool_result_store["tr.1"].description.startswith("failure Read")
 
 
 def test_agent_request_uses_configured_chat_reasoning_payload(tmp_path, monkeypatch):
@@ -1685,134 +1634,6 @@ def test_agent_request_empty_chat_reasoning_payload_disables_auto_detection(tmp_
     assert "thinking" not in payload
 
 
-def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
-    _patch_openai(monkeypatch, _chat_response('```json\n{"type":"message","text":"ok"}\n__END_ACTION__\n```'))
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
-
-    response = Agent(session).request("system", "user")
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
-
-
-def test_agent_request_accepts_leaked_think_tags_before_json(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    assert client._parse_model_content('</think>{"type":"message","text":"ok"}\n__END_ACTION__') == {
-        "actions": [{"type": "message", "text": "ok"}],
-    }
-    assert client._parse_model_content('<think>reasoning</think>\n{"type":"message","text":"ok"}\n__END_ACTION__') == {
-        "actions": [{"type": "message", "text": "ok"}],
-    }
-
-
-def test_agent_request_accepts_pretty_action_frames_and_marker_variants(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{\n  "type": "message",\n  "text": "ok"\n}\n**END_ACTION**\n{"type":"goal","text":"next"}\nEND_ACTION'
-    )
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}, {"type": "goal", "text": "next"}]}
-
-
-def test_agent_request_accepts_inline_action_frame_markers(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('{"type":"message","text":"ok"}__END_ACTION__{"type":"goal","text":"next"}__END_ACTION__')
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}, {"type": "goal", "text": "next"}]}
-
-
-def test_agent_request_accepts_single_unmarked_json_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('{"type":"message","text":"ok"}')
-
-    assert response == {"actions": [{"type": "message", "text": "ok"}]}
-
-
-def test_agent_request_accepts_adjacent_unmarked_json_actions(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{"type":"known","items":["Project is single-file."]}\n'
-        '{"type":"stable_knowledge","items":[{"category":"structure","text":"All runtime code lives in nanocode.py."}]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "known", "items": ["Project is single-file."]},
-            {
-                "type": "stable_knowledge",
-                "items": [{"category": "structure", "text": "All runtime code lives in nanocode.py."}],
-            },
-        ],
-    }
-
-
-def test_agent_request_accepts_unmarked_json_action_array(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('[{"type":"tool","name":"Read","args":["nanocode.py","0,1"],"intention":"read source"}]')
-
-    assert response == {"actions": [{"type": "tool", "name": "Read", "args": ["nanocode.py", "0,1"], "intention": "read source"}]}
-
-
-def test_agent_request_repairs_fenced_json_action_array_with_extra_brace(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '```json\n[{"type":"tool","name":"ListDir","intention":"Find the demo directory in the project root.","args":[""]}]}\n```'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "tool", "name": "ListDir", "intention": "Find the demo directory in the project root.", "args": [""]}
-        ]
-    }
-
-
-def test_agent_request_accepts_empty_actions_response_object(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    assert client._parse_model_content('{"actions": []}') == {"actions": []}
-    assert client._parse_model_content('{"actions": []}__END_ACTION__') == {"actions": []}
-
-
-def test_agent_request_accepts_comma_separated_unmarked_json_actions(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{"type":"tool","name":"Read","args":["nanocode.py","3893,3910"]},'
-        '{"type":"tool","name":"Search","args":["STABLE_KNOWLEDGE_CATEGORIES","path=nanocode.py","context=2"]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "tool", "name": "Read", "args": ["nanocode.py", "3893,3910"]},
-            {"type": "tool", "name": "Search", "args": ["STABLE_KNOWLEDGE_CATEGORIES", "path=nanocode.py", "context=2"]},
-        ]
-    }
-
-
-def test_agent_request_normalizes_tool_name_as_action_type(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{"type":"ListDir","intention":"list root","args":["."]}\n'
-        '{"type":"search","intention":"find tests","args":["pytest","path=.", "context=2"]}\n'
-        '{"type":"recall","intention":"recall result","args":["tr.1"]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "tool", "name": "ListDir", "intention": "list root", "args": ["."]},
-            {"type": "tool", "name": "Search", "intention": "find tests", "args": ["pytest", "path=.", "context=2"]},
-            {"type": "tool", "name": "Recall", "intention": "recall result", "args": ["tr.1"]},
-        ]
-    }
-
-
 def test_agent_normalizes_harmless_action_type_aliases(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
@@ -1820,195 +1641,15 @@ def test_agent_normalizes_harmless_action_type_aliases(tmp_path):
         {
             "actions": [
                 {"type": "Plan", "items": []},
-                {"type": "Message", "content": "ok"},
+                {"type": "Known", "items": []},
             ]
         }
     )
 
     assert actions == [
         {"type": "plan", "items": []},
-        {"type": "chat", "content": "ok", "text": "ok"},
+        {"type": "known", "items": []},
     ]
-
-
-def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        "The test is failing because the expected message changed. Let me read the test.\n\n"
-        '{"type":"tool","name":"Read","intention":"read the failing test","args":["tests/test_nanocode_commands.py","140,165"]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "progress", "text": "The test is failing because the expected message changed. Let me read the test."},
-            {"type": "tool", "name": "Read", "intention": "read the failing test", "args": ["tests/test_nanocode_commands.py", "140,165"]},
-        ],
-    }
-
-
-def test_agent_request_converts_plain_unmarked_text_to_progress_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content("Let me read the StatusBar class and the streaming content logic.")
-
-    assert response == {
-        "actions": [
-            {"type": "progress", "text": "Let me read the StatusBar class and the streaming content logic."},
-        ]
-    }
-
-    response = client._parse_model_content("让我读取 `_format_line` 的当前状态，以找到确切插入点。")
-
-    assert response == {
-        "actions": [
-            {"type": "progress", "text": "让我读取 `_format_line` 的当前状态，以找到确切插入点。"},
-        ]
-    }
-
-
-def test_agent_request_rejects_cli_context_transcript_as_plain_progress(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content("}")
-
-    assert response["actions"] == []
-    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
-
-    response = client._parse_model_content("Now }")
-
-    assert response["actions"] == []
-    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
-
-    response = client._parse_model_content("  ctx: -tr.61 -tr.62")
-
-    assert response["actions"] == []
-    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
-
-
-def test_agent_request_converts_interleaved_unmarked_text_to_progress_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{"type":"plan","items":[{"id":"p1","text":"Inspect","status":"doing"}]}\n\n'
-        "Now I will read the file.\n\n"
-        '{"type":"tool","name":"Read","intention":"read source","args":["demo/astar_demo.cpp"]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "plan", "items": [{"id": "p1", "text": "Inspect", "status": "doing"}]},
-            {"type": "progress", "text": "Now I will read the file."},
-            {"type": "tool", "name": "Read", "intention": "read source", "args": ["demo/astar_demo.cpp"]},
-        ],
-    }
-
-
-def test_agent_request_ignores_fence_only_interleaved_progress(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        '{"type":"plan","items":[{"id":"p1","text":"Inspect","status":"doing"}]}\n```json\n'
-        '{"type":"tool","name":"Read","intention":"read source","args":["demo/astar_demo.cpp"]}'
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "plan", "items": [{"id": "p1", "text": "Inspect", "status": "doing"}]},
-            {"type": "tool", "name": "Read", "intention": "read source", "args": ["demo/astar_demo.cpp"]},
-        ],
-    }
-
-
-def test_agent_request_strips_leaked_tool_code_after_valid_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content(
-        "我正在分析这些更改。让我仔细检查速率计算部分是否存在潜在的 bug。\n\n"
-        "```json\n"
-        '{"type":"Read","args":["nanocode.py","3500,3510"],"intention":"检查速率计算时 elapsed 是否可能为0"}\n'
-        "```\n"
-        "<tool_code>\n"
-        "{\n"
-        "  tool: 'Read',\n"
-        "  args: [\"nanocode.py\", \"3500,3510\"],\n"
-        "  intention: '检查速率计算时 elapsed 是否可能为0'\n"
-        "}\n"
-        "</tool_code>"
-    )
-
-    assert response == {
-        "actions": [
-            {"type": "progress", "text": "我正在分析这些更改。让我仔细检查速率计算部分是否存在潜在的 bug。"},
-            {"type": "tool", "name": "Read", "args": ["nanocode.py", "3500,3510"], "intention": "检查速率计算时 elapsed 是否可能为0"},
-        ]
-    }
-
-
-def test_agent_request_converts_trailing_unmarked_text_to_progress_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('{"type":"message","text":"ok"}\nDone.')
-
-    assert response == {
-        "actions": [
-            {"type": "message", "text": "ok"},
-            {"type": "progress", "text": "Done."},
-        ]
-    }
-
-
-def test_agent_request_converts_trailing_unmarked_text_after_action_array_to_progress_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('[{"type":"progress","text":"checking"}]\nNow I will read the file.')
-
-    assert response == {
-        "actions": [
-            {"type": "progress", "text": "checking"},
-            {"type": "progress", "text": "Now I will read the file."},
-        ]
-    }
-
-
-def test_agent_request_repairs_unescaped_newlines_in_unmarked_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('{"type":"chat","text":"line 1\n\n1. item\n2. item"}')
-
-    assert response == {
-        "actions": [
-            {"type": "chat", "text": "line 1\n\n1. item\n2. item"},
-        ]
-    }
-
-
-def test_agent_request_repairs_extra_closing_brace_after_unmarked_action(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('{"type":"progress","text":"ok"}}')
-
-    assert response == {"actions": [{"type": "progress", "text": "ok"}]}
-
-
-def test_agent_request_ignores_bad_action_frames_when_other_actions_are_valid(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('plain answer\n__END_ACTION__\n{"type":"message","text":"ok"}\n__END_ACTION__')
-
-    assert response["actions"] == [{"type": "message", "text": "ok"}]
-    assert response["_format_frame_errors"] == ["frame 1: expected JSON object action"]
-
-
-def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('<tool_call>Read("nanocode.py", 0, 100)')
-
-    assert response["actions"] == []
-    assert "Native tool_call syntax is not supported" in response["_format_error"]
-    assert '"name":"Read"' in response["_format_error"]
-    assert '"args":["nanocode.py","0,100"]' in response["_format_error"]
 
 
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
@@ -2018,17 +1659,7 @@ def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, mo
     response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
-    assert "expected one JSON action object or action frames ending with __END_ACTION__" in response["_format_error"]
-    assert "plain answer" in response["_format_error"]
-
-
-def test_agent_request_rejects_invalid_unmarked_json_action_array(tmp_path):
-    client = Agent(Session(cwd=str(tmp_path))).model_client
-
-    response = client._parse_model_content('[{"text":"ok"}]')
-
-    assert response["actions"] == []
-    assert "action missing type" in response["_format_error"]
+    assert response["_assistant_text"] == "plain answer"
 
 
 def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, monkeypatch):
@@ -2049,7 +1680,7 @@ def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, m
     response = Agent(session).request("system", "user")
 
     assert response["actions"] == []
-    assert "expected one JSON object" in response["_format_error"]
+    assert "expected a function tool call" in response["_format_error"]
     assert "API response missing message content" in response["_format_error"]
 
 
@@ -2257,10 +1888,10 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     agent.apply_response(
         {
             "actions": [
+                {"type": "goal", "text": "inspect project", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "inspect project",
-                    "plan": [
+                    "type": "plan",
+                    "items": [
                         {"id": "p1", "text": "List files", "status": "done"},
                         {"id": "p2", "text": "Read config", "status": "done"},
                         {"id": "p3", "text": "Update code", "status": "doing"},
@@ -2427,17 +2058,17 @@ def test_agent_applies_partial_plan_patch(tmp_path):
     ]
 
 
-def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
+def test_agent_applies_goal_and_plan_actions(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     agent.apply_response(
         {
             "actions": [
+                {"type": "goal", "text": "change map", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "change map",
-                    "plan": [
+                    "type": "plan",
+                    "items": [
                         {"id": "p1", "text": "Find map code", "status": "doing", "context": "need location"},
                         {"id": "p2", "text": "Edit map size", "status": "todo"},
                     ],
@@ -2455,7 +2086,21 @@ def test_agent_applies_start_action_to_goal_and_plan(tmp_path):
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
-def test_start_new_goal_clears_task_local_kept_results_only(tmp_path):
+def test_agent_accepts_goal_without_plan_for_new_task(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "goal", "text": "change map", "work_mode": "normal", "complete": False}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert agent.blackboard.goal == "change map"
+    assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
+    assert agent.blackboard.plan == []
+    assert messages == ["State Updated | VERIFY:idle\n  Goal    change map"]
+
+
+def test_new_goal_clears_task_local_kept_results_only(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.goal = "old goal"
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
@@ -2465,11 +2110,11 @@ def test_start_new_goal_clears_task_local_kept_results_only(tmp_path):
     agent.apply_response(
         {
             "actions": [
+                {"type": "goal", "text": "new goal", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "new goal",
-                    "plan": [{"id": "p1", "text": "Inspect new target", "status": "doing"}],
-                }
+                    "type": "plan",
+                    "items": [{"id": "p1", "text": "Inspect new target", "status": "doing"}],
+                },
             ]
         }
     )
@@ -2480,7 +2125,7 @@ def test_start_new_goal_clears_task_local_kept_results_only(tmp_path):
     assert "recent.py" in _blocks_text(agent.tool_context.recent)
 
 
-def test_start_same_goal_keeps_task_local_tool_results(tmp_path):
+def test_same_goal_keeps_task_local_tool_results(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.goal = "same goal"
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
@@ -2489,11 +2134,11 @@ def test_start_same_goal_keeps_task_local_tool_results(tmp_path):
     agent.apply_response(
         {
             "actions": [
+                {"type": "goal", "text": "same goal", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "same goal",
-                    "plan": [{"id": "p1", "text": "Continue current target", "status": "doing"}],
-                }
+                    "type": "plan",
+                    "items": [{"id": "p1", "text": "Continue current target", "status": "doing"}],
+                },
             ]
         }
     )
@@ -2511,11 +2156,11 @@ def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_ma
     agent.apply_response(
         {
             "actions": [
+                {"type": "goal", "text": "change map", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "change map",
-                    "plan": [{"id": "p1", "text": "Find map code", "status": "doing"}],
-                }
+                    "type": "plan",
+                    "items": [{"id": "p1", "text": "Find map code", "status": "doing"}],
+                },
             ]
         }
     )
@@ -2747,8 +2392,8 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
     latest = agent.execute_tool_calls([{"name": "ReplaceRange", "intention": "bad edit", "args": ["sample.txt", "0", "1", "abc", "", ""]}])
 
-    assert "ToolCallError: requires exactly 7 args" in latest
-    assert "got 6 args, expected 7, missing: content" in agent.agent_feedback_errors[0]
+    assert "ToolCallError: requires args: filepath, ranges where each range is [start,end,fingerprint,before_context,after_context,content]" in latest
+    assert "got 6 args, expected 2, extra: 4" in agent.agent_feedback_errors[0]
     assert "use ReplaceRange for read ranges" in agent.agent_feedback_errors[0]
 
 
@@ -2947,15 +2592,15 @@ def test_agent_plan_mode_rejects_mutating_tool_before_execution(tmp_path):
     assert messages == ['PlanMode_Gate: plan mode allows readonly discovery only; blocked tool=Edit args=["sample.txt","old","new"].']
 
 
-def test_agent_plan_mode_rejects_chat_instead_of_completing(tmp_path):
+def test_agent_plan_mode_rejects_invalid_action_instead_of_completing(tmp_path):
     agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
     messages = []
 
-    result = agent.handle_response({"actions": [{"type": "chat", "text": "done"}]}, on_message=messages.append)
+    result = agent.handle_response({"actions": [{"type": "invalid", "text": "done"}]}, on_message=messages.append)
 
     assert result.done is False
     assert agent.session.state.conversation == []
-    assert messages == ["ActionType_Gate: invalid action type(s): chat."]
+    assert messages == ["Protocol_Gate: invalid action type(s): invalid."]
 
 
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
@@ -3090,7 +2735,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": _final_actions("read sample")},
             ]
@@ -3151,7 +2796,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert len(session.state.tool_result_store) == 51
     assert list(session.state.tool_result_store)[0] == "tr.1"
 
-    agent.model_client.responses = [{"actions": [{"type": "chat", "text": "ok"}]}]
+    agent.model_client.responses = [{"actions": [], "_assistant_text": "ok"}]
     agent.run("next task")
 
     assert len(session.state.tool_result_store) == 50
@@ -3235,7 +2880,7 @@ def test_agent_run_allows_readonly_tool_before_plan(tmp_path):
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
 
 
-def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
+def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -3255,10 +2900,10 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
                 },
                 {
                     "actions": [
+                        {"type": "goal", "text": "new goal", "complete": False},
                         {
-                            "type": "start",
-                            "goal": "new goal",
-                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
@@ -3288,7 +2933,7 @@ def test_agent_run_requires_fresh_plan_when_goal_changes(tmp_path):
     assert "Retrying: new goal requires a fresh plan." not in messages
     assert agent.blackboard.goal == "new goal"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
-    assert len(session.state.tool_result_store) == 1
+    assert len(session.state.tool_result_store) == 3
 
 
 def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path):
@@ -3300,10 +2945,10 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
                 {
                     "actions": [
+                        {"type": "goal", "text": "run lint", "complete": False},
                         {
-                            "type": "start",
-                            "goal": "run lint",
-                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
@@ -3332,10 +2977,9 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     assert agent.blackboard.goal == "run lint"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert "previous task context is still present" in " ".join(agent.agent_feedback_errors)
-    assert not any("repeated start is invalid" in error for error in agent.agent_feedback_errors)
 
 
-def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
+def test_agent_run_rejects_goal_rewrite_after_task_is_working(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -3344,27 +2988,19 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
             self.responses = [
                 {
                     "actions": [
+                        {"type": "goal", "text": "read sample", "complete": False},
                         {
-                            "type": "start",
-                            "goal": "read sample",
-                            "plan": [{"id": "p1", "text": "Read sample", "status": "doing"}],
-                        }
+                            "type": "plan",
+                            "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
+                        },
                     ]
                 },
+                {"actions": [{"type": "goal", "text": "read sample again", "complete": False}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
                     "actions": [
-                        {
-                            "type": "start",
-                            "goal": "read sample again",
-                            "plan": [{"id": "p1", "text": "Read sample again", "status": "doing"}],
-                        }
-                    ]
-                    },
-                    {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
-                    {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
-                    {
-                        "actions": [
-                            {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
+                        {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
                         *_final_actions("read sample"),
                     ]
                 },
@@ -3383,7 +3019,7 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
-    assert "ignored repeated start" in " ".join(agent.agent_feedback_errors)
+    assert "cannot rewrite Goal" in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
@@ -3394,10 +3030,10 @@ def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
     result = agent.handle_response(
         {
             "actions": [
+                {"type": "goal", "text": "answer", "complete": False},
                 {
-                    "type": "start",
-                    "goal": "answer",
-                    "plan": [
+                    "type": "plan",
+                    "items": [
                         {"id": "p1", "text": "first", "status": "doing"},
                         {"id": "p2", "text": "second", "status": "doing"},
                     ],
@@ -3453,14 +3089,14 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
     assert not any(message.startswith("State Updated") for message in messages)
 
 
-def test_agent_run_stops_after_chat_action(tmp_path):
+def test_agent_run_stops_after_assistant_text(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.user_prompts.append(user_prompt)
-            return {"actions": [{"type": "chat", "text": "你好"}]}
+            return {"actions": [], "_assistant_text": "你好"}
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -3470,7 +3106,7 @@ def test_agent_run_stops_after_chat_action(tmp_path):
 
     response = agent.run("你好", on_message=messages.append)
 
-    assert response["actions"] == [{"type": "chat", "text": "你好"}]
+    assert response == {"actions": [], "_assistant_text": "你好"}
     assert messages == ["你好"]
     assert len(agent.model_client.user_prompts) == 1
     assert agent.blackboard.task_code == nanocode.TaskCode.DONE
@@ -3497,6 +3133,28 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: goal is not complete yet." not in messages
+
+
+def test_agent_run_rejects_no_effective_state_change(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    _seed_plan(agent, "answer")
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("answer")
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert any("response made no effective state change" in error for error in agent.agent_feedback_errors)
 
 
 def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
@@ -3822,10 +3480,10 @@ def test_agent_run_uses_fallback_when_goal_complete_has_no_message(tmp_path):
     assert agent.blackboard.goal_reached is False
 
 
-def test_agent_run_allows_chat_without_task_context(tmp_path):
+def test_agent_run_allows_assistant_text_without_task_context(tmp_path):
     class FakeModelClient:
         def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return {"actions": [{"type": "chat", "text": "hello"}]}
+            return {"actions": [], "_assistant_text": "hello"}
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -3834,17 +3492,17 @@ def test_agent_run_allows_chat_without_task_context(tmp_path):
 
     response = agent.run("hi", on_message=messages.append)
 
-    assert response["actions"] == [{"type": "chat", "text": "hello"}]
+    assert response == {"actions": [], "_assistant_text": "hello"}
     assert messages == ["hello"]
     assert session.state.conversation[-1].content == "hello"
 
 
-def test_agent_run_retries_chat_with_unfinished_task_context(tmp_path):
+def test_agent_run_retries_assistant_text_with_unfinished_task_context(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "chat", "text": "done too early"}]},
+                {"actions": [], "_assistant_text": "done too early"},
                 {
                     "actions": [
                         {"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "answered"}]},
@@ -3871,7 +3529,7 @@ def test_agent_run_retries_chat_with_unfinished_task_context(tmp_path):
     assert messages[-1] == "done"
     assert len(agent.model_client.user_prompts) == 2
     assert "done too early" not in [item.content for item in session.state.conversation]
-    assert any("chat cannot finish an active task" in error for error in agent.agent_feedback_errors)
+    assert any("assistant text cannot finish an active task" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
@@ -3950,7 +3608,7 @@ def test_investigate_completion_requires_root_cause_hypothesis(tmp_path):
     assert messages[-1] == "done"
 
 
-def test_start_declares_investigate_work_mode(tmp_path):
+def test_goal_declares_investigate_work_mode(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -3960,10 +3618,14 @@ def test_start_declares_investigate_work_mode(tmp_path):
             return {
                 "actions": [
                     {
-                        "type": "start",
-                        "goal": "find bug",
+                        "type": "goal",
+                        "text": "find bug",
                         "work_mode": "investigate",
-                        "plan": [{"id": "p1", "text": "identify root cause", "status": "done", "context": "reasoned"}],
+                        "complete": False,
+                    },
+                    {
+                        "type": "plan",
+                        "items": [{"id": "p1", "text": "identify root cause", "status": "done", "context": "reasoned"}],
                     },
                     {"type": "hypothesis", "items": [{"id": "h1", "text": "bad filter", "status": "confirmed", "source": ["tr.1"]}]},
                     _verify_passed_action(),
@@ -4025,8 +3687,8 @@ def test_agent_run_retries_format_error_with_tool_result_context(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 {"actions": _final_actions()},
             ]
 
@@ -4043,7 +3705,7 @@ def test_agent_run_retries_format_error_with_tool_result_context(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: model returned invalid output: plain answer" not in messages
+    assert "Retrying: invalid function/tool response: plain answer" not in messages
     assert messages[-1] == "done"
 
 
@@ -4052,7 +3714,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
                 {"actions": _final_actions()},
             ]
@@ -4073,7 +3735,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
 
     class ChatModelClient:
         def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return {"actions": [{"type": "chat", "text": "ok"}]}
+            return {"actions": [], "_assistant_text": "ok"}
 
     agent.model_client = ChatModelClient()
     agent.run("next task")
@@ -4087,7 +3749,20 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "progress", "text": "progress"}]},
+                {
+                    "actions": [
+                        {
+                            "type": "verify",
+                            "kind": "light",
+                            "method": "check",
+                            "criteria": ["progress can be emitted before completion"],
+                            "status": "passed",
+                            "blocker": None,
+                            "context": "progress context",
+                        }
+                    ],
+                    "_assistant_text": "progress",
+                },
                 {"actions": _final_actions()},
             ]
 
@@ -4104,7 +3779,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert messages[0] == "progress"
+    assert "progress" in messages
     assert messages[-1] == "done"
     assert "progress" not in [item.content for item in session.state.conversation]
     assert agent.agent_feedback_errors == []
@@ -4119,9 +3794,9 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "progress", "text": "reading sample"},
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
-                    ]
+                    ],
+                    "_assistant_text": "reading sample",
                 },
                 {"actions": [{"type": "forget", "source": ["tr.1"], "reason": "progress-only read result is not needed"}]},
                 {"actions": _final_actions()},
@@ -4147,7 +3822,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 KeyboardInterrupt(),
             ]
 
@@ -4184,7 +3859,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
 
     class ChatModelClient:
         def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return {"actions": [{"type": "chat", "text": "ok"}]}
+            return {"actions": [], "_assistant_text": "ok"}
 
     agent.model_client = ChatModelClient()
     agent.run("next task")
@@ -4215,45 +3890,11 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
     assert len(agent.model_client.user_prompts) == 2
 
 
-def test_agent_run_only_shows_ignored_action_frame_errors_in_debug(tmp_path):
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {
-                    "actions": _final_actions(),
-                    "_format_frame_errors": ["frame 1: expected JSON object action"],
-                }
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.model_client = FakeModelClient()
-    messages = []
-
-    agent.run("answer", on_message=messages.append)
-
-    assert "Format_Warning:" not in "\n".join(messages)
-    assert messages[-1] == "done"
-
-    debug_session = _session(tmp_path, debug=True)
-    debug_agent = Agent(debug_session)
-    debug_agent.model_client = FakeModelClient()
-    debug_messages = []
-
-    debug_agent.run("answer", on_message=debug_messages.append)
-
-    assert debug_messages[0] == "Format_Warning: ignored invalid action frame(s).\n- frame 1: expected JSON object action"
-    assert debug_messages[-1] == "done"
-
-
 def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"_format_error": "Invalid model output: plain answer", "_format_bad_output": "plain answer", "actions": []},
+                {"_format_error": "Invalid function-tool response: plain answer", "_format_bad_output": "plain answer", "actions": []},
                 {"actions": _final_actions()},
             ]
 
@@ -4267,7 +3908,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
 
     agent.run("answer", on_message=messages.append)
 
-    assert messages[0] == "Format_Gate: retrying model response. Invalid model output: plain answer\nFull bad output:\nplain answer"
+    assert messages[0] == "Format_Gate: retrying function/tool response. Invalid function-tool response: plain answer\nFull bad output:\nplain answer"
 
 
 def test_agent_run_stops_after_repeated_format_errors(tmp_path):
@@ -4277,7 +3918,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
             self.calls += 1
-            return {"_format_error": "Invalid model output: missing content", "actions": []}
+            return {"_format_error": "Invalid function-tool response: missing content", "actions": []}
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -4292,8 +3933,8 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
         raise AssertionError("expected LLMError")
 
     assert agent.model_client.calls == Agent.MAX_CONSECUTIVE_FORMAT_ERRORS
-    assert "model returned invalid output 3 times in a row" in message
-    assert messages[-1] == "Stopped: model returned invalid output 3 times in a row."
+    assert "invalid function/tool response 3 times in a row" in message
+    assert messages[-1] == "Stopped: invalid function/tool response 3 times in a row."
 
 
 def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path):
@@ -4347,21 +3988,21 @@ def test_agent_run_uses_fallback_when_goal_complete_has_empty_message_for_comple
     assert agent.agent_feedback_errors
 
 
-def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tmp_path):
+def test_agent_run_uses_message_for_complete_even_when_assistant_text_exists(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
             self.responses = [
                 {
                     "actions": [
-                        {"type": "progress", "text": "explicit progress"},
                         {
                             "type": "goal",
                             "text": "answer",
                             "complete": True,
                             "message_for_complete": "fallback message",
                         },
-                    ]
+                    ],
+                    "_assistant_text": "explicit progress",
                 },
                 {"actions": _final_actions()},
             ]
@@ -4377,8 +4018,8 @@ def test_agent_run_uses_message_for_complete_even_when_progress_actions_exist(tm
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][1]["message_for_complete"] == "fallback message"
-    assert "explicit progress" in messages
+    assert response["actions"][0]["message_for_complete"] == "fallback message"
+    assert "explicit progress" not in messages
     assert messages[-1] == "fallback message"
     assert len(agent.model_client.user_prompts) == 1
     assert "explicit progress" not in [item.content for item in session.state.conversation]
@@ -4391,7 +4032,6 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": False, "message_for_complete": "should be ignored"}]},
-                {"actions": [{"type": "progress", "text": "done without goal"}]},
                 {"actions": _final_actions()},
             ]
 
@@ -4407,6 +4047,6 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
     response = agent.run("answer", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
+    assert len(agent.model_client.user_prompts) == 2
     assert "should be ignored" not in messages
-    assert agent.agent_feedback_errors == []
+    assert not agent.agent_feedback_errors
