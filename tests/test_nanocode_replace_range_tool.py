@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallArgError, ToolCallError
+from nanocode import Agent, RangeFingerprintStore, ReadTool, ReplaceRangeTool, Session, ToolCallError
 
 
 def _fingerprint(read_result: str) -> str:
@@ -112,20 +112,55 @@ def test_replace_range_tool_warns_for_broad_preview_ranges(tmp_path):
     assert display.startswith("# warning: broad range replacement; prefer smaller semantic ranges\n--- ")
 
 
-def test_replace_range_tool_rejects_public_multi_range_args(tmp_path):
+def test_replace_range_tool_accepts_public_batch_ranges(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
     delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
 
-    with pytest.raises(ToolCallArgError, match="requires exactly 7 args"):
-        ReplaceRangeTool.make(
-            session,
-            ["sample.txt", "1", "2", beta_fingerprint, "alpha\n", "gamma\n", "BETA\n", "3", "4", delta_fingerprint, "gamma\n", "", "DELTA\n"],
-        )
+    result = ReplaceRangeTool.make(
+        session,
+        [
+            "sample.txt",
+            [
+                ["1", "2", beta_fingerprint, "alpha\n", "gamma\n", "BETA\n"],
+                ["3", "4", delta_fingerprint, "gamma\n", "", "DELTA\n"],
+            ],
+        ],
+    ).call()
 
-    assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\ndelta\n"
+    assert "* replacements: 2" in result
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
+
+
+def test_agent_executes_replace_range_batch_args(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls(
+        [
+            {
+                "name": "ReplaceRange",
+                "intention": "replace two ranges",
+                "args": [
+                    "sample.txt",
+                    [
+                        ["1", "2", beta_fingerprint, "alpha\n", "gamma\n", "BETA\n"],
+                        ["3", "4", delta_fingerprint, "gamma\n", "", "DELTA\n"],
+                    ],
+                ],
+            },
+        ],
+        confirm=lambda call, tool: True,
+    )
+
+    assert "* replacements: 2" in latest
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
 
 
 def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):

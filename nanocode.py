@@ -955,7 +955,7 @@ class Tool:
         return cls.NAME or cls.__name__.removesuffix("Tool")
 
     @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
+    def cli_args(cls, args: list[JsonValue]) -> list[str]:
         return [cls.cli_token(arg) for arg in args]
 
     @staticmethod
@@ -966,7 +966,7 @@ class Tool:
         return "<" + str(len(value)) + " chars>"
 
     @staticmethod
-    def cli_token(value: str) -> str:
+    def cli_token(value: JsonValue) -> str:
         text = str(value)
         if "\n" in text:
             return Tool.cli_content_summary(text)
@@ -995,7 +995,7 @@ ToolClass: TypeAlias = Type[Tool]
 class ParsedToolCall:
     name: str
     intention: str
-    args: list[str]
+    args: list[JsonValue]
 
     @property
     def executed(self) -> str:
@@ -1062,6 +1062,10 @@ RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:(?:result_)?key|recall)[
 
 def _format_tool_call_summary(call: ParsedToolCall) -> str:
     return "tool=" + call.name + " args=" + json.dumps(call.args, ensure_ascii=False, separators=(",", ":"))
+
+
+def _tool_call_args_key(args: list[JsonValue]) -> tuple[str, ...]:
+    return tuple(json.dumps(arg, ensure_ascii=False, sort_keys=True, separators=(",", ":")) for arg in args)
 
 
 @dataclass
@@ -1404,7 +1408,7 @@ class ReadTool(Tool):
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
+    def cli_args(cls, args: list[JsonValue]) -> list[str]:
         if not args:
             return []
         tokens = [cls.cli_token(args[0])]
@@ -2181,13 +2185,19 @@ class ReplaceRangeEdit:
 class ReplaceRangeTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace one small Read-backed [start,end) range in an existing file; best when exact line range is known or target text is not unique.",
-        "Use several focused ReplaceRange calls for separate structural edits instead of one large rewrite.",
+        "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
+        "For several independent ranges in the same file, pass a batch as ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]).",
         "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
-    SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) -> ReplaceRangeToolResult<path, range>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',)
+    SIGNATURE: ClassVar[str] = (
+        "ReplaceRange(filepath, start, end, fingerprint, before_context, after_context, content) "
+        "or ReplaceRange(filepath, ranges) -> ReplaceRangeToolResult<path, range>"
+    )
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["code.py", "10", "12", "a1b2c3", "line before\\n", "line after\\n", "replacement lines\\n"]',
+        'Batch args: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"]]]',
+    )
 
     filepath: str = ""
     start: int = 0
@@ -2202,6 +2212,10 @@ class ReplaceRangeTool(Tool):
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) == 2:
+            ranges = _json_list(args[1])
+            if ranges:
+                return [cls.cli_token(args[0]), str(len(ranges)) + " ranges"]
         if len(args) < 3:
             return [cls.cli_token(arg) for arg in args]
         return [cls.cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
@@ -2210,7 +2224,7 @@ class ReplaceRangeTool(Tool):
     def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
         if len(call.args) != 7:
             return None
-        return (call.args[0],)
+        return (str(call.args[0]),)
 
     @classmethod
     def merge_calls(cls, session: Session, calls: list[ParsedToolCall]) -> PreparedToolCall | None:
@@ -2221,14 +2235,14 @@ class ReplaceRangeTool(Tool):
         intentions = []
         for call in calls:
             try:
-                start, end = _parse_line_range(call.args[1], call.args[2])
+                start, end = _parse_line_range(str(call.args[1]), str(call.args[2]))
             except ToolCallArgError:
                 return None
-            fingerprint = call.args[3]
+            fingerprint = str(call.args[3])
             if not fingerprint:
                 return None
             edits.append(
-                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=call.args[4], after_context=call.args[5], content=call.args[6])
+                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(call.args[4]), after_context=str(call.args[5]), content=str(call.args[6]))
             )
             if call.intention:
                 intentions.append(call.intention)
@@ -2237,20 +2251,25 @@ class ReplaceRangeTool(Tool):
         return PreparedToolCall(call=call, tool=tool)
 
     @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        if len(args) == 2:
+            ranges = _json_list(args[1])
+            if not ranges:
+                raise ToolCallArgError("ranges cannot be empty")
+            return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(_json_list(item)) for item in ranges])
         if len(args) != 7:
-            raise ToolCallArgError("requires exactly 7 args: filepath, start, end, fingerprint, before_context, after_context, content")
-        start, end = _parse_line_range(args[1], args[2])
-        fingerprint = str(args[3])
+            raise ToolCallArgError("requires exactly 7 args or batch args: filepath, ranges")
+        return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(args[1:])])
+
+    @staticmethod
+    def _edit_from_args(args: list[JsonValue]) -> ReplaceRangeEdit:
+        if len(args) != 6:
+            raise ToolCallArgError("range requires exactly 6 args: start, end, fingerprint, before_context, after_context, content")
+        start, end = _parse_line_range(str(args[0]), str(args[1]))
+        fingerprint = str(args[2])
         if not fingerprint and (start != 0 or end != 0):
             raise ToolCallArgError("fingerprint cannot be empty")
-        return cls._from_edits(
-            session,
-            filepath=args[0],
-            edits=[
-                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[4]), after_context=str(args[5]), content=str(args[6]))
-            ],
-        )
+        return ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[3]), after_context=str(args[4]), content=str(args[5]))
 
     @classmethod
     def _from_edits(cls, session: Session, *, filepath: str, edits: list[ReplaceRangeEdit]) -> Self:
@@ -2853,7 +2872,7 @@ EDITING:
 - Never rewrite a large file in one action.
 - Use Edit when changing one tiny exact literal block that appears once.
 - Use ReplaceRange after Read for known continuous ranges, repeated text, insertions, and structural edits split into focused ranges.
-- Use multiple ReplaceRange calls when separate ranges are already known and independent.
+- Use ReplaceRange(filepath, ranges) when several independent ranges in the same file are already known.
 - Before ReplaceRange, Read the exact target range plus one boundary line before and after.
 
 TARGET DISCOVERY:
@@ -4111,7 +4130,7 @@ class ToolCallRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
             return None
-        return call.name, tuple(call.args)
+        return call.name, _tool_call_args_key(call.args)
 
     def _call_tool(
         self,
@@ -4256,7 +4275,8 @@ class ToolCallRunner:
         if name not in TOOL_REGISTRY and name == name.lower():
             name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == name), name)
         intention = _json_str(item.get("intention")) or ""
-        args = [_json_str(arg) or "" for arg in _json_list(item.get("args"))]
+        raw_args = _json_list(item.get("args"))
+        args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.name() else [_json_str(arg) or "" for arg in raw_args]
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -5318,7 +5338,7 @@ class Agent:
             self.failed_tool_call_key = None
             self.failed_tool_call_count = 0
             return
-        key = (execution.call.name, tuple(execution.call.args))
+        key = (execution.call.name, _tool_call_args_key(execution.call.args))
         if key == self.failed_tool_call_key:
             self.failed_tool_call_count += 1
         else:
@@ -5359,7 +5379,7 @@ class Agent:
     def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
         if not execution.call.args:
             return
-        filepath = self.session.resolve_path(execution.call.args[0])
+        filepath = self.session.resolve_path(str(execution.call.args[0]))
         try:
             path = os.path.relpath(filepath, self.session.cwd)
         except ValueError:
@@ -5555,7 +5575,7 @@ class Agent:
                 call = self.tool_runner.parse_tool_call(value)
             except ToolCallArgError:
                 continue
-            if (call.name, tuple(call.args)) == self.failed_tool_call_key:
+            if (call.name, _tool_call_args_key(call.args)) == self.failed_tool_call_key:
                 return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
         return ""
 
@@ -5573,7 +5593,7 @@ class Agent:
             if tool_class.effect() == ToolEffect.READONLY:
                 continue
             if tool_class is GitTool:
-                args = call.args[1:] if call.args and call.args[0].startswith("cwd=") else call.args
+                args = call.args[1:] if call.args and isinstance(call.args[0], str) and call.args[0].startswith("cwd=") else call.args
                 if args and args[0] in self.PLAN_MODE_GIT_READONLY:
                     continue
             return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
