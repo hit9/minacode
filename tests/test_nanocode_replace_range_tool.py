@@ -66,6 +66,17 @@ def test_replace_range_tool_rejects_after_context_mismatch(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
+def test_replace_range_tool_allows_empty_boundary_context_for_non_empty_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+
+    ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "", "", "BETA\n")).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
 def test_replace_range_tool_rejects_content_that_repeats_boundary_context(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
@@ -360,6 +371,20 @@ def test_replace_range_tool_inserts_when_start_equals_end(tmp_path):
     ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 1, fingerprint, "alpha\n", "gamma\n", "beta\n")).call()
 
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_replace_range_tool_requires_boundary_context_for_insert_range(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "1"]).call())
+
+    tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 1, fingerprint, "", "", "beta\n"))
+
+    assert "# preview unavailable: before_context mismatch" in tool.preview()
+    with pytest.raises(ToolCallError, match="before_context mismatch"):
+        tool.call()
+    assert path.read_text(encoding="utf-8") == "alpha\ngamma\n"
 
 
 def test_replace_range_tool_rejects_wide_fingerprint_for_empty_insert_range(tmp_path):

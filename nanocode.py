@@ -2310,7 +2310,7 @@ class ReplaceRangeTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
         "For several independent ranges in the same file, pass a batch as ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]).",
-        "Pass exact before_context and after_context boundary lines; use empty string at BOF/EOF.",
+        "Pass exact before_context and after_context when known; empty boundary context is allowed for non-empty replacements.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
     SIGNATURE: ClassVar[str] = (
@@ -2526,9 +2526,10 @@ class ReplaceRangeTool(Tool):
     def _validate_boundary_context(lines: list[str], resolved: RangeFingerprintStore.Resolved, edit: ReplaceRangeEdit, replacement: list[str]) -> None:
         before_context = "" if resolved.start == 0 else lines[resolved.start - 1]
         after_context = "" if resolved.end >= len(lines) else lines[resolved.end]
-        if edit.before_context != before_context:
+        inserting = resolved.start == resolved.end
+        if edit.before_context != before_context and (edit.before_context or inserting):
             raise ToolCallError("before_context mismatch; Read the target range with one line before and retry")
-        if edit.after_context != after_context:
+        if edit.after_context != after_context and (edit.after_context or inserting):
             raise ToolCallError("after_context mismatch; Read the target range with one line after and retry")
         if before_context and replacement and replacement[0] == before_context:
             raise ToolCallError("content includes before_context; expand start or remove the boundary line from content")
