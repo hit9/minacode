@@ -3208,7 +3208,7 @@ def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert agent.blackboard.known == ["fact"]
-    assert agent.agent_feedback_errors == []
+    assert any("state update-only turn" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):

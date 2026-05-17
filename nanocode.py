@@ -2792,7 +2792,7 @@ Choose the main next action and include tightly related state updates in the sam
 1. chat: casual chat or direct non-coding answers.
 2. user_rule: only explicit future-behavior memory requests.
 3. start: only when Task Code is new; set goal, work_mode normal|investigate, and a short plan.
-4. plan/known/hypothesis: only when direction, target, hypothesis status, or verification path changes. In investigate mode, use hypotheses for competing directions.
+4. plan/known/hypothesis: only when direction, target, hypothesis status, or verification path changes. If a frontier tool/verify/goal is already known, include it in the same turn instead of stopping on state updates.
 5. tool: execute the current action frontier. Frontier = useful next actions with known args and no dependency between them. Batch broad related searches/reads/recalls/checks; serialize only when later args depend on earlier results.
 6. verify: after edits or explicit check/test/build requests, use the smallest relevant check; if the exact check already passed in recent results, record passed.
 7. goal: complete only when the goal is done, all Plan items are done/blocked with result context, and verification passed or is blocked by the user.
@@ -2800,6 +2800,7 @@ Choose the main next action and include tightly related state updates in the sam
 PLANNING
 - Use plans only for real tasks; usually 2-5 concrete outcome steps.
 - Update Plan only when status, text, context, or ordering changes.
+- Pair Plan/Known/Hypothesis updates with the next frontier action whenever its arguments are known.
 - Use patch for small Plan changes; use replace only when restructuring.
 - At most one item may be doing.
 - Done context must cite result context; blocked context must name the concrete blocker.
@@ -4828,6 +4829,7 @@ class ResponseContext:
     has_plan_action: bool
     has_fresh_plan_action: bool
     has_user_rule_action: bool
+    has_state_update_action: bool
     state_or_work_requested: bool
 
 
@@ -5489,6 +5491,10 @@ class Agent:
         return any(self._is_pending_verify_action(action) for action in actions)
 
     @staticmethod
+    def _has_state_update_action(actions: list[Json]) -> bool:
+        return any(_json_str(action.get("type")) in {"plan", "known", "hypothesis", "stable_knowledge"} for action in actions)
+
+    @staticmethod
     def _is_pending_verify_action(action: Json) -> bool:
         return _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"
 
@@ -5574,6 +5580,7 @@ class Agent:
         has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
         has_forget_action = any(_json_str(action.get("type")) == "forget" for action in actions)
         has_hypothesis_action = any(_json_str(action.get("type")) == "hypothesis" for action in actions)
+        has_state_update_action = self._has_state_update_action(actions)
         goal_update = self._incomplete_goal_update_from_actions(actions)
         return ResponseContext(
             response=response,
@@ -5593,7 +5600,16 @@ class Agent:
             has_plan_action=has_plan_action,
             has_fresh_plan_action=self._has_fresh_plan_action(actions),
             has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
-            state_or_work_requested=bool(tool_calls or pending_verify_requested or progress_messages or has_plan_action or has_forget_action or has_hypothesis_action),
+            has_state_update_action=has_state_update_action,
+            state_or_work_requested=bool(
+                tool_calls
+                or pending_verify_requested
+                or progress_messages
+                or has_plan_action
+                or has_forget_action
+                or has_hypothesis_action
+                or has_state_update_action
+            ),
         )
 
     def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
@@ -5760,6 +5776,18 @@ class Agent:
             and not self.state_updater.changed
         ):
             self._warn_agent("response made no effective state change; continue with tool, verify, or goal.")
+        if (
+            not self.session.settings.plan_mode
+            and ctx.has_state_update_action
+            and self.state_updater.changed
+            and not ctx.has_goal_action
+            and not ctx.tool_calls
+            and not ctx.pending_verify_requested
+            and not ctx.completion_message
+            and ctx.chat_message is None
+            and ctx.user_rule_message is None
+        ):
+            self._warn_agent("state update-only turn; include frontier tool, verify, or goal when arguments are known.")
         return None
 
     def _plan_mode_completion_error(self, message: str) -> str:
