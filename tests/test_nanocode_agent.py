@@ -62,7 +62,7 @@ def _session(
     )
 
 
-def test_agent_tool_results_go_to_recent_tool_calls_and_store(tmp_path):
+def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -212,12 +212,12 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
-def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
+def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALL_SUMMARIES = 2
+    agent.TOOL_RESULT_INDEX_ITEMS = 2
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 4
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
@@ -234,7 +234,7 @@ def test_agent_keeps_latest_batch_and_recent_tool_calls(tmp_path):
     assert "<ReadToolResult>" in recent
     assert len(agent.tool_context.recent) == 3
     assert agent.mode == nanocode.AgentMode.OBSERVE
-    context = agent._format_recent_tool_call_context()
+    context = agent._format_observe_tool_result_context()
     assert "one.txt" in context
     assert "two.txt" in context
     assert "three.txt" in context
@@ -247,13 +247,13 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.RECENT_TOOL_CALL_CHARS = 300
+    agent.TOOL_RESULT_RAW_CHARS = 10_000
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
 
-    context = agent._format_recent_tool_call_context()
+    context = agent._format_observe_tool_result_context()
     assert agent.mode == nanocode.AgentMode.OBSERVE
     assert "one.txt" in context
     assert "<ReadToolResult>" in context
@@ -285,28 +285,28 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.RECENT_TOOL_CALL_CHARS = 300
+    agent.TOOL_RESULT_RAW_CHARS = 10_000
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
-    context = agent._format_recent_tool_call_context()
-    assert "one.txt" in context
-    assert "one\n" in context
-    assert "two.txt" in context
-    assert "two\n" in context
-    assert "recall=tr.1" not in context
-    assert context.count("key=tr.1") == 1
-    assert context.count("key=tr.2") == 1
+    index, unreduced, latest = agent._format_act_tool_result_context()
+    assert "one.txt" in unreduced
+    assert "one\n" in unreduced
+    assert "two.txt" in latest
+    assert "two\n" in latest
+    assert "recall=tr.1" in index
+    assert "recall=tr.2" in index
+    assert "output:\n<ReadToolResult>" not in index
 
 
 def test_observe_progress_does_not_checkpoint_tool_results(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.RECENT_TOOL_CALL_CHARS = 300
+    agent.TOOL_RESULT_RAW_CHARS = 300
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
@@ -377,7 +377,8 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     assert "act error" not in prompt
     assert "Conversation History" not in prompt
     assert "old conversation text" not in prompt
-    assert "Tool Result Store" not in prompt
+    assert "Tool Result Index" not in prompt
+    assert "Archived Recall Index" not in prompt
     assert "stored raw text" not in prompt
     assert "Kept Tool Results" in prompt
     assert "Recent Edits" not in prompt
@@ -751,45 +752,32 @@ def test_observe_checkpoint_clears_observe_errors(tmp_path):
     assert agent.observe_feedback_errors == []
 
 
-def test_agent_recent_tool_calls_respects_char_budget(tmp_path):
+def test_agent_tool_result_raw_budget_triggers_observe(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALL_CHARS = 180
+    agent.TOOL_RESULT_RAW_CHARS = 180
+    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 99
+    path = tmp_path / "sample.txt"
+    path.write_text("x" * 400 + "\n", encoding="utf-8")
 
-    agent.tool_context.append_recent(
-        ['- ok tool=Read args=["old"] key=tr.1\n  output:\n' + "x" * 200],
-        max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
-        max_chars=agent.RECENT_TOOL_CALL_CHARS,
-        checkpoint=999,
-    )
-    agent.tool_context.append_recent(
-        ['- ok tool=Read args=["new"] key=tr.2\n  output:\nnew'],
-        max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
-        max_chars=agent.RECENT_TOOL_CALL_CHARS,
-        checkpoint=999,
-    )
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
 
-    recent = _blocks_text(agent.tool_context.recent)
-    assert "recall=tr.1" in recent
-    assert "recall=tr.2" in recent
-    assert "x" * 50 not in recent
-    assert 'tool=Read args=["new"] key=tr.2' in recent
-    assert "\n  output:\nnew" not in recent
-    assert agent.mode == nanocode.AgentMode.ACT
-    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.TOOL_RESULT_RAW_CHARS
+    observe_context = agent._format_observe_tool_result_context()
+    assert "sample.txt" in observe_context
+    assert "x" * 50 in observe_context
 
 
-def test_agent_recent_tool_call_compact_summaries_have_count_limit(tmp_path):
+def test_agent_tool_result_index_has_count_limit(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.RECENT_TOOL_CALL_CHARS = 10_000
-    agent.RECENT_TOOL_CALL_SUMMARIES = 2
+    agent.TOOL_RESULT_INDEX_ITEMS = 2
 
     for index in range(4):
         agent.tool_context.append_recent(
             ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)],
-            max_summaries=agent.RECENT_TOOL_CALL_SUMMARIES,
-            max_chars=agent.RECENT_TOOL_CALL_CHARS,
+            max_index_items=agent.TOOL_RESULT_INDEX_ITEMS,
             checkpoint=999,
         )
 
@@ -3633,7 +3621,7 @@ def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path
     assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
 
 
-def test_agent_run_retries_format_error_with_recent_tool_calls(tmp_path):
+def test_agent_run_retries_format_error_with_tool_result_context(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
