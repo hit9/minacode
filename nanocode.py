@@ -2900,6 +2900,7 @@ Choose the main next action and include tightly related state updates in the sam
 3. start: only when Task Code is new; set goal, work_mode normal|investigate, and a short plan.
 4. plan/known/hypothesis: only when direction, target, hypothesis status, or verification path changes. If a frontier tool/verify/goal is already known, include it in the same turn instead of stopping on state updates.
 5. tool: execute the current action frontier. Frontier = useful next actions with known args and no dependency between them. Batch broad related searches/reads/recalls/checks; serialize only when later args depend on earlier results.
+   When context is missing, emit the first broad readonly tool batch quickly instead of spending a long turn speculating.
 6. verify: after edits or explicit check/test/build requests, use the smallest relevant check; if the exact check already passed in recent results, record passed.
 7. goal: complete only when the goal is done, all Plan items are done/blocked with result context, and verification passed or is blocked by the user.
 
@@ -3461,6 +3462,39 @@ class ModelClient:
     ACTION_FRAME_END: ClassVar[str] = "__END_ACTION__"
     ACTION_FRAME_END_SPLIT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"\**_*\s*END[\s_-]*ACTION\s*_*\**", re.IGNORECASE)
 
+    class ActionStreamParser:
+        def __init__(self, client: "ModelClient"):
+            self.client = client
+            self.buffer = ""
+            self.frame_number = 0
+            self.committed = 0
+            self.stopped = False
+
+        def feed(self, text: str, on_action: Callable[[Json], bool]) -> bool:
+            self.buffer += text
+            while True:
+                match = self.client.ACTION_FRAME_END_SPLIT_PATTERN.search(self.buffer)
+                if match is None:
+                    return False
+                frame = self.client._strip_fence_marker_lines(self.buffer[: match.start()])
+                self.buffer = self.buffer[match.end() :]
+                self.frame_number += 1
+                actions, error = self.client._parse_action_frame(frame, self.frame_number)
+                if error:
+                    self.buffer = frame + self.client.ACTION_FRAME_END + self.buffer
+                    return False
+                for action in actions:
+                    self.committed += 1
+                    if on_action(action):
+                        self.stopped = True
+                        return True
+
+        def trailing_error(self) -> str:
+            if self.stopped:
+                return ""
+            trailing = self.client._strip_fence_marker_lines(self.buffer).strip()
+            return "unexpected text after committed action frame" if trailing else ""
+
     def __init__(self, session: Session):
         self.session = session
         self._timeout_reason = "request model timeout"
@@ -3475,6 +3509,7 @@ class ModelClient:
         *,
         activity: str = "agent",
         parse_actions: bool = True,
+        on_stream_action: Callable[[Json], bool] | None = None,
     ) -> Json:
         config = self.session.config.provider
         if not config.url:
@@ -3500,6 +3535,7 @@ class ModelClient:
         self._write_debug_prompt(activity=activity, messages=messages)
         client = self._client(config, timeout=timeout)
         request_elapsed = 0.0
+        stream_parser = self.ActionStreamParser(self) if stream and parse_actions and on_stream_action is not None else None
         try:
             with ModelRetryShortcut(self.session):
                 self.session.state.current_model_call_started_at = time.monotonic()
@@ -3521,12 +3557,20 @@ class ModelClient:
                     )
                     if stream:
                         content, usage = (
-                            self._read_responses_stream(completion, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                            self._read_responses_stream(
+                                completion,
+                                request_deadline=request_deadline,
+                                first_token_timeout=first_token_timeout,
+                                stream_parser=stream_parser,
+                                on_stream_action=on_stream_action,
+                            )
                             if api == "responses"
                             else self._read_streaming_content(
                                 completion,
                                 request_deadline=request_deadline,
                                 first_token_timeout=first_token_timeout,
+                                stream_parser=stream_parser,
+                                on_stream_action=on_stream_action,
                             )
                         )
                         result: Json = {"usage": usage}
@@ -3567,6 +3611,13 @@ class ModelClient:
             raise LLMError(str(error))
 
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
+        if stream_parser is not None and stream_parser.committed:
+            response: Json = {"actions": [], "_stream_committed": True}
+            error = stream_parser.trailing_error()
+            if error:
+                response["_format_bad_output"] = content
+                response["_format_error"] = "Invalid model output: " + error + ". Return action frames only. Bad output: " + _shorten(content)
+            return response
         if not stream:
             content = self._responses_content(result) if api == "responses" else self._message_content(result)
         if content is None:
@@ -3628,7 +3679,15 @@ class ModelClient:
             return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
         return timeout, first_token_timeout
 
-    def _read_streaming_content(self, stream: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
+    def _read_streaming_content(
+        self,
+        stream: Any,
+        *,
+        request_deadline: float,
+        first_token_timeout: int | None,
+        stream_parser: "ModelClient.ActionStreamParser | None" = None,
+        on_stream_action: Callable[[Json], bool] | None = None,
+    ) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
         first_output_seen = False
@@ -3650,12 +3709,29 @@ class ModelClient:
                 first_output_seen = True
                 self.session.state.current_model_call_has_content = True
                 self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
+            self.session.state.current_model_call_streaming_chars += output_chars
             if isinstance(content, str) and content:
                 parts.append(content)
-            self.session.state.current_model_call_streaming_chars += output_chars
+                if stream_parser is not None and on_stream_action is not None:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    callback_started = time.monotonic()
+                    try:
+                        if stream_parser.feed(content, on_stream_action):
+                            break
+                    finally:
+                        request_deadline += max(0.0, time.monotonic() - callback_started)
+                        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
         return "".join(parts), usage
 
-    def _read_responses_stream(self, stream: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
+    def _read_responses_stream(
+        self,
+        stream: Any,
+        *,
+        request_deadline: float,
+        first_token_timeout: int | None,
+        stream_parser: "ModelClient.ActionStreamParser | None" = None,
+        on_stream_action: Callable[[Json], bool] | None = None,
+    ) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
         completed_content = ""
@@ -3695,9 +3771,18 @@ class ModelClient:
             output = self._responses_stream_output(data)
             if not output:
                 continue
+            mark_output(len(output[1]))
             if output[0] == "content":
                 parts.append(output[1])
-            mark_output(len(output[1]))
+                if stream_parser is not None and on_stream_action is not None:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    callback_started = time.monotonic()
+                    try:
+                        if stream_parser.feed(output[1], on_stream_action):
+                            break
+                    finally:
+                        request_deadline += max(0.0, time.monotonic() - callback_started)
+                        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
         return "".join(parts) or completed_content, usage
 
     def _raise_responses_stream_error(self, event: Json) -> None:
@@ -5163,6 +5248,7 @@ class Agent:
         self.observe_feedback_errors: list[str] = []
         self.task_alignment_required = False
         self.incomplete_task_context_at_turn_start = False
+        self.stream_stop_requested = False
         self.mode = AgentMode.ACT
 
     def build_user_prompt(self) -> str:
@@ -5187,11 +5273,14 @@ class Agent:
         *,
         activity: str = "agent",
         on_message: MessageCallback | None = None,
+        on_stream_action: Callable[[Json], bool] | None = None,
     ) -> Json:
         attempt = 0
         while attempt <= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
             try:
                 self.session.state.turn_model_calls += 1
+                if on_stream_action is not None and isinstance(self.model_client, ModelClient):
+                    return self.model_client.request(system_prompt, user_prompt, activity=activity, on_stream_action=on_stream_action)
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
             except ModelRequestRetry:
                 if on_message is not None and self.session.settings.debug:
@@ -5280,6 +5369,62 @@ class Agent:
             self.cancel_current_goal()
             raise
 
+    def run_stream_loop(
+        self,
+        *,
+        max_steps: int,
+        on_message: MessageCallback | None = None,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
+        on_step_limit: Callable[[], JsonValue],
+    ) -> JsonValue:
+        consecutive_format_errors = 0
+        try:
+            for _ in range(max_steps):
+                result, response, committed = self.stream_step(
+                    confirm=confirm,
+                    on_auto_approve=on_auto_approve,
+                    on_live_output=on_live_output,
+                    on_live_done=on_live_done,
+                    on_message=on_message,
+                )
+                format_error = _json_str(response.get("_format_error"))
+                if format_error:
+                    consecutive_format_errors += 1
+                    self._set_status_notice("err:format")
+                    remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
+                    remember_error(
+                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: " + self.RULE_ACTION_FRAMES
+                    )
+                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
+                        self._report_gate(
+                            on_message,
+                            "Stopped: model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
+                            "Format_Gate: stopped after "
+                            + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
+                            + " consecutive invalid model outputs. "
+                            + self._format_gate_debug_details(response, format_error),
+                        )
+                        raise LLMError(
+                            "model returned invalid output " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300)
+                        )
+                    self._report_gate(
+                        on_message,
+                        self._format_gate_user_message("Retrying: model returned invalid output", format_error),
+                        "Format_Gate: retrying model response. " + self._format_gate_debug_details(response, format_error),
+                    )
+                    continue
+                if not committed:
+                    consecutive_format_errors = 0
+                if result.done:
+                    return result.value
+            return on_step_limit()
+        except KeyboardInterrupt:
+            self.cancel_current_goal()
+            raise
+
     def _finish_current_goal(self) -> None:
         self.blackboard.task_code = TaskCode.DONE
         self.blackboard.goal_reached = False
@@ -5356,6 +5501,7 @@ class Agent:
         self._remember_observe_error(self._warning(text, rule))
 
     def _reject_agent(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> bool:
+        self.stream_stop_requested = True
         self._remember_agent_error(feedback)
         self._report_gate(on_message, retry, debug)
         return True
@@ -5368,6 +5514,7 @@ class Agent:
         retry: str,
         debug: str,
     ) -> AgentRunResult:
+        self.stream_stop_requested = True
         remember_error(feedback)
         self._report_gate(on_message, retry, debug)
         return AgentRunResult()
@@ -5413,7 +5560,7 @@ class Agent:
             return _shorten(format_error, 180)
         return _shorten(format_error, 180) + "\nFull bad output:\n" + bad_output
 
-    def step(self, *, on_message: MessageCallback | None = None) -> Json:
+    def _step_prompts(self) -> tuple[str, str, str]:
         if self.mode == AgentMode.OBSERVE:
             system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT, tools=())
             user_prompt = self.build_observe_prompt()
@@ -5425,6 +5572,10 @@ class Agent:
             )
             user_prompt = self.build_user_prompt()
             activity = "agent"
+        return system_prompt, user_prompt, activity
+
+    def step(self, *, on_message: MessageCallback | None = None) -> Json:
+        system_prompt, user_prompt, activity = self._step_prompts()
         response = self.request(system_prompt, user_prompt, activity=activity, on_message=on_message)
         if _json_str(response.get("_format_error")):
             return response
@@ -5432,6 +5583,88 @@ class Agent:
         if invalid_response is not None:
             return invalid_response
         return response
+
+    def stream_step(
+        self,
+        *,
+        confirm: ConfirmCallback | None = None,
+        on_auto_approve: ToolDisplayCallback | None = None,
+        on_live_output: ToolLiveOutputCallback | None = None,
+        on_live_done: ToolLiveDoneCallback | None = None,
+        on_message: MessageCallback | None = None,
+    ) -> tuple[AgentRunResult, Json, bool]:
+        if not self._can_stream_action_frames():
+            response = self.step(on_message=on_message)
+            if _json_str(response.get("_format_error")):
+                return AgentRunResult(), response, False
+            return self.handle_response(
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            ), response, False
+
+        committed = False
+        latest_result = AgentRunResult()
+
+        def on_stream_action(action: Json) -> bool:
+            nonlocal committed, latest_result
+            committed = True
+            self.stream_stop_requested = False
+            response = {"actions": [action]}
+            invalid_response = self._validate_action_response(response)
+            latest_result = (
+                self.handle_response(
+                    response,
+                    confirm=confirm,
+                    on_auto_approve=on_auto_approve,
+                    on_live_output=on_live_output,
+                    on_live_done=on_live_done,
+                    on_message=on_message,
+                )
+                if invalid_response is None
+                else self._reject_result(
+                    self._remember_agent_error,
+                    on_message,
+                    _json_str(invalid_response.get("_format_error")) or self._error("invalid streamed action."),
+                    "Retrying: invalid streamed action.",
+                    "Format_Gate: invalid streamed action.",
+                )
+            )
+            if latest_result.done or self.stream_stop_requested:
+                return True
+            if _json_str(action.get("type")) == "tool" and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions):
+                return True
+            return self.mode == AgentMode.OBSERVE
+
+        system_prompt, user_prompt, activity = self._step_prompts()
+        response = self.request(
+            system_prompt,
+            user_prompt,
+            activity=activity,
+            on_message=on_message,
+            on_stream_action=on_stream_action,
+        )
+        if committed:
+            return latest_result, response, True
+        if _json_str(response.get("_format_error")):
+            return AgentRunResult(), response, False
+        invalid_response = self._validate_action_response(response)
+        if invalid_response is not None:
+            return AgentRunResult(), invalid_response, False
+        return self.handle_response(
+            response,
+            confirm=confirm,
+            on_auto_approve=on_auto_approve,
+            on_live_output=on_live_output,
+            on_live_done=on_live_done,
+            on_message=on_message,
+        ), response, False
+
+    def _can_stream_action_frames(self) -> bool:
+        return self.mode == AgentMode.ACT and isinstance(self.model_client, ModelClient) and self.session.config.provider.stream is not False
 
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
@@ -6355,7 +6588,7 @@ class Agent:
         # Keep previous task state at a new user turn so short follow-ups like
         # "continue" can resume. The first response must align with it before work
         # when the new request does not match the previous goal.
-        self.task_alignment_required = self.incomplete_task_context_at_turn_start and self._task_text_key(user_input) != self._task_text_key(old_goal)
+        self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
@@ -6363,6 +6596,17 @@ class Agent:
         self.blackboard.verification.reset()
         self.compactor.maybe_compact()
         self.session.append_conversation(UserMessage(content=user_input))
+
+        if self._can_stream_action_frames():
+            return self.run_stream_loop(
+                max_steps=self.session.settings.max_agent_steps,
+                on_message=on_message,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
+            )
 
         return self.run_loop(
             max_steps=self.session.settings.max_agent_steps,

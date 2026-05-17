@@ -1417,6 +1417,52 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     assert messages[-1] == "done"
 
 
+def test_agent_run_executes_action_frame_before_stream_finishes(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+    agent = Agent(session)
+    _seed_plan(agent, "read sample")
+
+    def stream():
+        yield _stream_chunk({"content": '{"type":"tool","name":"Read","intention":"read sample","args":["sample.txt","0","1"]}__END_ACTION__'})
+        assert session.state.tool_result_counter == 1
+        yield _stream_chunk({"content": '{"type":"verify","method":"unit","status":"passed","context":"checked"}__END_ACTION__'})
+        yield _stream_chunk({"content": '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__'})
+
+    _patch_openai(monkeypatch, stream)
+    messages = []
+
+    response = agent.run("read sample", on_message=messages.append)
+
+    assert response["actions"][0]["message_for_complete"] == "done"
+    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
+    assert session.state.tool_result_counter == 1
+
+
+def test_agent_run_stops_stream_after_tool_failure(tmp_path, monkeypatch):
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+    agent = Agent(session)
+    _seed_plan(agent, "read sample")
+
+    def stream():
+        yield _stream_chunk({"content": '{"type":"tool","name":"Read","intention":"read missing","args":["missing.txt","0","1"]}__END_ACTION__'})
+        raise AssertionError("stream should stop after failed tool")
+
+    _patch_openai(
+        monkeypatch,
+        (
+            stream(),
+            [_stream_chunk({"content": '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__'})],
+        ),
+    )
+
+    response = agent.run("read sample")
+
+    assert response["actions"][0]["message_for_complete"] == "done"
+    assert session.state.tool_result_counter == 1
+    assert session.state.tool_result_store["tr.1"].description.startswith("failure Read")
+
+
 def test_agent_request_uses_configured_chat_reasoning_payload(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(
