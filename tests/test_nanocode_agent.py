@@ -1479,6 +1479,24 @@ def test_agent_request_normalizes_tool_name_as_action_type(tmp_path):
     }
 
 
+def test_agent_normalizes_harmless_action_type_aliases(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    actions = agent._response_actions(
+        {
+            "actions": [
+                {"type": "Plan", "items": []},
+                {"type": "Message", "content": "ok"},
+            ]
+        }
+    )
+
+    assert actions == [
+        {"type": "plan", "items": []},
+        {"type": "chat", "content": "ok", "text": "ok"},
+    ]
+
+
 def test_agent_request_converts_prefixed_unmarked_text_to_progress_action(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
@@ -1593,13 +1611,30 @@ def test_agent_request_strips_leaked_tool_code_after_valid_action(tmp_path):
     }
 
 
-def test_agent_request_rejects_unmarked_json_action_with_trailing_text(tmp_path):
+def test_agent_request_converts_trailing_unmarked_text_to_progress_action(tmp_path):
     client = Agent(Session(cwd=str(tmp_path))).model_client
 
     response = client._parse_model_content('{"type":"message","text":"ok"}\nDone.')
 
-    assert response["actions"] == []
-    assert "unexpected text after JSON action" in response["_format_error"]
+    assert response == {
+        "actions": [
+            {"type": "message", "text": "ok"},
+            {"type": "progress", "text": "Done."},
+        ]
+    }
+
+
+def test_agent_request_converts_trailing_unmarked_text_after_action_array_to_progress_action(tmp_path):
+    client = Agent(Session(cwd=str(tmp_path))).model_client
+
+    response = client._parse_model_content('[{"type":"progress","text":"checking"}]\nNow I will read the file.')
+
+    assert response == {
+        "actions": [
+            {"type": "progress", "text": "checking"},
+            {"type": "progress", "text": "Now I will read the file."},
+        ]
+    }
 
 
 def test_agent_request_repairs_unescaped_newlines_in_unmarked_action(tmp_path):

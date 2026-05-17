@@ -3684,6 +3684,10 @@ class ModelClient:
                 while index < len(text) and text[index].isspace():
                     index += 1
                 if index < len(text):
+                    progress = self._trailing_progress_text(text[index:])
+                    if progress:
+                        parsed.append({"type": "progress", "text": progress})
+                        return parsed, ""
                     return [], "unexpected text after JSON action array"
                 return parsed, ""
             action_start = text.find("{", index)
@@ -3733,6 +3737,10 @@ class ModelClient:
                         repaired, error = self._repair_single_json_action(text)
                         if not error:
                             return repaired, ""
+                    progress = self._trailing_progress_text(text[index:])
+                    if progress:
+                        actions.append({"type": "progress", "text": progress})
+                        return actions, ""
                     return [], "unexpected text after JSON action"
                 progress = self._progress_text(text[index:next_action])
                 if progress:
@@ -3763,6 +3771,12 @@ class ModelClient:
         )
         return progress if progress.lower().startswith(starters) else ""
 
+    def _trailing_progress_text(self, text: str) -> str:
+        progress = self._progress_text(text)
+        if not progress or "{" in progress or "}" in progress:
+            return ""
+        return progress
+
     def _decode_json_array_text(self, text: str, index: int) -> tuple[JsonValue, int]:
         decoder = json.JSONDecoder()
         value, end = decoder.raw_decode(text, index)
@@ -3770,6 +3784,8 @@ class ModelClient:
         while cursor < len(text) and text[cursor].isspace():
             cursor += 1
         if cursor >= len(text):
+            return value, cursor
+        if not self._should_repair_trailing_json_text(text[cursor:]):
             return value, cursor
         value = json_repair.loads(text[index:])
         if not isinstance(value, list):
@@ -5333,7 +5349,25 @@ class Agent:
         return "Format_Warning: ignored invalid action frame(s).\n" + "\n".join("- " + _shorten(error, 220) for error in errors)
 
     def _response_actions(self, response: Json) -> list[Json]:
-        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+        actions = [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+        for action in actions:
+            self._normalize_response_action(action)
+        return actions
+
+    def _normalize_response_action(self, action: Json) -> None:
+        action_type = _json_str(action.get("type"))
+        if not action_type:
+            return
+        lowered = action_type.lower()
+        if lowered == "message":
+            action["type"] = "chat"
+            if _json_str(action.get("text")) is None:
+                text = _json_str(action.get("message")) or _json_str(action.get("content"))
+                if text is not None:
+                    action["text"] = text
+            return
+        if lowered in (self.ACT_ACTION_TYPES | self.OBSERVE_ACTION_TYPES):
+            action["type"] = lowered
 
     def _gate_action_types(
         self,
