@@ -26,6 +26,7 @@ import threading
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -417,7 +418,7 @@ class ProviderConfig:
     temperature: float | None = None
     reasoning: bool | None = True
     reasoning_effort: str = "medium"
-    reasoning_payload: str = ""
+    reasoning_payload: str = "auto"
     stream: bool | None = True
     timeout: int | None = 180
     first_token_timeout: int | None = 90
@@ -442,9 +443,23 @@ class ProviderConfig:
     @classmethod
     def _reasoning_payload(cls, data: Json, default: str) -> str:
         value = Config.str(data, "reasoning_payload", default)
-        if value not in ("", "reasoning", "reasoning_effort"):
-            raise ConfigError("config provider.reasoning_payload must be one of: reasoning, reasoning_effort, empty")
+        if value not in ("auto", "", "reasoning", "reasoning_effort", "thinking", "enable_thinking"):
+            raise ConfigError("config provider.reasoning_payload must be one of: auto, reasoning, reasoning_effort, thinking, enable_thinking, empty")
         return value
+
+    def resolved_reasoning_payload(self) -> str:
+        if self.reasoning_payload != "auto":
+            return self.reasoning_payload
+        host = (urllib.parse.urlparse(self.url).hostname or "").lower()
+        if host == "api.deepseek.com":
+            return "thinking"
+        if host in ("openrouter.ai", "opencode.ai"):
+            return "reasoning"
+        if host in ("dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"):
+            return "enable_thinking"
+        if host == "api.openai.com":
+            return "reasoning_effort"
+        return ""
 
 
 @dataclass
@@ -612,10 +627,12 @@ model = ""
 # temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
-# Optional reasoning payload shape. Leave unset for broad OpenAI-compatible
-# compatibility. Set only for providers that require it, for example OpenRouter:
+# Optional reasoning payload shape. Default "auto" detects common providers
+# by URL. Override only when provider auto-detection is wrong:
 # reasoning_payload = "reasoning" sends {"reasoning":{"effort":...}}
 # reasoning_payload = "reasoning_effort" sends a top-level effort.
+# reasoning_payload = "thinking" sends {"thinking":{"type":"enabled/disabled"}, "reasoning_effort":"high/max"}.
+# reasoning_payload = "enable_thinking" sends {"enable_thinking": true/false}.
 stream = true
 timeout = 180
 # Stream mode only: retry if no first content token arrives within this many seconds.
@@ -3394,10 +3411,18 @@ class ModelClient:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
         timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
-        if config.reasoning is not False and config.reasoning_payload == "reasoning":
+        reasoning_payload = config.resolved_reasoning_payload()
+        if config.reasoning is not False and reasoning_payload == "reasoning":
             payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
-        if config.reasoning is not False and config.reasoning_payload == "reasoning_effort":
+        if config.reasoning is not False and reasoning_payload == "reasoning_effort":
             payload["reasoning_effort"] = config.reasoning_effort or "medium"
+        if reasoning_payload == "thinking":
+            payload["thinking"] = {"type": "enabled" if config.reasoning is not False else "disabled"}
+            if config.reasoning is not False:
+                effort = config.reasoning_effort or "medium"
+                payload["reasoning_effort"] = "max" if effort in ("max", "xhigh") else "high"
+        if reasoning_payload == "enable_thinking":
+            payload["enable_thinking"] = config.reasoning is not False
         self._write_debug_prompt(activity=activity, messages=messages)
         url = config.url.rstrip("/")
 
@@ -3486,8 +3511,8 @@ class ModelClient:
     def _read_streaming_content(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
-        first_content_seen = False
-        self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=False, first_token_timeout=first_token_timeout)
+        first_output_seen = False
+        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line or line.startswith(":") or not line.startswith("data:"):
@@ -3508,25 +3533,35 @@ class ModelClient:
                 continue
             delta = _json_dict(_json_dict(choices[0]).get("delta"))
             content = delta.get("content")
-            if not isinstance(content, str) or not content:
+            output_chars = self._stream_output_chars(delta)
+            if output_chars <= 0:
                 continue
-            if not first_content_seen:
-                first_content_seen = True
+            if not first_output_seen:
+                first_output_seen = True
                 self.session.state.current_model_call_has_content = True
-                self._arm_stream_timeout(request_deadline=request_deadline, first_content_seen=True, first_token_timeout=first_token_timeout)
-            parts.append(content)
-            self.session.state.current_model_call_streaming_chars += len(content)
+                self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
+            if isinstance(content, str) and content:
+                parts.append(content)
+            self.session.state.current_model_call_streaming_chars += output_chars
         return "".join(parts), usage
+
+    def _stream_output_chars(self, delta: Json) -> int:
+        for key in ("content", "reasoning_content", "reasoning"):
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                return len(value)
+        details = _json_list(delta.get("reasoning_details"))
+        return len(json.dumps(details, ensure_ascii=False)) if details else 0
 
     def _estimate_stream_rate(self, elapsed: float) -> float:
         return self.session.state.current_model_call_streaming_chars / 4 / elapsed if elapsed > 0 else 0.0
 
-    def _arm_stream_timeout(self, *, request_deadline: float, first_content_seen: bool, first_token_timeout: int | None) -> None:
+    def _arm_stream_timeout(self, *, request_deadline: float, first_output_seen: bool, first_token_timeout: int | None) -> None:
         remaining = request_deadline - time.monotonic()
         if remaining <= 0:
             raise ModelRequestTimeout("request model timeout")
         self._timeout_reason = "request model timeout"
-        if not first_content_seen and first_token_timeout is not None and first_token_timeout > 0:
+        if not first_output_seen and first_token_timeout is not None and first_token_timeout > 0:
             if first_token_timeout < remaining:
                 remaining = first_token_timeout
                 self._timeout_reason = "request first token timeout"
