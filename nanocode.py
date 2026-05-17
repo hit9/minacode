@@ -52,7 +52,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
 __version__ = "0.3.34"
-HTTP_USER_AGENT = "nanocode/" + __version__
 
 
 JsonValue: TypeAlias = Any
@@ -3424,6 +3423,9 @@ class PromptBuilder:
 ############################
 # LLM Request (ModelClient)
 ############################
+
+
+HTTP_USER_AGENT = "nanocode/" + __version__
 
 
 class ModelClient:
