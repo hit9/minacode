@@ -79,7 +79,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["url"] == ""
     assert "available_models" not in config["provider"]["default"]
     assert "temperature" not in config["provider"]["default"]
-    assert "reasoning_payload" not in config["provider"]["default"]
+    assert "chat_reasoning_payload" not in config["provider"]["default"]
     assert config["provider"]["default"]["timeout"] == 180
     assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
@@ -508,7 +508,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
 
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
-    assert any("model: model reasoning=medium stream=on" in output for output in outputs)
+    assert any("model: model api=chat(auto) reasoning=medium(no-payload) stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
 

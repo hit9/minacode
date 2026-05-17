@@ -19,23 +19,21 @@ import re
 import selectors
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
 import tomllib
-import urllib.error
-import urllib.parse
-import urllib.request
 import uuid
 from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
+from urllib.parse import urlparse
 
 import json_repair
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 from prompt_toolkit.application import Application
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
@@ -409,16 +407,74 @@ class Blackboard:
         return keys
 
 
+@dataclass(frozen=True)
+class ChatReasoningRule:
+    payload: str
+    model_prefixes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ProviderProfile:
+    api: str = "chat"
+    chat_reasoning_payload: str = ""
+    chat_reasoning_rules: tuple[ChatReasoningRule, ...] = ()
+
+
+ALIYUN_CHAT_PROFILE = ProviderProfile(
+    chat_reasoning_rules=(
+        ChatReasoningRule("enable_thinking", ("qwen", "qwq", "qvq")),
+        ChatReasoningRule("thinking", ("deepseek-v4",)),
+    )
+)
+
+
+# Exact host matches only. Keep provider quirks here instead of scattering
+# vendor-specific branches through request construction. DashScope intentionally
+# defaults to Chat because Responses support differs by model family and region.
+PROVIDER_PROFILES: dict[str, ProviderProfile] = {
+    "api.openai.com": ProviderProfile(
+        api="responses",
+        chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),),
+    ),
+    "openrouter.ai": ProviderProfile(api="responses", chat_reasoning_payload="reasoning"),
+    "opencode.ai": ProviderProfile(chat_reasoning_payload="reasoning"),
+    "api.deepseek.com": ProviderProfile(chat_reasoning_payload="thinking"),
+    "dashscope.aliyuncs.com": ALIYUN_CHAT_PROFILE,
+    "dashscope-intl.aliyuncs.com": ALIYUN_CHAT_PROFILE,
+    "dashscope-us.aliyuncs.com": ALIYUN_CHAT_PROFILE,
+}
+
+
+ALIYUN_THINKING_BUDGET_BY_EFFORT = {
+    "minimal": 256,
+    "low": 1024,
+    "medium": 4096,
+    "high": 8192,
+    "xhigh": 16384,
+    "max": 16384,
+}
+
+DEEPSEEK_REASONING_EFFORT_BY_EFFORT = {
+    "minimal": "high",
+    "low": "high",
+    "medium": "high",
+    "high": "high",
+    "xhigh": "max",
+    "max": "max",
+}
+
+
 @dataclass
 class ProviderConfig:
     url: str = ""
     key: str = ""
     model: str = ""
+    api: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
     reasoning: bool | None = True
     reasoning_effort: str = "medium"
-    reasoning_payload: str = "auto"
+    chat_reasoning_payload: str = "auto"
     stream: bool | None = True
     timeout: int | None = 180
     first_token_timeout: int | None = 90
@@ -430,36 +486,55 @@ class ProviderConfig:
             url=Config.str(data, "url", defaults.url),
             key=Config.str(data, "key", defaults.key),
             model=Config.str(data, "model", defaults.model),
+            api=cls._api(data, defaults.api),
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", defaults.temperature),
             reasoning=Config.bool(data, "reasoning", defaults.reasoning),
             reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
-            reasoning_payload=cls._reasoning_payload(data, defaults.reasoning_payload),
+            chat_reasoning_payload=cls._chat_reasoning_payload(data, defaults.chat_reasoning_payload),
             stream=Config.bool(data, "stream", defaults.stream),
             timeout=Config.int(data, "timeout", defaults.timeout),
             first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
         )
 
     @classmethod
-    def _reasoning_payload(cls, data: Json, default: str) -> str:
-        value = Config.str(data, "reasoning_payload", default)
-        if value not in ("auto", "", "reasoning", "reasoning_effort", "thinking", "enable_thinking"):
-            raise ConfigError("config provider.reasoning_payload must be one of: auto, reasoning, reasoning_effort, thinking, enable_thinking, empty")
+    def _api(cls, data: Json, default: str) -> str:
+        value = Config.str(data, "api", default)
+        if value not in ("chat", "responses", "auto"):
+            raise ConfigError("config provider.api must be one of: chat, responses, auto")
         return value
 
-    def resolved_reasoning_payload(self) -> str:
-        if self.reasoning_payload != "auto":
-            return self.reasoning_payload
-        host = (urllib.parse.urlparse(self.url).hostname or "").lower()
-        if host == "api.deepseek.com":
-            return "thinking"
-        if host in ("openrouter.ai", "opencode.ai"):
-            return "reasoning"
-        if host in ("dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"):
-            return "enable_thinking"
-        if host == "api.openai.com":
-            return "reasoning_effort"
-        return ""
+    @classmethod
+    def _chat_reasoning_payload(cls, data: Json, default: str) -> str:
+        value = Config.str(data, "chat_reasoning_payload", default)
+        if value not in ("auto", "", "reasoning", "reasoning_effort", "thinking", "enable_thinking"):
+            raise ConfigError("config provider.chat_reasoning_payload must be one of: auto, reasoning, reasoning_effort, thinking, enable_thinking, empty")
+        return value
+
+    def resolved_chat_reasoning_payload(self) -> str:
+        if self.chat_reasoning_payload != "auto":
+            return self.chat_reasoning_payload
+        profile = PROVIDER_PROFILES.get(self.host())
+        if not profile:
+            return ""
+        model = self.model.lower()
+        for rule in profile.chat_reasoning_rules:
+            if any(model.startswith(prefix) for prefix in rule.model_prefixes):
+                return rule.payload
+        return profile.chat_reasoning_payload
+
+    def host(self) -> str:
+        return (urlparse(self.url).hostname or "").lower()
+
+    def base_url(self) -> str:
+        url = self.url.rstrip("/")
+        return url[: -len("/chat/completions")] if url.endswith("/chat/completions") else url
+
+    def resolved_api(self) -> str:
+        if self.api != "auto":
+            return self.api
+        profile = PROVIDER_PROFILES.get(self.host())
+        return profile.api if profile else "chat"
 
 
 @dataclass
@@ -621,18 +696,22 @@ url = ""
 key = ""
 # Default model used by nanocode.
 model = ""
+# API backend: "auto" (default), "chat", or "responses".
+# "auto" uses nanocode's exact-host provider profile table.
+# api = "auto"
 # Optional: add available_models = ["model-a", "model-b"] manually to pin preferred
 # /model choices above automatically discovered provider models.
 # Optional. Uncomment only for models/providers that support temperature.
 # temperature = 0.7
 reasoning = true
 reasoning_effort = "medium"
-# Optional reasoning payload shape. Default "auto" detects common providers
-# by URL. Override only when provider auto-detection is wrong:
-# reasoning_payload = "reasoning" sends {"reasoning":{"effort":...}}
-# reasoning_payload = "reasoning_effort" sends a top-level effort.
-# reasoning_payload = "thinking" sends {"thinking":{"type":"enabled/disabled"}, "reasoning_effort":"high/max"}.
-# reasoning_payload = "enable_thinking" sends {"enable_thinking": true/false}.
+# Optional advanced override. Chat Completions reasoning shape is auto-detected
+# by provider/model profile where nanocode knows the provider. Responses API
+# always uses the standard reasoning.effort payload.
+# chat_reasoning_payload = "reasoning" sends {"reasoning":{"effort":...}}
+# chat_reasoning_payload = "reasoning_effort" sends a top-level effort.
+# chat_reasoning_payload = "thinking" sends {"thinking":{"type":"enabled/disabled"}, "reasoning_effort":"high/max"}.
+# chat_reasoning_payload = "enable_thinking" sends enable_thinking plus a budget mapped from effort.
 stream = true
 timeout = 180
 # Stream mode only: retry if no first content token arrives within this many seconds.
@@ -3400,41 +3479,16 @@ class ModelClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        payload: Json = {
-            "model": model,
-            "messages": messages,
-        }
-        if config.temperature is not None:
-            payload["temperature"] = config.temperature
         stream = config.stream is not False
-        if stream:
-            payload["stream"] = True
-            payload["stream_options"] = {"include_usage": True}
         timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
-        reasoning_payload = config.resolved_reasoning_payload()
-        if config.reasoning is not False and reasoning_payload == "reasoning":
-            payload["reasoning"] = {"effort": config.reasoning_effort or "medium"}
-        if config.reasoning is not False and reasoning_payload == "reasoning_effort":
-            payload["reasoning_effort"] = config.reasoning_effort or "medium"
-        if reasoning_payload == "thinking":
-            payload["thinking"] = {"type": "enabled" if config.reasoning is not False else "disabled"}
-            if config.reasoning is not False:
-                effort = config.reasoning_effort or "medium"
-                payload["reasoning_effort"] = "max" if effort in ("max", "xhigh") else "high"
-        if reasoning_payload == "enable_thinking":
-            payload["enable_thinking"] = config.reasoning is not False
-        self._write_debug_prompt(activity=activity, messages=messages)
-        url = config.url.rstrip("/")
-
-        request = urllib.request.Request(
-            url=url if url.endswith("/chat/completions") else url + "/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": "Bearer " + config.key,
-                "Content-Type": "application/json",
-                "User-Agent": HTTP_USER_AGENT,
-            },
+        api = config.resolved_api()
+        params = (
+            self._responses_params(config, model=model, system_prompt=system_prompt, user_prompt=user_prompt, stream=stream)
+            if api == "responses"
+            else self._chat_completion_params(config, model=model, messages=messages, stream=stream)
         )
+        self._write_debug_prompt(activity=activity, messages=messages)
+        client = self._client(config, timeout=timeout)
         request_elapsed = 0.0
         try:
             self.session.state.current_model_call_started_at = time.monotonic()
@@ -3449,16 +3503,24 @@ class ModelClient:
             self._timeout_reason = "request model timeout"
             signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
             try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
-                    if stream:
-                        content, usage = self._read_streaming_content(
-                            response,
+                completion = (
+                    client.responses.create(**params, timeout=timeout)
+                    if api == "responses"
+                    else client.chat.completions.create(**params, timeout=timeout)
+                )
+                if stream:
+                    content, usage = (
+                        self._read_responses_stream(completion, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                        if api == "responses"
+                        else self._read_streaming_content(
+                            completion,
                             request_deadline=request_deadline,
                             first_token_timeout=first_token_timeout,
                         )
-                        result: Json = {"usage": usage}
-                    else:
-                        body = response.read().decode("utf-8")
+                    )
+                    result: Json = {"usage": usage}
+                else:
+                    result = self._sdk_json(completion)
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
@@ -3474,32 +3536,72 @@ class ModelClient:
                 self.session.state.current_model_call_streaming_chars = 0
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
-        except (socket.timeout, TimeoutError):
+        except APITimeoutError:
             raise LLMError("request model timeout")
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            raise LLMError("API request failed: HTTP " + str(error.code) + ": " + _shorten(body))
-        except urllib.error.URLError as error:
-            if isinstance(error.reason, (socket.timeout, TimeoutError)):
-                raise LLMError("request model timeout")
+        except APIStatusError as error:
+            body = getattr(error.response, "text", "") or str(getattr(error, "body", "")) or str(error)
+            raise LLMError("API request failed: HTTP " + str(error.status_code) + ": " + _shorten(body))
+        except APIConnectionError as error:
+            raise LLMError(str(error))
+        except APIError as error:
             raise LLMError(str(error))
         except Exception as error:
             raise LLMError(str(error))
 
-        if not stream:
-            try:
-                result = json.loads(body)
-            except json.JSONDecodeError:
-                raise LLMError("API response is not JSON: " + _shorten(body))
-
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
         if not stream:
-            content = self._message_content(result)
+            content = self._responses_content(result) if api == "responses" else self._message_content(result)
         if content is None:
             return self._invalid_model_response(self._format_missing_message_content(result))
         if not parse_actions:
             return self._parse_json_content(content)
         return self._parse_model_content(content)
+
+    def _client(self, config: ProviderConfig, *, timeout: int) -> OpenAI:
+        return OpenAI(
+            api_key=config.key,
+            base_url=config.base_url(),
+            timeout=timeout,
+            max_retries=0,
+            default_headers={"User-Agent": HTTP_USER_AGENT},
+        )
+
+    @staticmethod
+    def _reasoning_effort(config: ProviderConfig) -> str:
+        return config.reasoning_effort or "medium"
+
+    def _chat_completion_params(self, config: ProviderConfig, *, model: str, messages: list[Json], stream: bool) -> Json:
+        params: Json = {"model": model, "messages": messages, "stream": stream}
+        extra_body: Json = {}
+        if config.temperature is not None:
+            params["temperature"] = config.temperature
+        if stream:
+            params["stream_options"] = {"include_usage": True}
+        chat_reasoning_payload = config.resolved_chat_reasoning_payload()
+        if config.reasoning is not False and chat_reasoning_payload == "reasoning":
+            extra_body["reasoning"] = {"effort": self._reasoning_effort(config)}
+        if config.reasoning is not False and chat_reasoning_payload == "reasoning_effort":
+            params["reasoning_effort"] = self._reasoning_effort(config)
+        if chat_reasoning_payload == "thinking":
+            extra_body["thinking"] = {"type": "enabled" if config.reasoning is not False else "disabled"}
+            if config.reasoning is not False:
+                params["reasoning_effort"] = DEEPSEEK_REASONING_EFFORT_BY_EFFORT.get(self._reasoning_effort(config), "high")
+        if chat_reasoning_payload == "enable_thinking":
+            extra_body["enable_thinking"] = config.reasoning is not False
+            if config.reasoning is not False:
+                extra_body["thinking_budget"] = ALIYUN_THINKING_BUDGET_BY_EFFORT.get(self._reasoning_effort(config), ALIYUN_THINKING_BUDGET_BY_EFFORT["medium"])
+        if extra_body:
+            params["extra_body"] = extra_body
+        return params
+
+    def _responses_params(self, config: ProviderConfig, *, model: str, system_prompt: str, user_prompt: str, stream: bool) -> Json:
+        params: Json = {"model": model, "instructions": system_prompt, "input": user_prompt, "stream": stream, "store": False}
+        if config.temperature is not None:
+            params["temperature"] = config.temperature
+        if config.reasoning is not False:
+            effort = self._reasoning_effort(config)
+            params["reasoning"] = {"effort": "high" if effort in ("max", "xhigh") else effort}
+        return params
 
     def _request_timeouts(self, config: ProviderConfig, *, activity: str) -> tuple[int, int | None]:
         timeout = config.timeout if config.timeout is not None else 180
@@ -3508,23 +3610,13 @@ class ModelClient:
             return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
         return timeout, first_token_timeout
 
-    def _read_streaming_content(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
+    def _read_streaming_content(self, stream: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
         parts: list[str] = []
         usage: Json = {}
         first_output_seen = False
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
-        for raw_line in response:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line or line.startswith(":") or not line.startswith("data:"):
-                continue
-            data = line[len("data:") :].strip()
-            if data == "[DONE]":
-                break
-            try:
-                event = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            event_data = _json_dict(event)
+        for event in stream:
+            event_data = self._sdk_json(event)
             event_usage = _json_dict(event_data.get("usage"))
             if event_usage:
                 usage = event_usage
@@ -3544,6 +3636,95 @@ class ModelClient:
                 parts.append(content)
             self.session.state.current_model_call_streaming_chars += output_chars
         return "".join(parts), usage
+
+    def _read_responses_stream(self, stream: Any, *, request_deadline: float, first_token_timeout: int | None) -> tuple[str, Json]:
+        parts: list[str] = []
+        usage: Json = {}
+        completed_content = ""
+        first_output_seen = False
+
+        def mark_output(chars: int) -> None:
+            nonlocal first_output_seen
+            if chars <= 0:
+                return
+            if not first_output_seen:
+                first_output_seen = True
+                self.session.state.current_model_call_has_content = True
+                self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=True, first_token_timeout=first_token_timeout)
+            self.session.state.current_model_call_streaming_chars += chars
+
+        self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
+        for event in stream:
+            data = self._sdk_json(event)
+            event_type = _json_str(data.get("type"))
+            self._raise_responses_stream_error(data)
+            event_usage = _json_dict(data.get("usage"))
+            if event_usage:
+                usage = event_usage
+            if event_type == "response.completed":
+                response = _json_dict(data.get("response"))
+                usage = _json_dict(response.get("usage")) or usage
+                response_content = self._responses_content(response)
+                if response_content and not parts and not completed_content:
+                    completed_content = response_content
+                    mark_output(len(response_content))
+                continue
+            fallback_content = self._responses_event_content(data)
+            if fallback_content and not parts and not completed_content:
+                completed_content = fallback_content
+                mark_output(len(fallback_content))
+                continue
+            output = self._responses_stream_output(data)
+            if not output:
+                continue
+            if output[0] == "content":
+                parts.append(output[1])
+            mark_output(len(output[1]))
+        return "".join(parts) or completed_content, usage
+
+    def _raise_responses_stream_error(self, event: Json) -> None:
+        code = _json_str(event.get("code"))
+        message = _json_str(event.get("message"))
+        if code or message:
+            raise LLMError("API request failed: " + (code or "error") + (": " + message if message else ""))
+
+    def _responses_event_content(self, event: Json) -> str:
+        event_type = _json_str(event.get("type"))
+        if event_type == "response.output_text.done":
+            return _json_str(event.get("text"))
+        if event_type == "response.content_part.done":
+            return _json_str(_json_dict(event.get("part")).get("text"))
+        if event_type == "response.output_item.done":
+            item = _json_dict(event.get("item"))
+            return self._responses_content({"output": [item]}) or ""
+        if event_type == "response.done":
+            return self._responses_content(_json_dict(event.get("response"))) or ""
+        return ""
+
+    def _responses_stream_output(self, event: Json) -> tuple[str, str] | None:
+        event_type = _json_str(event.get("type"))
+        if event_type in ("response.output_text.delta", "response.message.delta"):
+            text = event.get("delta")
+            if isinstance(text, str) and text:
+                return ("content", text)
+        if event_type == "response.reasoning.delta":
+            text = event.get("delta")
+            if isinstance(text, str) and text:
+                return ("reasoning", text)
+        return None
+
+    def _sdk_json(self, value: Any) -> Json:
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            dumped = value.model_dump(mode="json")
+            if not isinstance(dumped, dict):
+                return {}
+            output_text = getattr(value, "output_text", None)
+            if isinstance(output_text, str):
+                dumped["_sdk_output_text"] = output_text
+            return dumped
+        return {}
 
     def _stream_output_chars(self, delta: Json) -> int:
         for key in ("content", "reasoning_content", "reasoning"):
@@ -3899,8 +4080,32 @@ class ModelClient:
             return None
         return content
 
+    def _responses_content(self, result: JsonValue) -> str | None:
+        data = _json_dict(result)
+        output_text = data.get("_sdk_output_text")
+        if isinstance(output_text, str) and output_text:
+            return output_text
+        parts = []
+        for item in _json_list(data.get("output")):
+            if _json_str(_json_dict(item).get("type")) != "message":
+                continue
+            for content in _json_list(_json_dict(item).get("content")):
+                text = _json_dict(content).get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts) if parts else None
+
     def _format_missing_message_content(self, result: JsonValue) -> str:
-        choice = _json_dict(_json_list(_json_dict(result).get("choices"))[0])
+        data = _json_dict(result)
+        if "output" in data:
+            details: Json = {
+                "output_types": [_json_str(_json_dict(item).get("type")) for item in _json_list(data.get("output"))],
+            }
+            return "API response missing output text: " + json.dumps(details, ensure_ascii=False)
+        choices = _json_list(data.get("choices"))
+        if not choices:
+            return "API response missing message content: " + json.dumps({"top_level_keys": sorted(str(key) for key in data)}, ensure_ascii=False)
+        choice = _json_dict(choices[0])
         message = _json_dict(choice.get("message"))
         details: Json = {
             "finish_reason": choice.get("finish_reason"),
@@ -3909,8 +4114,8 @@ class ModelClient:
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
     def _record_usage(self, usage: Json, config: ProviderConfig, *, elapsed: float = 0.0) -> None:
-        prompt_tokens = self._json_int(usage.get("prompt_tokens"))
-        completion_tokens = self._json_int(usage.get("completion_tokens"))
+        prompt_tokens = self._json_int(usage.get("prompt_tokens")) or self._json_int(usage.get("input_tokens"))
+        completion_tokens = self._json_int(usage.get("completion_tokens")) or self._json_int(usage.get("output_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
         if completion_tokens > 0 and elapsed > 0:
             self.session.state.last_model_call_rate = completion_tokens / elapsed
@@ -5559,9 +5764,6 @@ class Agent:
         conflict = sorted((forgotten & protected) - released)
         return "active hypothesis source: " + ", ".join(conflict) if conflict else ""
 
-    def _plan_items_from_json(self, value: JsonValue) -> list[PlanItem]:
-        return [item for item in (self.state_updater._plan_item_from_json(raw) for raw in _json_list(value)) if item]
-
     def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
         if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
             return ""
@@ -6399,21 +6601,19 @@ class CommandDispatcher:
     def _fetch_remote_models(self, provider: ProviderConfig) -> tuple[str, ...]:
         if not provider.url or not provider.key:
             return ()
-        base_url = provider.url.rstrip("/")
-        if base_url.endswith("/chat/completions"):
-            base_url = base_url[: -len("/chat/completions")]
-        request = urllib.request.Request(
-            base_url + "/models",
-            headers={"Authorization": "Bearer " + provider.key, "User-Agent": HTTP_USER_AGENT},
-        )
         try:
-            with urllib.request.urlopen(request, timeout=3) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            response = OpenAI(
+                api_key=provider.key,
+                base_url=provider.base_url(),
+                timeout=3,
+                max_retries=0,
+                default_headers={"User-Agent": HTTP_USER_AGENT},
+            ).models.list(timeout=3)
         except Exception:
             return ()
         ids = []
-        for item in _json_list(_json_dict(data).get("data")):
-            model_id = _json_dict(item).get("id")
+        for item in getattr(response, "data", response):
+            model_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
             if isinstance(model_id, str) and model_id:
                 ids.append(model_id)
         return tuple(dict.fromkeys(sorted(ids)))
@@ -6507,7 +6707,8 @@ class CommandDispatcher:
         session = self.agent.session
         blackboard = self.agent.blackboard
         provider = session.config.provider
-        reasoning = provider.reasoning_effort if provider.reasoning else "off"
+        reasoning = self._format_provider_reasoning(provider)
+        api = provider.resolved_api() + ("(" + provider.api + ")" if provider.api == "auto" else "")
         model_usage = (
             "\n".join(
                 "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
@@ -6520,7 +6721,7 @@ class CommandDispatcher:
         return "\n".join(
             [
                 "provider: " + session.config.active_provider,
-                "model: " + (provider.model or "(empty)") + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
+                "model: " + (provider.model or "(empty)") + " api=" + api + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
                 "session: " + session.session_id,
                 "runtime: yolo="
                 + self._format_bool(session.settings.yolo)
@@ -6568,10 +6769,12 @@ class CommandDispatcher:
                 "provider.url: " + (provider_config.url or "(empty)"),
                 "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
                 "provider.model: " + (provider_config.model or "(empty)"),
+                "provider.api: " + provider_config.api,
                 "provider.available_models: " + (", ".join(provider_config.available_models) or "(empty)"),
                 "provider.reasoning: " + self._format_bool(provider_config.reasoning),
                 "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
-                "provider.reasoning_payload: " + (provider_config.reasoning_payload or "(empty)"),
+                "provider.chat_reasoning_payload: " + (provider_config.chat_reasoning_payload or "(empty)"),
+                "provider.resolved_chat_reasoning_payload: " + (provider_config.resolved_chat_reasoning_payload() or "(empty)"),
                 "provider.stream: " + self._format_bool(provider_config.stream),
                 "provider.temperature: " + self._format_optional(provider_config.temperature),
                 "provider.timeout: " + self._format_optional(provider_config.timeout),
@@ -6695,6 +6898,14 @@ class CommandDispatcher:
 
     def _format_bool(self, value: bool | None) -> str:
         return "(fallback)" if value is None else ("on" if value else "off")
+
+    def _format_provider_reasoning(self, provider: ProviderConfig) -> str:
+        if provider.reasoning is False:
+            return "off"
+        effort = provider.reasoning_effort or "medium"
+        if provider.resolved_api() != "chat":
+            return effort
+        return effort + "(" + (provider.resolved_chat_reasoning_payload() or "no-payload") + ")"
 
     def _format_optional(self, value: object) -> str:
         return str(value) if value is not None else "(fallback)"

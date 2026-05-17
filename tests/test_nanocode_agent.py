@@ -1,4 +1,3 @@
-import json
 import os
 
 import nanocode
@@ -36,12 +35,15 @@ def _session(
     first_token_timeout: int | None = None,
     temperature: float | None = None,
     reasoning_effort: str = "",
-    reasoning_payload: str = "",
+    chat_reasoning_payload: str = "",
     yolo: bool = False,
     plan_mode: bool = False,
     debug: bool = False,
+    api: str = "",
 ) -> Session:
     provider: dict[str, object] = {"url": api_url, "key": api_key, "model": model}
+    if api:
+        provider["api"] = api
     if stream is not None:
         provider["stream"] = stream
     if timeout is not None:
@@ -52,14 +54,77 @@ def _session(
         provider["temperature"] = temperature
     if reasoning_effort:
         provider["reasoning_effort"] = reasoning_effort
-    if reasoning_payload:
-        provider["reasoning_payload"] = reasoning_payload
+    if chat_reasoning_payload:
+        provider["chat_reasoning_payload"] = chat_reasoning_payload
     data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
     return Session(
         cwd=str(tmp_path),
         config=nanocode.Config.from_dict(data),
         settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode, debug=debug),
     )
+
+
+def _chat_response(content: str = '{"type":"message","text":"ok"}', usage: dict | None = None) -> dict:
+    return {"choices": [{"message": {"content": content}}], "usage": usage or {}}
+
+
+def _stream_chunk(delta: dict | None = None, usage: dict | None = None, choices: bool = True) -> dict:
+    return {"choices": [{"delta": delta or {}}] if choices else [], "usage": usage}
+
+
+def _responses_response(content: str = '{"type":"message","text":"ok"}', usage: dict | None = None) -> dict:
+    return {"output": [{"type": "message", "content": [{"type": "output_text", "text": content}]}], "usage": usage or {}}
+
+
+def _responses_text_delta(text: str) -> dict:
+    return {"type": "response.output_text.delta", "delta": text}
+
+
+def _responses_reasoning_delta(text: str) -> dict:
+    return {"type": "response.reasoning.delta", "delta": text}
+
+
+def _responses_completed(usage: dict | None = None) -> dict:
+    return {"type": "response.completed", "response": {"usage": usage or {}}}
+
+
+def _sdk_payload(call: dict) -> dict:
+    payload = dict(call)
+    payload.update(payload.pop("extra_body", {}) or {})
+    payload.pop("timeout", None)
+    return payload
+
+
+def _patch_openai(monkeypatch, responses):
+    calls = []
+    response_calls = []
+    client_kwargs = []
+    queue = list(responses) if isinstance(responses, tuple) else [responses]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            response = responses() if callable(responses) else queue.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            response_calls.append(kwargs)
+            response = responses() if callable(responses) else queue.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            client_kwargs.append(kwargs)
+            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
+    return calls, response_calls, client_kwargs
 
 
 def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
@@ -836,73 +901,80 @@ def test_agent_prunes_tool_result_store_but_keeps_referenced_result_keys(tmp_pat
 
 
 def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps(
-                {
-                    "choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}],
-                    "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["timeout"] = timeout
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        captured["authorization"] = request.headers["Authorization"]
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    calls, _response_calls, client_kwargs = _patch_openai(monkeypatch, _chat_response(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, stream=False)
 
     response = Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
 
     assert response == {"actions": [{"type": "message", "text": "ok"}]}
-    assert captured["url"] == "https://example.test/v1/chat/completions"
-    assert captured["timeout"] == 12
-    assert captured["authorization"] == "Bearer key"
-    assert captured["payload"]["model"] == "model"
-    assert captured["payload"]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
-    assert "temperature" not in captured["payload"]
-    assert "response_format" not in captured["payload"]
-    assert "reasoning_effort" not in captured["payload"]
-    assert "reasoning" not in captured["payload"]
+    assert client_kwargs[0]["base_url"] == "https://example.test/v1"
+    assert client_kwargs[0]["api_key"] == "key"
+    assert client_kwargs[0]["timeout"] == 12
+    assert calls[0]["timeout"] == 12
+    assert payload["model"] == "model"
+    assert payload["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
+    assert "temperature" not in payload
+    assert "response_format" not in payload
+    assert "reasoning_effort" not in payload
+    assert "reasoning" not in payload
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
 
 
 def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}]}).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, temperature=0.2)
 
     Agent(session).request("system", "user")
 
-    assert captured["payload"]["temperature"] == 0.2
+    assert _sdk_payload(calls[0])["temperature"] == 0.2
+
+
+def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypatch):
+    class FakeResponse:
+        output_text = '{"type":"message","text":"ok"}'
+
+        def model_dump(self, mode="json"):
+            return {"output": [], "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}
+
+    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, FakeResponse())
+    session = _session(
+        tmp_path,
+        api_url="https://api.openai.com/v1",
+        api_key="key",
+        model="model",
+        api="responses",
+        stream=False,
+        reasoning_effort="high",
+    )
+
+    response = Agent(session).request("system", "user")
+    payload = _sdk_payload(response_calls[0])
+
+    assert response == {"actions": [{"type": "message", "text": "ok"}]}
+    assert calls == []
+    assert payload["model"] == "model"
+    assert payload["instructions"] == "system"
+    assert payload["input"] == "user"
+    assert payload["store"] is False
+    assert payload["reasoning"] == {"effort": "high"}
+    assert session.state.last_prompt_tokens == 2
+    assert session.state.last_completion_tokens == 3
+    assert session.state.last_total_tokens == 5
+
+
+def test_agent_request_responses_api_omits_reasoning_when_disabled(tmp_path, monkeypatch):
+    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, _responses_response())
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", stream=False)
+    session.config.provider.reasoning = False
+
+    Agent(session).request("system", "user")
+    payload = _sdk_payload(response_calls[0])
+
+    assert calls == []
+    assert "reasoning" not in payload
 
 
 def test_plan_mode_uses_runtime_plan_timeouts(tmp_path):
@@ -1085,41 +1157,20 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
 
 
 def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
-            chunks = [
-                '{"type":"tool","name":"Read",',
-                '"intention":"read sample","args":["sample.txt"]}__END_ACTION__',
-                '{"type":"message","text":"done"}__END_ACTION__',
-            ]
-            for chunk in chunks:
-                yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
-            yield (
-                "data: "
-                + json.dumps({"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}})
-                + "\n"
-            ).encode("utf-8")
-            yield b"data: [DONE]\n"
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    stream = [
+        _stream_chunk({"content": '{"type":"tool","name":"Read",'}),
+        _stream_chunk({"content": '"intention":"read sample","args":["sample.txt"]}__END_ACTION__'}),
+        _stream_chunk({"content": '{"type":"message","text":"done"}__END_ACTION__'}),
+        _stream_chunk(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, choices=False),
+    ]
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
 
     response = Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
 
-    assert captured["payload"]["stream"] is True
-    assert captured["payload"]["stream_options"] == {"include_usage": True}
+    assert payload["stream"] is True
+    assert payload["stream_options"] == {"include_usage": True}
     assert response["actions"] == [
         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
         {"type": "message", "text": "done"},
@@ -1132,20 +1183,13 @@ def test_agent_request_streams_and_reports_completed_actions(tmp_path, monkeypat
 
 def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, monkeypatch):
     timers = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
-            yield ("data: " + json.dumps({"choices": [{"delta": {"role": "assistant"}}]}) + "\n").encode("utf-8")
-            yield ("data: " + json.dumps({"choices": [{"delta": {"content": '{"type":"message","text":"ok"}__END_ACTION__'}}]}) + "\n").encode("utf-8")
-            yield b"data: [DONE]\n"
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    _patch_openai(
+        monkeypatch,
+        [
+            _stream_chunk({"role": "assistant"}),
+            _stream_chunk({"content": '{"type":"message","text":"ok"}__END_ACTION__'}),
+        ],
+    )
     monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
 
@@ -1157,21 +1201,129 @@ def test_agent_request_stream_uses_first_token_timeout_until_content(tmp_path, m
     assert timers[-1] == 0
 
 
+def test_agent_request_stream_reasoning_chunks_count_as_first_output(tmp_path, monkeypatch):
+    timers = []
+    _patch_openai(
+        monkeypatch,
+        [
+            _stream_chunk({"reasoning_content": "thinking"}),
+            _stream_chunk({"reasoning_details": [{"type": "reasoning.text", "text": "more"}]}),
+            _stream_chunk({"content": '{"type":"message","text":"ok"}__END_ACTION__'}),
+        ],
+    )
+    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=90, first_token_timeout=4)
+
+    response = Agent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert timers[0] == 90
+    assert 4 in timers
+    assert timers[-1] == 0
+
+
+def test_agent_request_responses_stream_reasoning_counts_as_first_output(tmp_path, monkeypatch):
+    timers = []
+    stream = [
+        _responses_reasoning_delta("thinking"),
+        _responses_text_delta('{"type":"message","text":"ok"}__END_ACTION__'),
+        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}),
+    ]
+    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
+    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", timeout=90, first_token_timeout=4)
+
+    response = Agent(session).request("system", "user")
+    payload = _sdk_payload(response_calls[0])
+
+    assert response["actions"][0]["text"] == "ok"
+    assert calls == []
+    assert payload["stream"] is True
+    assert payload["reasoning"] == {"effort": "medium"}
+    assert timers[0] == 90
+    assert 4 in timers
+    assert timers[-1] == 0
+    assert session.state.last_prompt_tokens == 2
+    assert session.state.last_completion_tokens == 3
+    assert session.state.last_total_tokens == 5
+
+
+def test_agent_request_responses_stream_uses_completed_output_when_no_delta(tmp_path, monkeypatch):
+    stream = [
+        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})
+        | {"response": _responses_response(usage={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})},
+    ]
+    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
+
+    response = Agent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert calls == []
+    assert response_calls[0]["stream"] is True
+    assert session.state.last_prompt_tokens == 2
+    assert session.state.last_completion_tokens == 3
+    assert session.state.last_total_tokens == 5
+
+
+def test_agent_request_responses_stream_uses_output_text_done_when_no_delta(tmp_path, monkeypatch):
+    timers = []
+    stream = [
+        {"type": "response.output_text.done", "text": '{"type":"message","text":"ok"}__END_ACTION__'},
+        _responses_completed({"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}),
+    ]
+    calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, stream)
+    monkeypatch.setattr(nanocode.signal, "setitimer", lambda timer, seconds: timers.append(seconds))
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", timeout=90, first_token_timeout=4)
+
+    response = Agent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert calls == []
+    assert response_calls[0]["stream"] is True
+    assert 4 in timers
+    assert timers[-2] > 80
+
+
+def test_agent_request_responses_stream_does_not_count_done_after_delta_twice(tmp_path, monkeypatch):
+    chars_seen = []
+    delta = '{"type":"message","text":"ok"}__END_ACTION__'
+    stream = [
+        _responses_text_delta(delta),
+        {"type": "response.output_text.done", "text": delta},
+        _responses_completed(),
+    ]
+    _patch_openai(monkeypatch, stream)
+    monkeypatch.setattr(nanocode.ModelClient, "_estimate_stream_rate", lambda self, elapsed: chars_seen.append(self.session.state.current_model_call_streaming_chars) or 0)
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
+
+    response = Agent(session).request("system", "user")
+
+    assert response["actions"][0]["text"] == "ok"
+    assert chars_seen == [len(delta)]
+
+
+def test_agent_request_responses_stream_error_event_raises_llm_error(tmp_path, monkeypatch):
+    _patch_openai(monkeypatch, [{"code": "InvalidParameter", "message": "Unsupported model: 'deepseek-v4-flash'."}])
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
+
+    try:
+        Agent(session).request("system", "user")
+    except LLMError as error:
+        assert str(error) == "API request failed: InvalidParameter: Unsupported model: 'deepseek-v4-flash'."
+    else:
+        raise AssertionError("expected LLMError")
+
+
 def test_agent_request_records_stream_rate_from_usage(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
-            yield ("data: " + json.dumps({"choices": [{"delta": {"content": '{"type":"message","text":"ok"}'}}]}) + "\n").encode("utf-8")
-            yield ("data: " + json.dumps({"choices": [], "usage": {"completion_tokens": 20, "total_tokens": 30}}) + "\n").encode("utf-8")
-            yield b"data: [DONE]\n"
-
     times = [100.0, 100.0, 100.0, 102.0]
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    _patch_openai(
+        monkeypatch,
+        [
+            _stream_chunk({"content": '{"type":"message","text":"ok"}'}),
+            _stream_chunk(usage={"completion_tokens": 20, "total_tokens": 30}, choices=False),
+        ],
+    )
     monkeypatch.setattr(nanocode.time, "monotonic", lambda: times.pop(0) if times else 102.0)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
 
@@ -1182,19 +1334,15 @@ def test_agent_request_records_stream_rate_from_usage(tmp_path, monkeypatch):
 
 
 def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
+    def stream():
+        if False:
+            yield {}
+        while True:
             nanocode.signal.raise_signal(nanocode.signal.SIGALRM)
-            yield b""
+            yield {}
 
     sleeps = []
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    _patch_openai(monkeypatch, stream)
     monkeypatch.setattr(nanocode.time, "sleep", sleeps.append)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12)
 
@@ -1212,7 +1360,6 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
 def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     (tmp_path / "other.txt").write_text("beta\n", encoding="utf-8")
-    captured_payloads = []
     responses = [
         [
             '{"type":"tool","name":"Read",',
@@ -1228,27 +1375,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
             '{"type":"goal","text":"read sample","complete":true,"message_for_complete":"done"}__END_ACTION__',
         ],
     ]
-
-    class FakeResponse:
-        def __init__(self, chunks):
-            self.chunks = chunks
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def __iter__(self):
-            for chunk in self.chunks:
-                yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n").encode("utf-8")
-            yield b"data: [DONE]\n"
-
-    def fake_urlopen(request, timeout):
-        captured_payloads.append(json.loads(request.data.decode("utf-8")))
-        return FakeResponse(responses.pop(0))
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple([_stream_chunk({"content": chunk}) for chunk in chunks] for chunks in responses))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
     agent = Agent(session)
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 1
@@ -1256,6 +1383,7 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     messages = []
 
     response = agent.run("read sample", on_message=messages.append)
+    captured_payloads = [_sdk_payload(call) for call in calls]
 
     assert response["actions"][-1] == {"type": "goal", "text": "read sample", "complete": True, "message_for_complete": "done"}
     assert len(captured_payloads) == 3
@@ -1265,94 +1393,230 @@ def test_agent_run_reports_streamed_tool_actions_after_execution(tmp_path, monke
     assert messages[-1] == "done"
 
 
-def test_agent_request_uses_configured_reasoning_payload(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+def test_agent_request_uses_configured_chat_reasoning_payload(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(
         tmp_path,
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
         reasoning_effort="high",
-        reasoning_payload="reasoning",
+        chat_reasoning_payload="reasoning",
         stream=False,
     )
 
     Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
 
-    assert captured["payload"]["reasoning"] == {"effort": "high"}
-    assert "reasoning_effort" not in captured["payload"]
+    assert payload["reasoning"] == {"effort": "high"}
+    assert "reasoning_effort" not in payload
 
 
 def test_agent_request_uses_configured_reasoning_effort_payload(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"type": "message", "text": "ok"})}}], "usage": {}}).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(
         tmp_path,
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
         reasoning_effort="high",
-        reasoning_payload="reasoning_effort",
+        chat_reasoning_payload="reasoning_effort",
         stream=False,
     )
 
     Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
 
-    assert captured["payload"]["reasoning_effort"] == "high"
-    assert "reasoning" not in captured["payload"]
+    assert payload["reasoning_effort"] == "high"
+    assert "reasoning" not in payload
+
+
+def test_agent_request_uses_configured_thinking_payload(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
+    session = _session(
+        tmp_path,
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        reasoning_effort="xhigh",
+        chat_reasoning_payload="thinking",
+        stream=False,
+    )
+
+    Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
+
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == "max"
+    assert "reasoning" not in payload
+
+
+def test_agent_request_uses_configured_thinking_disabled_payload(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
+    session = _session(
+        tmp_path,
+        api_url="https://example.test/v1",
+        api_key="key",
+        model="model",
+        chat_reasoning_payload="thinking",
+        stream=False,
+    )
+    session.config.provider.reasoning = False
+
+    Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
+
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload
+
+
+def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple(_chat_response() for _ in range(8)))
+
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://api.deepseek.com",
+            api_key="key",
+            model="model",
+            reasoning_effort="xhigh",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://openrouter.ai/api/v1",
+            api_key="key",
+            model="model",
+            api="chat",
+            reasoning_effort="high",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="key",
+            model="qwen3.6-plus",
+            api="chat",
+            reasoning_effort="high",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="key",
+            model="deepseek-v4-flash",
+            api="chat",
+            reasoning_effort="xhigh",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="key",
+            model="glm-5.1",
+            api="chat",
+            reasoning_effort="high",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://api.openai.com/v1",
+            api_key="key",
+            model="gpt-5",
+            api="chat",
+            reasoning_effort="medium",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://not-openrouter.ai/api/v1",
+            api_key="key",
+            model="model",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://example.test/v1",
+            api_key="key",
+            model="model",
+            stream=False,
+        )
+    ).request("system", "user")
+
+    payloads = [_sdk_payload(call) for call in calls]
+    assert payloads[0]["thinking"] == {"type": "enabled"}
+    assert payloads[0]["reasoning_effort"] == "max"
+    assert payloads[1]["reasoning"] == {"effort": "high"}
+    assert payloads[2]["enable_thinking"] is True
+    assert payloads[2]["thinking_budget"] == nanocode.ALIYUN_THINKING_BUDGET_BY_EFFORT["high"]
+    assert payloads[3]["thinking"] == {"type": "enabled"}
+    assert payloads[3]["reasoning_effort"] == "max"
+    assert payloads[4] == {"model": "glm-5.1", "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}], "stream": False}
+    assert payloads[5]["reasoning_effort"] == "medium"
+    for payload in payloads[6:]:
+        assert "reasoning" not in payload
+        assert "reasoning_effort" not in payload
+        assert "thinking" not in payload
+        assert "enable_thinking" not in payload
+
+
+def test_provider_config_auto_resolves_api_and_chat_reasoning_payload_from_profiles():
+    openai_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "auto"})
+    openai_reasoning_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "chat", "model": "gpt-5"})
+    openrouter_provider = nanocode.ProviderConfig.from_dict({"url": "https://openrouter.ai/api/v1", "api": "auto"})
+    dashscope_provider = nanocode.ProviderConfig.from_dict({"url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "auto", "model": "qwen3.6-plus"})
+    dashscope_deepseek_provider = nanocode.ProviderConfig.from_dict({"url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "auto", "model": "deepseek-v4-flash"})
+    unknown_provider = nanocode.ProviderConfig.from_dict({"url": "https://example.test/v1", "api": "auto"})
+
+    assert openai_provider.resolved_api() == "responses"
+    assert openai_provider.resolved_chat_reasoning_payload() == ""
+    assert openai_reasoning_provider.resolved_api() == "chat"
+    assert openai_reasoning_provider.resolved_chat_reasoning_payload() == "reasoning_effort"
+    assert openrouter_provider.resolved_api() == "responses"
+    assert openrouter_provider.resolved_chat_reasoning_payload() == "reasoning"
+    assert dashscope_provider.resolved_api() == "chat"
+    assert dashscope_provider.resolved_chat_reasoning_payload() == "enable_thinking"
+    assert dashscope_deepseek_provider.resolved_api() == "chat"
+    assert dashscope_deepseek_provider.resolved_chat_reasoning_payload() == "thinking"
+    assert unknown_provider.resolved_api() == "chat"
+    assert unknown_provider.resolved_chat_reasoning_payload() == ""
+
+
+def test_agent_request_empty_chat_reasoning_payload_disables_auto_detection(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
+    session = _session(
+        tmp_path,
+        api_url="https://api.deepseek.com",
+        api_key="key",
+        model="model",
+        stream=False,
+    )
+    session.config.provider.chat_reasoning_payload = ""
+
+    Agent(session).request("system", "user")
+    payload = _sdk_payload(calls[0])
+
+    assert "reasoning" not in payload
+    assert "reasoning_effort" not in payload
+    assert "thinking" not in payload
 
 
 def test_agent_request_accepts_json_fenced_model_content(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps(
-                {
-                    "choices": [{"message": {"content": '```json\n{"type":"message","text":"ok"}\n__END_ACTION__\n```'}}],
-                    "usage": {},
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    _patch_openai(monkeypatch, _chat_response('```json\n{"type":"message","text":"ok"}\n__END_ACTION__\n```'))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")
@@ -1678,20 +1942,7 @@ def test_agent_request_rejects_native_tool_call_syntax(tmp_path):
 
 
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "plain answer"}}], "usage": {}}).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+    _patch_openai(monkeypatch, _chat_response("plain answer"))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")
@@ -1711,30 +1962,18 @@ def test_agent_request_rejects_invalid_unmarked_json_action_array(tmp_path):
 
 
 def test_agent_request_wraps_missing_message_content_as_format_error(tmp_path, monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps(
+    _patch_openai(
+        monkeypatch,
+        {
+            "choices": [
                 {
-                    "choices": [
-                        {
-                            "finish_reason": "stop",
-                            "message": {"role": "assistant", "content": None},
-                        }
-                    ],
-                    "usage": {},
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": None},
                 }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
+            ],
+            "usage": {},
+        },
+    )
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
 
     response = Agent(session).request("system", "user")

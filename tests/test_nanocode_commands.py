@@ -16,6 +16,25 @@ class FakeModelClient:
         return {"summary": self.summary}
 
 
+def patch_openai_models(monkeypatch, models=None, error: Exception | None = None):
+    seen = {}
+
+    class FakeModels:
+        def list(self, **kwargs):
+            seen["list_kwargs"] = kwargs
+            if error is not None:
+                raise error
+            return type("ModelList", (), {"data": [type("Model", (), {"id": model})() for model in (models or ())]})()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen["client_kwargs"] = kwargs
+            self.models = FakeModels()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
+    return seen
+
+
 def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
     provider: dict[str, object] = {"model": model}
     if stream is not None:
@@ -75,7 +94,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
-    assert "model: model reasoning=medium stream=on" in result.message
+    assert "model: model api=chat(auto) reasoning=medium(no-payload) stream=on" in result.message
     assert "session: " + session.session_id in result.message
     assert "runtime: yolo=off plan=off compact_at=50" in result.message
     assert "models:" in result.message
@@ -317,37 +336,26 @@ def test_model_command_lists_configured_models_before_remote_models(tmp_path, mo
     session.config.provider.url = "https://provider.example/v1"
     session.config.provider.key = "key"
     session.config.provider.available_models = ("old", "manual")
-    seen = {}
-
-    def fake_urlopen(request, timeout):
-        assert request.full_url == "https://provider.example/v1/models"
-        seen["auth"] = request.headers["Authorization"]
-
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            @staticmethod
-            def read():
-                return b'{"data":[{"id":"remote-b"},{"id":"manual"},{"id":"remote-a"}]}'
-
-        return Response()
+    seen = patch_openai_models(monkeypatch, ("remote-b", "manual", "remote-a"))
 
     def select_model(models, current):
         seen["models"] = models
         seen["current"] = current
         return "remote-a"
 
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", fake_urlopen)
     dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
 
     result = dispatcher.dispatch("/model")
 
     assert seen == {
-        "auth": "Bearer key",
+        "client_kwargs": {
+            "api_key": "key",
+            "base_url": "https://provider.example/v1",
+            "timeout": 3,
+            "max_retries": 0,
+            "default_headers": {"User-Agent": "nanocode/" + nanocode.__version__},
+        },
+        "list_kwargs": {"timeout": 3},
         "models": (
             CommandDispatcher.MODEL_CONFIGURED_LABEL,
             "old",
@@ -373,7 +381,7 @@ def test_model_command_ignores_remote_model_failure(tmp_path, monkeypatch):
         seen["models"] = models
         return "manual"
 
-    monkeypatch.setattr(nanocode.urllib.request, "urlopen", lambda request, timeout: (_ for _ in ()).throw(OSError("offline")))
+    patch_openai_models(monkeypatch, error=OSError("offline"))
     dispatcher = CommandDispatcher(Agent(session), select_model=select_model)
 
     result = dispatcher.dispatch("/model")

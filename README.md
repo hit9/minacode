@@ -95,7 +95,8 @@ Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/model` lists co
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `reasoning_payload` controls whether effort is sent as `reasoning`, `reasoning_effort`, or not sent.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, or `auto`; auto uses exact-host profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
+- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, OpenRouter/OpenCode, and DashScope models use their matching Chat reasoning payload shapes.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
