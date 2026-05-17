@@ -3774,6 +3774,58 @@ def test_agent_run_uses_fallback_when_goal_complete_has_no_message(tmp_path):
     assert agent.blackboard.goal_reached is False
 
 
+def test_agent_run_allows_chat_without_task_context(tmp_path):
+    class FakeModelClient:
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            return {"actions": [{"type": "chat", "text": "hello"}]}
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("hi", on_message=messages.append)
+
+    assert response["actions"] == [{"type": "chat", "text": "hello"}]
+    assert messages == ["hello"]
+    assert session.state.conversation[-1].content == "hello"
+
+
+def test_agent_run_retries_chat_with_unfinished_task_context(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "chat", "text": "done too early"}]},
+                {
+                    "actions": [
+                        {"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "answered"}]},
+                        *_final_actions("answer"),
+                    ]
+                },
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "answer"
+    agent.blackboard.task_code = nanocode.TaskCode.WORKING
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DOING)]
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert messages[-1] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert "done too early" not in [item.content for item in session.state.conversation]
+    assert any("chat cannot finish an active task" in error for error in agent.agent_feedback_errors)
+
+
 def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
     class FakeModelClient:
         def __init__(self):

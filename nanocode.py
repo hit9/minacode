@@ -5156,6 +5156,7 @@ class Agent:
         self.agent_feedback_errors: list[str] = []
         self.observe_feedback_errors: list[str] = []
         self.task_alignment_required = False
+        self.incomplete_task_context_at_turn_start = False
         self.mode = AgentMode.ACT
 
     def build_user_prompt(self) -> str:
@@ -5870,6 +5871,16 @@ class Agent:
     def _handle_chat_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.chat_message is None:
             return None
+        if ctx.completion_message:
+            return None
+        if ctx.state_or_work_requested or self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
+            return self._reject_result(
+                self._remember_agent_error,
+                on_message,
+                self._error("chat cannot finish an active task.", self.RULE_FINAL_ACTION),
+                "Retrying: active task is not complete.",
+                "Completion_Gate: chat before task completion.",
+            )
         self.blackboard.task_code = TaskCode.DONE
         self.session.append_conversation(AssistantMessage(content=ctx.chat_message))
         if on_message is not None:
@@ -6323,12 +6334,13 @@ class Agent:
         old_task_context = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         self.blackboard.user_input = user_input
         previous_task_done = self.blackboard.task_code == TaskCode.DONE
+        self.incomplete_task_context_at_turn_start = old_task_context and not previous_task_done
         if previous_task_done:
             self.blackboard.work_mode = WorkMode.NORMAL
         # Keep previous task state at a new user turn so short follow-ups like
         # "continue" can resume. The first response must align with it before work
         # when the new request does not match the previous goal.
-        self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
+        self.task_alignment_required = self.incomplete_task_context_at_turn_start and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.verification_required = False
