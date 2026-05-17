@@ -4851,8 +4851,8 @@ class Agent:
     KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
     # Compact recall/timeline entries shown in Tool Result Index; current-task timeline has priority over archived entries.
     TOOL_RESULT_INDEX_ITEMS: ClassVar[int] = 40
-    # Trigger observe after this many unresolved raw tool result blocks accumulate.
-    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 8
+    # Trigger observe after this many unresolved raw result blocks accumulate; raw-size pressure can still trigger earlier.
+    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 12
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
@@ -5225,18 +5225,11 @@ class Agent:
         pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
         if not pending:
             return False
-        if any(self._tool_failure_needs_observe(execution) for execution in self.tool_runner.latest_executions):
-            return True
+        # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
+        # Very large failures still trigger observe through raw-context pressure.
         return len(pending) >= self.OBSERVE_AFTER_PENDING_RESULT_COUNT or self.tool_context.raw_context_chars(
             self.blackboard.memory_checkpoint_tool_result_counter
         ) >= self.TOOL_RESULT_RAW_CHARS
-
-    def _tool_failure_needs_observe(self, execution: ToolCallExecution) -> bool:
-        if execution.outcome == "success":
-            return False
-        if execution.error_type is not None and issubclass(execution.error_type, (ToolCallArgError, Cancellation)):
-            return False
-        return True
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)

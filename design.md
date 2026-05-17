@@ -206,7 +206,9 @@ This keeps tool results visible until the model has had a chance to decide wheth
 
 ## Observe Policy
 
-OBSERVE is triggered when unresolved pending results accumulate, or when a meaningful tool failure needs cleanup.
+OBSERVE is triggered when unresolved pending results accumulate by count or raw
+context pressure. Tool failures stay visible to ACT first; very large failures
+still trigger OBSERVE through raw-context pressure.
 
 In OBSERVE, every unreduced result key must be covered by either:
 

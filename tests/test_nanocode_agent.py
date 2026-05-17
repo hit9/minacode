@@ -2416,7 +2416,7 @@ def test_tool_arg_error_does_not_force_observe(tmp_path):
     assert agent.agent_feedback_errors
 
 
-def test_non_arg_tool_failure_forces_observe(tmp_path):
+def test_non_arg_tool_failure_stays_in_act_for_repair(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
@@ -2425,7 +2425,8 @@ def test_non_arg_tool_failure_forces_observe(tmp_path):
         confirm=lambda call, tool: True,
     )
 
-    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert "exit 7" in _blocks_text(agent.tool_context.latest)
 
 
 def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
