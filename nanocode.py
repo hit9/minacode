@@ -7420,6 +7420,10 @@ class AgentLoop:
 
         @bindings.add("enter", eager=True)
         def _accept(event):
+            if state["searching"]:
+                state["searching"] = False
+                event.app.invalidate()
+                return
             options = enabled()
             if options:
                 event.app.exit(result=options[int(state["selected"])])

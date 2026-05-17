@@ -663,6 +663,59 @@ def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):
     assert "old" not in outputs[-1]
 
 
+def test_agent_loop_choice_prompt_enter_confirms_search_before_select(tmp_path, monkeypatch):
+    class FakeStdin:
+        @staticmethod
+        def isatty():
+            return True
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    class FakePromptApp:
+        result = None
+
+        def invalidate(self):
+            pass
+
+        def exit(self, result=None, exception=None):
+            if exception is not None:
+                raise exception
+            self.result = result
+
+    def handler(bindings, key):
+        return next(binding.handler for binding in bindings.bindings if binding.keys == (key,))
+
+    class FakeEvent:
+        def __init__(self, app, data=""):
+            self.app = app
+            self.data = data
+
+    class FakeApplication:
+        def __init__(self, **kwargs):
+            self.bindings = kwargs["key_bindings"]
+
+        def run(self):
+            app = FakePromptApp()
+            handler(self.bindings, "/")(FakeEvent(app, "/"))
+            any_key = handler(self.bindings, nanocode.Keys.Any)
+            for char in "remote":
+                any_key(FakeEvent(app, char))
+            enter = handler(self.bindings, nanocode.Keys.ControlM)
+            enter(FakeEvent(app, "\r"))
+            assert app.result is None
+            enter(FakeEvent(app, "\r"))
+            return app.result
+
+    monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
+
+    loop = AgentLoop(FakeAgent(), prompt_session=object())
+
+    assert loop._select_choice("Model", ("old", "remote-a", "remote-b"), current="old") == "remote-a"
+
+
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
     calls = []
 
