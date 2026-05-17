@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.35 - 2026-05-16
+
+### Changed
+- Aligned tool-result context layout with the design document.
+- Compressed ACT and OBSERVE system prompts.
+- Reduced routine OBSERVE triggers by raising the pending-result threshold and keeping ordinary tool failures in ACT for repair.
+- Added soft feedback for state-update-only ACT turns so models continue with frontier tools, verification, or completion.
+
+### Fixed
+- Accepted harmless model output variants including trailing progress text, action type casing, and `message` action aliases.
+
 ## 0.3.34 - 2026-05-16
 
 ### Changed
