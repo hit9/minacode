@@ -2243,7 +2243,7 @@ class EditTool(Tool):
 class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Create a new UTF-8 file with short initial content; parent directory must exist and target file must not exist.",
+        "Create a new UTF-8 file with short initial content; target file must not exist.",
         "For substantial new files, create only a small skeleton first, then grow it with focused ReplaceRange edits.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
@@ -2252,6 +2252,7 @@ class CreateFileTool(Tool):
     filepath: str = ""
     content: str = ""
     cwd: str = ""
+    can_create_parent: bool = False
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -2263,7 +2264,8 @@ class CreateFileTool(Tool):
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) != 2:
             raise ToolCallArgError('requires exactly 2 args: filepath, content. Example: CreateFile("new.py", "content\\n")')
-        return cls(filepath=session.resolve_path(args[0]), content=str(args[1]), cwd=session.cwd)
+        filepath = session.resolve_path(args[0])
+        return cls(filepath=filepath, content=str(args[1]), cwd=session.cwd, can_create_parent=session.is_path_in_cwd(os.path.dirname(filepath)))
 
     def preview(self) -> str:
         label = f"CreateFile({self.filepath})"
@@ -2272,6 +2274,9 @@ class CreateFileTool(Tool):
         return _make_unified_diff("", self.content, self.filepath) or label
 
     def call(self) -> str:
+        parent = os.path.dirname(self.filepath)
+        if parent and not os.path.isdir(parent) and self.can_create_parent:
+            os.makedirs(parent, exist_ok=True)
         try:
             with open(self.filepath, "x", encoding="utf-8") as f:
                 f.write(self.content)
