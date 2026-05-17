@@ -487,6 +487,26 @@ def test_agent_loop_confirmation_discards_pending_tty_input(tmp_path, monkeypatc
     assert outputs == ["Answer: yes"]
 
 
+def test_model_retry_shortcut_signal_only_retries_active_model_request(tmp_path):
+    session = make_session(tmp_path, model="model")
+    shortcut = nanocode.ModelRetryShortcut(session)
+
+    shortcut._handle_signal(0, None)
+
+    assert session.state.manual_model_retry_requested is False
+
+    session.state.current_model_call_started_at = 1.0
+    try:
+        shortcut._handle_signal(0, None)
+    except KeyboardInterrupt:
+        interrupted = True
+    else:
+        interrupted = False
+
+    assert interrupted is True
+    assert session.state.manual_model_retry_requested is True
+
+
 def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):

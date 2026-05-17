@@ -75,6 +75,8 @@ If you do not fully trust the model, tools, prompts, or workspace, run nanocode 
 
 USE AT YOUR OWN RISK.
 
+nanocode currently targets macOS and Linux. Windows is not supported.
+
 ## Tools
 
 - File: `Read`, `LineCount`, `ListDir`, `Search`.
@@ -90,6 +92,7 @@ USE AT YOUR OWN RISK.
 - Exit: `/exit`, `/quit`.
 
 Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
+During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
 
 ## Configuration
 

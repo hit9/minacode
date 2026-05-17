@@ -923,6 +923,30 @@ def test_agent_request_calls_chat_completions_and_parses_json(tmp_path, monkeypa
     assert session.state.last_total_tokens == 5
 
 
+def test_agent_request_manual_retry_resends_same_model_prompt(tmp_path):
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+    agent = Agent(session)
+
+    class FakeModelClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, system_prompt, user_prompt, *, activity="agent"):
+            self.calls += 1
+            if self.calls == 1:
+                raise nanocode.ModelRequestRetry()
+            return {"actions": [{"type": "message", "text": system_prompt + "/" + user_prompt + "/" + activity}]}
+
+    fake_client = FakeModelClient()
+    agent.model_client = fake_client
+
+    response = agent.request("system", "user", activity="observe")
+
+    assert response == {"actions": [{"type": "message", "text": "system/user/observe"}]}
+    assert fake_client.calls == 2
+    assert session.state.status_notice == ""
+
+
 def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, temperature=0.2)

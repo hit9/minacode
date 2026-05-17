@@ -79,6 +79,9 @@ class ConfigError(Error): ...
 class ModelRequestTimeout(Error): ...
 
 
+class ModelRequestRetry(Error): ...
+
+
 class Cancellation(Error): ...
 
 
@@ -921,6 +924,7 @@ class RuntimeState:
     current_model_call_has_content: bool = False
     current_model_call_streaming_chars: int = 0
     last_model_call_rate: float = 0.0
+    manual_model_retry_requested: bool = False
     status_notice: str = ""
     status_notice_until: float = 0.0
     conversation: list[ConversationItem] = field(default_factory=list)
@@ -3491,49 +3495,57 @@ class ModelClient:
         client = self._client(config, timeout=timeout)
         request_elapsed = 0.0
         try:
-            self.session.state.current_model_call_started_at = time.monotonic()
-            self.session.state.current_model_call_label = model
-            self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
-            self.session.state.current_model_call_activity = activity
-            self.session.state.current_model_call_has_content = False
-            self.session.state.current_model_call_streaming_chars = 0
-            request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
-            previous_handler = signal.getsignal(signal.SIGALRM)
-            signal.signal(signal.SIGALRM, self._timeout_handler)
-            self._timeout_reason = "request model timeout"
-            signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
-            try:
-                completion = (
-                    client.responses.create(**params, timeout=timeout)
-                    if api == "responses"
-                    else client.chat.completions.create(**params, timeout=timeout)
-                )
-                if stream:
-                    content, usage = (
-                        self._read_responses_stream(completion, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
-                        if api == "responses"
-                        else self._read_streaming_content(
-                            completion,
-                            request_deadline=request_deadline,
-                            first_token_timeout=first_token_timeout,
-                        )
-                    )
-                    result: Json = {"usage": usage}
-                else:
-                    result = self._sdk_json(completion)
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-                signal.signal(signal.SIGALRM, previous_handler)
-                if self.session.state.current_model_call_started_at > 0:
-                    request_elapsed = max(0.0, time.monotonic() - self.session.state.current_model_call_started_at)
-                    if request_elapsed > 0 and self.session.state.current_model_call_streaming_chars > 0:
-                        self.session.state.last_model_call_rate = self._estimate_stream_rate(request_elapsed)
-                self.session.state.current_model_call_started_at = 0.0
-                self.session.state.current_model_call_label = ""
-                self.session.state.current_model_call_reasoning_label = ""
-                self.session.state.current_model_call_activity = ""
+            with ModelRetryShortcut(self.session):
+                self.session.state.current_model_call_started_at = time.monotonic()
+                self.session.state.current_model_call_label = model
+                self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+                self.session.state.current_model_call_activity = activity
                 self.session.state.current_model_call_has_content = False
                 self.session.state.current_model_call_streaming_chars = 0
+                request_deadline = self.session.state.current_model_call_started_at + max(0, timeout)
+                previous_handler = signal.getsignal(signal.SIGALRM)
+                signal.signal(signal.SIGALRM, self._timeout_handler)
+                self._timeout_reason = "request model timeout"
+                signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
+                try:
+                    completion = (
+                        client.responses.create(**params, timeout=timeout)
+                        if api == "responses"
+                        else client.chat.completions.create(**params, timeout=timeout)
+                    )
+                    if stream:
+                        content, usage = (
+                            self._read_responses_stream(completion, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                            if api == "responses"
+                            else self._read_streaming_content(
+                                completion,
+                                request_deadline=request_deadline,
+                                first_token_timeout=first_token_timeout,
+                            )
+                        )
+                        result: Json = {"usage": usage}
+                    else:
+                        result = self._sdk_json(completion)
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    signal.signal(signal.SIGALRM, previous_handler)
+                    if self.session.state.current_model_call_started_at > 0:
+                        request_elapsed = max(0.0, time.monotonic() - self.session.state.current_model_call_started_at)
+                        if request_elapsed > 0 and self.session.state.current_model_call_streaming_chars > 0:
+                            self.session.state.last_model_call_rate = self._estimate_stream_rate(request_elapsed)
+                    self.session.state.current_model_call_started_at = 0.0
+                    self.session.state.current_model_call_label = ""
+                    self.session.state.current_model_call_reasoning_label = ""
+                    self.session.state.current_model_call_activity = ""
+                    self.session.state.current_model_call_has_content = False
+                    self.session.state.current_model_call_streaming_chars = 0
+        except KeyboardInterrupt:
+            if self.session.state.manual_model_retry_requested:
+                self.session.state.manual_model_retry_requested = False
+                raise ModelRequestRetry()
+            raise
+        except ModelRequestRetry:
+            raise
         except ModelRequestTimeout as error:
             raise LLMError(str(error) or "request model timeout")
         except APITimeoutError:
@@ -5169,10 +5181,15 @@ class Agent:
         activity: str = "agent",
         on_message: MessageCallback | None = None,
     ) -> Json:
-        for attempt in range(len(self.MODEL_TIMEOUT_RETRY_DELAYS) + 1):
+        attempt = 0
+        while attempt <= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
             try:
                 self.session.state.turn_model_calls += 1
                 return self.model_client.request(system_prompt, user_prompt, activity=activity)
+            except ModelRequestRetry:
+                if on_message is not None and self.session.settings.debug:
+                    on_message("Retrying: manual model retry requested.")
+                continue
             except LLMError as error:
                 timeout_reason = str(error)
                 if timeout_reason not in ("request model timeout", "request first token timeout") or attempt >= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
@@ -5189,6 +5206,7 @@ class Agent:
                         + str(delay)
                         + "s."
                     )
+                attempt += 1
                 time.sleep(delay)
         raise LLMError("request model timeout")
 
@@ -7065,6 +7083,64 @@ class StatusBar:
         return fragments
 
 
+class ModelRetryShortcut:
+    CTRL_G = 0x07
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.fd: int | None = None
+        self.original_attrs = None
+        self.previous_handler = None
+
+    def __enter__(self) -> Self:
+        if not sys.stdin.isatty() or not hasattr(signal, "SIGQUIT"):
+            return self
+        try:
+            import termios
+        except ImportError:
+            return self
+        try:
+            self.fd = sys.stdin.fileno()
+            self.original_attrs = termios.tcgetattr(self.fd)
+            attrs = list(self.original_attrs)
+            attrs[6] = list(attrs[6])
+            attrs[6][termios.VQUIT] = self._control_char(attrs[6], self.CTRL_G)
+            if hasattr(termios, "VREPRINT"):
+                attrs[6][termios.VREPRINT] = self._control_char(attrs[6], os.fpathconf(self.fd, "PC_VDISABLE"))
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
+            self.previous_handler = signal.getsignal(signal.SIGQUIT)
+            signal.signal(signal.SIGQUIT, self._handle_signal)
+        except (AttributeError, OSError, ValueError, termios.error):
+            self.fd = None
+            self.original_attrs = None
+        return self
+
+    def __exit__(self, *args) -> None:
+        try:
+            import termios
+        except ImportError:
+            return
+        if self.previous_handler is not None:
+            signal.signal(signal.SIGQUIT, self.previous_handler)
+            self.previous_handler = None
+        if self.fd is not None and self.original_attrs is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_attrs)
+            except termios.error:
+                pass
+        self.fd = None
+        self.original_attrs = None
+
+    @staticmethod
+    def _control_char(chars: list[Any], value: int) -> int | bytes:
+        return bytes([value]) if chars and isinstance(chars[0], bytes) else value
+
+    def _handle_signal(self, signum: int, frame: Any) -> None:
+        if self.session.state.current_model_call_started_at > 0:
+            self.session.state.manual_model_retry_requested = True
+            raise KeyboardInterrupt
+
+
 class AgentLoop:
     LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
     LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
@@ -7511,6 +7587,7 @@ class AgentLoop:
         except Exception as error:
             self._emit("Error: " + str(error))
         finally:
+            self.agent.session.state.manual_model_retry_requested = False
             self._finish_live_tool_output()
             self.status_bar.pause()
 
