@@ -2452,7 +2452,7 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
 
     assert result.done is False
     assert session.state.tool_result_counter == 2
-    assert any("repeated failed tool call is blocked" in error for error in agent.agent_feedback_errors)
+    assert any("repeated failed tool call" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_execute_bash_does_not_require_verification(tmp_path):
@@ -2619,7 +2619,7 @@ def test_agent_plan_mode_rejects_chat_instead_of_completing(tmp_path):
 
     assert result.done is False
     assert agent.session.state.conversation == []
-    assert messages == ["ActionType_Gate: use action types: goal, hypothesis, known, plan, progress, stable_knowledge, start, tool, verify; got: chat."]
+    assert messages == ["ActionType_Gate: invalid action type(s): chat."]
 
 
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
@@ -2861,7 +2861,7 @@ def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
     assert "<ReadToolResult>" not in agent.model_client.user_prompts[2]
 
 
-def test_agent_run_requires_plan_before_first_tool(tmp_path):
+def test_agent_run_allows_readonly_tool_before_plan(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -2874,18 +2874,6 @@ def test_agent_run_requires_plan_before_first_tool(tmp_path):
                         {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
                     ]
                 },
-                {
-                    "actions": [
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
-                    ]
-                },
-                {
-                    "actions": [
-                        {"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Read sample", "status": "doing"}]},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
-                    ]
-                },
-                {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
                     "actions": [
                         {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
@@ -3059,7 +3047,7 @@ def test_agent_run_rejects_repeated_start_after_task_is_working(tmp_path):
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
-    assert "repeated start is invalid" in " ".join(agent.agent_feedback_errors)
+    assert "ignored repeated start" in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
@@ -3084,7 +3072,7 @@ def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
 
     assert result.done is False
     assert [item.id for item in agent.blackboard.plan] == ["p1", "p2"]
-    assert [item.status for item in agent.blackboard.plan] == [nanocode.PlanStatus.DOING, nanocode.PlanStatus.DOING]
+    assert [item.status for item in agent.blackboard.plan] == [nanocode.PlanStatus.DOING, nanocode.PlanStatus.TODO]
     assert agent.agent_feedback_errors == []
 
 
@@ -3099,7 +3087,7 @@ def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):
     assert result.done is False
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
-    assert "rewriting Goal is invalid" in " ".join(agent.agent_feedback_errors)
+    assert "cannot rewrite Goal" in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
@@ -3334,7 +3322,7 @@ def test_agent_run_retries_noop_state_only_response(tmp_path):
     assert any("response made no effective state change" in error for error in agent.agent_feedback_errors)
 
 
-def test_agent_blocks_tool_after_completed_plan_and_verification(tmp_path):
+def test_agent_allows_tool_after_completed_plan_and_verification(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "inspect")
@@ -3352,8 +3340,9 @@ def test_agent_blocks_tool_after_completed_plan_and_verification(tmp_path):
     )
 
     assert result.done is False
-    assert agent.tool_runner.latest_executions == []
-    assert messages[-1] == "Completion_Gate: completed plan and verification cannot continue tools without reopening Plan."
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "success"
+    assert not any("Completion_Gate: completed plan and verification" in message for message in messages)
     assert any("Plan and verification are complete" in error for error in agent.agent_feedback_errors)
 
 
@@ -3395,7 +3384,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path)
     )
 
 
-def test_agent_blocks_tool_after_reopening_completed_plan_without_context(tmp_path):
+def test_agent_allows_tool_after_reopening_completed_plan_without_context(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "inspect")
@@ -3418,9 +3407,10 @@ def test_agent_blocks_tool_after_reopening_completed_plan_without_context(tmp_pa
     )
 
     assert result.done is False
-    assert agent.tool_runner.latest_executions == []
-    assert messages[-1].startswith("Completion_Gate: reopened plan item missing context:")
-    assert any("continuing after completed Plan requires" in error for error in agent.agent_feedback_errors)
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "success"
+    assert not any("Completion_Gate: reopened plan item missing context" in message for message in messages)
+    assert any("Continuing tools after completed Plan" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path):
@@ -3468,14 +3458,12 @@ def test_agent_allows_verify_blocked_completion_with_user_blocker(tmp_path):
     assert messages[-1] == "done"
 
 
-def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
+def test_agent_run_uses_fallback_when_goal_complete_has_no_message(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
-                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
@@ -3490,8 +3478,9 @@ def test_agent_run_retries_when_goal_complete_has_no_message(tmp_path):
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
+    assert response["actions"][-1] == {"type": "goal", "text": "answer", "complete": True}
+    assert messages[-1] == "Done."
+    assert len(agent.model_client.user_prompts) == 1
     assert "Retrying: goal is complete but message_for_complete is missing." not in messages
     assert agent.agent_feedback_errors
     assert agent.blackboard.goal_reached is False
@@ -3944,15 +3933,12 @@ def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path
     assert "Task completed successfully" in messages
     assert "Retrying: goal is complete but message_for_complete is missing." not in " ".join(messages)
 
-def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp_path):
-    """Empty string message_for_complete is falsy, so retry should still happen."""
+def test_agent_run_uses_fallback_when_goal_complete_has_empty_message_for_complete(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
             self.responses = [
                 {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
-                {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
-                {"actions": _final_actions()},
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent"):
@@ -3966,8 +3952,9 @@ def test_agent_run_retries_when_goal_complete_has_empty_message_for_complete(tmp
 
     response = agent.run("answer", on_message=messages.append)
 
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert len(agent.model_client.user_prompts) == 3
+    assert response["actions"][-1]["message_for_complete"] == ""
+    assert messages[-1] == "Done."
+    assert len(agent.model_client.user_prompts) == 1
     assert "Retrying: goal is complete but message_for_complete is missing." not in messages
     assert agent.agent_feedback_errors
 

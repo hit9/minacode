@@ -4490,6 +4490,7 @@ class AgentStateUpdater:
         for start in [action for action in actions if _json_str(action.get("type")) == "start"]:
             items = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(start.get("plan"))) if item]
             if items:
+                self._normalize_doing_items(items)
                 self.blackboard.plan = items
                 replaced = True
         for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
@@ -4497,10 +4498,13 @@ class AgentStateUpdater:
             if update.get("mode") != "patch":
                 if not items:
                     continue
-                self.blackboard.plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+                plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+                self._normalize_doing_items(plan)
+                self.blackboard.plan = plan
                 replaced = True
                 continue
-            self._apply_plan_patches(self.blackboard.plan, items)
+            if self._apply_plan_patches(self.blackboard.plan, items):
+                self._normalize_doing_items(self.blackboard.plan)
         return replaced
 
     def _apply_plan_patches(self, plan: list[PlanItem], value: JsonValue) -> bool:
@@ -4548,6 +4552,17 @@ class AgentStateUpdater:
             id=_json_str(item.get("id")) or "",
             context=_json_str(item.get("context")) or "",
         )
+
+    @staticmethod
+    def _normalize_doing_items(plan: list[PlanItem]) -> None:
+        seen = False
+        for item in plan:
+            if item.status != PlanStatus.DOING:
+                continue
+            if seen:
+                item.status = PlanStatus.TODO
+            else:
+                seen = True
 
     def _apply_known(self, actions: list[Json]) -> None:
         for action in actions:
@@ -4911,6 +4926,17 @@ class Agent:
     # Trigger observe after this many unresolved raw tool result blocks accumulate.
     OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 8
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
+    RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
+    RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
+    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures prefer ReplaceRange after Read."
+    RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
+    RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
+    RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use ReplaceRange for read ranges or repeated text, and use the exact tool signature."
+    RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
+    RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
+    RULE_FINAL_ACTION: ClassVar[str] = "continue with a useful action or finish with goal.complete=true."
+    RULE_ACTION_FRAMES: ClassVar[str] = "return valid JSON action frames only."
 
     def __init__(self, session: Session):
         self.session = session
@@ -5009,7 +5035,7 @@ class Agent:
                     self._set_status_notice("err:format")
                     remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
                     remember_error(
-                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: return valid JSON action frames only."
+                        self._format_gate_user_message("Error: model returned invalid output", format_error) + " Rule: " + self.RULE_ACTION_FRAMES
                     )
                     if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
                         if on_format_error_limit is not None:
@@ -5078,6 +5104,43 @@ class Agent:
 
     def _remember_observe_error(self, text: str) -> None:
         self._remember_feedback_error(self.observe_feedback_errors, text)
+
+    @staticmethod
+    def _feedback(level: str, text: str, rule: str = "") -> str:
+        return level + ": " + text + ((" Rule: " + rule) if rule else "")
+
+    def _error(self, text: str, rule: str = "") -> str:
+        return self._feedback("Error", text, rule)
+
+    def _warning(self, text: str, rule: str = "") -> str:
+        return self._feedback("Warning", text, rule)
+
+    def _warn_agent(self, text: str, rule: str = "") -> None:
+        self._remember_agent_error(self._warning(text, rule))
+
+    def _warn_observe(self, text: str, rule: str = "") -> None:
+        self._remember_observe_error(self._warning(text, rule))
+
+    def _reject_agent(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> bool:
+        self._remember_agent_error(feedback)
+        self._report_gate(on_message, retry, debug)
+        return True
+
+    def _reject_result(
+        self,
+        remember_error: Callable[[str], None],
+        on_message: MessageCallback | None,
+        feedback: str,
+        retry: str,
+        debug: str,
+    ) -> AgentRunResult:
+        remember_error(feedback)
+        self._report_gate(on_message, retry, debug)
+        return AgentRunResult()
+
+    def _reject_completion(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> AgentRunResult:
+        self.blackboard.goal_reached = False
+        return self._reject_result(self._remember_agent_error, on_message, feedback, retry, debug)
 
     def _format_agent_feedback(self) -> str:
         if not self.agent_feedback_errors:
@@ -5230,17 +5293,18 @@ class Agent:
         self._remember_tool_failure(execution)
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
-            rule = "Rule: use the tool signature exactly."
+            rule = self.RULE_TOOL_SIGNATURE
             if execution.call.name in {EditTool.name(), ReplaceRangeTool.name()}:
-                rule = "Rule: use ReplaceRange for read ranges or repeated text, and use the exact tool signature."
+                rule = self.RULE_EDIT_SIGNATURE
             self._remember_agent_error(
-                "Error: tool call args invalid: "
-                + _format_tool_call_summary(execution.call)
-                + " -> "
-                + detail
-                + ". "
-                + rule
-                + ((" Tool output: " + execution.output) if detail != execution.output else "")
+                self._error(
+                    "tool call args invalid: "
+                    + _format_tool_call_summary(execution.call)
+                    + " -> "
+                    + detail
+                    + ".",
+                    rule,
+                )
             )
         if execution.requires_verification:
             self.blackboard.verification_required = True
@@ -5260,9 +5324,10 @@ class Agent:
             self.failed_tool_call_count = 1
         if self.failed_tool_call_count >= 2:
             self._remember_agent_error(
-                "Error: repeated same failed tool call: "
-                + _format_tool_call_summary(execution.call)
-                + ". Rule: do not retry the same tool with identical args; correct the args or switch tools."
+                self._error(
+                    "repeated same failed tool call: " + _format_tool_call_summary(execution.call) + ".",
+                    "do not retry identical failed tool calls; change args or switch tools.",
+                )
             )
 
     def _format_tool_arg_error(self, execution: ToolCallExecution) -> str:
@@ -5345,7 +5410,7 @@ class Agent:
         self._report_gate(
             on_message,
             retry_message,
-            "ActionType_Gate: use action types: " + ", ".join(sorted(allowed)) + "; got: " + ", ".join(invalid) + ".",
+            "ActionType_Gate: invalid action type(s): " + ", ".join(invalid) + ".",
         )
         return AgentRunResult()
 
@@ -5374,6 +5439,11 @@ class Agent:
                 return _json_str(action.get("message_for_complete")) or ""
         return ""
 
+    def _completion_fallback_message(self, ctx: ResponseContext) -> str:
+        if ctx.completion_message:
+            return ctx.completion_message
+        return next((message for message in reversed(ctx.progress_messages) if message.strip()), "Done.")
+
     def _incomplete_goal_update_from_actions(self, actions: list[Json]) -> str:
         update = ""
         for action in actions:
@@ -5385,16 +5455,16 @@ class Agent:
         return update
 
     def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
+        def has_items(value: JsonValue) -> bool:
+            return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
+
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "start" and self._has_plan_items(action.get("plan")):
+            if action_type == "start" and has_items(action.get("plan")):
                 return True
-            if action_type == "plan" and action.get("mode") != "patch" and self._has_plan_items(action.get("items")):
+            if action_type == "plan" and action.get("mode") != "patch" and has_items(action.get("items")):
                 return True
         return False
-
-    def _has_plan_items(self, value: JsonValue) -> bool:
-        return any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(value))
 
     def _plan_is_complete(self) -> bool:
         return bool(self.blackboard.plan) and all(
@@ -5403,9 +5473,6 @@ class Agent:
 
     def _verification_is_settled(self) -> bool:
         return self.blackboard.verification.status in {VerificationStatus.DONE, VerificationStatus.BLOCKED}
-
-    def _latest_tool_results_clean(self) -> bool:
-        return not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions)
 
     def _completion_plan_error(self, ctx: ResponseContext) -> str:
         if not self.blackboard.goal_reached:
@@ -5510,10 +5577,22 @@ class Agent:
             return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
         return ""
 
+    def _has_non_readonly_tool_call(self, tool_calls: list[JsonValue]) -> bool:
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                return True
+            tool_class = TOOL_REGISTRY.get(call.name)
+            if tool_class is None or tool_class.effect() != ToolEffect.READONLY:
+                return True
+        return False
+
     def _build_response_context(self, response: Json) -> ResponseContext:
-        actions = self._response_actions(response)
+        raw_actions = self._response_actions(response)
+        pending_verify_requested = self._has_pending_verification(raw_actions)
+        actions = [action for action in raw_actions if not self._is_pending_verify_action(action)]
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
-        pending_verify_requested = self._has_pending_verification(actions)
         progress_messages = self._progress_messages_from_actions(actions)
         has_goal_action = any(_json_str(action.get("type")) in {"goal", "start"} for action in actions)
         has_plan_action = any(_json_str(action.get("type")) in {"plan", "start"} for action in actions)
@@ -5556,54 +5635,42 @@ class Agent:
             allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
             on_message=on_message,
             retry_message="Retrying: use a valid agent action.",
-            feedback_message="Error: this step only accepts agent work actions.",
+            feedback_message=self._error("this step only accepts agent work actions."),
         )
         if action_gate is not None:
             return True
         forget_error = self._forget_tool_result_error(ctx.actions)
         if forget_error:
-            self._remember_agent_error("Error: forget is invalid: " + forget_error + ". Rule: forget only visible tool result source keys.")
-            self._report_gate(
+            return self._reject_agent(
                 on_message,
+                self._error("invalid forget: " + forget_error + ".", self.RULE_VISIBLE_RESULTS),
                 "Retrying: forget only visible tool result keys.",
                 "ToolResult_Gate: " + forget_error + ".",
             )
-            return True
         forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
         if forget_hypothesis_error:
-            self._remember_agent_error(
-                "Error: forget would remove a tool result used by an active hypothesis: "
-                + forget_hypothesis_error
-                + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
-            )
-            self._report_gate(
+            return self._reject_agent(
                 on_message,
+                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
                 "Retrying: close hypothesis before forgetting its source result.",
                 "ToolResult_Gate: " + forget_hypothesis_error + ".",
             )
-            return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
-            self._remember_agent_error(
-                "Error: repeated failed tool call is blocked: "
-                + repeated_tool_retry_error
-                + ". Rule: correct the args or switch tools; for local edit failures, prefer ReplaceRange after Read."
-            )
-            self._report_gate(
+            return self._reject_agent(
                 on_message,
+                self._error("repeated failed tool call: " + repeated_tool_retry_error + ".", self.RULE_CHANGE_FAILED_TOOL),
                 "Retrying: change the failed tool call instead of repeating it.",
                 "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
             )
-            return True
         plan_mode_tool_error = self._plan_mode_tool_error(ctx.tool_calls)
         if plan_mode_tool_error:
-            self._remember_agent_error("Error: " + plan_mode_tool_error + ". Rule: produce a proposed plan without executing mutations.")
-            self._report_gate(
+            return self._reject_agent(
                 on_message,
+                self._error(plan_mode_tool_error + ".", "produce a proposed plan without executing mutations."),
                 "Retrying: plan mode only allows readonly discovery.",
                 "PlanMode_Gate: " + plan_mode_tool_error + ".",
             )
-            return True
         if (
             self.blackboard.task_code == TaskCode.NEW
             and self.task_alignment_required
@@ -5613,8 +5680,10 @@ class Agent:
             and not ctx.has_user_rule_action
         ):
             self._remember_agent_error(
-                "Error: previous task context is still present. Rule: before work, emit start if the latest request changes the task; "
-                "if continuing, update or confirm the plan first."
+                self._error(
+                    "previous task context is still present.",
+                    "emit start for a new task; otherwise update or confirm the current plan.",
+                )
             )
             self._report_gate(
                 on_message,
@@ -5623,18 +5692,10 @@ class Agent:
             )
             return True
         if self.blackboard.task_code != TaskCode.NEW and any(_json_str(action.get("type")) == "start" for action in ctx.actions):
-            self._remember_agent_error(
-                "Error: repeated start is invalid after the current task is active. Rule: follow Current Task Code and continue with plan/tool/verify/goal."
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: current task is already active; continue without start.",
-                "GoalPlan_Gate: repeated start while task code is " + self.blackboard.task_code + ".",
-            )
-            return True
+            self._warn_agent("ignored repeated start after the current task became active.")
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
             self._remember_agent_error(
-                "Error: rewriting Goal is invalid after the current task is active. Rule: follow Current Task Code and continue the existing Goal/Plan."
+                self._error("cannot rewrite Goal after the task is active.", "continue the existing Goal/Plan.")
             )
             self._report_gate(
                 on_message,
@@ -5643,21 +5704,21 @@ class Agent:
             )
             return True
         if ctx.pending_verify_requested:
-            self._remember_agent_error(
-                'Error: ignored verify status="pending". Rule: run verification with tool actions directly, then return verify status="passed"|"failed"|"blocked".'
-            )
-        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested:
-            self._remember_agent_error(
-                "Error: started task state/work before Goal and Plan were ready. Rule: set goal complete=false and create a short plan before tools."
-            )
-            self._report_gate(
+            self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
+        if (
+            ctx.goal_was_empty
+            and not ctx.has_goal_action
+            and ctx.state_or_work_requested
+            and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
+        ):
+            return self._reject_agent(
                 on_message,
+                self._error("Goal/Plan required before mutating work.", self.RULE_GOAL_PLAN_FIRST),
                 "Retrying: set goal and plan before tools.",
                 "GoalPlan_Gate: Goal is empty before task state/work.",
             )
-            return True
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error("Error: changed Goal without replacing Plan. Rule: include start.plan or a full plan action with the new goal.")
+            self._remember_agent_error(self._error("changed Goal without replacing Plan.", "include start.plan or a full plan action."))
             self._report_gate(
                 on_message,
                 "Retrying: new goal requires a fresh plan.",
@@ -5683,79 +5744,37 @@ class Agent:
                 on_message(message)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.tool_calls or ctx.pending_verify_requested):
-            self._remember_agent_error("Error: attempted tool/verify while Plan is empty. Rule: create a short plan first, then do the next smallest step.")
-            self._report_gate(
+        if (
+            ctx.plan_was_empty
+            and not self.blackboard.plan
+            and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
+        ):
+            return self._reject_result(
+                self._remember_agent_error,
                 on_message,
-                "Retrying: create a short plan before tools.",
-                "GoalPlan_Gate: Plan is empty before tool/verify.",
+                self._error("Plan required before mutating work.", self.RULE_GOAL_PLAN_FIRST),
+                "Retrying: create a short plan before mutating tools.",
+                "GoalPlan_Gate: Plan is empty before mutating tool/verify.",
             )
-            return AgentRunResult()
-
-        if ctx.tool_calls and self._latest_tool_results_clean() and self._verification_is_settled():
-            if self._plan_is_complete():
-                self._remember_agent_error(
-                    "Error: Plan and verification are complete. Rule: finish with goal.complete=true; "
-                    "if more tools are needed, first reopen Plan with a todo/doing item and context explaining why completion is insufficient."
-                )
-                self._report_gate(
-                    on_message,
-                    "Retrying: finish the completed task or reopen the plan before more tools.",
-                    "Completion_Gate: completed plan and verification cannot continue tools without reopening Plan.",
-                )
-                return AgentRunResult()
-            if ctx.plan_was_complete and ctx.verification_was_settled:
-                missing_context = [
-                    item
-                    for item in self.blackboard.plan
-                    if item.status not in self.COMPLETED_PLAN_STATUSES and not item.context.strip()
-                ]
-                if missing_context:
-                    self._remember_agent_error(
-                        "Error: continuing after completed Plan requires a reopened todo/doing Plan item with context. "
-                        "Rule: explain why existing completion is insufficient before tool calls."
-                    )
-                    self._report_gate(
-                        on_message,
-                        "Retrying: reopen the plan with context before more tools.",
-                        "Completion_Gate: reopened plan item missing context: " + self._format_plan_gate_items(missing_context) + ".",
-                    )
-                    return AgentRunResult()
 
         if (
-            not ctx.tool_calls
-            and not self.blackboard.goal_reached
-            and self.blackboard.verification.status in (VerificationStatus.DONE, VerificationStatus.BLOCKED)
+            ctx.tool_calls
+            and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions)
+            and self._verification_is_settled()
         ):
-            self._remember_agent_error(
-                "Error: verification is done but goal.complete is not true. Rule: if finished, return goal complete=true with message_for_complete; otherwise continue with tool/plan/verify."
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: verification is done but goal is not complete.",
-                "Completion_Gate: verification is done but goal.complete is not true.",
-            )
-            return AgentRunResult()
+            if self._plan_is_complete():
+                self._warn_agent("Plan and verification are complete; continuing tools without reopening Plan.")
+            elif ctx.plan_was_complete and ctx.verification_was_settled:
+                self._warn_agent("Continuing tools after completed Plan; update Plan if the new work changes scope.")
+
         if not ctx.tool_calls and not ctx.plan_was_complete and self._plan_is_complete() and not self.blackboard.goal_reached:
             if not self._verification_is_settled():
-                self._remember_agent_error(
-                    'Error: Plan is complete but verification is not recorded. Rule: return verify status="passed"|"blocked" with context, or reopen Plan before more work.'
+                self._warn_agent(
+                    "Plan is complete but verification is not recorded.",
+                    "run checks when files changed or verification was requested.",
                 )
-                self._report_gate(
-                    on_message,
-                    "Retrying: record verification before completing.",
-                    "Completion_Gate: completed plan requires verification status.",
-                )
-                return AgentRunResult()
-            self._remember_agent_error(
-                "Error: Plan and verification are complete but goal.complete is not true. Rule: finish with goal.complete=true and message_for_complete."
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: finish the completed task.",
-                "Completion_Gate: completed plan and verification require goal.complete=true.",
-            )
-            return AgentRunResult()
+            else:
+                self._warn_agent("Plan and verification are complete; finish with goal.complete=true when no further work is needed.")
         if (
             ctx.state_or_work_requested
             and not ctx.tool_calls
@@ -5764,15 +5783,7 @@ class Agent:
             and not ctx.completion_message
             and not self.state_updater.changed
         ):
-            self._remember_agent_error(
-                "Error: response made no effective state change. Rule: do not repeat state updates; continue with tool, verify, or goal."
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: continue with tool, verify, or goal.",
-                "Progress_Gate: state-only response made no effective change.",
-            )
-            return AgentRunResult()
+            self._warn_agent("response made no effective state change; continue with tool, verify, or goal.")
         return None
 
     def _plan_mode_completion_error(self, message: str) -> str:
@@ -5842,67 +5853,53 @@ class Agent:
         *,
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
+        if ctx.pending_verify_requested:
+            self._warn_observe('ignored verify status="pending".', "observe must keep or forget latest results first.")
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
-            self._remember_observe_error(
-                "Error: repeated failed tool call is blocked: "
-                + repeated_tool_retry_error
-                + ". Rule: first observe latest results, then correct the args or switch tools."
-            )
-            self._report_gate(
+            return self._reject_result(
+                self._remember_observe_error,
                 on_message,
+                self._error("repeated failed tool call: " + repeated_tool_retry_error + ".", "observe latest results, then change args or switch tools."),
                 "Retrying: change the failed tool call instead of repeating it.",
                 "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
             )
-            return AgentRunResult()
         gate_result = self._gate_action_types(
             ctx.actions,
             allowed=self.OBSERVE_ACTION_TYPES,
             on_message=on_message,
             retry_message="Retrying: observe latest results.",
-            feedback_message="Error: latest results must be observed before more work.",
+            feedback_message=self._error("latest results must be observed before more work."),
             remember_error=self._remember_observe_error,
         )
         if gate_result is not None:
             return gate_result
         forget_error = self._forget_tool_result_error(ctx.actions)
         if forget_error:
-            self._remember_observe_error("Error: forget is invalid: " + forget_error + ". Rule: forget only visible tool result source keys.")
-            self._report_gate(
+            return self._reject_result(
+                self._remember_observe_error,
                 on_message,
+                self._error("invalid forget: " + forget_error + ".", self.RULE_VISIBLE_RESULTS),
                 "Retrying: forget only visible tool result keys.",
                 "ToolResult_Gate: " + forget_error + ".",
             )
-            return AgentRunResult()
         forget_hypothesis_error = self._forget_active_hypothesis_error(ctx.actions)
         if forget_hypothesis_error:
-            self._remember_observe_error(
-                "Error: forget would remove a tool result used by an active hypothesis: "
-                + forget_hypothesis_error
-                + ". Rule: mark the hypothesis ruled_out, dropped, or confirmed before forgetting its source."
-            )
-            self._report_gate(
+            return self._reject_result(
+                self._remember_observe_error,
                 on_message,
+                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
                 "Retrying: close hypothesis before forgetting its source result.",
                 "ToolResult_Gate: " + forget_hypothesis_error + ".",
             )
-            return AgentRunResult()
-        if any(_json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending" for action in ctx.actions):
-            self._remember_observe_error("Error: cannot request new verification before observing latest results. Rule: keep or forget latest results first.")
-            self._report_gate(
-                on_message,
-                "Retrying: observe latest results before new verification.",
-                "Verification_Gate: verify status=pending is not allowed while observing latest results.",
-            )
-            return AgentRunResult()
         if not ctx.actions:
-            self._remember_observe_error("Error: observe returned no actions. Rule: keep useful tool results or forget latest raw results with a reason.")
-            self._report_gate(
+            return self._reject_result(
+                self._remember_observe_error,
                 on_message,
+                self._error("observe returned no actions.", "keep useful results or forget latest results with a reason."),
                 "Retrying: keep or forget latest results.",
                 "Observe_Gate: empty actions are not a checkpoint; return keep or forget.",
             )
-            return AgentRunResult()
         observed_blocks = list(self.tool_context.pending_observe)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
         covered = {
@@ -5915,9 +5912,7 @@ class Agent:
         missing_observe_keys = [key for key in ToolResultContext.blocks_by_key(observed_blocks) if key not in covered]
         if missing_observe_keys:
             self._remember_observe_error(
-                "Error: observe did not cover latest result keys: "
-                + ", ".join(missing_observe_keys)
-                + ". Rule: every latest result key must be covered by keep or forget."
+                self._error("observe missed result key(s): " + ", ".join(missing_observe_keys) + ".", "cover each latest result with keep or forget.")
             )
             self._report_gate(
                 on_message,
@@ -5968,102 +5963,71 @@ class Agent:
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            self.blackboard.goal_reached = False
             if self.blackboard.verification_required:
-                self._remember_agent_error(
-                    'Error: edited files must be verified before completion. Rule: run the smallest relevant check, then return verify status="passed"|"blocked" with context before goal complete=true.'
+                return self._reject_completion(
+                    on_message,
+                    self._error("edited files need verification before completion.", self.RULE_VERIFY_DIRECTLY),
+                    "Retrying: verify edited files before completion.",
+                    "Verification_Gate: edit completion requires verification.",
                 )
-                retry_message = "Retrying: verify edited files before completion."
-                debug_message = "Verification_Gate: edit completion requires verification."
-            else:
-                self._remember_agent_error(
-                    'Error: completion is blocked until verification passes or is blocked. Rule: run the needed verification tool, then return verify status="passed"|"blocked" with context before goal complete=true.'
-                )
-                retry_message = "Retrying: verification is required before completion."
-                debug_message = "Verification_Gate: retrying until verification is passed or blocked."
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
-                retry_message,
-                debug_message,
+                self._error("verification required before completion.", self.RULE_VERIFY_DIRECTLY),
+                "Retrying: verification is required before completion.",
+                "Verification_Gate: retrying until verification is passed or blocked.",
             )
-            return AgentRunResult()
         if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
-            self.blackboard.goal_reached = False
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
+                self._error("verification failed; fix the reported issue first."),
                 "Retrying: verification failed; fix the reported issue first.",
                 "Verification_Gate: verification failed; fix before completion.",
             )
-            return AgentRunResult()
         completion_plan_error = self._completion_plan_error(ctx)
         if completion_plan_error:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(
-                "Error: returned goal.complete=true before Plan was complete. Rule: every existing Plan item must be done or blocked with result context before completion."
-            )
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
+                self._error("completion before Plan was complete.", self.RULE_COMPLETE_PLAN),
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
             )
-            return AgentRunResult()
         blocked_completion_error = self._blocked_verification_completion_error()
         if blocked_completion_error:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(
-                "Error: returned goal.complete=true with verify blocked, but "
-                + blocked_completion_error
-                + ". Rule: continue verification if possible; only complete blocked verification when blocker=user."
-            )
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
+                self._error("blocked verification completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER),
                 "Retrying: blocked verification needs blocker=user.",
                 "Verification_Gate: " + blocked_completion_error + ".",
             )
-            return AgentRunResult()
         investigate_completion_error = self._investigate_completion_error()
         if investigate_completion_error:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error("Error: " + investigate_completion_error + ". Rule: mark a hypothesis confirmed before completing.")
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
+                self._error(investigate_completion_error + ".", "mark a hypothesis confirmed before completing."),
                 "Retrying: confirm a hypothesis before completing.",
                 "Completion_Gate: " + investigate_completion_error + ".",
             )
-            return AgentRunResult()
         if self.blackboard.goal_reached and not ctx.completion_message:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(
-                "Error: returned goal.complete=true without message_for_complete. Rule: finish with goal complete=true and non-empty message_for_complete."
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: goal is complete but message_for_complete is missing.",
-                "Completion_Gate: goal.complete=true requires non-empty message_for_complete.",
-            )
-            return AgentRunResult()
-        plan_mode_completion_error = self._plan_mode_completion_error(ctx.completion_message) if self.blackboard.goal_reached else ""
+            self._warn_agent("filled missing message_for_complete with a fallback completion message.")
+        completion_message = self._completion_fallback_message(ctx) if self.blackboard.goal_reached else ""
+        plan_mode_completion_error = self._plan_mode_completion_error(completion_message) if self.blackboard.goal_reached else ""
         if plan_mode_completion_error:
-            self.blackboard.goal_reached = False
-            self._remember_agent_error(
-                "Error: invalid plan-mode completion: " + plan_mode_completion_error + ". Rule: return the proposed plan as the final message."
-            )
-            self._report_gate(
+            return self._reject_completion(
                 on_message,
+                self._error("invalid plan-mode completion: " + plan_mode_completion_error + ".", "return the proposed plan as the final message."),
                 "Retrying: finish plan mode with a proposed_plan block.",
                 "PlanMode_Gate: " + plan_mode_completion_error + ".",
             )
-            return AgentRunResult()
         if self.blackboard.goal_reached:
-            self.session.append_conversation(AssistantMessage(content=ctx.completion_message))
+            self.session.append_conversation(AssistantMessage(content=completion_message))
             if on_message is not None:
-                on_message(ctx.completion_message)
+                on_message(completion_message)
             self._finish_current_goal()
             return AgentRunResult(done=True, value=ctx.response)
         self.blackboard.goal_reached = False
         if not ctx.actions:
             self._remember_agent_error(
-                "Error: returned no actions while the goal is incomplete. Rule: continue with a useful agent action and optional progress field, or final goal action."
+                self._error("no actions while goal is incomplete.", self.RULE_FINAL_ACTION)
             )
             self._report_gate(
                 on_message,
