@@ -2528,6 +2528,8 @@ class PatchFileTool(Tool):
             if raw_line.startswith("\\ No newline at end of file"):
                 continue
             if raw_line.startswith("@@"):
+                if current is not None and not current.old and not current.new:
+                    continue
                 current = PatchFileHunk(old=[], new=[])
                 hunks.append(current)
                 continue

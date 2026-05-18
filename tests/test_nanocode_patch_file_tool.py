@@ -62,6 +62,16 @@ def test_patch_file_tool_applies_multiple_hunks_atomically(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
 
 
+def test_patch_file_tool_ignores_duplicate_empty_hunk_markers(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    PatchFileTool.make(session, ["sample.txt", "@@\n@@\n alpha\n-beta\n+BETA\n gamma\n"]).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
 def test_patch_file_tool_rejects_context_mismatch_without_writing(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
