@@ -7533,7 +7533,7 @@ class AgentLoop:
         def choice_fragments():
             query = str(state["query"])
             visible = self._visible_choices(choices, labels, disabled, query)
-            options = self._choice_enabled(visible, disabled)
+            options = tuple(choice for choice in visible if choice not in disabled)
             clamp_selection()
             suffix = (" /" + query) if query else ""
             if query and not state["searching"]:
