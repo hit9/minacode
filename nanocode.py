@@ -6728,6 +6728,7 @@ class CommandDispatcher:
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
+    COMMAND_ALIASES = {"/context-budget": "/context", "/context_budget": "/context"}
 
     def __init__(
         self,
@@ -6744,25 +6745,12 @@ class CommandDispatcher:
         self.select_reasoning = select_reasoning
         self.select_model = select_model
         self.select_provider = select_provider
-        self.handlers: dict[str, Callable[[str], str]] = {
-            "/help": self._help,
-            "/status": self._status,
-            "/rules": self._rules,
-            "/compact": self._compact,
-            "/config": self._config,
-            "/context": self._context,
-            "/context-budget": self._context,
-            "/context_budget": self._context,
-            "/set": self._set,
-            "/api": self._api,
-            "/clean": self._clean,
-            "/model": self._model,
-            "/reason": self._reason,
-            "/reason-payload": self._reason_payload,
-            "/provider": self._provider,
-            "/plan": self._plan,
-            "/yolo": self._yolo,
+        self.handlers = {
+            spec.name: getattr(self, "_" + spec.name[1:].replace("-", "_"))
+            for spec in COMMANDS
+            if spec.category != "Control"
         }
+        self.handlers.update({alias: self.handlers[target] for alias, target in self.COMMAND_ALIASES.items()})
 
     def dispatch(self, user_input: str) -> CommandResult:
         stripped = user_input.strip()
@@ -7132,22 +7120,6 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " [on|off]"
             setattr(target, attr, value == "on")
             return ""
-        if key == "provider.reasoning":
-            if value not in REASONING_CHOICES:
-                return "Usage: /set " + key + " [" + "|".join(REASONING_CHOICES) + "]"
-            setattr(target, attr, value)
-            return ""
-        if key == "provider.chat_reasoning":
-            if value not in CHAT_REASONING_CHOICES:
-                return "Usage: /set " + key + " [" + "|".join(CHAT_REASONING_CHOICES) + "]"
-            setattr(target, attr, value)
-            return ""
-        if key == "runtime.context_budget":
-            if value not in CONTEXT_BUDGET_CHOICES:
-                return "Usage: /set " + key + " [" + "|".join(CONTEXT_BUDGET_CHOICES) + "]"
-            setattr(target, attr, value)
-            self.agent.apply_context_budget()
-            return ""
         if key == "provider.temperature":
             if value == "off":
                 setattr(target, attr, None)
@@ -7159,6 +7131,14 @@ class CommandDispatcher:
             if parsed_float < 0:
                 return "Usage: /set " + key + " <number|off>"
             setattr(target, attr, parsed_float)
+            return ""
+        choices = CONFIG_VALUE_COMPLETIONS.get(key)
+        if choices:
+            if value not in choices:
+                return "Usage: /set " + key + " [" + "|".join(choices) + "]"
+            setattr(target, attr, value)
+            if key == "runtime.context_budget":
+                self.agent.apply_context_budget()
             return ""
         if key in CONFIG_INT_KEYS:
             try:
