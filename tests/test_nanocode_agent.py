@@ -2756,6 +2756,25 @@ def test_agent_reports_edit_verification_gate_in_debug(tmp_path):
     assert messages == ["Verification_Gate: edit completion requires verification."]
 
 
+def test_agent_plain_text_cannot_finish_when_verification_required(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.verification_required = True
+    agent.blackboard.verification.status = VerificationStatus.REQUIRED
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
+    ctx = agent._build_response_context({"actions": [], "_assistant_text": "Done."})
+    messages = []
+
+    result = agent._handle_text_response(ctx, messages.append)
+
+    assert result is not None
+    assert result.done is False
+    assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
+    assert agent.agent_feedback_errors == [
+        'Warning: assistant text cannot finish while verification is required. Rule: run verification tools, then report verify status="passed"|"failed"|"blocked".'
+    ]
+    assert messages == ["Done."]
+
+
 def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 

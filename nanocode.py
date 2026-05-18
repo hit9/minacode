@@ -6320,6 +6320,10 @@ class Agent:
             on_message(ctx.assistant_text)
         if self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
             return AgentRunResult()
+        if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
+            self._warn_agent("assistant text cannot finish while verification is required.", self.RULE_VERIFY_DIRECTLY)
+            self.blackboard.task_code = TaskCode.VERIFYING
+            return AgentRunResult()
         self.blackboard.task_code = TaskCode.DONE
         return AgentRunResult(done=True, value=ctx.response)
 
