@@ -1258,6 +1258,24 @@ def test_function_tool_schemas_define_items_for_every_array():
         walk(schema)
 
 
+def test_function_tool_schemas_do_not_emit_null_enum_values():
+    def walk(value, path="schema"):
+        if isinstance(value, dict):
+            enum = value.get("enum")
+            if isinstance(enum, list):
+                assert None not in enum, path
+            for key, child in value.items():
+                walk(child, path + "." + str(key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, path + "[" + str(index) + "]")
+
+    state_schemas = [nanocode._state_tool_schema(name) for name in nanocode.STATE_TOOL_PARAMS]
+    repo_schemas = [tool.tool_schema() for tool in nanocode.TOOL_REGISTRY.values()]
+    for schema in [*state_schemas, *repo_schemas, nanocode.COMPACT_TOOL_SCHEMA]:
+        walk(schema)
+
+
 def test_agent_request_responses_api_parses_function_call(tmp_path, monkeypatch):
     _calls, response_calls, _client_kwargs = _patch_openai(
         monkeypatch,

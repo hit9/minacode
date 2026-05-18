@@ -3092,10 +3092,10 @@ TOOL_PLAN_ITEMS_SCHEMA: Json = {
     "type": "array",
     "items": _tool_object_schema(
         {
-            "op": {"type": ["string", "null"], "enum": ["add", "update", "remove", None]},
+            "op": {"type": ["string", "null"], "enum": ["add", "update", "remove"]},
             "id": TOOL_NULLABLE_STRING_SCHEMA,
             "text": TOOL_NULLABLE_STRING_SCHEMA,
-            "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES, None]},
+            "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
         },
         [],
@@ -3107,7 +3107,7 @@ TOOL_HYPOTHESIS_ITEMS_SCHEMA: Json = {
         {
             "id": TOOL_NULLABLE_STRING_SCHEMA,
             "text": TOOL_NULLABLE_STRING_SCHEMA,
-            "status": {"type": ["string", "null"], "enum": [*ALL_HYPOTHESIS_STATUSES, None]},
+            "status": {"type": ["string", "null"], "enum": [*ALL_HYPOTHESIS_STATUSES]},
             "source": TOOL_STRING_LIST_SCHEMA,
             "context": TOOL_NULLABLE_STRING_SCHEMA,
         },
@@ -3121,7 +3121,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         "Set, update, or complete the current goal. Use work_mode=investigate for root-cause/debug work; use message_for_complete for the final user message.",
         {
             "text": TOOL_STRING_SCHEMA,
-            "work_mode": {"type": ["string", "null"], "enum": ["normal", "investigate", None]},
+            "work_mode": {"type": ["string", "null"], "enum": ["normal", "investigate"]},
             "complete": {"type": "boolean"},
             "message_for_complete": TOOL_NULLABLE_STRING_SCHEMA,
         },
@@ -3148,7 +3148,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
             "method": TOOL_NULLABLE_STRING_SCHEMA,
             "criteria": TOOL_STRING_LIST_SCHEMA,
             "status": {"type": "string", "enum": ["passed", "failed", "blocked"]},
-            "blocker": {"type": ["string", "null"], "enum": ["user", "environment", "tool", "unknown", None]},
+            "blocker": {"type": ["string", "null"], "enum": ["user", "environment", "tool", "unknown"]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
         },
         ["kind", "method", "criteria", "status", "blocker", "context"],
