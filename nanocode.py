@@ -1745,8 +1745,9 @@ class ReadTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
         "Each range returns at most 600 lines.",
+        'Content is line-numbered as "line | code"; edit text must use only code after " | ".',
     )
-    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, content>"
+    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, line-numbered content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["code.py", "0,80", "160,220"]',
         'Example args: ["code.py"]',
@@ -1817,6 +1818,10 @@ class ReadTool(Tool):
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
+    @staticmethod
+    def _numbered_content(content: str, start: int) -> str:
+        return "".join(f"{start + index:>7} | {line}" for index, line in enumerate(content.splitlines(keepends=True)))
+
     def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
         target_filepath = self.filepath
         total_lines = 0
@@ -1864,6 +1869,7 @@ class ReadTool(Tool):
         lines = [
             indent + "<range>" + str(start) + ":" + str(fingerprint_end) + "</range>",
             indent + "<fingerprint>" + fingerprint + "</fingerprint>",
+            indent + '<note>Line prefixes are display-only; use only code after " | " in edits.</note>',
         ]
         if truncated:
             note = (
@@ -1877,7 +1883,7 @@ class ReadTool(Tool):
                     indent + "<note>" + note + "</note>",
                 ]
             )
-        lines.extend([indent + "<content no-indention>", content, indent + "</content>"])
+        lines.extend([indent + "<content line-numbered>", self._numbered_content(content, start), indent + "</content>"])
         return lines
 
 
@@ -3230,6 +3236,7 @@ DISCOVERY AND EDITING
 Use Search/ListDir/LineCount when path, symbol, range, or target is unknown.
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
+Read line prefixes are display-only; edit text starts after " | ".
 
 Stop discovery once the next edit/check is clear.
 
