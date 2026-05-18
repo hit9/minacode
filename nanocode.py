@@ -4761,21 +4761,21 @@ class AgentStateUpdater:
         sections = [
             (name, rows)
             for name, changed, rows in (
-                ("Goal", "\n  Goal" in self.latest_report, ["  " + self._compact(self.blackboard.goal or "(empty)")]),
-                ("Plan", "\n  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
+                ("Goal", "  Goal" in self.latest_report, ["  " + self._compact(self.blackboard.goal or "(empty)")]),
+                ("Plan", "  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
                 (
                     "Hypotheses",
-                    "\n  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
+                    "  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
                     self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
                 ),
                 (
                     "Known",
-                    "\n  Known" in self.latest_report and self.blackboard.known,
+                    "  Known" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
-                ("Stable Knowledge", "\n  Stable_Knowledge" in self.latest_report, ["  updated"]),
-                ("Verification", "\n  Verify" in self.latest_report, ["  " + self._format_verification()]),
-                ("User Rules", "\n  User_Rules" in self.latest_report, ["  updated"]),
+                ("Stable Knowledge", "  Stable_Knowledge" in self.latest_report, ["  updated"]),
+                ("Verification", "  Verify" in self.latest_report, ["  " + self._format_verification()]),
+                ("User Rules", "  User_Rules" in self.latest_report, ["  updated"]),
             )
             if changed
         ]
@@ -4999,8 +4999,6 @@ class AgentStateUpdater:
             self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
-        if not lines:
-            lines.append("State Updated | VERIFY:" + self.blackboard.verification.status)
         lines.append(title)
         lines.extend(rows or [])
 
@@ -7956,9 +7954,6 @@ class AgentLoop:
             return raw_answer
 
     def _print_message(self, message: str) -> None:
-        if message.startswith("State Updated"):
-            self._emit_segments(self._state_segments(message), message)
-            return
         if message.startswith(
             (
                 "Plan Updated",
@@ -8108,33 +8103,6 @@ class AgentLoop:
                 at_line_start = part.endswith("\n")
         return indented
 
-    def _state_segments(self, message: str) -> list[tuple[str, str]]:
-        lines = message.splitlines()
-        segments: list[tuple[str, str]] = [("ansibrightblack", "-" * 48 + "\n")]
-        for index, line in enumerate(lines):
-            if index == 0:
-                title, _, badge = line.partition("|")
-                badge = badge.strip()
-                segments.extend([("bold ansicyan", title.strip()), ("ansibrightblack", " | "), (self._verify_style(badge), badge), ("", "\n")])
-            elif line.startswith("  Goal"):
-                segments.extend([("ansibrightblack", line[:10]), ("bold ansigreen", line[10:] + "\n")])
-            elif line.startswith("  Plan"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansicyan", line.strip()), ("", "\n")])
-            elif line.startswith("  Hypotheses"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansimagenta", line.strip()), ("", "\n")])
-            elif line.startswith("  Known"):
-                segments.extend([("ansibrightblack", "  "), ("bold ansiyellow", line.strip()), ("", "\n")])
-            elif line.startswith("  Verify"):
-                status = line[10:].strip().split(" ", 1)[0]
-                segments.extend([("ansibrightblack", line[:10]), (self._verify_style("VERIFY:" + status), line[10:] + "\n")])
-            elif line.startswith("    ..."):
-                segments.extend([("ansibrightblack", line + "\n")])
-            elif line.startswith("    "):
-                segments.extend([("ansibrightblack", "    "), ("ansiwhite", line[4:] + "\n")])
-            else:
-                segments.extend([("ansiwhite", line + "\n")])
-        return segments
-
     def _compact_state_segments(self, message: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         for line in message.splitlines():
@@ -8172,15 +8140,6 @@ class AgentLoop:
             segments.append((detail_style, detail_text))
         segments.append(("", "\n"))
         return segments
-
-    def _verify_style(self, badge: str) -> str:
-        if "required" in badge:
-            return "bold ansimagenta"
-        if "done" in badge:
-            return "bold ansigreen"
-        if "failed" in badge or "blocked" in badge:
-            return "bold ansired"
-        return "ansibrightblack"
 
 
 ############################

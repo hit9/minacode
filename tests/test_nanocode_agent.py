@@ -2089,7 +2089,6 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
     agent.apply_response(response)
 
-    assert "State Updated | VERIFY:idle" in agent.state_updater.latest_report
     assert "  Plan\n" in agent.state_updater.latest_report
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
     assert "  Known\n" in agent.state_updater.latest_report
