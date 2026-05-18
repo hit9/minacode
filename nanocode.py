@@ -4761,17 +4761,21 @@ class AgentStateUpdater:
         sections = [
             (name, rows)
             for name, changed, rows in (
-                ("Plan", "  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
+                ("Goal", "\n  Goal" in self.latest_report, ["  " + self._compact(self.blackboard.goal or "(empty)")]),
+                ("Plan", "\n  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
                 (
                     "Hypotheses",
-                    "  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
+                    "\n  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
                     self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
                 ),
                 (
                     "Known",
-                    "  Known" in self.latest_report and self.blackboard.known,
+                    "\n  Known" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
+                ("Stable Knowledge", "\n  Stable_Knowledge" in self.latest_report, ["  updated"]),
+                ("Verification", "\n  Verify" in self.latest_report, ["  " + self._format_verification()]),
+                ("User Rules", "\n  User_Rules" in self.latest_report, ["  updated"]),
             )
             if changed
         ]
@@ -6180,7 +6184,7 @@ class Agent:
 
     def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
-            report = self.state_updater.latest_report if self.session.settings.debug else self.state_updater.compact_report()
+            report = self.state_updater.compact_report()
             if report:
                 on_message(report)
         if on_message is not None and ctx.assistant_text and ctx.actions and not ctx.completion_message:

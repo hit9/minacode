@@ -1962,7 +1962,7 @@ def test_main_agent_state_updates_show_in_debug(tmp_path):
 
     agent.run("记住：prompt 改动不用测试", on_message=messages.append)
 
-    assert any(message.startswith("State Updated") for message in messages)
+    assert "User Rules Updated\n  updated" in messages
 
 
 def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
@@ -1987,12 +1987,12 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     )
 
     report = agent.state_updater.compact_report()
-    assert report.startswith("Plan + Known Updated")
+    assert report.startswith("Goal + Plan + Known Updated")
+    assert "\nGoal\n  inspect project\n" in report
     assert "\nPlan\n" in report
     assert "  ... 1 older\n  2. [✓ done] Read config\n  3. [◔ doing] Update code\n  4. [○ todo] Run tests" in report
     assert "\nKnown\n" in report
     assert "  ... 1 older\n  2. fact two\n  3. fact three\n  4. fact four" in report
-    assert "inspect project" not in report
     assert "State Updated" not in report
 
 
@@ -2180,7 +2180,7 @@ def test_agent_accepts_goal_without_plan_for_new_task(tmp_path):
     assert agent.blackboard.goal == "change map"
     assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
     assert agent.blackboard.plan == []
-    assert messages == ["State Updated | VERIFY:idle\n  Goal    change map"]
+    assert messages == ["Goal Updated\n  change map"]
 
 
 def test_new_goal_clears_task_local_kept_results_only(tmp_path):
