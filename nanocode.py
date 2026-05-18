@@ -1930,14 +1930,14 @@ class LineCountTool(Tool):
 
 
 @dataclass
-class ListDirTool(Tool):
-    NAME: ClassVar[str] = "ListDir"
+class ListTool(Tool):
+    NAME: ClassVar[str] = "List"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "List one directory non-recursively; optional glob filters immediate entry names.",
-        "Batch multiple ListDir actions in one turn when checking several known directories.",
+        "Batch multiple List actions in one turn when checking several known directories.",
     )
-    SIGNATURE: ClassVar[str] = "ListDir([dirpath][, glob]) -> ListDirToolResult<entries>"
+    SIGNATURE: ClassVar[str] = "List([dirpath][, glob]) -> ListToolResult<entries>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []")
 
     dirpath: str = ""
@@ -1954,8 +1954,8 @@ class ListDirTool(Tool):
 
     def preview(self) -> str:
         if self.glob_pattern:
-            return f'ListDir({self.dirpath}, "{self.glob_pattern}")'
-        return f"ListDir({self.dirpath})"
+            return f'List({self.dirpath}, "{self.glob_pattern}")'
+        return f"List({self.dirpath})"
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.dirpath)
@@ -1988,10 +1988,10 @@ class ListDirTool(Tool):
                     }
                 )
         entries.sort(key=lambda item: (self._entry_type_sort_key(str(item["type"])), str(item["name"])))
-        lines = ["<ListDirToolResult>"]
+        lines = ["<ListToolResult>"]
         for e in entries:
             lines.append(f"* ({e['type']}): {os.path.relpath(str(e['path']), self.cwd)}")
-        lines.append("</ListDirToolResult>")
+        lines.append("</ListToolResult>")
         return "\n".join(lines)
 
 
@@ -3198,7 +3198,7 @@ class ToolResultTool(Tool):
 TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.NAME: ReadTool,
     LineCountTool.NAME: LineCountTool,
-    ListDirTool.NAME: ListDirTool,
+    ListTool.NAME: ListTool,
     SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
@@ -3208,7 +3208,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListDirTool, SearchTool, PlanModeGitTool, ToolResultTool)
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, PlanModeGitTool, ToolResultTool)
 
 
 TOOL_STRING_SCHEMA: Json = {"type": "string"}
@@ -3412,7 +3412,7 @@ Rules:
 - stop investigating when the exact target and next edit/check are clear
 
 DISCOVERY AND EDITING
-Use Search/ListDir/LineCount when path, symbol, range, or target is unknown.
+Use Search/List/LineCount when path, symbol, range, or target is unknown.
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 Read line prefixes are display-only; edit text starts immediately after "|".
@@ -3476,7 +3476,7 @@ OUTPUT PROTOCOL
 - Assistant text is optional; never use it instead of the next useful function tool.
 - A completed plan-mode task still needs goal.complete=true.
 - Allowed state tools: goal, plan, hypothesis, known, stable_knowledge, verify.
-- Allowed repository tools: Read, LineCount, ListDir, Search, Recall, and readonly Git.
+- Allowed repository tools: Read, LineCount, List, Search, Recall, and readonly Git.
 - Repository tool calls require intention and args.
 - Do not invent fields when a tool schema already fits.
 
@@ -3493,7 +3493,7 @@ LANGUAGE
 - If the user mixes languages, follow the dominant language of the latest request.
 
 READONLY DISCOVERY
-- Allowed tools: Read, LineCount, ListDir, Search, Recall.
+- Allowed tools: Read, LineCount, List, Search, Recall.
 - Git is allowed only for readonly inspection: status, diff, log, show, rev-parse, ls-files, grep, blame.
 - Use only the provided readonly function tools. Do not request any other tools.
 - Use the smallest useful discovery batch.

@@ -79,7 +79,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 
 ## Tools
 
-- File: `Read`, `LineCount`, `ListDir`, `Search`.
+- File: `Read`, `LineCount`, `List`, `Search`.
 - Edit: `Edit`, `ReplaceRange`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.

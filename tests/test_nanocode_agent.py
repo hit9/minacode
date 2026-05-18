@@ -3352,8 +3352,8 @@ def test_agent_warns_when_discovery_runs_long_without_plan(tmp_path, monkeypatch
     agent.blackboard.goal = "investigate"
     _set_context_budget(monkeypatch, agent, planless_discovery_tool_calls=2)
 
-    agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root", "args": ["."]}]})
-    agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root again", "args": ["."]}]})
+    agent.handle_response({"actions": [{"type": "tool", "name": "List", "intention": "inspect root", "args": ["."]}]})
+    agent.handle_response({"actions": [{"type": "tool", "name": "List", "intention": "inspect root again", "args": ["."]}]})
 
     assert any("Plan is empty after discovery" in error for error in agent.agent_feedback_errors)
 
