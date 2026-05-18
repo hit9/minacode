@@ -630,13 +630,6 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     assert attrs.bold is True
     assert captured["erase_when_done"] is True
     assert captured["layout"] is not None
-    assert loop._choice_initial_index(("off", "minimal", "low", "medium"), "medium") == 3
-
-    loop._select_model(("old", "new"), "new")
-    assert loop._choice_initial_index(("old", "new"), "new") == 1
-
-    loop._select_provider(("one", "two"), "two")
-    assert loop._choice_initial_index(("one", "two"), "two") == 1
 
 
 def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):

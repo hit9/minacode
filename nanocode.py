@@ -4721,29 +4721,27 @@ class AgentStateUpdater:
         return rows
 
     def compact_report(self) -> str:
-        sections = []
-        if "  Plan" in self.latest_report and self.blackboard.plan:
-            sections.append("Plan")
-        if "  Hypotheses" in self.latest_report and self.blackboard.hypotheses:
-            sections.append("Hypotheses")
-        if "  Known" in self.latest_report and self.blackboard.known:
-            sections.append("Known")
+        sections = [
+            (name, rows)
+            for name, changed, rows in (
+                ("Plan", "  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
+                (
+                    "Hypotheses",
+                    "  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
+                    self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
+                ),
+                ("Known", "  Known" in self.latest_report and self.blackboard.known, self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100))),
+            )
+            if changed
+        ]
         if not sections:
             return ""
-        lines = [" + ".join(sections) + " Updated"]
+        lines = [" + ".join(name for name, _ in sections) + " Updated"]
         grouped = len(sections) > 1
-        if "Plan" in sections:
+        for name, rows in sections:
             if grouped:
-                lines.append("Plan")
-            lines.extend(self.latest_compact_plan_rows or self._compact_plan_rows())
-        if "Hypotheses" in sections:
-            if grouped:
-                lines.append("Hypotheses")
-            lines.extend(self._compact_hypothesis_rows())
-        if "Known" in sections:
-            if grouped:
-                lines.append("Known")
-            lines.extend(self._compact_known_rows())
+                lines.append(name)
+            lines.extend(rows)
         return "\n".join(lines)
 
     def _compact_plan_rows(self) -> list[str]:
@@ -4766,12 +4764,6 @@ class AgentStateUpdater:
 
     def _compact_plan_row(self, index: int, item: PlanItem) -> str:
         return "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
-
-    def _compact_known_rows(self) -> list[str]:
-        return self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100))
-
-    def _compact_hypothesis_rows(self) -> list[str]:
-        return self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100))
 
     def _compact_rows(self, items: list[Any], render: Callable[[Any], str]) -> list[str]:
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
@@ -7518,12 +7510,6 @@ class AgentLoop:
         flush()
         return tuple(visible)
 
-    def _choice_enabled(self, choices: tuple[str, ...], disabled: set[str]) -> tuple[str, ...]:
-        return tuple(choice for choice in choices if choice not in disabled)
-
-    def _choice_initial_index(self, enabled_choices: tuple[str, ...], current: str) -> int:
-        return enabled_choices.index(current) if current in enabled_choices else 0
-
     def _run_choice_application(
         self,
         title: str,
@@ -7535,7 +7521,7 @@ class AgentLoop:
         state: dict[str, str | int | bool] = {"query": "", "selected": 0, "searching": False}
 
         def enabled() -> tuple[str, ...]:
-            return self._choice_enabled(self._visible_choices(choices, labels, disabled, str(state["query"])), disabled)
+            return tuple(choice for choice in self._visible_choices(choices, labels, disabled, str(state["query"])) if choice not in disabled)
 
         def clamp_selection() -> None:
             options = enabled()
@@ -7667,7 +7653,7 @@ class AgentLoop:
             event.app.invalidate()
 
         options = enabled()
-        state["selected"] = self._choice_initial_index(options, current) if options else 0
+        state["selected"] = options.index(current) if current in options else 0
         content = FormattedTextControl(choice_fragments, focusable=True)
         choice_window = Window(content, dont_extend_height=True)
         app = Application(
