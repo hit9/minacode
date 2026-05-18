@@ -256,6 +256,24 @@ def test_model_command_can_select_reasoning_effort(tmp_path):
     assert session.config.provider.reasoning_effort == "high"
 
 
+def test_api_command_shows_and_sets_provider_api(tmp_path):
+    session = make_session(tmp_path, model="model")
+    dispatcher = CommandDispatcher(Agent(session))
+
+    show_result = dispatcher.dispatch("/api")
+    responses_result = dispatcher.dispatch("/api responses")
+    chat_result = dispatcher.dispatch("/api chat")
+    auto_result = dispatcher.dispatch("/api auto")
+    bad_result = dispatcher.dispatch("/api invalid")
+
+    assert show_result.message == "provider.api: auto (chat)\nUsage: /api [auto|chat|responses]"
+    assert responses_result.message == "Set provider.api = responses"
+    assert chat_result.message == "Set provider.api = chat"
+    assert auto_result.message == "Set provider.api = auto"
+    assert bad_result.message == "Usage: /api [auto|chat|responses]"
+    assert session.config.provider.api == "auto"
+
+
 def test_model_command_can_disable_reasoning(tmp_path):
     session = make_session(tmp_path, model="old")
     dispatcher = CommandDispatcher(Agent(session), select_reasoning=lambda: "off")

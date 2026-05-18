@@ -87,11 +87,11 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
+Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
 During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
 
 ## Configuration

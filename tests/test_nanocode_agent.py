@@ -1356,6 +1356,37 @@ def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, mon
     assert session.state.last_total_tokens == 5
 
 
+def test_agent_request_responses_stream_uses_output_item_function_name(tmp_path, monkeypatch):
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return iter(
+                [
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {"id": "fc_1", "type": "function_call", "name": "goal", "arguments": ""},
+                    },
+                    {
+                        "type": "response.function_call_arguments.done",
+                        "item_id": "fc_1",
+                        "arguments": '{"text":"Greet the user.","complete":true,"message_for_complete":"Hi!"}',
+                    },
+                    {"type": "response.completed", "response": {"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}},
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
+    session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")
+
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode._state_tool_schema("goal")])
+
+    assert response == {"actions": [{"type": "goal", "text": "Greet the user.", "complete": True, "message_for_complete": "Hi!"}]}
+
+
 def test_agent_request_responses_stream_error_event_raises_llm_error(tmp_path, monkeypatch):
     _patch_openai(monkeypatch, [{"code": "InvalidParameter", "message": "Unsupported model: 'deepseek-v4-flash'."}])
     session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses")

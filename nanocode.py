@@ -4032,6 +4032,7 @@ class ModelClient:
         actions: list[Json] = []
         text_parts: list[str] = []
         first_output_seen = False
+        function_calls: dict[str, Json] = {}
 
         stream_params = dict(params)
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
@@ -4051,7 +4052,10 @@ class ModelClient:
                     if content:
                         text_parts.append(content)
                 continue
-            if event_type in ("response.output_text.delta", "response.reasoning.delta", "response.function_call_arguments.delta"):
+            if event_type in ("response.output_item.added", "response.output_item.done"):
+                self._remember_responses_function_call(function_calls, data)
+                continue
+            if event_type in ("response.output_text.delta", "response.reasoning.delta"):
                 text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
                 first_output_seen = self._mark_stream_output(
                     len(text),
@@ -4062,11 +4066,25 @@ class ModelClient:
                 if event_type == "response.output_text.delta" and text:
                     text_parts.append(text)
                 continue
+            if event_type == "response.function_call_arguments.delta":
+                text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
+                first_output_seen = self._mark_stream_output(
+                    len(text),
+                    first_output_seen,
+                    request_deadline=request_deadline,
+                    first_token_timeout=first_token_timeout,
+                )
+                call = self._responses_function_call_for_event(function_calls, data)
+                call["arguments"] = _json_str(call.get("arguments")) + text
+                continue
             if event_type != "response.function_call_arguments.done":
                 continue
+            call = self._responses_function_call_for_event(function_calls, data)
+            name = str(getattr(event, "name", "") or _json_str(data.get("name")) or _json_str(call.get("name")) or "")
+            arguments = str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or _json_str(call.get("arguments")) or "{}")
             action = self._action_from_function_call(
-                str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
-                str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
+                name,
+                arguments,
             )
             DebugTrace.stream_action(self.session, activity=activity, action=action)
             if text_parts and on_stream_action is not None:
@@ -4082,6 +4100,35 @@ class ModelClient:
             if stopped:
                 break
         return self._action_response(actions, "".join(text_parts)), usage
+
+    def _remember_responses_function_call(self, function_calls: dict[str, Json], event: Json) -> None:
+        item = _json_dict(event.get("item"))
+        if _json_str(item.get("type")) != "function_call":
+            return
+        call = function_calls.setdefault(self._responses_function_call_key(event, item, len(function_calls)), {"name": "", "arguments": ""})
+        name = _json_str(item.get("name"))
+        arguments = _json_str(item.get("arguments"))
+        if name:
+            call["name"] = name
+        if arguments:
+            call["arguments"] = arguments
+
+    def _responses_function_call_for_event(self, function_calls: dict[str, Json], event: Json) -> Json:
+        key = self._responses_function_call_key(event, {}, len(function_calls))
+        if key.startswith("fallback:") and len(function_calls) == 1:
+            return next(iter(function_calls.values()))
+        return function_calls.setdefault(key, {"name": "", "arguments": ""})
+
+    def _responses_function_call_key(self, event: Json, item: Json, fallback: int) -> str:
+        item_id = _json_str(event.get("item_id")) or _json_str(item.get("id")) or _json_str(item.get("item_id"))
+        if item_id:
+            return "item:" + item_id
+        call_id = _json_str(event.get("call_id")) or _json_str(item.get("call_id"))
+        if call_id:
+            return "call:" + call_id
+        if "output_index" in event or "output_index" in item:
+            return "index:" + str(self._stream_list_index(event.get("output_index", item.get("output_index")), fallback))
+        return "fallback:" + str(fallback)
 
     def _chat_tool_response(self, result: JsonValue) -> Json:
         data = _json_dict(result)
@@ -6823,6 +6870,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
+    CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
     CommandSpec("/reason", "Set reasoning effort", "Config", "/reason"),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
@@ -6905,6 +6953,7 @@ class CommandDispatcher:
             "/compact": self._compact,
             "/config": self._config,
             "/set": self._set,
+            "/api": self._api,
             "/clean": self._clean,
             "/model": self._model,
             "/reason": self._reason,
@@ -6985,6 +7034,18 @@ class CommandDispatcher:
         if " " in model:
             return "Usage: /model [model_name]"
         return self._set_model(model)
+
+    def _api(self, args: str) -> str:
+        value = args.strip()
+        provider = self.agent.session.config.provider
+        if not value:
+            resolved = provider.resolved_api()
+            suffix = " (" + resolved + ")" if provider.api == "auto" else ""
+            return "provider.api: " + provider.api + suffix + "\nUsage: /api [auto|chat|responses]"
+        if value not in {"auto", "chat", "responses"}:
+            return "Usage: /api [auto|chat|responses]"
+        provider.api = value
+        return "Set provider.api = " + value
 
     def _model_choices(self, provider: ProviderConfig) -> tuple[str, ...]:
         configured = provider.available_models
@@ -8480,6 +8541,12 @@ class CommandCompleter(Completer):
         if text.startswith("/plan "):
             text = text[len("/plan ") :]
             for value in ("on", "off"):
+                if value.startswith(text):
+                    yield Completion(value, start_position=-len(text))
+            return
+        if text.startswith("/api "):
+            text = text[len("/api ") :]
+            for value in ("auto", "chat", "responses"):
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
             return
