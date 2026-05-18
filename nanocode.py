@@ -3438,7 +3438,7 @@ Unreduced Raw Tool Results:
 --- Output ---
 
 Use function tools only.
-Keep or forget Unreduced Raw Tool Results.
+Prefer explicit keep/forget decisions. Omitted results are compacted by default.
 
 YOUR OUTPUT:
 """
@@ -3449,12 +3449,12 @@ Use function tools only. No prose.
 
 Job:
 - Reduce Unreduced Raw Tool Results before ACT continues.
-- Cover every unreduced tr.N key with keep or forget.
+- Prefer declaring keep or forget for each result you reviewed.
 - keep only raw results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion.
 - forget routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
+- If you omit a tr.N key, nanocode compacts it by default; use omission only for unimportant results.
 - Before forgetting an important conclusion, preserve it with known, hypothesis, or stable_knowledge.
 - Do not update Plan, Verify, or Goal.
-- Do not return {"actions":[]}.
 
 Allowed tools: keep, forget, known, hypothesis, stable_knowledge.
 """
@@ -5187,7 +5187,7 @@ class Agent:
     # Compact recall/timeline entries shown in Tool Result Index; current-task timeline has priority over archived entries.
     TOOL_RESULT_INDEX_ITEMS: ClassVar[int] = 40
     # Trigger observe after this many unresolved raw result blocks accumulate; raw-size pressure can still trigger earlier.
-    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 12
+    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 10
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
@@ -6336,45 +6336,15 @@ class Agent:
         forget_gate = self._gate_forget_actions(ctx.actions, on_message, self._remember_observe_error)
         if forget_gate is not None:
             return forget_gate
-        if not ctx.actions:
-            return self._reject_result(
-                self._remember_observe_error,
-                on_message,
-                self._error("observe returned no actions.", "keep useful results or forget latest results with a reason."),
-                "Retrying: keep or forget latest results.",
-                "Observe_Gate: empty actions are not a checkpoint; return keep or forget.",
-            )
         observed_blocks = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
-        covered = {
-            key
-            for action in ctx.actions
-            if _json_str(action.get("type")) in {"keep", "forget"}
-            for key in _source_from_json(action)
-            if key.startswith("tr.")
-        }
-        missing_observe_keys = [key for key in ToolResultContext.blocks_by_key(observed_blocks) if key not in covered]
-        if missing_observe_keys:
-            self._remember_observe_error(
-                self._error("observe missed result key(s): " + ", ".join(missing_observe_keys) + ".", "cover each latest result with keep or forget.")
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: cover every latest result key with keep or forget.",
-                "Observe_Gate: missing coverage for result keys: " + ", ".join(missing_observe_keys) + ".",
-            )
-            return AgentRunResult()
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_text(ctx, on_message)
-        kept_keys: list[str] = []
-        if any(_json_str(action.get("type")) in {"keep", "forget", "known", "stable_knowledge"} for action in ctx.actions):
-            self.mode = AgentMode.ACT
-            kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
-            self.tool_context.compact_observed(observed_blocks)
-            self._mark_memory_checkpoint(observed_counter)
-            self.observe_feedback_errors = []
-        else:
-            self.mode = AgentMode.OBSERVE
+        self.mode = AgentMode.ACT
+        kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
+        self.tool_context.compact_observed(observed_blocks)
+        self._mark_memory_checkpoint(observed_counter)
+        self.observe_feedback_errors = []
         self._emit_tool_context_update(kept_keys, forgotten_keys, on_message)
         self._promote_required_verification(ctx)
         return AgentRunResult()

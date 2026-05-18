@@ -346,7 +346,7 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     assert "output:\n<ReadToolResult>" not in index
 
 
-def test_observe_text_does_not_checkpoint_tool_results(tmp_path):
+def test_empty_observe_compacts_unreduced_tool_results(tmp_path):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -358,11 +358,9 @@ def test_observe_text_does_not_checkpoint_tool_results(tmp_path):
 
     agent.handle_response({"actions": [], "_assistant_text": "checking result"})
 
-    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    unreduced = _blocks_text(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
-    assert "one.txt" in unreduced
-    assert "two.txt" in unreduced
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 2
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
 
 
 def test_assistant_text_does_not_mark_memory_checkpoint(tmp_path):
@@ -642,10 +640,10 @@ def test_observe_forget_does_not_cover_latest_result_key(tmp_path):
     result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "old branch ruled out"}]}, on_message=messages.append)
 
     assert result.done is False
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert "tr.1" in _blocks_text(agent.tool_context.kept_results)
-    assert any("tr.2" in error for error in agent.observe_feedback_errors)
-    assert messages == ["Observe_Gate: missing coverage for result keys: tr.2."]
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
+    assert messages == ["Tool Result Context: -tr.1"]
 
 
 def test_observe_can_forget_old_kept_result_while_forgetting_latest(tmp_path):
@@ -701,21 +699,24 @@ def test_keep_action_is_observe_only(tmp_path):
     assert any("Invalid action(s): keep" in error for error in agent.agent_feedback_errors)
 
 
-def test_observe_rejects_invalid_action_and_empty_actions(tmp_path):
+def test_observe_rejects_invalid_action_and_allows_empty_actions(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
 
     agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": False}]})
-    agent.handle_response({"actions": []})
-
     assert any("latest results must be observed" in error for error in agent.observe_feedback_errors)
-    assert any("observe returned no actions" in error for error in agent.observe_feedback_errors)
     assert agent.mode == nanocode.AgentMode.OBSERVE
 
+    agent.handle_response({"actions": []})
 
-def test_observe_requires_every_result_key_to_be_covered(tmp_path):
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.observe_feedback_errors == []
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
+
+
+def test_observe_compacts_unmentioned_result_keys_by_default(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.tool_context.latest = [
@@ -730,10 +731,10 @@ def test_observe_requires_every_result_key_to_be_covered(tmp_path):
     )
 
     assert result.done is False
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert "tr.2" in _blocks_text(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
-    assert any("tr.2" in error for error in agent.observe_feedback_errors)
-    assert messages == ["Observe_Gate: missing coverage for result keys: tr.2."]
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert "tr.1" in _blocks_text(agent.tool_context.kept_results)
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
+    assert messages == ["Tool Result Context: +tr.1"]
 
 
 def test_observe_forget_source_covers_result_key(tmp_path):
@@ -749,16 +750,16 @@ def test_observe_forget_source_covers_result_key(tmp_path):
     assert agent.tool_context.kept_results == []
 
 
-def test_observe_known_source_does_not_cover_result_key(tmp_path):
+def test_observe_known_source_compacts_result_key_by_default(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.tool_context.latest = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
 
     agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "a exists"}]}]})
 
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert agent.blackboard.known == []
-    assert any("tr.1" in error for error in agent.observe_feedback_errors)
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert [nanocode.KnownItem.format_item(item) for item in agent.blackboard.known] == ["[tr.1] a exists"]
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
 
 
 def test_kept_tool_results_respect_char_budget(tmp_path):
