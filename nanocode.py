@@ -2355,15 +2355,16 @@ class EditTool(Tool):
     NAME: ClassVar[str] = "Edit"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace/delete one unique exact literal text block in an existing file; best for tiny unambiguous edits, not regex.",
-        "If the target text is repeated, structural, or line ranges are clearer, use ReplaceRange.",
+        "Replace/delete exact literal text in an existing file; default requires one unique match, optional 'all' replaces every match.",
+        "If the target is structural or line ranges are clearer, use ReplaceRange.",
     )
-    SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace) -> EditToolResult<path, replacements>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]',)
+    SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace[, all]) -> EditToolResult<path, replacements>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]', 'Example all args: ["code.py", "old", "new", "all"]')
 
     filepath: str = ""
     find: str = ""
     replace: str = ""
+    replace_all: bool = False
     cwd: str = ""
 
     @classmethod
@@ -2372,14 +2373,16 @@ class EditTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 3:
+        if len(args) not in (3, 4):
             raise ToolCallArgError(
                 "Edit args error: got "
                 + str(len(args))
-                + ' args; expected ["filepath", "find", "replace"]. Example: Edit("nanocode.py", "old text", "new text"). Do not call Edit().'
+                + ' args; expected ["filepath", "find", "replace", optional "all"]. Example: Edit("nanocode.py", "old text", "new text").'
             )
+        if len(args) == 4 and str(args[3]) != "all":
+            raise ToolCallArgError('Edit fourth arg must be exactly "all"')
         find = str(args[1])
-        return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), cwd=session.cwd)
+        return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), replace_all=len(args) == 4, cwd=session.cwd)
 
     def preview(self) -> str:
         label = f'Edit({self.filepath}, find="{self.find}")'
@@ -2396,9 +2399,10 @@ class EditTool(Tool):
             return label + "\n# preview unavailable: empty find creates missing files only"
         if self.find not in content:
             return label
-        if content.count(self.find) != 1:
-            return label + "\n# preview unavailable: target `find` text matched multiple times; use ReplaceRange or a larger unique find block"
-        return _make_unified_diff(content, content.replace(self.find, self.replace, 1), self.filepath) or label
+        replacements = content.count(self.find)
+        if replacements != 1 and not self.replace_all:
+            return label + '\n# preview unavailable: target `find` text matched multiple times; pass "all" to replace all matches or use ReplaceRange'
+        return _make_unified_diff(content, content.replace(self.find, self.replace, -1 if self.replace_all else 1), self.filepath) or label
 
     def call(self) -> str:
         created = False
@@ -2414,11 +2418,12 @@ class EditTool(Tool):
             raise ToolCallError("empty find creates missing files only")
         if self.find not in content:
             raise ToolCallError("target `find` text not found")
-        if content.count(self.find) != 1:
-            raise ToolCallError("target `find` text matched multiple times; use ReplaceRange or a larger unique find block")
+        replacements = content.count(self.find)
+        if replacements != 1 and not self.replace_all:
+            raise ToolCallError('target `find` text matched multiple times; pass "all" to replace all matches or use ReplaceRange')
 
         with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(content.replace(self.find, self.replace, 1))
+            f.write(content.replace(self.find, self.replace, -1 if self.replace_all else 1))
 
         lines = [
             "<EditToolResult>",
@@ -2427,7 +2432,7 @@ class EditTool(Tool):
         if created:
             lines.append("* created: true")
         else:
-            lines.append("* replacements: 1")
+            lines.append(f"* replacements: {replacements}")
         lines.append("</EditToolResult>")
         return "\n".join(lines)
 
