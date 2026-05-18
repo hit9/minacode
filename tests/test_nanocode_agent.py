@@ -480,8 +480,10 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
     prompt = agent._system_prompt()
 
     assert "simple conversation or a one-shot lookup" in prompt
-    assert "do not create Goal or Plan just to report the answer" in prompt
+    assert "then answer directly with assistant text and stop" in prompt
+    assert "do not create Goal, Plan, or Known just to report the answer" in prompt
     assert "inspect visible results before deciding the next action" in prompt
+    assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
 
 
 def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
