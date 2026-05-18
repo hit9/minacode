@@ -5232,7 +5232,6 @@ class Agent:
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
-    PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
     RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures prefer ReplaceRange after Read."
@@ -5242,7 +5241,6 @@ class Agent:
     RULE_EDIT_SIGNATURE: ClassVar[str] = "use ReplaceRange for read ranges or repeated text, and use the exact tool signature."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
-    RULE_FINAL_ACTION: ClassVar[str] = "continue with a useful action or finish with goal.complete=true."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
 
     def __init__(self, session: Session):
@@ -6051,7 +6049,7 @@ class Agent:
                 continue
             if tool_class is GitTool:
                 args = call.args[1:] if call.args and isinstance(call.args[0], str) and call.args[0].startswith("cwd=") else call.args
-                if args and args[0] in self.PLAN_MODE_GIT_READONLY:
+                if args and args[0] in GIT_READONLY_COMMANDS:
                     continue
             return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
         return ""
