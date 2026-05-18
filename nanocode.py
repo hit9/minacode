@@ -441,7 +441,7 @@ PROVIDER_PROFILES: dict[str, ProviderProfile] = {
         chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),),
     ),
     "openrouter.ai": ProviderProfile(api="responses", chat_reasoning_payload="reasoning"),
-    "opencode.ai": ProviderProfile(chat_reasoning_payload="reasoning"),
+    "opencode.ai": ProviderProfile(chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),)),
     "api.deepseek.com": ProviderProfile(chat_reasoning_payload="thinking"),
     "dashscope.aliyuncs.com": ALIYUN_CHAT_PROFILE,
     "dashscope-intl.aliyuncs.com": ALIYUN_CHAT_PROFILE,
@@ -6879,6 +6879,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
     CommandSpec("/reason", "Set reasoning effort", "Config", "/reason"),
+    CommandSpec("/reason-payload", "Show or set chat reasoning payload", "Config", "/reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
@@ -6894,6 +6895,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
 
 
 CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+CHAT_REASONING_PAYLOAD_CHOICES: tuple[str, ...] = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 CONFIG_PROVIDER_ATTRS: dict[str, str] = {
     "provider.model": "model",
     "provider.reasoning": "reasoning",
@@ -6963,6 +6965,7 @@ class CommandDispatcher:
             "/clean": self._clean,
             "/model": self._model,
             "/reason": self._reason,
+            "/reason-payload": self._reason_payload,
             "/provider": self._provider,
             "/plan": self._plan,
             "/yolo": self._yolo,
@@ -7100,6 +7103,24 @@ class CommandDispatcher:
         if not isinstance(choice, str):
             return "No change"
         return self._apply_reasoning_choice(choice)
+
+    def _reason_payload(self, args: str) -> str:
+        value = args.strip()
+        provider = self.agent.session.config.provider
+        if not value:
+            configured = provider.chat_reasoning_payload or "off"
+            resolved = provider.resolved_chat_reasoning_payload() or "off"
+            return (
+                "provider.chat_reasoning_payload: "
+                + configured
+                + "\nprovider.resolved_chat_reasoning_payload: "
+                + resolved
+                + "\nUsage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+            )
+        if value not in CHAT_REASONING_PAYLOAD_CHOICES:
+            return "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+        provider.chat_reasoning_payload = "" if value == "off" else value
+        return "Set provider.chat_reasoning_payload = " + value
 
     def _apply_reasoning_choice(self, choice: str) -> str:
         provider = self.agent.session.config.provider
@@ -8553,6 +8574,12 @@ class CommandCompleter(Completer):
         if text.startswith("/api "):
             text = text[len("/api ") :]
             for value in ("auto", "chat", "responses"):
+                if value.startswith(text):
+                    yield Completion(value, start_position=-len(text))
+            return
+        if text.startswith("/reason-payload "):
+            text = text[len("/reason-payload ") :]
+            for value in CHAT_REASONING_PAYLOAD_CHOICES:
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
             return

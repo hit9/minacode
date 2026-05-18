@@ -87,11 +87,11 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
+Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason-payload off` disables Chat reasoning payloads when a provider/model rejects them. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
 During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
 
 ## Configuration
@@ -99,7 +99,7 @@ During a slow model request, press `Ctrl-G` to cancel that request and resend th
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
 - Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, or `auto`; auto uses exact-host profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
-- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, OpenRouter/OpenCode, and DashScope models use their matching Chat reasoning payload shapes.
+- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, selected OpenCode models, and DashScope models use their matching Chat reasoning payload shapes.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.

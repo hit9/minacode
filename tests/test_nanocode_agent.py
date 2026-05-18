@@ -1519,7 +1519,7 @@ def test_agent_request_uses_configured_thinking_disabled_payload(tmp_path, monke
 
 
 def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp_path, monkeypatch):
-    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple(_chat_response() for _ in range(8)))
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple(_chat_response() for _ in range(10)))
 
     Agent(
         _session(
@@ -1589,6 +1589,26 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
     Agent(
         _session(
             tmp_path,
+            api_url="https://opencode.ai/zen/go/v1",
+            api_key="key",
+            model="deepseek-v4-flash",
+            reasoning_effort="high",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
+            api_url="https://opencode.ai/zen/go/v1",
+            api_key="key",
+            model="kimi-k2.6",
+            reasoning_effort="high",
+            stream=False,
+        )
+    ).request("system", "user")
+    Agent(
+        _session(
+            tmp_path,
             api_url="https://not-openrouter.ai/api/v1",
             api_key="key",
             model="model",
@@ -1615,7 +1635,8 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
     assert payloads[3]["reasoning_effort"] == "max"
     assert payloads[4] == {"model": "glm-5.1", "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}], "stream": False}
     assert payloads[5]["reasoning_effort"] == "medium"
-    for payload in payloads[6:]:
+    assert payloads[6]["reasoning"] == {"effort": "high"}
+    for payload in payloads[7:]:
         assert "reasoning" not in payload
         assert "reasoning_effort" not in payload
         assert "thinking" not in payload
@@ -1626,6 +1647,8 @@ def test_provider_config_auto_resolves_api_and_chat_reasoning_payload_from_profi
     openai_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "auto"})
     openai_reasoning_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "chat", "model": "gpt-5"})
     openrouter_provider = nanocode.ProviderConfig.from_dict({"url": "https://openrouter.ai/api/v1", "api": "auto"})
+    opencode_deepseek_provider = nanocode.ProviderConfig.from_dict({"url": "https://opencode.ai/zen/go/v1", "api": "auto", "model": "deepseek-v4-flash"})
+    opencode_kimi_provider = nanocode.ProviderConfig.from_dict({"url": "https://opencode.ai/zen/go/v1", "api": "auto", "model": "kimi-k2.6"})
     dashscope_provider = nanocode.ProviderConfig.from_dict({"url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "auto", "model": "qwen3.6-plus"})
     dashscope_deepseek_provider = nanocode.ProviderConfig.from_dict({"url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api": "auto", "model": "deepseek-v4-flash"})
     unknown_provider = nanocode.ProviderConfig.from_dict({"url": "https://example.test/v1", "api": "auto"})
@@ -1636,6 +1659,10 @@ def test_provider_config_auto_resolves_api_and_chat_reasoning_payload_from_profi
     assert openai_reasoning_provider.resolved_chat_reasoning_payload() == "reasoning_effort"
     assert openrouter_provider.resolved_api() == "responses"
     assert openrouter_provider.resolved_chat_reasoning_payload() == "reasoning"
+    assert opencode_deepseek_provider.resolved_api() == "chat"
+    assert opencode_deepseek_provider.resolved_chat_reasoning_payload() == "reasoning"
+    assert opencode_kimi_provider.resolved_api() == "chat"
+    assert opencode_kimi_provider.resolved_chat_reasoning_payload() == ""
     assert dashscope_provider.resolved_api() == "chat"
     assert dashscope_provider.resolved_chat_reasoning_payload() == "enable_thinking"
     assert dashscope_deepseek_provider.resolved_api() == "chat"

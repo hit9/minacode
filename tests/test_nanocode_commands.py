@@ -338,6 +338,30 @@ def test_reason_command_back_keeps_current_reasoning(tmp_path):
     assert session.config.provider.reasoning_effort == "medium"
 
 
+def test_reason_payload_command_shows_and_sets_chat_payload(tmp_path):
+    session = make_session(tmp_path, model="old")
+    dispatcher = CommandDispatcher(Agent(session))
+
+    show_result = dispatcher.dispatch("/reason-payload")
+    off_result = dispatcher.dispatch("/reason-payload off")
+    reasoning_result = dispatcher.dispatch("/reason-payload reasoning")
+    auto_result = dispatcher.dispatch("/reason-payload auto")
+    bad_result = dispatcher.dispatch("/reason-payload bad")
+
+    assert show_result.message == "\n".join(
+        [
+            "provider.chat_reasoning_payload: auto",
+            "provider.resolved_chat_reasoning_payload: off",
+            "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]",
+        ]
+    )
+    assert off_result.message == "Set provider.chat_reasoning_payload = off"
+    assert reasoning_result.message == "Set provider.chat_reasoning_payload = reasoning"
+    assert auto_result.message == "Set provider.chat_reasoning_payload = auto"
+    assert bad_result.message == "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+    assert session.config.provider.chat_reasoning_payload == "auto"
+
+
 def test_model_command_selects_from_available_models(tmp_path):
     session = make_session(tmp_path, model="old")
     session.config.provider.available_models = ("old", "new-model")
