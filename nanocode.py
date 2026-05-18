@@ -7681,14 +7681,14 @@ class AgentLoop:
             print_formatted_text(FormattedText([("ansibrightblack", "queued: " + text)]), output=self.status_bar.output)
 
         def queue_text(event, text: str) -> None:
+            buffer.reset()
+            event.app.invalidate()
             if not text:
                 return
             self._append_queued_input(text)
-            buffer.reset()
             terminal_task = run_in_terminal(lambda: print_queued(text), in_executor=False)
             if inspect.iscoroutine(terminal_task):
                 event.app.create_background_task(terminal_task)
-            event.app.invalidate()
 
         @bindings.add("enter", eager=True)
         def _accept(event):

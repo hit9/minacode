@@ -600,6 +600,51 @@ def test_agent_loop_clears_queued_input_on_cancel(tmp_path, monkeypatch):
     assert "queued cleared: 1" in output
 
 
+def test_agent_loop_runtime_ui_empty_enter_only_refreshes(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakePromptApp:
+        def __init__(self):
+            self.invalidated = 0
+            self.background_tasks = []
+
+        def invalidate(self):
+            self.invalidated += 1
+
+        def create_background_task(self, task):
+            self.background_tasks.append(task)
+
+    class FakeEvent:
+        def __init__(self, app):
+            self.app = app
+
+    def handler(bindings, key):
+        return next(binding.handler for binding in bindings.bindings if binding.keys == (key,))
+
+    prompt_app = FakePromptApp()
+
+    class FakeApplication:
+        def __init__(self, **kwargs):
+            self.bindings = kwargs["key_bindings"]
+
+        def run(self, handle_sigint=False):
+            handler(self.bindings, nanocode.Keys.ControlM)(FakeEvent(prompt_app))
+
+    terminal_calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
+    monkeypatch.setattr(nanocode, "run_in_terminal", lambda *args, **kwargs: terminal_calls.append((args, kwargs)))
+
+    loop._run_runtime_ui()
+
+    assert loop._pop_queued_input() is None
+    assert prompt_app.invalidated == 1
+    assert prompt_app.background_tasks == []
+    assert terminal_calls == []
+
+
 def test_agent_loop_runtime_ui_pause_restarts_for_confirm(tmp_path, monkeypatch):
     class FakeAgent:
         def __init__(self):
