@@ -251,6 +251,9 @@ class Hypothesis:
 
     @classmethod
     def from_json(cls, value: JsonValue) -> "Hypothesis | None":
+        if isinstance(value, str):
+            text = value.strip()
+            return cls(text=text) if text else None
         item = _json_dict(value)
         text = _json_str(item.get("text")) or ""
         if not text:
@@ -564,7 +567,7 @@ class RuntimeSettings:
     max_agent_steps: int = 100
     plan_timeout: int = 360
     plan_first_token_timeout: int = 180
-    auto_clean_recent: str = "3d"
+    auto_clean_recent: str = "1d"
     yolo: bool = False
     plan_mode: bool = False
     debug: bool = False
@@ -578,7 +581,7 @@ class RuntimeSettings:
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
             plan_timeout=max(1, Config.int(runtime, "plan_timeout", 360) or 0),
             plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 180) or 0),
-            auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "3d")),
+            auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "1d")),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
             plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
@@ -728,8 +731,8 @@ compact_at = 50
 max_agent_steps = 100
 plan_timeout = 360
 plan_first_token_timeout = 180
-# Automatically delete tool-result logs older than this from inactive sessions. Use "off" to disable.
-auto_clean_recent = "3d"
+# Automatically delete inactive session directories older than this. Use "off" to disable.
+auto_clean_recent = "1d"
 yolo = false
 plan_mode = false
 """
@@ -933,6 +936,7 @@ class RuntimeState:
     turn_tool_calls: int = 0
     session_tool_calls: int = 0
     turn_model_calls: int = 0
+    debug_log_count: int = 0
 
 
 @dataclass
@@ -1025,6 +1029,188 @@ class Session:
     def missing_required_config(self) -> list[str]:
         provider = self.config.provider
         return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
+
+
+class DebugTrace:
+    STRING_LIMIT: ClassVar[int] = 20_000
+
+    @classmethod
+    def value(cls, value: Any) -> JsonValue:
+        if isinstance(value, dict):
+            return {str(key): cls.value(item) for key, item in value.items()}
+        if isinstance(value, list | tuple):
+            return [cls.value(item) for item in value]
+        if isinstance(value, str):
+            return value if len(value) <= cls.STRING_LIMIT else value[: cls.STRING_LIMIT] + "...<truncated>"
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        return str(value)
+
+    @classmethod
+    def write(cls, session: Session, *, activity: str, label: str, payload: JsonValue) -> str:
+        if not session.settings.debug:
+            return ""
+        session.state.debug_log_count += 1
+        directory = session.debug_dir()
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        safe_activity = re.sub(r"[^A-Za-z0-9_.-]+", "-", activity or "debug")
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
+        filepath = os.path.join(directory, f"{timestamp}-{session.state.debug_log_count:04d}-{safe_activity}-{safe_label}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(cls.value(payload), f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        return filepath
+
+    @staticmethod
+    def response_summary(response: Json) -> Json:
+        actions = [_json_dict(action) for action in _json_list(response.get("actions"))]
+        return {
+            "actions_len": len(actions),
+            "action_types": [_json_str(action.get("type")) or "(missing)" for action in actions],
+            "tool_names": [_json_str(action.get("name")) or "" for action in actions if _json_str(action.get("type")) == "tool"],
+            "assistant_text_len": len(_json_str(response.get("_assistant_text")) or ""),
+            "format_error": _json_str(response.get("_format_error")) or "",
+        }
+
+    @staticmethod
+    def tool_names(tool_schemas: list[Json] | None) -> list[str]:
+        names = []
+        for schema in tool_schemas or []:
+            function = _json_dict(schema.get("function")) or schema
+            names.append(_json_str(function.get("name")) or "(unknown)")
+        return names
+
+    @classmethod
+    def model_request(
+        cls,
+        session: Session,
+        *,
+        activity: str,
+        api: str,
+        model: str,
+        stream: bool,
+        params: Json,
+        tool_schemas: list[Json] | None,
+    ) -> None:
+        cls.write(
+            session,
+            activity=activity,
+            label="model-request",
+            payload={
+                "api": api,
+                "model": model,
+                "stream": stream,
+                "tool_names": cls.tool_names(tool_schemas),
+                "param_keys": sorted(params),
+                "params": {key: value for key, value in params.items() if key not in {"messages", "instructions", "input", "tools"}},
+            },
+        )
+
+    @classmethod
+    def prompt(cls, session: Session, *, activity: str, messages: list[Json]) -> str:
+        if not session.settings.debug:
+            return ""
+        session.state.debug_prompt_count += 1
+        directory = session.debug_dir()
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        filepath = os.path.join(directory, f"{timestamp}-{session.state.debug_prompt_count:04d}-{activity or 'request'}.txt")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(cls.format_prompt(messages))
+        return filepath
+
+    @staticmethod
+    def format_prompt(messages: list[Json]) -> str:
+        lines = []
+        for index, message in enumerate(messages, start=1):
+            role = _json_str(message.get("role")) or "(unknown)"
+            content = message.get("content")
+            lines.append(f"--- {role} message {index} ---")
+            lines.append(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2))
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def model_response(cls, session: Session, *, activity: str, api: str, stream: bool, raw: JsonValue, parsed: Json) -> None:
+        cls.write(
+            session,
+            activity=activity,
+            label="model-response",
+            payload={"api": api, "stream": stream, "parsed": cls.response_summary(parsed), "raw": raw},
+        )
+
+    @classmethod
+    def stream_action(cls, session: Session, *, activity: str, action: Json) -> None:
+        cls.write(
+            session,
+            activity=activity,
+            label="stream-action",
+            payload={"action": cls.response_summary({"actions": [action]})},
+        )
+
+    @classmethod
+    def loop_event(
+        cls,
+        agent: Any,
+        label: str,
+        *,
+        index: int,
+        response: Json,
+        result: Any | None = None,
+        committed: bool | None = None,
+    ) -> None:
+        payload: Json = cls._agent_payload(agent)
+        payload.update({"step": index, "response": cls.response_summary(response)})
+        if result is not None:
+            payload["result"] = {"done": result.done, "value_type": type(result.value).__name__}
+        if committed is not None:
+            payload["committed"] = committed
+        cls.write(agent.session, activity="agent", label=label, payload=payload)
+
+    @classmethod
+    def handle_event(
+        cls,
+        agent: Any,
+        label: str,
+        ctx: Any,
+        response: Json,
+        *,
+        result: Any | None = None,
+        extra: Json | None = None,
+    ) -> None:
+        payload = cls._agent_payload(agent)
+        payload.update(
+            {
+                "goal_reached": agent.blackboard.goal_reached,
+                "ctx": {
+                    "actions": len(ctx.actions),
+                    "tool_calls": len(ctx.tool_calls),
+                    "assistant_text_len": len(ctx.assistant_text),
+                    "completion_message": bool(ctx.completion_message),
+                    "has_goal_action": ctx.has_goal_action,
+                    "has_plan_action": ctx.has_plan_action,
+                    "has_state_update_action": ctx.has_state_update_action,
+                    "state_or_work_requested": ctx.state_or_work_requested,
+                },
+                "response": cls.response_summary(response),
+            }
+        )
+        if result is not None:
+            payload["result"] = {"done": result.done, "value_type": type(result.value).__name__}
+        if extra:
+            payload.update(extra)
+        cls.write(agent.session, activity="agent", label=label, payload=payload)
+
+    @staticmethod
+    def _agent_payload(agent: Any) -> Json:
+        return {
+            "mode": agent.mode,
+            "task_code": agent.blackboard.task_code,
+            "goal": agent.blackboard.goal,
+            "plan_items": len(agent.blackboard.plan),
+            "feedback_tail": agent.agent_feedback_errors[-3:],
+        }
 
 
 ############################
@@ -1436,6 +1622,12 @@ class SessionLock:
         fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
         self.file.close()
         self.file = None
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
     def __enter__(self) -> Self:
         self.acquire()
@@ -1467,7 +1659,7 @@ class CleanResult:
     skipped: int = 0
 
 
-class SessionLogCleaner:
+class SessionCleaner:
     def __init__(self, session: Session):
         self.session = session
 
@@ -1477,27 +1669,23 @@ class SessionLogCleaner:
         if not os.path.isdir(sessions_dir):
             return result
         cutoff = time.time() - older_than_seconds if older_than_seconds > 0 else 0.0
-        for session_name in os.listdir(sessions_dir):
+        for session_name in sorted(os.listdir(sessions_dir)):
             session_dir = os.path.join(sessions_dir, session_name)
             if not os.path.isdir(session_dir):
+                continue
+            if cutoff and os.path.getmtime(session_dir) >= cutoff:
+                continue
+            if session_name == self.session.session_id:
+                result.skipped += 1
                 continue
             if SessionLock.is_locked(os.path.join(session_dir, "session.lock")):
                 result.skipped += 1
                 continue
-            tool_results_dir = os.path.join(session_dir, "tool_results")
-            if not os.path.isdir(tool_results_dir):
-                continue
-            for name in os.listdir(tool_results_dir):
-                path = os.path.join(tool_results_dir, name)
-                if not name.endswith(".log") or not os.path.isfile(path):
-                    continue
-                if cutoff and os.path.getmtime(path) >= cutoff:
-                    continue
-                try:
-                    os.remove(path)
-                    result.cleaned += 1
-                except OSError:
-                    result.failed += 1
+            try:
+                shutil.rmtree(session_dir)
+                result.cleaned += 1
+            except OSError:
+                result.failed += 1
         return result
 
 
@@ -2898,6 +3086,32 @@ TOOL_STRING_SCHEMA: Json = {"type": "string"}
 TOOL_NULLABLE_STRING_SCHEMA: Json = {"type": ["string", "null"]}
 TOOL_ITEMS_SCHEMA: Json = {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA}
 TOOL_STRING_LIST_SCHEMA: Json = {"type": "array", "items": {"type": "string"}}
+TOOL_PLAN_ITEMS_SCHEMA: Json = {
+    "type": "array",
+    "items": _tool_object_schema(
+        {
+            "op": {"type": ["string", "null"], "enum": ["add", "update", "remove", None]},
+            "id": TOOL_NULLABLE_STRING_SCHEMA,
+            "text": TOOL_NULLABLE_STRING_SCHEMA,
+            "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES, None]},
+            "context": TOOL_NULLABLE_STRING_SCHEMA,
+        },
+        [],
+    ),
+}
+TOOL_HYPOTHESIS_ITEMS_SCHEMA: Json = {
+    "type": "array",
+    "items": _tool_object_schema(
+        {
+            "id": TOOL_NULLABLE_STRING_SCHEMA,
+            "text": TOOL_NULLABLE_STRING_SCHEMA,
+            "status": {"type": ["string", "null"], "enum": [*ALL_HYPOTHESIS_STATUSES, None]},
+            "source": TOOL_STRING_LIST_SCHEMA,
+            "context": TOOL_NULLABLE_STRING_SCHEMA,
+        },
+        [],
+    ),
+}
 
 
 STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
@@ -2911,8 +3125,8 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         },
         ["text", "complete", "message_for_complete"],
     ),
-    "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_ITEMS_SCHEMA}, ["items"]),
-    "hypothesis": ("Update investigation hypotheses.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
+    "hypothesis": ("Update investigation hypotheses.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "stable_knowledge": ("Record rare reusable codebase facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
@@ -3538,7 +3752,8 @@ class ModelClient:
             if api == "responses"
             else self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas, required_tool=required_tool)
         )
-        self._write_debug_prompt(activity=activity, messages=messages)
+        DebugTrace.prompt(self.session, activity=activity, messages=messages)
+        DebugTrace.model_request(self.session, activity=activity, api=api, model=model, stream=stream, params=params, tool_schemas=tool_schemas)
         client = self._client(config, timeout=timeout)
         request_elapsed = 0.0
         try:
@@ -3562,6 +3777,7 @@ class ModelClient:
                             timeout=timeout,
                             request_deadline=request_deadline,
                             first_token_timeout=first_token_timeout,
+                            activity=activity,
                             on_stream_action=on_stream_action,
                         )
                         result = {"usage": usage, **response}
@@ -3573,6 +3789,7 @@ class ModelClient:
                             timeout=timeout,
                             request_deadline=request_deadline,
                             first_token_timeout=first_token_timeout,
+                            activity=activity,
                             on_stream_action=on_stream_action,
                         )
                         result = {"usage": usage, **response}
@@ -3640,12 +3857,18 @@ class ModelClient:
 
         self._record_usage(_json_dict(result.get("usage") if isinstance(result, dict) else None), config, elapsed=request_elapsed)
         if tool_schemas and isinstance(result.get("actions"), list):
-            return self._action_response(_json_list(result.get("actions")), _json_str(result.get("_assistant_text")) or "")
+            parsed = self._action_response(_json_list(result.get("actions")), _json_str(result.get("_assistant_text")) or "")
+            DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
+            return parsed
         if not stream:
             content = self._responses_content(result) if api == "responses" else self._message_content(result)
         if content is None:
-            return self._invalid_model_response(self._format_missing_message_content(result))
-        return {"actions": [], "_assistant_text": content}
+            parsed = self._invalid_model_response(self._format_missing_message_content(result))
+            DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
+            return parsed
+        parsed = {"actions": [], "_assistant_text": content}
+        DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
+        return parsed
 
     def _client(self, config: ProviderConfig, *, timeout: int) -> OpenAI:
         return OpenAI(
@@ -3715,6 +3938,7 @@ class ModelClient:
         timeout: int,
         request_deadline: float,
         first_token_timeout: int | None,
+        activity: str,
         on_stream_action: Callable[[Json], bool] | None = None,
     ) -> tuple[Json, Json]:
         usage: Json = {}
@@ -3723,56 +3947,75 @@ class ModelClient:
         first_output_seen = False
 
         stream_params = dict(params)
-        stream_params.pop("stream", None)
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         stopped = False
-        with client.beta.chat.completions.stream(**stream_params, timeout=timeout) as stream:
-            for event in stream:
-                data = self._sdk_json(event)
-                event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
-                if event_type == "content.delta":
-                    text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
+        tool_calls: dict[int, Json] = {}
+        for event in client.chat.completions.create(**stream_params, timeout=timeout):
+            data = self._sdk_json(event)
+            event_usage = _json_dict(data.get("usage"))
+            if event_usage:
+                usage = event_usage
+            for choice in _json_list(data.get("choices")):
+                delta = _json_dict(_json_dict(choice).get("delta"))
+                content = delta.get("content")
+                output_chars = self._stream_output_chars(delta)
+                if output_chars > 0:
                     first_output_seen = self._mark_stream_output(
-                        len(text),
+                        output_chars,
                         first_output_seen,
                         request_deadline=request_deadline,
                         first_token_timeout=first_token_timeout,
                     )
-                    if text:
-                        text_parts.append(text)
-                    continue
-                if event_type == "tool_calls.function.arguments.delta":
-                    first_output_seen = self._mark_stream_output(
-                        len(str(getattr(event, "arguments_delta", "") or _json_str(data.get("arguments_delta")) or "")),
-                        first_output_seen,
-                        request_deadline=request_deadline,
-                        first_token_timeout=first_token_timeout,
-                    )
-                    continue
-                if event_type != "tool_calls.function.arguments.done":
-                    continue
-                action = self._action_from_function_call(
-                    str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
-                    str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
-                )
-                if text_parts and on_stream_action is not None:
-                    action["_assistant_text"] = "".join(text_parts).strip()
-                    text_parts.clear()
-                actions.append(action)
-                stopped, request_deadline = self._call_stream_action(
-                    on_stream_action,
-                    action,
-                    request_deadline=request_deadline,
-                    first_token_timeout=first_token_timeout,
-                )
-                if stopped:
-                    break
-            if not stopped:
-                final = self._sdk_json(stream.get_final_completion())
-                usage = _json_dict(final.get("usage"))
-                if not actions:
-                    return self._chat_tool_response(final), usage
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
+                self._accumulate_chat_tool_calls(tool_calls, delta)
+        for index in sorted(tool_calls):
+            item = tool_calls[index]
+            action = self._action_from_function_call(_json_str(item.get("name")) or "", _json_str(item.get("arguments")) or "{}")
+            DebugTrace.stream_action(self.session, activity=activity, action=action)
+            if text_parts and on_stream_action is not None:
+                action["_assistant_text"] = "".join(text_parts).strip()
+                text_parts.clear()
+            actions.append(action)
+            stopped, request_deadline = self._call_stream_action(
+                on_stream_action,
+                action,
+                request_deadline=request_deadline,
+                first_token_timeout=first_token_timeout,
+            )
+            if stopped:
+                break
         return self._action_response(actions, "".join(text_parts)), usage
+
+    def _accumulate_chat_tool_calls(self, tool_calls: dict[int, Json], delta: Json) -> None:
+        for raw in _json_list(delta.get("tool_calls")):
+            call = _json_dict(raw)
+            index = self._stream_list_index(call.get("index"), len(tool_calls))
+            function = _json_dict(call.get("function"))
+            item = tool_calls.setdefault(index, {"name": "", "arguments": ""})
+            name = _json_str(function.get("name"))
+            arguments = _json_str(function.get("arguments"))
+            if name:
+                item["name"] = name
+            if arguments:
+                item["arguments"] = _json_str(item.get("arguments")) + arguments
+        function_call = _json_dict(delta.get("function_call"))
+        if function_call:
+            item = tool_calls.setdefault(0, {"name": "", "arguments": ""})
+            name = _json_str(function_call.get("name"))
+            arguments = _json_str(function_call.get("arguments"))
+            if name:
+                item["name"] = name
+            if arguments:
+                item["arguments"] = _json_str(item.get("arguments")) + arguments
+
+    @staticmethod
+    def _stream_list_index(value: JsonValue, fallback: int) -> int:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return fallback
 
     def _read_responses_tool_stream(
         self,
@@ -3782,6 +4025,7 @@ class ModelClient:
         timeout: int,
         request_deadline: float,
         first_token_timeout: int | None,
+        activity: str,
         on_stream_action: Callable[[Json], bool] | None = None,
     ) -> tuple[Json, Json]:
         usage: Json = {}
@@ -3790,55 +4034,53 @@ class ModelClient:
         first_output_seen = False
 
         stream_params = dict(params)
-        stream_params.pop("stream", None)
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         stopped = False
-        with client.responses.stream(**stream_params, timeout=timeout) as stream:
-            for event in stream:
-                data = self._sdk_json(event)
-                event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
-                if event_type in ("response.output_text.delta", "response.reasoning.delta"):
-                    text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
-                    first_output_seen = self._mark_stream_output(
-                        len(text),
-                        first_output_seen,
-                        request_deadline=request_deadline,
-                        first_token_timeout=first_token_timeout,
-                    )
-                    if event_type == "response.output_text.delta" and text:
-                        text_parts.append(text)
-                    continue
-                if event_type == "response.function_call_arguments.delta":
-                    first_output_seen = self._mark_stream_output(
-                        len(str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")),
-                        first_output_seen,
-                        request_deadline=request_deadline,
-                        first_token_timeout=first_token_timeout,
-                    )
-                    continue
-                if event_type != "response.function_call_arguments.done":
-                    continue
-                action = self._action_from_function_call(
-                    str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
-                    str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
-                )
-                if text_parts and on_stream_action is not None:
-                    action["_assistant_text"] = "".join(text_parts).strip()
-                    text_parts.clear()
-                actions.append(action)
-                stopped, request_deadline = self._call_stream_action(
-                    on_stream_action,
-                    action,
+        for event in client.responses.create(**stream_params, timeout=timeout):
+            data = self._sdk_json(event)
+            event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
+            self._raise_responses_stream_error(data)
+            event_usage = _json_dict(data.get("usage"))
+            if event_usage:
+                usage = event_usage
+            if event_type == "response.completed":
+                response = _json_dict(data.get("response"))
+                usage = _json_dict(response.get("usage")) or usage
+                if not actions and not text_parts:
+                    content = self._responses_content(response)
+                    if content:
+                        text_parts.append(content)
+                continue
+            if event_type in ("response.output_text.delta", "response.reasoning.delta", "response.function_call_arguments.delta"):
+                text = str(getattr(event, "delta", "") or _json_str(data.get("delta")) or "")
+                first_output_seen = self._mark_stream_output(
+                    len(text),
+                    first_output_seen,
                     request_deadline=request_deadline,
                     first_token_timeout=first_token_timeout,
                 )
-                if stopped:
-                    break
-            if not stopped:
-                final = self._sdk_json(stream.get_final_response())
-                usage = _json_dict(final.get("usage"))
-                if not actions:
-                    return self._responses_tool_response(final), usage
+                if event_type == "response.output_text.delta" and text:
+                    text_parts.append(text)
+                continue
+            if event_type != "response.function_call_arguments.done":
+                continue
+            action = self._action_from_function_call(
+                str(getattr(event, "name", "") or _json_str(data.get("name")) or ""),
+                str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or "{}"),
+            )
+            DebugTrace.stream_action(self.session, activity=activity, action=action)
+            if text_parts and on_stream_action is not None:
+                action["_assistant_text"] = "".join(text_parts).strip()
+                text_parts.clear()
+            actions.append(action)
+            stopped, request_deadline = self._call_stream_action(
+                on_stream_action,
+                action,
+                request_deadline=request_deadline,
+                first_token_timeout=first_token_timeout,
+            )
+            if stopped:
+                break
         return self._action_response(actions, "".join(text_parts)), usage
 
     def _chat_tool_response(self, result: JsonValue) -> Json:
@@ -4101,31 +4343,6 @@ class ModelClient:
                 remaining = first_token_timeout
                 self._timeout_reason = "request first token timeout"
         signal.setitimer(signal.ITIMER_REAL, remaining)
-
-    def _write_debug_prompt(self, *, activity: str, messages: list[Json]) -> str:
-        if not self.session.settings.debug:
-            return ""
-        self.session.state.debug_prompt_count += 1
-        directory = self.session.debug_dir()
-        os.makedirs(directory, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        filepath = os.path.join(directory, f"{timestamp}-{self.session.state.debug_prompt_count:04d}-{activity or 'request'}.txt")
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(self._format_debug_prompt(messages=messages))
-        return filepath
-
-    def _format_debug_prompt(self, *, messages: list[Json]) -> str:
-        lines = []
-        for index, message in enumerate(messages, start=1):
-            role = _json_str(message.get("role")) or "(unknown)"
-            content = message.get("content")
-            lines.append(f"--- {role} message {index} ---")
-            if isinstance(content, str):
-                lines.append(content)
-            else:
-                lines.append(json.dumps(content, ensure_ascii=False, indent=2))
-            lines.append("")
-        return "\n".join(lines).rstrip() + "\n"
 
     def _invalid_model_response(self, content: str, reason: str = "expected a function tool call") -> Json:
         return {
@@ -4773,6 +4990,9 @@ class AgentStateUpdater:
         return changed
 
     def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
+        if isinstance(value, str):
+            text = value.strip()
+            return PlanItem(text=text) if text else None
         item = _json_dict(value)
         text = _json_str(item.get("text"))
         if not text:
@@ -5288,6 +5508,7 @@ class Agent:
                 if on_before_step is not None:
                     on_before_step(index, max_steps)
                 response = self.step(on_message=on_message)
+                DebugTrace.loop_event(self, "loop-step", index=index + 1, response=response)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
@@ -5299,6 +5520,7 @@ class Agent:
                     continue
                 consecutive_format_errors = 0
                 result = on_step(response)
+                DebugTrace.loop_event(self, "loop-result", index=index + 1, response=response, result=result)
                 if result.done:
                     return result.value
             return on_step_limit()
@@ -5319,7 +5541,7 @@ class Agent:
     ) -> JsonValue:
         consecutive_format_errors = 0
         try:
-            for _ in range(max_steps):
+            for index in range(max_steps):
                 result, response, committed = self.stream_step(
                     confirm=confirm,
                     on_auto_approve=on_auto_approve,
@@ -5327,6 +5549,7 @@ class Agent:
                     on_live_done=on_live_done,
                     on_message=on_message,
                 )
+                DebugTrace.loop_event(self, "stream-loop-step", index=index + 1, response=response, result=result, committed=committed)
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
@@ -5473,14 +5696,15 @@ class Agent:
         return "\n".join("- " + error for error in self.observe_feedback_errors)
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
+        is_retry = message.startswith(("Retrying:", "Continuing:"))
         if on_message is None:
             return
-        if message.startswith(("Retrying:", "Continuing:")) and self.session.state.status_notice_until <= time.monotonic():
+        if is_retry and self.session.state.status_notice_until <= time.monotonic():
             self._set_status_notice("err:gate")
         if self.session.settings.debug:
             on_message(debug_message)
             return
-        if not message.startswith(("Retrying:", "Continuing:")):
+        if not is_retry:
             on_message(message)
 
     def _format_gate_user_message(self, prefix: str, format_error: str) -> str:
@@ -5863,9 +6087,15 @@ class Agent:
     def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
         for action in actions:
             action_type = _json_str(action.get("type"))
-            if action_type == "plan" and action.get("mode") != "patch" and any(_json_str(_json_dict(raw).get("text")) for raw in _json_list(action.get("items"))):
+            if action_type == "plan" and action.get("mode") != "patch" and any(self._plan_item_has_text(raw) for raw in _json_list(action.get("items"))):
                 return True
         return False
+
+    @staticmethod
+    def _plan_item_has_text(value: JsonValue) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        return bool(_json_str(_json_dict(value).get("text")))
 
     def _plan_is_complete(self) -> bool:
         return bool(self.blackboard.plan) and all(
@@ -6036,18 +6266,12 @@ class Agent:
     def _handle_text_response(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if ctx.actions or not ctx.assistant_text:
             return None
-        if ctx.state_or_work_requested or self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
-            return self._reject_result(
-                self._remember_agent_error,
-                on_message,
-                self._error("assistant text cannot finish an active task.", self.RULE_FINAL_ACTION),
-                "Retrying: active task is not complete.",
-                "Completion_Gate: assistant text before task completion.",
-            )
-        self.blackboard.task_code = TaskCode.DONE
         self.session.append_conversation(AssistantMessage(content=ctx.assistant_text))
         if on_message is not None:
             on_message(ctx.assistant_text)
+        if self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
+            return AgentRunResult()
+        self.blackboard.task_code = TaskCode.DONE
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
@@ -6090,6 +6314,13 @@ class Agent:
             )
         return False
 
+    def _drop_goal_rewrite_actions(self, ctx: ResponseContext) -> None:
+        def keep(action: Json) -> bool:
+            return not (_json_str(action.get("type")) == "goal" and action.get("complete") is not True)
+
+        ctx.actions[:] = [action for action in ctx.actions if keep(action)]
+        ctx.response["actions"] = [action for action in _json_list(ctx.response.get("actions")) if not isinstance(action, dict) or keep(action)]
+
     def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if (
             self.blackboard.task_code == TaskCode.NEW
@@ -6099,28 +6330,13 @@ class Agent:
             and not ctx.has_plan_action
             and not ctx.has_user_rule_action
         ):
-            self._remember_agent_error(
-                self._error(
-                    "previous task context is still present.",
-                    "emit goal for a new task; otherwise update or confirm the current plan.",
-                )
+            self._warn_agent(
+                "previous task context is still present.",
+                "emit goal for a new task; otherwise update or confirm the current plan.",
             )
-            self._report_gate(
-                on_message,
-                "Retrying: align this request with the task before work.",
-                "GoalPlan_Gate: work before task alignment with previous task context.",
-            )
-            return True
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
-            self._remember_agent_error(
-                self._error("cannot rewrite Goal after the task is active.", "continue the existing Goal/Plan.")
-            )
-            self._report_gate(
-                on_message,
-                "Retrying: current task is already active; continue without rewriting goal.",
-                "GoalPlan_Gate: goal rewrite while task code is " + self.blackboard.task_code + ".",
-            )
-            return True
+            self._warn_agent("rewrote Goal after the task was active.", "replace Plan when the task scope changes.")
+            self._drop_goal_rewrite_actions(ctx)
         if ctx.pending_verify_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
         if (
@@ -6129,20 +6345,10 @@ class Agent:
             and ctx.state_or_work_requested
             and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
         ):
-            return self._reject_agent(
-                on_message,
-                self._error("Goal/Plan required before mutating work.", self.RULE_GOAL_PLAN_FIRST),
-                "Retrying: set goal and plan before tools.",
-                "GoalPlan_Gate: Goal is empty before task state/work.",
-            )
+            self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls)):
-            self._remember_agent_error(self._error("changed Goal without replacing Plan.", "include a full plan action before mutating work."))
-            self._report_gate(
-                on_message,
-                "Retrying: new goal requires a fresh plan.",
-                "GoalPlan_Gate: Goal changed without replacing Plan.",
-            )
-            return True
+            self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
+            self._drop_goal_rewrite_actions(ctx)
         return False
 
     def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
@@ -6154,19 +6360,12 @@ class Agent:
             on_message(ctx.assistant_text)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        has_progress_text = bool(ctx.assistant_text and ctx.actions and not ctx.completion_message)
         if (
             ctx.plan_was_empty
             and not self.blackboard.plan
             and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
         ):
-            return self._reject_result(
-                self._remember_agent_error,
-                on_message,
-                self._error("Plan required before mutating work.", self.RULE_GOAL_PLAN_FIRST),
-                "Retrying: create a short plan before mutating tools.",
-                "GoalPlan_Gate: Plan is empty before mutating tool/verify.",
-            )
+            self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
 
         if (
             ctx.tool_calls
@@ -6186,25 +6385,6 @@ class Agent:
                 )
             else:
                 self._warn_agent("Plan and verification are complete; finish with goal.complete=true when no further work is needed.")
-        if (
-            ctx.state_or_work_requested
-            and not ctx.tool_calls
-            and not ctx.pending_verify_requested
-            and not has_progress_text
-            and not ctx.completion_message
-            and not self.state_updater.changed
-            and not self.blackboard.goal_reached
-        ):
-            rule = "do not repeat unchanged state; call readonly discovery if context is missing, set plan if ready, verify, or finish."
-            if self.blackboard.goal and not self.blackboard.plan:
-                rule = "Goal is already set; do not repeat it. Call readonly discovery if context is missing, or set plan if ready."
-            return self._reject_result(
-                self._remember_agent_error,
-                on_message,
-                self._error("response made no effective state change.", rule),
-                "Retrying: move to the next workflow state.",
-                "Progress_Gate: no effective state change.",
-            )
         if (
             not self.session.settings.plan_mode
             and ctx.has_state_update_action
@@ -6417,15 +6597,6 @@ class Agent:
             self._finish_current_goal()
             return AgentRunResult(done=True, value=ctx.response)
         self.blackboard.goal_reached = False
-        if not ctx.actions:
-            self._remember_agent_error(
-                self._error("no actions while goal is incomplete.", self.RULE_FINAL_ACTION)
-            )
-            self._report_gate(
-                on_message,
-                "Continuing: assistant must set current task's goal.",
-                "GoalPlan_Gate: goal not reached; retrying next useful action.",
-            )
         return AgentRunResult()
 
     def _gate_completion(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
@@ -6567,6 +6738,7 @@ class Agent:
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
         ctx = self._build_response_context(response)
+        DebugTrace.handle_event(self, "handle-start", ctx, response)
         if self.mode == AgentMode.OBSERVE:
             return self._handle_observe_response(
                 ctx,
@@ -6575,13 +6747,16 @@ class Agent:
             )
 
         if self._gate_before_apply(ctx, on_message):
+            DebugTrace.handle_event(self, "handle-gated-before-apply", ctx, response)
             return AgentRunResult()
 
         text_result = self._handle_text_response(ctx, on_message)
         if text_result is not None:
+            DebugTrace.handle_event(self, "handle-text", ctx, response, result=text_result)
             return text_result
 
         forgotten_keys = self.apply_response(response)
+        DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
         self._emit_state_and_text(ctx, on_message)
         self._emit_tool_context_update([], forgotten_keys, on_message)
         if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
@@ -6590,10 +6765,12 @@ class Agent:
             if on_message is not None:
                 on_message(message)
             self._finish_current_goal()
+            DebugTrace.handle_event(self, "handle-user-rule", ctx, response)
             return AgentRunResult(done=True, value=response)
 
         gate_result = self._gate_after_apply(ctx, on_message)
         if gate_result is not None:
+            DebugTrace.handle_event(self, "handle-gated-after-apply", ctx, response, result=gate_result)
             return gate_result
 
         self._promote_required_verification(ctx)
@@ -6605,10 +6782,12 @@ class Agent:
             on_live_done=on_live_done,
             on_message=on_message,
         ):
+            DebugTrace.handle_event(self, "handle-tools", ctx, response)
             return AgentRunResult()
-
         self.runtime.consecutive_tool_turns = 0
-        return self._finish_or_continue(ctx, on_message)
+        result = self._finish_or_continue(ctx, on_message)
+        DebugTrace.handle_event(self, "handle-finish-or-continue", ctx, response, result=result)
+        return result
 
 
 ############################
@@ -6649,7 +6828,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
-    CommandSpec("/clean", "Clean all session tool result logs", "Maintenance", "/clean"),
+    CommandSpec("/clean", "Clean inactive session directories", "Maintenance", "/clean"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
@@ -7106,9 +7285,9 @@ class CommandDispatcher:
             return "Usage: /clean"
         sessions_dir = self.agent.session.data_path("sessions")
         if not os.path.isdir(sessions_dir):
-            return f"No session logs directory found at {sessions_dir}"
-        result = SessionLogCleaner(self.agent.session).clean()
-        msg = f"Cleaned {result.cleaned} log file(s) from {sessions_dir}"
+            return f"No sessions directory found at {sessions_dir}"
+        result = SessionCleaner(self.agent.session).clean()
+        msg = f"Cleaned {result.cleaned} session(s) from {sessions_dir}"
         if result.skipped:
             msg += f" ({result.skipped} active session(s) skipped)"
         if result.failed:
@@ -7411,7 +7590,7 @@ class AgentLoop:
     def _auto_clean_logs(self) -> None:
         seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
         if seconds > 0:
-            SessionLogCleaner(self.agent.session).clean(older_than_seconds=seconds)
+            SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
 
     def _prompt(self) -> str:
         labels = []

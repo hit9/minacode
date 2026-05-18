@@ -1217,6 +1217,29 @@ def test_agent_request_sends_function_tool_schema_and_parses_tool_call(tmp_path,
     assert session.state.last_total_tokens == 5
 
 
+def test_agent_accepts_string_plan_items_from_function_call(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    response = {"actions": [{"type": "plan", "mode": "replace", "items": ["Create demo", "Run smoke test"]}]}
+
+    assert agent._build_response_context(response).has_fresh_plan_action is True
+    agent.apply_response(response)
+
+    assert agent.blackboard.plan == [
+        nanocode.PlanItem(text="Create demo"),
+        nanocode.PlanItem(text="Run smoke test"),
+    ]
+
+
+def test_agent_accepts_string_hypothesis_items_from_function_call(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.apply_response({"actions": [{"type": "hypothesis", "items": ["Admin filter excludes history"]}]})
+
+    assert agent.blackboard.hypotheses == [
+        nanocode.Hypothesis(text="Admin filter excludes history"),
+    ]
+
+
 def test_function_tool_schemas_define_items_for_every_array():
     def walk(value, path="schema"):
         if isinstance(value, dict):
@@ -1263,36 +1286,21 @@ def test_agent_request_responses_api_parses_function_call(tmp_path, monkeypatch)
 def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypatch):
     calls = []
 
-    class FakeStream:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def __iter__(self):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
             return iter(
                 [
-                    {"type": "content.delta", "delta": "Reading."},
-                    {
-                        "type": "tool_calls.function.arguments.done",
-                        "name": "Read",
-                        "arguments": '{"intention":"read sample","args":["sample.txt","0","1"]}',
-                    },
+                    _stream_chunk({"content": "Reading."}),
+                    _stream_chunk({"tool_calls": [{"index": "0", "function": {"name": "Read", "arguments": '{"intention":"read sample",'}}]}),
+                    _stream_chunk({"tool_calls": [{"index": "0", "function": {"arguments": '"args":["sample.txt","0","1"]}'}}]}),
+                    _stream_chunk(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, choices=False),
                 ]
             )
 
-        def get_final_completion(self):
-            return {"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, "choices": [{"message": {}}]}
-
-    class FakeStreamCompletions:
-        def stream(self, **kwargs):
-            calls.append(kwargs)
-            return FakeStream()
-
     class FakeOpenAI:
         def __init__(self, **_kwargs):
-            self.beta = type("FakeBeta", (), {"chat": type("FakeChat", (), {"completions": FakeStreamCompletions()})()})()
+            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
 
     monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
@@ -1300,6 +1308,7 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
     response = Agent(session).request("system", "user", tool_schemas=[nanocode.ReadTool.tool_schema()])
 
     assert calls[0]["tools"][0]["function"]["name"] == "Read"
+    assert calls[0]["stream"] is True
     assert response == {
         "actions": [
             {
@@ -1317,14 +1326,9 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
 def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, monkeypatch):
     response_calls = []
 
-    class FakeStream:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def __iter__(self):
+    class FakeResponses:
+        def create(self, **kwargs):
+            response_calls.append(kwargs)
             return iter(
                 [
                     {"type": "response.output_text.delta", "delta": "Recording."},
@@ -1333,16 +1337,9 @@ def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, mon
                         "name": "known",
                         "arguments": '{"items":["Project uses pytest."]}',
                     },
+                    {"type": "response.completed", "response": {"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}},
                 ]
             )
-
-        def get_final_response(self):
-            return {"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}, "output": []}
-
-    class FakeResponses:
-        def stream(self, **kwargs):
-            response_calls.append(kwargs)
-            return FakeStream()
 
     class FakeOpenAI:
         def __init__(self, **_kwargs):
@@ -1354,6 +1351,7 @@ def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, mon
     response = Agent(session).request("system", "user", tool_schemas=[nanocode._state_tool_schema("known")])
 
     assert response_calls[0]["tools"][0]["name"] == "known"
+    assert response_calls[0]["stream"] is True
     assert response == {"actions": [{"type": "known", "items": ["Project uses pytest."]}], "_assistant_text": "Recording."}
     assert session.state.last_total_tokens == 5
 
@@ -2979,7 +2977,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     assert "previous task context is still present" in " ".join(agent.agent_feedback_errors)
 
 
-def test_agent_run_rejects_goal_rewrite_after_task_is_working(tmp_path):
+def test_agent_run_ignores_goal_rewrite_after_task_is_working(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -3019,7 +3017,7 @@ def test_agent_run_rejects_goal_rewrite_after_task_is_working(tmp_path):
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
-    assert "cannot rewrite Goal" in " ".join(agent.agent_feedback_errors)
+    assert "rewrote Goal after the task was active" in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
@@ -3048,7 +3046,7 @@ def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
     assert agent.agent_feedback_errors == []
 
 
-def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):
+def test_agent_ignores_goal_rewrite_after_task_is_working(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.task_code = nanocode.TaskCode.WORKING
     agent.blackboard.goal = "read sample"
@@ -3059,7 +3057,7 @@ def test_agent_rejects_goal_rewrite_after_task_is_working(tmp_path):
     assert result.done is False
     assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
-    assert "cannot rewrite Goal" in " ".join(agent.agent_feedback_errors)
+    assert "rewrote Goal after the task was active" in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
@@ -3133,28 +3131,6 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert "Continuing: goal is not complete yet." not in messages
-
-
-def test_agent_run_rejects_no_effective_state_change(tmp_path):
-    class FakeModelClient:
-        def __init__(self):
-            self.responses = [
-                {"actions": [{"type": "goal", "text": "answer", "complete": False}]},
-                {"actions": _final_actions()},
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
-            return self.responses.pop(0)
-
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    _seed_plan(agent, "answer")
-    agent.model_client = FakeModelClient()
-
-    response = agent.run("answer")
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert any("response made no effective state change" in error for error in agent.agent_feedback_errors)
 
 
 def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
@@ -3280,40 +3256,6 @@ def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
     assert len(agent.model_client.user_prompts) == 3
     assert any("Plan is complete but verification is not recorded" in error for error in agent.agent_feedback_errors)
     assert agent.blackboard.verification.status == VerificationStatus.DONE
-
-
-def test_agent_run_retries_noop_state_only_response(tmp_path):
-    class FakeModelClient:
-        def __init__(self):
-            self.user_prompts = []
-            self.responses = [
-                {"actions": [{"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "doing"}]}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]}]},
-                {"actions": [{"type": "forget", "source": ["tr.1"], "reason": "read result is not needed"}]},
-                {
-                    "actions": [
-                        {"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "sample inspected"}]},
-                        {"type": "verify", "status": "passed", "context": "no code change"},
-                        {"type": "goal", "text": "inspect sample", "complete": True, "message_for_complete": "done"},
-                    ]
-                },
-            ]
-
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
-            self.user_prompts.append(user_prompt)
-            return self.responses.pop(0)
-
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-    agent.blackboard.goal = "inspect sample"
-    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect sample", status=nanocode.PlanStatus.DOING)]
-    agent.model_client = FakeModelClient()
-
-    response = agent.run("inspect sample")
-
-    assert response["actions"][-1]["message_for_complete"] == "done"
-    assert any("response made no effective state change" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_allows_tool_after_completed_plan_and_verification(tmp_path):
@@ -3497,7 +3439,7 @@ def test_agent_run_allows_assistant_text_without_task_context(tmp_path):
     assert session.state.conversation[-1].content == "hello"
 
 
-def test_agent_run_retries_assistant_text_with_unfinished_task_context(tmp_path):
+def test_agent_run_treats_assistant_text_as_progress_with_unfinished_task_context(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -3527,9 +3469,10 @@ def test_agent_run_retries_assistant_text_with_unfinished_task_context(tmp_path)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert messages[-1] == "done"
+    assert "done too early" in messages
     assert len(agent.model_client.user_prompts) == 2
-    assert "done too early" not in [item.content for item in session.state.conversation]
-    assert any("assistant text cannot finish an active task" in error for error in agent.agent_feedback_errors)
+    assert "done too early" in [item.content for item in session.state.conversation]
+    assert not any("assistant text cannot finish an active task" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):

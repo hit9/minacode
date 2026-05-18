@@ -3,7 +3,7 @@ import shutil
 import time
 
 import nanocode
-from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionLogCleaner, UserMessage
+from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage, RuntimeSettings, Session, SessionLock, SessionCleaner, UserMessage
 
 
 class FakeModelClient:
@@ -153,7 +153,7 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "runtime.max_agent_steps: 100" in result.message
     assert "runtime.plan_timeout: 360" in result.message
     assert "runtime.plan_first_token_timeout: 180" in result.message
-    assert "runtime.auto_clean_recent: 3d" in result.message
+    assert "runtime.auto_clean_recent: 1d" in result.message
     assert "runtime.plan_mode: off" in result.message
 
 
@@ -555,90 +555,69 @@ def test_help_question_runs_agent_with_source_aware_prompt(tmp_path):
     assert len(prompts) == 1
 
 
-def test_clean_command_removes_all_session_log_files(tmp_path):
+def test_clean_command_removes_inactive_session_directories(tmp_path):
     session = Session(cwd=str(tmp_path))
-    tool_results_dir = session.tool_results_dir()
-    other_tool_results_dir = session.data_path("sessions", "other-session", "tool_results")
-    os.makedirs(tool_results_dir, exist_ok=True)
-    os.makedirs(other_tool_results_dir, exist_ok=True)
-
-    # Create some log files and a non-log file
-    log1 = os.path.join(tool_results_dir, "test1.log")
-    log2 = os.path.join(tool_results_dir, "test2.log")
-    log3 = os.path.join(other_tool_results_dir, "test3.log")
-    other = os.path.join(tool_results_dir, "other.txt")
-    with open(log1, "w"):
-        pass
-    with open(log2, "w"):
-        pass
-    with open(log3, "w"):
-        pass
-    with open(other, "w"):
-        pass
-
+    current_dir = session.session_dir()
+    old_dir = session.data_path("sessions", "old-session")
+    recent_dir = session.data_path("sessions", "recent-session")
+    for path in (current_dir, old_dir, recent_dir):
+        os.makedirs(path, exist_ok=True)
     dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 3 log file(s)" in result.message
-    assert not os.path.exists(log1)
-    assert not os.path.exists(log2)
-    assert not os.path.exists(log3)
-    assert os.path.exists(other)
+    assert "Cleaned 2 session(s)" in result.message
+    assert os.path.exists(current_dir)
+    assert not os.path.exists(old_dir)
+    assert not os.path.exists(recent_dir)
 
 
 def test_clean_command_skips_active_sessions(tmp_path):
     session = Session(cwd=str(tmp_path))
-    active_tool_results_dir = session.tool_results_dir()
-    stale_tool_results_dir = session.data_path("sessions", "stale-session", "tool_results")
-    os.makedirs(active_tool_results_dir, exist_ok=True)
-    os.makedirs(stale_tool_results_dir, exist_ok=True)
+    active_dir = session.data_path("sessions", "active-session")
+    stale_dir = session.data_path("sessions", "stale-session")
+    os.makedirs(active_dir, exist_ok=True)
+    os.makedirs(stale_dir, exist_ok=True)
+    old_time = time.time() - 2 * 86400
 
-    active_log = os.path.join(active_tool_results_dir, "active.log")
-    stale_log = os.path.join(stale_tool_results_dir, "stale.log")
-    with open(active_log, "w"):
-        pass
-    with open(stale_log, "w"):
-        pass
-
-    with SessionLock(session.lock_path()):
+    with SessionLock(os.path.join(active_dir, "session.lock")):
+        os.utime(active_dir, (old_time, old_time))
+        os.utime(stale_dir, (old_time, old_time))
         dispatcher = CommandDispatcher(Agent(session))
         result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 1 log file(s)" in result.message
+    assert "Cleaned 1 session(s)" in result.message
     assert "1 active session(s) skipped" in result.message
-    assert os.path.exists(active_log)
-    assert not os.path.exists(stale_log)
+    assert os.path.exists(active_dir)
+    assert not os.path.exists(stale_dir)
 
 
-def test_session_log_cleaner_removes_only_old_logs_from_inactive_sessions(tmp_path):
+def test_session_cleaner_removes_only_old_inactive_sessions(tmp_path):
     session = Session(cwd=str(tmp_path))
-    old_dir = session.data_path("sessions", "old-session", "tool_results")
-    recent_dir = session.data_path("sessions", "recent-session", "tool_results")
-    active_dir = session.tool_results_dir()
-    os.makedirs(old_dir, exist_ok=True)
-    os.makedirs(recent_dir, exist_ok=True)
-    os.makedirs(active_dir, exist_ok=True)
-
-    old_log = os.path.join(old_dir, "old.log")
-    recent_log = os.path.join(recent_dir, "recent.log")
-    active_old_log = os.path.join(active_dir, "active-old.log")
-    for path in (old_log, recent_log, active_old_log):
-        with open(path, "w"):
-            pass
+    old_dir = session.data_path("sessions", "old-session")
+    recent_dir = session.data_path("sessions", "recent-session")
+    current_dir = session.session_dir()
+    for path in (old_dir, recent_dir, current_dir):
+        os.makedirs(path, exist_ok=True)
     old_time = time.time() - 10 * 86400
-    os.utime(old_log, (old_time, old_time))
-    os.utime(active_old_log, (old_time, old_time))
+    os.utime(old_dir, (old_time, old_time))
+    os.utime(current_dir, (old_time, old_time))
 
     with SessionLock(session.lock_path()):
-        result = SessionLogCleaner(session).clean(older_than_seconds=3 * 86400)
+        result = SessionCleaner(session).clean(older_than_seconds=3 * 86400)
 
     assert result.cleaned == 1
-    assert result.skipped == 1
-    assert not os.path.exists(old_log)
-    assert os.path.exists(recent_log)
-    assert os.path.exists(active_old_log)
+    assert not os.path.exists(old_dir)
+    assert os.path.exists(recent_dir)
+    assert os.path.exists(current_dir)
+
+
+def test_session_lock_removes_lock_file_on_release(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    with SessionLock(session.lock_path()):
+        assert os.path.exists(session.lock_path())
+    assert not os.path.exists(session.lock_path())
 
 
 def test_clean_command_no_directory(tmp_path):
@@ -651,25 +630,23 @@ def test_clean_command_no_directory(tmp_path):
     result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "No session logs directory found" in result.message
+    assert "No sessions directory found" in result.message
 
 
 def test_clean_command_empty_directory(tmp_path):
     session = Session(cwd=str(tmp_path))
-    tool_results_dir = session.tool_results_dir()
-    os.makedirs(tool_results_dir, exist_ok=True)
+    os.makedirs(session.session_dir(), exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 0 log file(s)" in result.message
+    assert "Cleaned 0 session(s)" in result.message
 
 
 def test_clean_command_with_args_returns_usage(tmp_path):
     session = Session(cwd=str(tmp_path))
-    tool_results_dir = session.tool_results_dir()
-    os.makedirs(tool_results_dir, exist_ok=True)
+    os.makedirs(session.session_dir(), exist_ok=True)
 
     dispatcher = CommandDispatcher(Agent(session))
     result = dispatcher.dispatch("/clean extra-arg")
@@ -680,32 +657,24 @@ def test_clean_command_with_args_returns_usage(tmp_path):
 
 def test_clean_command_reports_failed_deletions(tmp_path):
     session = Session(cwd=str(tmp_path))
-    tool_results_dir = session.tool_results_dir()
-    os.makedirs(tool_results_dir, exist_ok=True)
-
-    # Create two log files
-    log1 = os.path.join(tool_results_dir, "good.log")
-    log2 = os.path.join(tool_results_dir, "fail.log")
-    with open(log1, "w"):
-        pass
-    with open(log2, "w"):
-        pass
-
-    # Mock os.remove to fail on the second file
-    original_remove = os.remove
+    good_dir = session.data_path("sessions", "good-session")
+    fail_dir = session.data_path("sessions", "fail-session")
+    os.makedirs(good_dir, exist_ok=True)
+    os.makedirs(fail_dir, exist_ok=True)
+    original_rmtree = shutil.rmtree
     call_count = [0]
 
-    def mock_remove(path):
+    def mock_rmtree(path):
         call_count[0] += 1
         if call_count[0] == 2:
             raise OSError("Permission denied")
-        original_remove(path)
+        original_rmtree(path)
 
     import unittest.mock
-    with unittest.mock.patch("os.remove", side_effect=mock_remove):
+    with unittest.mock.patch("shutil.rmtree", side_effect=mock_rmtree):
         dispatcher = CommandDispatcher(Agent(session))
         result = dispatcher.dispatch("/clean")
 
     assert result.status == CommandStatus.HANDLED
-    assert "Cleaned 1 log file(s)" in result.message
+    assert "Cleaned 1 session(s)" in result.message
     assert "1 failed" in result.message
