@@ -2897,7 +2897,7 @@ class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd.",
-        "Use for tests, builds, and fast Unix text-tool work such as find, sed, awk, perl, xargs, and grep when that is the clearest path.",
+        "Prefer List/Search/Read/Git for repository inspection; use Bash for tests, builds, and fast Unix text-tool work such as find, sed, awk, perl, xargs, and grep when that is the clearest path.",
         "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
@@ -3467,6 +3467,7 @@ Complete with verify blocked only when blocker=user.
 
 TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
+Prefer List/Search/Read/Git for repository inspection. Do not use Bash just to list files or inspect git state.
 Use Bash for explicit shell commands, tests/builds, and fast Unix text-tool work: find, sed, awk, perl, xargs, grep.
 Mechanical shell edits are allowed; verify afterward with Git diff, Read, tests, or another focused check.
 For complex code changes, prefer ReplaceRange or PatchFile over shell rewrites.
