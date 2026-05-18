@@ -2686,6 +2686,25 @@ def test_agent_plan_mode_rejects_invalid_action_instead_of_completing(tmp_path):
     assert messages == ["Protocol_Gate: invalid action type(s): invalid."]
 
 
+def test_agent_normalizes_direct_repo_tool_action_type(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "change sample")
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "Edit", "intention": "change sample", "args": ["sample.txt", "old", "new"]}]},
+        confirm=lambda call, tool: True,
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert path.read_text(encoding="utf-8") == "new\n"
+    assert agent.tool_runner.latest_executions[0].call.name == "Edit"
+    assert not any("Protocol_Gate" in message for message in messages)
+
+
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
     agent = Agent(_session(tmp_path, plan_mode=True))
     _seed_plan(agent, "plan change")

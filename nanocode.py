@@ -5966,7 +5966,17 @@ class Agent:
         return None
 
     def _response_actions(self, response: Json) -> list[Json]:
-        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+        return [self._normalize_action(action) for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
+
+    @staticmethod
+    def _normalize_action(action: Json) -> Json:
+        action_type = _json_str(action.get("type"))
+        if action_type not in TOOL_REGISTRY:
+            return action
+        normalized = dict(action)
+        normalized["type"] = "tool"
+        normalized["name"] = action_type
+        return normalized
 
     def _gate_action_types(
         self,
