@@ -1381,11 +1381,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     if original_chars <= max_chars:
         return BoundedToolOutput(output, False, original_lines, original_chars)
 
-    header = (
-        "[tool result excerpt]\n"
-        "excerpted: true\n"
-        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + "\n"
-    )
+    header = "[tool result excerpt]\nexcerpted: true\noriginal_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + "\n"
     labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
     body_budget = max_chars - len(header) - sum(len(label) for label in labels)
     if body_budget <= 0:
@@ -1517,11 +1513,7 @@ class ToolResultContext:
 
     def unreduced_recent_blocks(self, checkpoint: int) -> list[str]:
         latest_keys = set(self.blocks_by_key(self.latest))
-        return [
-            block
-            for block in self.recent
-            if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)
-        ]
+        return [block for block in self.recent if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)]
 
     def unreduced_blocks(self, checkpoint: int) -> list[str]:
         seen: set[str] = set()
@@ -2526,7 +2518,9 @@ class ReplaceRangeTool(Tool):
         "Pass exact before_context and after_context when known; empty boundary context is allowed for non-empty replacements.",
         "Content is only the replacement for that range; do not include boundary lines.",
     )
-    SIGNATURE: ClassVar[str] = "ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]) -> ReplaceRangeToolResult<path, range>"
+    SIGNATURE: ClassVar[str] = (
+        "ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]) -> ReplaceRangeToolResult<path, range>"
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Single range: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"]]]',
         'Two ranges: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"], ["20", "20", "d4e5f6", "prev\\n", "next\\n", "inserted\\n"]]]',
@@ -2963,7 +2957,9 @@ class PlanModeGitTool(GitTool):
 class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Recall stored tool results by tr.* key; pass optional 0-based line ranges to read exact slices from the stored full log.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Recall stored tool results by tr.* key; pass optional 0-based line ranges to read exact slices from the stored full log.",
+    )
     SIGNATURE: ClassVar[str] = "Recall(key...[, range_token...]) -> RecallToolResult<content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["tr.1"]',
@@ -3109,7 +3105,11 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         },
         ["kind", "method", "criteria", "status", "blocker", "context"],
     ),
-    "keep": ("Keep visible raw tool result keys in context during observe.", {"source": TOOL_STRING_LIST_SCHEMA, "reason": TOOL_STRING_SCHEMA}, ["source", "reason"]),
+    "keep": (
+        "Keep visible raw tool result keys in context during observe.",
+        {"source": TOOL_STRING_LIST_SCHEMA, "reason": TOOL_STRING_SCHEMA},
+        ["source", "reason"],
+    ),
 }
 
 
@@ -3136,86 +3136,148 @@ COMPACT_TOOL_SCHEMA = _function_tool_schema(
 
 AGENT_SYSTEM_PROMPT = """You are nanocode, a coding agent.
 
-OUTPUT
-- Use function tools for state updates and repository actions.
-- Assistant text is optional; never use it instead of the next useful function tool.
-- A completed task still needs goal.complete=true; assistant text alone does not complete work.
-- State tools: goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget.
-- Repository tools: { __tool_names__ }.
-- Repository tool calls require intention and args.
-- Use the latest user language for user-facing text; keep it plain, concise, and direct.
+Use function tools to update state and work on the repository.
+Assistant text is optional. Do not answer with text when a useful tool call should be made.
+A task is complete only after goal.complete=true is set.
 
-PRIORITY AND STATE
-- Priority: Latest User Request > User Rules > Current Goal > Plan/Known/Stable Knowledge > Conversation History.
-- Latest User Request overrides stale Goal, but Task Code decides whether to begin a new task.
-- Task Code: new = align latest request with goal/plan or readonly discovery; working = continue current Goal; verifying = run/record verification; done = wait for next request.
-- If Task Code is working or verifying, do not rewrite Goal unless the user changed the task.
-- Never repeat a previous completion as the answer.
-- User Rules are mandatory long-term behavior rules; add them only when the user explicitly asks to remember future behavior.
+User-facing text must use the latest user language. Keep it plain, concise, and direct.
 
-MEMORY AND TOOL RESULTS
-- Known = settled current-task facts that still matter after visible tool results disappear.
-- Hypotheses = investigation directions with status { __hypothesis_status_text__ }.
-- Stable Knowledge = rare reusable codebase facts: stack, structure, workflow, convention, gotcha.
-- Do not store intentions, TODOs, guesses, user requests, routine observations, or duplicate facts in Known.
-- Tool Result Index, Kept Tool Results, Unreduced Tool Results, and Latest Tool Results are support context; do not restate raw results.
-- OBSERVE keeps useful raw results and forgets noise. ACT must not keep results.
-- In ACT, use forget only when a visible result is already irrelevant; first preserve any needed conclusion in Plan, Known, Hypotheses, or Verify. Forget preserves logs and Recall.
+Available state tools:
+goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget
+
+Available repository tools:
+{ __tool_names__ }
+
+All repository tool calls require:
+- intention: the concrete question to answer or outcome to achieve
+- args: tool arguments
+
+PRIORITY
+Latest User Request > User Rules > Current Goal > Plan/Known/Stable Knowledge > Conversation History.
+
+Current Phase:
+- new: align latest request with current state, or start readonly discovery
+- working: continue the current goal
+- verifying: run or record verification
+- done: wait for the next user request
+
+Do not rewrite the Goal when Current Phase is working/verifying unless the user changed the task.
+Never repeat a previous completion as the answer.
+
+STATE
+Known:
+- settled current-task facts that matter after tool results disappear
+- not intentions, TODOs, guesses, routine observations, duplicates, or raw logs
+
+Hypotheses:
+- competing investigation directions
+- status: { __hypothesis_status_text__ }
+- each hypothesis should imply a concrete check
+
+Stable Knowledge:
+- rare reusable codebase facts: stack, structure, workflow, convention, gotcha
+
+User Rules:
+- only explicit future-behavior requests from the user
+
+Tool Results:
+- visible tool results are temporary support context
+- OBSERVE owns keep/forget cleanup
+- ACT may forget irrelevant visible results only after preserving useful conclusions in goal, plan, known, hypothesis, or verify
 
 WORKFLOW
-- No Goal: set goal. If enough context is known, also set plan or call the first useful readonly tools.
-- Goal but no Plan: set a short plan, or call readonly discovery first when planning needs context.
-- Goal and Plan: execute the next useful frontier with tools. Batch independent searches/reads/recalls/checks; serialize only when later args depend on earlier results.
-- After edits or explicit checks: verify with the smallest relevant test/build/lint/static check.
-- Complete only when the goal is done, Plan items are done/blocked with context, and verification passed or is blocked by the user.
-- Never repeat an unchanged goal, unchanged plan, or no-op state update. Move to the next workflow state.
+If there is no Goal:
+- set a Goal
+- if enough context is known, also set a short Plan or call the first useful readonly tools
 
-STATE UPDATES
-- user_rule: only explicit future-behavior memory requests.
-- known/hypothesis: only when facts or investigation status changed.
-- Pair state updates with the next frontier action when its args are known.
+If there is a Goal but no Plan:
+- set a short Plan
+- or run readonly discovery first if planning needs context
+
+If there is a Goal and Plan:
+- execute the next useful frontier
+- batch independent searches, reads, recalls, and checks
+- serialize only when later arguments depend on earlier results
+
+Prefer useful tool calls over state-only turns.
+Pair state updates with the next frontier tool call when tool arguments are already known.
 
 PLANNING
-- Use plans only for real tasks; usually 2-5 concrete outcome steps.
-- Update Plan only when status, text, context, or ordering changes.
-- Pair Plan/Known/Hypothesis updates with the next frontier action whenever its arguments are known.
-- Use patch for small Plan changes; use replace only when restructuring.
-- At most one item may be doing.
-- Done context must cite result context; blocked context must name the concrete blocker.
-- Add a verify step only for edits, explicit checks, or correctness-sensitive changes.
-- If Plan is complete and verification passed/blocked, finish by default. To continue tools, first reopen Plan with a todo/doing item explaining why completion is insufficient.
+Use a Plan only for real multi-step work.
+Usually keep it to 2-5 concrete outcome steps.
+
+Plan rules:
+- update only when status, text, context, or order changes
+- use patch for small changes; replace only for restructuring
+- at most one item may be doing
+- done context must cite supporting result context
+- blocked context must name the concrete blocker
+- add a verify step only for edits, explicit checks, or correctness-sensitive work
+
+If all Plan items are done/blocked and verification passed/blocked, finish by default.
+To continue tools after that, first reopen the Plan with a todo/doing item explaining why completion is insufficient.
 
 INVESTIGATION
-- Use work_mode=investigate for competing explanations, root-cause reasoning, or branch elimination.
-- Track plausible directions separately; each should imply a concrete check.
-- Mark hypotheses ruled_out when result context eliminates them, confirmed before root-cause completion.
-- Prefer useful readonly tool batches over intermediate state-only turns.
+Use work_mode=investigate for root-cause analysis, competing explanations, or branch elimination.
 
-EDITING AND DISCOVERY
-- Use Search/ListDir/LineCount when target file/path/symbol/range is unknown.
-- Read only known paths/ranges or search-narrowed targets; read small ranges around likely matches.
-- Stop discovery when exact target and next edit/check are clear; do not repeat equivalent searches.
-- Edit incrementally: one small coherent change per edit action.
-- New file: create a minimal skeleton first; grow large content with focused ReplaceRange chunks.
-- Existing file: inspect exact target before editing. Never rewrite a large file in one action.
-- Use Edit for one tiny exact literal block that appears once.
-- Use ReplaceRange after Read for ranges, repeated text, insertions, and structural edits; use ReplaceRange(filepath, ranges) for several known independent ranges in one file.
+Rules:
+- track plausible directions separately
+- mark hypotheses ruled_out when evidence eliminates them
+- mark hypotheses confirmed before claiming root cause
+- stop investigating when the exact target and next edit/check are clear
+
+DISCOVERY AND EDITING
+Use Search/ListDir/LineCount when path, symbol, range, or target is unknown.
+Use Read only for known paths/ranges or search-narrowed targets.
+Read small ranges around likely matches.
+
+Stop discovery once the next edit/check is clear.
+
+Editing rules:
+- make one small coherent change per edit action
+- new file: create a minimal skeleton first, then grow with focused ReplaceRange chunks
+- existing file: inspect the exact target before editing
+- never rewrite a large file in one action
+- use Edit only for one tiny exact literal block that appears once
+- use ReplaceRange after Read for ranges, repeated text, insertions, and structural edits
+- use ReplaceRange(filepath, ranges) for several known independent ranges in one file
 
 VERIFICATION
-- Verification strength: none for simple answers, light for read/static confirmation, tool for code changes or requested checks, user for visual/manual confirmation.
-- Verify action requires kind, method, criteria, status passed|failed|blocked, context, and blocker when blocked.
-- Passed context must cite concrete recent tool result context. Blocked verification must set blocker and context.
-- If verification fails, record failed and repair before completion.
-- A build/test after a failed edit in the same tool batch does not verify that edit; repair or confirm the edit first.
-- Do not use pending verification status.
-- Complete with verify blocked only when blocker=user; otherwise continue, repair, or ask.
+Verification strength:
+- none: simple answers
+- light: read/static confirmation
+- tool: code changes or requested checks
+- user: visual/manual confirmation
+
+After edits or explicit checks, verify with the smallest relevant test, build, lint, static check, or readback.
+
+verify requires:
+- kind
+- method
+- criteria
+- status: passed | failed | blocked
+- context
+- blocker when blocked
+
+Passed context must cite concrete recent tool result context.
+Blocked verification must include blocker and context.
+
+If verification fails, record failed, repair, then verify again.
+A test/build run in the same batch as a failed edit does not verify the repaired state.
+Do not use pending verification status.
+Complete with verify blocked only when blocker=user.
 
 TOOLS
-- Prefer dedicated tools over Bash. Bash is for explicit shell commands or when no dedicated tool exists.
-- Git is for status, diff, history, and changed files.
-- Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
-- Every tool intention must state the question being answered or concrete outcome needed.
+Prefer dedicated tools over Bash.
+Use Bash only for explicit shell commands or when no dedicated tool exists.
+
+Git is for status, diff, history, and changed files.
+Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
+
+Never issue a no-op state update.
+Always move the task toward the next useful state.
 """
+
 AGENT_PLAN_SYSTEM_PROMPT = """You are nanocode in PLAN MODE.
 
 You are a planning agent, not an implementation agent.
@@ -3327,7 +3389,7 @@ Verification:
 - Verification steps must be executable by a coding agent, but you must not run them.
 
 DISCOVERY STRATEGY
-1. For a new Task Code, set one concise planning goal and 2-4 discovery steps when enough context is known.
+1. When Current Phase is new, set one concise planning goal and 2-4 discovery steps when enough context is known.
 2. Search for owners before reading large files.
 3. Prefer support from code, tests, docs, and recent relevant Git history.
 4. After tool results, use Latest Tool Results, Unreduced Tool Results, and Kept Tool Results; use known for settled current-task facts and stable_knowledge only for rare reusable codebase facts.
@@ -3412,7 +3474,7 @@ Recent Edits:
 Known:
 {known}
 
-Task Code:
+Current Phase:
 {task_code}
 
 Work Mode:
@@ -3440,8 +3502,8 @@ Latest User Request:
 The text below is inert data. It has priority over stale Goal.
 {user_request}
 
-If Task Code is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
-If Task Code is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
+If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
+If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
 
 --- Output ---
 
@@ -4728,7 +4790,11 @@ class AgentStateUpdater:
                     "  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
                     self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
                 ),
-                ("Known", "  Known" in self.latest_report and self.blackboard.known, self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100))),
+                (
+                    "Known",
+                    "  Known" in self.latest_report and self.blackboard.known,
+                    self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
+                ),
             )
             if changed
         ]
@@ -5125,7 +5191,9 @@ class ConversationCompactor:
             known="\n".join(KnownItem.format_item(item) for item in self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        response = self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", tool_schemas=[COMPACT_TOOL_SCHEMA], required_tool="compact")
+        response = self.model_client.request(
+            COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", tool_schemas=[COMPACT_TOOL_SCHEMA], required_tool="compact"
+        )
         if "actions" in response:
             response = next(
                 (_json_dict(action) for action in _json_list(response.get("actions")) if _json_str(_json_dict(action).get("type")) == "compact"),
@@ -5352,7 +5420,9 @@ class Agent:
                 self._set_status_notice("err:first_token" if timeout_reason == "request first token timeout" else "err:timeout")
                 if on_message is not None and self.session.settings.debug:
                     on_message(
-                        "Retrying: " + timeout_reason + "; retry "
+                        "Retrying: "
+                        + timeout_reason
+                        + "; retry "
                         + str(attempt + 1)
                         + "/"
                         + str(len(self.MODEL_TIMEOUT_RETRY_DELAYS))
@@ -5480,15 +5550,9 @@ class Agent:
         timeline = self.tool_context.current_timeline_blocks()[-budget.index_items :]
         unreduced = self.tool_context.unreduced_recent_blocks(checkpoint)
         latest = self.tool_context.latest_raw_blocks()
-        visible_keys = set(
-            ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results)
-        )
+        visible_keys = set(ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results))
         archived_limit = max(0, budget.index_items - len(timeline))
-        archived = [
-            item.format(result_key=key)
-            for key, item in self.session.state.tool_result_store.items()
-            if key not in visible_keys
-        ]
+        archived = [item.format(result_key=key) for key, item in self.session.state.tool_result_store.items() if key not in visible_keys]
         archived = archived[-archived_limit:] if archived_limit > 0 else archived
         sections = []
         if archived:
@@ -5641,14 +5705,18 @@ class Agent:
             response = self.step(on_message=on_message)
             if _json_str(response.get("_format_error")):
                 return AgentRunResult(), response, False
-            return self.handle_response(
+            return (
+                self.handle_response(
+                    response,
+                    confirm=confirm,
+                    on_auto_approve=on_auto_approve,
+                    on_live_output=on_live_output,
+                    on_live_done=on_live_done,
+                    on_message=on_message,
+                ),
                 response,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
-            ), response, False
+                False,
+            )
 
         committed = False
         latest_result = AgentRunResult()
@@ -5702,14 +5770,18 @@ class Agent:
         invalid_response = self._validate_action_response(response)
         if invalid_response is not None:
             return AgentRunResult(), invalid_response, False
-        return self.handle_response(
+        return (
+            self.handle_response(
+                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
+                on_live_output=on_live_output,
+                on_live_done=on_live_done,
+                on_message=on_message,
+            ),
             response,
-            confirm=confirm,
-            on_auto_approve=on_auto_approve,
-            on_live_output=on_live_output,
-            on_live_done=on_live_done,
-            on_message=on_message,
-        ), response, False
+            False,
+        )
 
     def _can_stream_tools(self) -> bool:
         return self.mode == AgentMode.ACT and isinstance(self.model_client, ModelClient) and self.session.config.provider.stream is not False
@@ -5794,9 +5866,10 @@ class Agent:
         budget = self.context_budget()
         # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
         # Very large failures still trigger observe through raw-context pressure.
-        return len(pending) >= budget.observe_after_results or self.tool_context.raw_context_chars(
-            self.blackboard.memory_checkpoint_tool_result_counter
-        ) >= budget.raw_chars
+        return (
+            len(pending) >= budget.observe_after_results
+            or self.tool_context.raw_context_chars(self.blackboard.memory_checkpoint_tool_result_counter) >= budget.raw_chars
+        )
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)
@@ -5816,11 +5889,7 @@ class Agent:
                 rule = self.RULE_EDIT_SIGNATURE
             self._remember_agent_error(
                 self._error(
-                    "tool call args invalid: "
-                    + _format_tool_call_summary(execution.call)
-                    + " -> "
-                    + detail
-                    + ".",
+                    "tool call args invalid: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".",
                     rule,
                 )
             )
@@ -5921,9 +5990,7 @@ class Agent:
         return AgentRunResult()
 
     def _plan_is_complete(self) -> bool:
-        return bool(self.blackboard.plan) and all(
-            item.status in self.COMPLETED_PLAN_STATUSES and item.context.strip() for item in self.blackboard.plan
-        )
+        return bool(self.blackboard.plan) and all(item.status in self.COMPLETED_PLAN_STATUSES and item.context.strip() for item in self.blackboard.plan)
 
     def _verification_is_settled(self) -> bool:
         return self.blackboard.verification.status in {VerificationStatus.DONE, VerificationStatus.BLOCKED}
@@ -5970,7 +6037,11 @@ class Agent:
     def _investigate_completion_error(self) -> str:
         if self.blackboard.work_mode != WorkMode.INVESTIGATE or not self.blackboard.goal_reached:
             return ""
-        return "" if any(item.status == HypothesisStatus.CONFIRMED for item in self.blackboard.hypotheses) else "investigate completion requires a confirmed hypothesis"
+        return (
+            ""
+            if any(item.status == HypothesisStatus.CONFIRMED for item in self.blackboard.hypotheses)
+            else "investigate completion requires a confirmed hypothesis"
+        )
 
     def _forget_active_hypothesis_error(self, actions: list[Json]) -> str:
         forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
@@ -5983,13 +6054,7 @@ class Agent:
                 item = Hypothesis.from_json(raw)
                 if item is not None and item.status != HypothesisStatus.ACTIVE:
                     released.update(key for key in item.source if key.startswith("tr."))
-        protected = {
-            key
-            for item in self.blackboard.hypotheses
-            if item.status == HypothesisStatus.ACTIVE
-            for key in item.source
-            if key.startswith("tr.")
-        }
+        protected = {key for item in self.blackboard.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
         conflict = sorted((forgotten & protected) - released)
         return "active hypothesis source: " + ", ".join(conflict) if conflict else ""
 
@@ -6110,20 +6175,19 @@ class Agent:
         return AgentRunResult(done=True, value=ctx.response)
 
     def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        return (
-            self._gate_protocol_actions(ctx, on_message)
-            or self._gate_tool_actions(ctx, on_message)
-            or self._gate_task_state(ctx, on_message)
-        )
+        return self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx, on_message)
 
     def _gate_protocol_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        return self._gate_action_types(
-            ctx.actions,
-            allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
-            on_message=on_message,
-            retry_message="Retrying: use a valid agent action.",
-            feedback_message=self._error("this step only accepts agent work actions."),
-        ) is not None
+        return (
+            self._gate_action_types(
+                ctx.actions,
+                allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
+                on_message=on_message,
+                retry_message="Retrying: use a valid agent action.",
+                feedback_message=self._error("this step only accepts agent work actions."),
+            )
+            is not None
+        )
 
     def _gate_tool_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if self._gate_forget_actions(ctx.actions, on_message, self._remember_agent_error) is not None:
@@ -6171,12 +6235,7 @@ class Agent:
             self._drop_goal_rewrite_actions(ctx)
         if ctx.pending_verify_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
-        if (
-            ctx.goal_was_empty
-            and not ctx.has_goal_action
-            and ctx.state_or_work_requested
-            and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call)
-        ):
+        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
@@ -6192,11 +6251,7 @@ class Agent:
             on_message(ctx.assistant_text)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if (
-            ctx.plan_was_empty
-            and not self.blackboard.plan
-            and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call)
-        ):
+        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if (
             ctx.plan_was_empty
@@ -6206,11 +6261,7 @@ class Agent:
         ):
             self._warn_agent("Plan is empty after discovery.", "set a short Plan before more broad exploration.")
 
-        if (
-            ctx.tool_calls
-            and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions)
-            and self._verification_is_settled()
-        ):
+        if ctx.tool_calls and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions) and self._verification_is_settled():
             if self._plan_is_complete():
                 self._warn_agent("Plan and verification are complete; continuing tools without reopening Plan.")
             elif ctx.plan_was_complete and ctx.verification_was_settled:
@@ -6352,11 +6403,7 @@ class Agent:
             return ""
         if not keys:
             return "missing tr.* source"
-        visible_keys = set(
-            ToolResultContext.blocks_by_key(
-                self.tool_context.kept_results + self.tool_context.latest + self.tool_context.recent
-            )
-        )
+        visible_keys = set(ToolResultContext.blocks_by_key(self.tool_context.kept_results + self.tool_context.latest + self.tool_context.recent))
         missing = [key for key in keys if key not in visible_keys]
         return "not in visible tool results: " + ", ".join(missing) if missing else ""
 
@@ -6637,7 +6684,9 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
     CommandSpec("/reason", "Set reasoning effort", "Config", "/reason"),
-    CommandSpec("/reason-payload", "Show or set chat reasoning payload", "Config", "/reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"),
+    CommandSpec(
+        "/reason-payload", "Show or set chat reasoning payload", "Config", "/reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+    ),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
@@ -6713,11 +6762,7 @@ class CommandDispatcher:
         self.select_reasoning = select_reasoning
         self.select_model = select_model
         self.select_provider = select_provider
-        self.handlers = {
-            spec.name: getattr(self, "_" + spec.name[1:].replace("-", "_"))
-            for spec in COMMANDS
-            if spec.category != "Control"
-        }
+        self.handlers = {spec.name: getattr(self, "_" + spec.name[1:].replace("-", "_")) for spec in COMMANDS if spec.category != "Control"}
         self.handlers.update({alias: self.handlers[target] for alias, target in self.COMMAND_ALIASES.items()})
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -6951,7 +6996,14 @@ class CommandDispatcher:
         return "\n".join(
             [
                 "provider: " + session.config.active_provider,
-                "model: " + (provider.model or "(empty)") + " api=" + api + " reasoning=" + (reasoning or "(empty)") + " stream=" + self._format_bool(provider.stream),
+                "model: "
+                + (provider.model or "(empty)")
+                + " api="
+                + api
+                + " reasoning="
+                + (reasoning or "(empty)")
+                + " stream="
+                + self._format_bool(provider.stream),
                 "session: " + session.session_id,
                 "runtime: yolo="
                 + self._format_bool(session.settings.yolo)
@@ -7251,9 +7303,7 @@ class StatusBar:
         session = self.session
         active_model = session.state.current_model_call_label or session.config.provider.model
         model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
-        reasoning = session.state.current_model_call_reasoning_label or (
-            session.config.provider.reasoning
-        )
+        reasoning = session.state.current_model_call_reasoning_label or (session.config.provider.reasoning)
         modes = "".join(" | " + label for label, enabled in (("yolo", session.settings.yolo), ("plan", session.settings.plan_mode)) if enabled)
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)
@@ -7270,13 +7320,7 @@ class StatusBar:
             elapsed = max(0.0, now - session.state.current_model_call_started_at)
             if session.state.current_model_call_has_content and elapsed > 0:
                 rate = session.state.current_model_call_streaming_chars / 4 / elapsed
-            parts.append(
-                activity
-                + "("
-                + str(session.state.turn_model_calls)
-                + "):"
-                + f"{elapsed:.1f}s"
-            )
+            parts.append(activity + "(" + str(session.state.turn_model_calls) + "):" + f"{elapsed:.1f}s")
         if rate > 0:
             parts[3] += " " + _format_count(int(rate)) + "t/s"
         if session.state.status_notice and session.state.status_notice_until > now:
@@ -7987,7 +8031,17 @@ class AgentLoop:
         if message.startswith("State Updated"):
             self._emit_segments(self._state_segments(message), message)
             return
-        if message.startswith(("Plan Updated", "Known Updated", "Hypotheses Updated", "Plan + Known Updated", "Plan + Hypotheses Updated", "Hypotheses + Known Updated", "Plan + Hypotheses + Known Updated")):
+        if message.startswith(
+            (
+                "Plan Updated",
+                "Known Updated",
+                "Hypotheses Updated",
+                "Plan + Known Updated",
+                "Plan + Hypotheses Updated",
+                "Hypotheses + Known Updated",
+                "Plan + Hypotheses + Known Updated",
+            )
+        ):
             self._emit_segments(self._compact_state_segments(message), message)
             return
         if message.startswith("Tool Result Context:"):

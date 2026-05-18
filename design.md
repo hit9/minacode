@@ -125,7 +125,7 @@ ACT user prompt, top -> bottom
 | Current Decision                                 | section-local limits         |
 |   - Recent Edits                                 |                              |
 |   - Known                                        |                              |
-|   - Task Code / Work Mode                        |                              |
+|   - Current Phase / Work Mode                    |                              |
 |   - Goal / Plan / Hypotheses / Verify            |                              |
 |   - Errors                                       |                              |
 |   - Latest User Request                          |                              |
