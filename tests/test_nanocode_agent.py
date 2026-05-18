@@ -470,6 +470,8 @@ def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
     assert "Pending feedback rules:" in prompt
     assert "first emit a brief assistant text response" in prompt
     assert "not a new task" in prompt
+    assert "latest user language" in prompt
+    assert "pending-feedback replies" in prompt
 
 
 def test_act_prompt_includes_kept_tool_results(tmp_path):
