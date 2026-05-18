@@ -271,18 +271,6 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
-def test_agent_loop_live_preview_interrupt_hint_latches(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
-    loop._live_preview_started_at = time.monotonic() - loop.LIVE_PREVIEW_INTERRUPT_HINT_AFTER - 0.1
-
-    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
-    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
-
-
 def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -521,7 +509,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.blackboard = Blackboard()
             self.runs = []
 
-        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
+        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None, poll_user_input=None):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
@@ -538,6 +526,148 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     assert any("model: model api=chat(auto) reasoning=medium(off) stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
+
+
+def test_agent_loop_consumes_queued_input_before_prompt(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+            self.runs = []
+
+        def run(self, user_input, **kwargs):
+            self.runs.append(user_input)
+
+    inputs = iter(["/exit"])
+    output = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=output.append)
+
+    loop._append_queued_input(" queued message ")
+
+    assert loop.run() == 0
+    assert loop.agent.runs == ["queued message"]
+    assert "sent: queued message" in output
+
+
+def test_agent_loop_run_agent_uses_runtime_ui_without_status_thread(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+            self.runs = []
+            self.poll_user_input = None
+
+        def run(self, user_input, **kwargs):
+            self.runs.append(user_input)
+            self.poll_user_input = kwargs["poll_user_input"]
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    calls = []
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: calls.append("start-ui") or True)
+    monkeypatch.setattr(loop, "_stop_runtime_ui", lambda: calls.append("stop-ui") or True)
+    monkeypatch.setattr(loop.status_bar, "reset_timer", lambda: calls.append("reset"))
+    monkeypatch.setattr(loop.status_bar, "resume", lambda: calls.append("resume"))
+    monkeypatch.setattr(loop.status_bar, "pause", lambda: calls.append("pause"))
+
+    loop._run_agent("hello")
+
+    assert loop.agent.runs == ["hello"]
+    assert loop.agent.poll_user_input.__self__ is loop
+    assert loop.agent.poll_user_input.__func__ is AgentLoop._pop_queued_input
+    assert calls == ["reset", "start-ui", "stop-ui", "pause"]
+
+
+def test_agent_loop_clears_queued_input_on_cancel(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+
+        def run(self, user_input, **kwargs):
+            raise KeyboardInterrupt
+
+        def cancel_current_goal(self):
+            pass
+
+    output = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=output.append)
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: False)
+    loop._append_queued_input("queued message")
+
+    loop._run_agent("hello")
+
+    assert loop._pop_queued_input() is None
+    assert "queued cleared: 1" in output
+
+
+def test_agent_loop_runtime_ui_pause_restarts_for_confirm(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    calls = []
+    monkeypatch.setattr(loop, "_stop_runtime_ui", lambda: calls.append("stop-ui") or True)
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: calls.append("start-ui") or True)
+    monkeypatch.setattr(loop, "_with_status_paused", lambda action: action())
+    monkeypatch.setattr(loop, "_print_tool_call_display", lambda *args, **kwargs: calls.append("display"))
+    monkeypatch.setattr(loop, "_wait_confirm", lambda *args, **kwargs: True)
+
+    result = loop._confirm_tool_call(ParsedToolCall("Edit", "edit", ["a", "b", "c"]), object())
+
+    assert result is True
+    assert calls == ["stop-ui", "display", "start-ui"]
+
+
+def test_agent_loop_runtime_interrupt_requests_sigint(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.exited = False
+
+        def exit(self):
+            self.exited = True
+
+    app = FakeApp()
+    calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    loop._runtime_ui_app = app
+    monkeypatch.setattr(nanocode.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    loop._interrupt_current_turn(exit_after=True)
+
+    assert loop._exit_after_current_turn is True
+    assert app.exited is True
+    assert calls == [(nanocode.os.getpid(), nanocode.signal.SIGINT)]
+
+
+def test_agent_loop_runtime_retry_requests_model_retry(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.exited = False
+
+        def exit(self):
+            self.exited = True
+
+    app = FakeApp()
+    calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    loop._runtime_ui_app = app
+    loop.agent.session.state.current_model_call_started_at = 1.0
+    monkeypatch.setattr(nanocode.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    loop._retry_current_model_call()
+
+    assert loop.agent.session.state.manual_model_retry_requested is True
+    assert app.exited is False
+    assert calls == [(nanocode.os.getpid(), nanocode.signal.SIGINT)]
 
 
 def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):

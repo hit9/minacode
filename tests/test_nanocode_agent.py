@@ -460,6 +460,18 @@ def test_act_prompt_uses_first_todo_as_current_focus(tmp_path):
     assert "Current Focus:\n- [○ todo] edit command handler (id=p2)" in prompt
 
 
+def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.session.state.pending_user_feedback = "focus on sed"
+
+    prompt = agent.build_user_prompt()
+
+    assert "Pending User Feedback:\nfocus on sed" in prompt
+    assert "Pending feedback rules:" in prompt
+    assert "first emit a brief assistant text response" in prompt
+    assert "not a new task" in prompt
+
+
 def test_act_prompt_includes_kept_tool_results(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha unique\n", encoding="utf-8")
     (tmp_path / "other.txt").write_text("beta unique\n", encoding="utf-8")
@@ -701,6 +713,19 @@ def test_observe_can_forget_old_kept_result_while_forgetting_latest(tmp_path):
     assert agent.tool_context.kept_results == []
     assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
     assert messages == ["Tool Result Context: -tr.1 -tr.2"]
+
+
+def test_pending_user_feedback_does_not_rewrite_goal_by_default(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _seed_plan(agent, "implement demo")
+    agent.session.state.pending_user_feedback = "how many lines?"
+
+    result = agent.handle_response({"actions": [{"type": "goal", "text": "answer line count"}]})
+
+    assert result.done is False
+    assert agent.blackboard.goal == "implement demo"
+    assert agent.session.state.pending_user_feedback == ""
+    assert any("Pending User Feedback is not a new task" in error for error in agent.agent_feedback_errors)
 
 
 def test_keep_tool_results_ignore_non_tool_sources(tmp_path):
@@ -2642,6 +2667,38 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert agent.blackboard.verification.status == VerificationStatus.DONE
     assert agent.blackboard.goal_reached is False
     assert agent.blackboard.verification_required is False
+
+
+def test_agent_run_ingests_queued_user_input_before_next_model_call(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "text": "initial task"}]},
+                {"actions": [{"type": "known", "items": ["queued feedback was visible"]}]},
+                {"actions": [{"type": "goal", "complete": True, "message_for_complete": "done"}]},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    queued_inputs = [None, "use chinese", None]
+    messages = []
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+
+    response = agent.run("initial task", on_message=messages.append, poll_user_input=lambda: queued_inputs.pop(0) if queued_inputs else None)
+
+    assert response["actions"][0]["message_for_complete"] == "done"
+    assert messages == ["Goal Updated\n  initial task", "sent: use chinese", "Known Updated\n  1. queued feedback was visible", "done"]
+    assert [item.content for item in agent.session.state.conversation if isinstance(item, nanocode.UserMessage)] == ["initial task", "use chinese"]
+    assert agent.blackboard.user_input == "use chinese"
+    assert "use chinese" not in agent.model_client.user_prompts[0]
+    assert "use chinese" in agent.model_client.user_prompts[1]
+    assert "Pending User Feedback:\nuse chinese" in agent.model_client.user_prompts[1]
+    assert "Pending User Feedback:\n(empty)" in agent.model_client.user_prompts[2]
+    assert "Latest User Request:" in agent.model_client.user_prompts[1]
 
 
 def test_agent_plan_mode_tool_gate_allows_only_readonly_tools(tmp_path):

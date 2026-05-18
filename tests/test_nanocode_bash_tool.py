@@ -43,17 +43,22 @@ def test_bash_tool_times_out_and_reports_timeout(tmp_path):
     assert "timeout" in result
 
 
-def test_bash_tool_kills_process_group_on_interrupt(tmp_path):
+def test_bash_tool_kills_process_group_on_interrupt(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), settings=RuntimeSettings(shell_timeout=30))
     pid_file = tmp_path / "pid"
     tool = BashTool.make(session, [f"echo $$ > {pid_file}; printf started; sleep 30"])
+    original_read_chunk = BashTool._read_stream_chunk
 
-    def interrupt_on_output(chunk: str) -> None:
-        if "started" in chunk:
+    def interrupt_on_output(selector, key, stdout_parts, stderr_parts):
+        result = original_read_chunk(selector, key, stdout_parts, stderr_parts)
+        if "started" in "".join(stdout_parts):
             raise KeyboardInterrupt()
+        return result
+
+    monkeypatch.setattr(BashTool, "_read_stream_chunk", staticmethod(interrupt_on_output))
 
     try:
-        result = tool.call_live(interrupt_on_output)
+        result = tool.call()
         assert "* exit_code: -1" in result
         assert "* interrupted: true" in result
         assert "* reason: user_ctrl_c" in result

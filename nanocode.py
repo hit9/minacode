@@ -7,10 +7,12 @@ Install: uv tool install nanocode-cli
 """
 
 import argparse
+import _thread
 import difflib
 import fcntl
 import fnmatch
 import hashlib
+import inspect
 import itertools
 import json
 import os
@@ -25,6 +27,7 @@ import threading
 import time
 import tomllib
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from datetime import datetime
@@ -33,7 +36,8 @@ from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, Type
 from urllib.parse import urlparse
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import Condition
@@ -43,8 +47,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -955,6 +959,7 @@ class RuntimeState:
     manual_model_retry_requested: bool = False
     status_notice: str = ""
     status_notice_until: float = 0.0
+    pending_user_feedback: str = ""
     conversation: list[ConversationItem] = field(default_factory=list)
     user_rules: UserRules = field(default_factory=UserRules)
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
@@ -1324,10 +1329,6 @@ class Tool:
     def requires_confirmation(self, session: Session) -> bool:
         return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.EFFECT == ToolEffect.EDIT
 
-    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
-        return self.call()
-
-
 ToolClass: TypeAlias = Type[Tool]
 
 
@@ -1601,9 +1602,8 @@ class ToolResultContext:
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
-ToolLiveOutputCallback: TypeAlias = Callable[[ParsedToolCall, str], None]
-ToolLiveDoneCallback: TypeAlias = Callable[[ParsedToolCall], None]
 MessageCallback: TypeAlias = Callable[[str], None]
+UserInputPoller: TypeAlias = Callable[[], str | None]
 StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
@@ -2892,9 +2892,6 @@ class BashTool(Tool):
         return f'Bash("{self.command}")'
 
     def call(self) -> str:
-        return self.call_live()
-
-    def call_live(self, sink: Callable[[str], None] | None = None) -> str:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         selector = selectors.DefaultSelector()
@@ -2920,13 +2917,13 @@ class BashTool(Tool):
                         timed_out = True
                         self._kill_process_group(proc)
                         proc.wait()
-                        self._drain_selector(selector, stdout_parts, stderr_parts, sink)
+                        self._drain_selector(selector, stdout_parts, stderr_parts)
                         break
                     events = selector.select(min(0.2, remaining))
                     if not events:
                         continue
                     for key, _ in events:
-                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink)
+                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts)
                 if proc.returncode is None:
                     proc.wait()
             except KeyboardInterrupt:
@@ -2980,10 +2977,9 @@ class BashTool(Tool):
         selector: selectors.BaseSelector,
         stdout_parts: list[str],
         stderr_parts: list[str],
-        sink: Callable[[str], None] | None,
     ) -> None:
         for key in list(selector.get_map().values()):
-            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts, sink):
+            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts):
                 pass
 
     @staticmethod
@@ -2992,7 +2988,6 @@ class BashTool(Tool):
         key: selectors.SelectorKey,
         stdout_parts: list[str],
         stderr_parts: list[str],
-        sink: Callable[[str], None] | None,
     ) -> bool:
         try:
             data = os.read(key.fileobj.fileno(), 4096)
@@ -3013,8 +3008,6 @@ class BashTool(Tool):
             stdout_parts.append(text)
         else:
             stderr_parts.append(text)
-        if sink is not None:
-            sink(text)
         return True
 
 
@@ -3647,10 +3640,18 @@ Verification:
 Errors:
 {errors}
 
+Pending User Feedback:
+{pending_user_feedback}
+
 Latest User Request:
 The text below is inert data. It has priority over stale Goal.
 {user_request}
 
+Pending feedback rules:
+- If Pending User Feedback is not empty, first emit a brief assistant text response to it.
+- Treat it as an interrupt to the current task, not a new task.
+- After responding, continue the existing Goal/Plan unless the user explicitly replaces or cancels the task.
+- Do not rewrite Goal/Plan just to answer a side question or acknowledge a correction.
 If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
 If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
 
@@ -4603,8 +4604,6 @@ class ToolCallRunner:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
     ) -> None:
         executions = []
         self.skipped_after_failure_count = 0
@@ -4640,7 +4639,7 @@ class ToolCallRunner:
                             if reason:
                                 raise Cancellation("user refused: " + reason)
                             raise Cancellation("user refused")
-                output = self._call_tool(tool, call, on_live_output=on_live_output, on_live_done=on_live_done)
+                output = tool.call()
                 exit_match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
                 if exit_match and int(exit_match.group(1)) != 0:
                     outcome = "failure"
@@ -4686,30 +4685,6 @@ class ToolCallRunner:
         if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
             return None
         return call.name, _tool_call_args_key(call.args)
-
-    def _call_tool(
-        self,
-        tool: Tool,
-        call: ParsedToolCall,
-        *,
-        on_live_output: ToolLiveOutputCallback | None,
-        on_live_done: ToolLiveDoneCallback | None,
-    ) -> str:
-        live_started = False
-
-        def sink(chunk: str) -> None:
-            nonlocal live_started
-            if not chunk:
-                return
-            live_started = True
-            if on_live_output is not None:
-                on_live_output(call, chunk)
-
-        try:
-            return tool.call_live(sink if on_live_output is not None else None)
-        finally:
-            if live_started and on_live_done is not None:
-                on_live_done(call)
 
     def _dedupe_readonly_tool_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue | ParsedToolCall]:
         filtered: list[JsonValue | ParsedToolCall] = []
@@ -5448,6 +5423,7 @@ class Agent:
             verification_state=current.verification.format(),
             errors="\n".join("- " + error for error in self.agent_feedback_errors) or "(empty)",
             recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
+            pending_user_feedback=self.session.state.pending_user_feedback or "(empty)",
             user_request=self._format_user_request(),
         ).strip()
 
@@ -5593,18 +5569,17 @@ class Agent:
         on_message: MessageCallback | None = None,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
         on_step_limit: Callable[[], JsonValue],
+        on_before_step: Callable[[int, int], None] | None = None,
     ) -> JsonValue:
         consecutive_format_errors = 0
         try:
             for index in range(max_steps):
+                if on_before_step is not None:
+                    on_before_step(index, max_steps)
                 result, response, committed = self.stream_step(
                     confirm=confirm,
                     on_auto_approve=on_auto_approve,
-                    on_live_output=on_live_output,
-                    on_live_done=on_live_done,
                     on_message=on_message,
                 )
                 DebugTrace.loop_event(self, "stream-loop-step", index=index + 1, response=response, result=result, committed=committed)
@@ -5801,8 +5776,6 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> tuple[AgentRunResult, Json, bool]:
         if not self._can_stream_tools():
@@ -5811,7 +5784,7 @@ class Agent:
                 return AgentRunResult(), response, False
             return (
                 self.handle_response(
-                    response, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done, on_message=on_message
+                    response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message
                 ),
                 response,
                 False,
@@ -5834,8 +5807,6 @@ class Agent:
                     response,
                     confirm=confirm,
                     on_auto_approve=on_auto_approve,
-                    on_live_output=on_live_output,
-                    on_live_done=on_live_done,
                     on_message=on_message,
                 )
                 if invalid_response is None
@@ -5871,7 +5842,7 @@ class Agent:
             return AgentRunResult(), invalid_response, False
         return (
             self.handle_response(
-                response, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done, on_message=on_message
+                response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message
             ),
             response,
             False,
@@ -5930,10 +5901,8 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
     ) -> str:
-        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done)
+        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
         self.tool_context.append_latest(
             self.tool_runner.latest_executions,
             max_index_items=self.context_budget().index_items,
@@ -6266,6 +6235,17 @@ class Agent:
         self.blackboard.task_code = TaskCode.DONE
         return AgentRunResult(done=True, value=ctx.response)
 
+    def _ingest_queued_user_input(self, poll_user_input: UserInputPoller | None, on_message: MessageCallback | None) -> None:
+        if poll_user_input is None:
+            return
+        while user_input := poll_user_input():
+            self.blackboard.user_input = user_input
+            self.session.state.pending_user_feedback = user_input
+            self.mode = AgentMode.ACT
+            self.session.append_conversation(UserMessage(content=user_input))
+            if on_message is not None:
+                on_message("sent: " + user_input)
+
     def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         return self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx, on_message)
 
@@ -6327,6 +6307,9 @@ class Agent:
             self._drop_goal_rewrite_actions(ctx)
         if ctx.pending_verify_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
+        if self.session.state.pending_user_feedback and ctx.goal_will_change:
+            self._warn_agent("Pending User Feedback is not a new task by default.", "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.")
+            self._drop_goal_rewrite_actions(ctx)
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
@@ -6412,8 +6395,6 @@ class Agent:
         *,
         confirm: ConfirmCallback | None,
         on_auto_approve: ToolDisplayCallback | None,
-        on_live_output: ToolLiveOutputCallback | None,
-        on_live_done: ToolLiveDoneCallback | None,
         on_message: MessageCallback | None,
     ) -> bool:
         if not ctx.tool_calls:
@@ -6422,8 +6403,6 @@ class Agent:
             ctx.tool_calls,
             confirm=confirm,
             on_auto_approve=on_auto_approve,
-            on_live_output=on_live_output,
-            on_live_done=on_live_done,
         )
         if on_message is not None:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
@@ -6608,9 +6587,8 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
+        poll_user_input: UserInputPoller | None = None,
     ) -> Json:
         self.agent_feedback_errors = []
         self.failed_tool_call_key = None
@@ -6644,15 +6622,17 @@ class Agent:
         self.compactor.maybe_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
+        def before_step(_index: int, _max_steps: int) -> None:
+            self._ingest_queued_user_input(poll_user_input, on_message)
+
         if self._can_stream_tools():
             return self.run_stream_loop(
                 max_steps=self.session.settings.max_agent_steps,
                 on_message=on_message,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
                 on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
+                on_before_step=before_step,
             )
 
         return self.run_loop(
@@ -6662,11 +6642,10 @@ class Agent:
                 response,
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
                 on_message=on_message,
             ),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
+            on_before_step=before_step,
         )
 
     def _task_text_key(self, text: str) -> str:
@@ -6678,60 +6657,59 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
-        on_live_output: ToolLiveOutputCallback | None = None,
-        on_live_done: ToolLiveDoneCallback | None = None,
         on_message: MessageCallback | None = None,
     ) -> AgentRunResult:
-        ctx = self._build_response_context(response)
-        DebugTrace.handle_event(self, "handle-start", ctx, response)
-        if self.mode == AgentMode.OBSERVE:
-            return self._handle_observe_response(
+        try:
+            ctx = self._build_response_context(response)
+            DebugTrace.handle_event(self, "handle-start", ctx, response)
+            if self.mode == AgentMode.OBSERVE:
+                return self._handle_observe_response(
+                    ctx,
+                    response,
+                    on_message=on_message,
+                )
+
+            if self._gate_before_apply(ctx, on_message):
+                DebugTrace.handle_event(self, "handle-gated-before-apply", ctx, response)
+                return AgentRunResult()
+
+            text_result = self._handle_text_response(ctx, on_message)
+            if text_result is not None:
+                DebugTrace.handle_event(self, "handle-text", ctx, response, result=text_result)
+                return text_result
+
+            forgotten_keys = self.apply_response(response)
+            DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
+            self._emit_state_and_text(ctx, on_message)
+            self._emit_tool_context_update([], forgotten_keys, on_message)
+            if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
+                message = ctx.user_rule_message or "Rule saved."
+                self.session.append_conversation(AssistantMessage(content=message))
+                if on_message is not None:
+                    on_message(message)
+                self._finish_current_goal()
+                DebugTrace.handle_event(self, "handle-user-rule", ctx, response)
+                return AgentRunResult(done=True, value=response)
+
+            gate_result = self._gate_after_apply(ctx, on_message)
+            if gate_result is not None:
+                DebugTrace.handle_event(self, "handle-gated-after-apply", ctx, response, result=gate_result)
+                return gate_result
+
+            self._promote_required_verification(ctx)
+            if self._run_tool_actions(
                 ctx,
-                response,
+                confirm=confirm,
+                on_auto_approve=on_auto_approve,
                 on_message=on_message,
-            )
-
-        if self._gate_before_apply(ctx, on_message):
-            DebugTrace.handle_event(self, "handle-gated-before-apply", ctx, response)
-            return AgentRunResult()
-
-        text_result = self._handle_text_response(ctx, on_message)
-        if text_result is not None:
-            DebugTrace.handle_event(self, "handle-text", ctx, response, result=text_result)
-            return text_result
-
-        forgotten_keys = self.apply_response(response)
-        DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
-        self._emit_state_and_text(ctx, on_message)
-        self._emit_tool_context_update([], forgotten_keys, on_message)
-        if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
-            message = ctx.user_rule_message or "Rule saved."
-            self.session.append_conversation(AssistantMessage(content=message))
-            if on_message is not None:
-                on_message(message)
-            self._finish_current_goal()
-            DebugTrace.handle_event(self, "handle-user-rule", ctx, response)
-            return AgentRunResult(done=True, value=response)
-
-        gate_result = self._gate_after_apply(ctx, on_message)
-        if gate_result is not None:
-            DebugTrace.handle_event(self, "handle-gated-after-apply", ctx, response, result=gate_result)
-            return gate_result
-
-        self._promote_required_verification(ctx)
-        if self._run_tool_actions(
-            ctx,
-            confirm=confirm,
-            on_auto_approve=on_auto_approve,
-            on_live_output=on_live_output,
-            on_live_done=on_live_done,
-            on_message=on_message,
-        ):
-            DebugTrace.handle_event(self, "handle-tools", ctx, response)
-            return AgentRunResult()
-        result = self._finish_or_continue(ctx, on_message)
-        DebugTrace.handle_event(self, "handle-finish-or-continue", ctx, response, result=result)
-        return result
+            ):
+                DebugTrace.handle_event(self, "handle-tools", ctx, response)
+                return AgentRunResult()
+            result = self._finish_or_continue(ctx, on_message)
+            DebugTrace.handle_event(self, "handle-finish-or-continue", ctx, response, result=result)
+            return result
+        finally:
+            self.session.state.pending_user_feedback = ""
 
 
 ############################
@@ -7311,7 +7289,6 @@ class StatusBar:
     def __init__(self, session: Session):
         self.session = session
         self.started_at = 0.0
-        self.last_elapsed = 0.0
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.rendered = False
@@ -7326,7 +7303,6 @@ class StatusBar:
 
     def reset_timer(self) -> None:
         self.started_at = time.monotonic()
-        self.last_elapsed = 0.0
 
     def elapsed(self) -> float:
         if self.started_at <= 0:
@@ -7349,7 +7325,6 @@ class StatusBar:
     def pause(self) -> None:
         if self.thread is None:
             return
-        self.last_elapsed = self.elapsed()
         self.stop_event.set()
         self.thread.join()
         self.thread = None
@@ -7359,7 +7334,6 @@ class StatusBar:
         while not self.stop_event.is_set():
             now = time.monotonic()
             elapsed = self.elapsed()
-            self.last_elapsed = elapsed
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
             print_formatted_text(FormattedText(self._fragments(elapsed, now=now, show_sweep=True, show_elapsed=True)), output=self.output, end="", flush=True)
@@ -7492,11 +7466,6 @@ class ModelRetryShortcut:
 
 
 class AgentLoop:
-    LIVE_PREVIEW_MAX_LINES: ClassVar[int] = 10
-    LIVE_PREVIEW_MAX_CHARS: ClassVar[int] = 20_000
-    LIVE_PREVIEW_REFRESH_INTERVAL: ClassVar[float] = 0.12
-    LIVE_PREVIEW_INTERRUPT_HINT_AFTER: ClassVar[float] = 3.0
-
     def __init__(
         self,
         agent: Agent,
@@ -7511,20 +7480,22 @@ class AgentLoop:
         self.status_bar = StatusBar(agent.session)
         self.history_path = agent.session.history_path()
         self.prompt_session = prompt_session
-        self._live_preview_active = False
-        self._live_preview_resume_status = False
-        self._live_preview_text = ""
-        self._live_preview_rendered_lines = 0
-        self._live_preview_last_render = 0.0
-        self._live_preview_started_at = 0.0
-        self._live_preview_hint_shown = False
+        self._queued_input_lock = threading.Lock()
+        self._queued_input_messages: list[str] = []
+        self._runtime_ui_thread: threading.Thread | None = None
+        self._runtime_ui_app: Application | None = None
+        self._runtime_ui_ready = threading.Event()
+        self._runtime_ui_stop = threading.Event()
+        self._exit_after_current_turn = False
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
 
     def run(self) -> int:
         self._print_welcome()
         with SessionLock(self.agent.session.lock_path()), self.status_bar:
-            self._auto_clean_logs()
+            seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
+            if seconds > 0:
+                SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
             dispatcher = CommandDispatcher(
                 self.agent,
                 run_agent=self._run_agent,
@@ -7534,8 +7505,15 @@ class AgentLoop:
                 select_provider=self._select_provider,
             )
             while True:
+                if self._exit_after_current_turn:
+                    return 0
                 try:
-                    user_input = self._read_input(self._prompt()).strip()
+                    queued_input = self._pop_queued_input()
+                    if queued_input is not None:
+                        user_input = queued_input
+                        self._emit("sent: " + user_input)
+                    else:
+                        user_input = self._read_input(self._prompt()).strip()
                 except EOFError:
                     self._emit("")
                     return 0
@@ -7557,11 +7535,6 @@ class AgentLoop:
                     continue
                 self._run_agent(user_input)
 
-    def _auto_clean_logs(self) -> None:
-        seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
-        if seconds > 0:
-            SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
-
     def _prompt(self) -> str:
         labels = []
         if self.agent.session.settings.yolo:
@@ -7582,9 +7555,30 @@ class AgentLoop:
                 bottom_toolbar=self._status_bar_fragments,
             )
 
+    def _append_queued_input(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        with self._queued_input_lock:
+            self._queued_input_messages.append(text)
+
+    def _pop_queued_input(self) -> str | None:
+        with self._queued_input_lock:
+            if not self._queued_input_messages:
+                return None
+            return self._queued_input_messages.pop(0)
+
+    def _clear_queued_input(self) -> int:
+        with self._queued_input_lock:
+            count = len(self._queued_input_messages)
+            self._queued_input_messages.clear()
+            return count
+
     def _choice_style(self) -> Style:
         return Style.from_dict(
             {
+                "runtime-prompt": "#67e8f9",
+                "queue-input": "#e5e7eb",
                 "selected-option": "bold #0f4c5c bg:#e6f2f3",
                 "choice-hint": "#6b7280",
                 "bottom-toolbar": "noreverse bg:default fg:default",
@@ -7599,6 +7593,154 @@ class AgentLoop:
             show_sweep=False,
             show_elapsed=False,
         )
+
+    def _runtime_status_fragments(self):
+        return self.status_bar._fragments(
+            self.status_bar.elapsed(),
+            now=time.monotonic(),
+            show_sweep=True,
+            show_elapsed=True,
+        )
+
+    def _start_runtime_ui(self) -> bool:
+        if self.input_fn is not input or not sys.stdin.isatty() or not sys.stderr.isatty() or self._runtime_ui_thread is not None:
+            return False
+        self._runtime_ui_ready.clear()
+        self._runtime_ui_stop.clear()
+        self._runtime_ui_thread = threading.Thread(target=self._run_runtime_ui, daemon=True)
+        self._runtime_ui_thread.start()
+        self._runtime_ui_ready.wait(timeout=0.2)
+        if self._runtime_ui_thread is not None and not self._runtime_ui_thread.is_alive():
+            self._runtime_ui_thread = None
+            return False
+        return True
+
+    def _stop_runtime_ui(self) -> bool:
+        thread = self._runtime_ui_thread
+        if thread is None:
+            return False
+        self._runtime_ui_stop.set()
+        self._runtime_ui_ready.wait(timeout=0.2)
+        app = self._runtime_ui_app
+        if app is not None:
+            try:
+                app.exit()
+            except Exception:
+                pass
+        thread.join(timeout=0.8)
+        stopped = not thread.is_alive()
+        if stopped:
+            self._runtime_ui_thread = None
+            self._runtime_ui_app = None
+        return stopped
+
+    def _with_runtime_ui_paused(self, action: Callable[[], JsonValue]) -> JsonValue:
+        was_running = self._stop_runtime_ui()
+        try:
+            return action()
+        finally:
+            if was_running:
+                self._start_runtime_ui()
+
+    def _interrupt_current_turn(self, *, exit_after: bool = False) -> None:
+        self._exit_after_current_turn = self._exit_after_current_turn or exit_after
+        app = self._runtime_ui_app
+        if app is not None:
+            app.exit()
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+        except Exception:
+            _thread.interrupt_main()
+
+    def _retry_current_model_call(self) -> None:
+        if self.agent.session.state.current_model_call_started_at <= 0:
+            return
+        self.agent.session.state.manual_model_retry_requested = True
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+        except Exception:
+            _thread.interrupt_main()
+
+    def _run_runtime_ui(self) -> None:
+        buffer = Buffer(multiline=False)
+        buffer_control = BufferControl(buffer=buffer, focusable=True)
+        bindings = KeyBindings()
+
+        def print_queued(text: str) -> None:
+            print_formatted_text(FormattedText([("ansibrightblack", "queued: " + text)]), output=self.status_bar.output)
+
+        def queue_text(event, text: str) -> None:
+            if not text:
+                return
+            self._append_queued_input(text)
+            buffer.reset()
+            terminal_task = run_in_terminal(lambda: print_queued(text), in_executor=False)
+            if inspect.iscoroutine(terminal_task):
+                event.app.create_background_task(terminal_task)
+            event.app.invalidate()
+
+        @bindings.add("enter", eager=True)
+        def _accept(event):
+            queue_text(event, buffer.text.strip())
+
+        @bindings.add("c-d", eager=True)
+        def _eof(event):
+            if buffer.text:
+                buffer.delete()
+                event.app.invalidate()
+            else:
+                self._interrupt_current_turn(exit_after=True)
+
+        @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
+        def _interrupt(event):
+            self._interrupt_current_turn()
+
+        @bindings.add("c-g", eager=True)
+        def _retry(event):
+            self._retry_current_model_call()
+
+        input_line = VSplit(
+            [
+                Window(FormattedTextControl([("class:runtime-prompt", "> ")]), width=2, dont_extend_width=True),
+                Window(buffer_control, style="class:queue-input", dont_extend_height=True),
+            ],
+            height=Dimension(min=1),
+        )
+        app = Application(
+            layout=Layout(
+                HSplit(
+                    [
+                        input_line,
+                        Window(
+                            FormattedTextControl(self._runtime_status_fragments, style="class:bottom-toolbar.text"),
+                            style="class:bottom-toolbar",
+                            height=Dimension(min=1),
+                            dont_extend_height=True,
+                        ),
+                    ]
+                ),
+                focused_element=buffer_control,
+            ),
+            style=self._choice_style(),
+            full_screen=False,
+            key_bindings=bindings,
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
+            output=self.status_bar.output,
+        )
+        self._runtime_ui_app = app
+        self._runtime_ui_ready.set()
+        if self._runtime_ui_stop.is_set():
+            return
+        try:
+            app.run(handle_sigint=False)
+        except BaseException:
+            return
+        finally:
+            self._runtime_ui_ready.set()
+            if self._runtime_ui_app is app:
+                self._runtime_ui_app = None
 
     def _visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
         if not query:
@@ -7909,19 +8051,26 @@ class AgentLoop:
         )
 
     def _run_agent(self, user_input: str) -> None:
+        runtime_ui_running = False
         try:
             self.status_bar.reset_timer()
-            self.status_bar.resume()
-            self.agent.run(
-                user_input,
-                confirm=self._confirm_tool_call,
-                on_auto_approve=self._show_auto_tool_call,
-                **self._live_preview_callbacks(),
-                on_message=self._emit,
-            )
+            runtime_ui_running = self._start_runtime_ui()
+            if not runtime_ui_running:
+                self.status_bar.resume()
+            with patch_stdout() if runtime_ui_running else nullcontext():
+                self.agent.run(
+                    user_input,
+                    confirm=self._confirm_tool_call,
+                    on_auto_approve=self._show_auto_tool_call,
+                    on_message=self._emit,
+                    poll_user_input=self._pop_queued_input,
+                )
         except KeyboardInterrupt:
             self.agent.cancel_current_goal()
             self._emit("Cancelled")
+            cleared = self._clear_queued_input()
+            if cleared:
+                self._emit("queued cleared: " + str(cleared))
         except Cancellation as error:
             self.agent.cancel_current_goal()
             self._emit("Cancelled: " + str(error))
@@ -7929,94 +8078,9 @@ class AgentLoop:
             self._emit("Error: " + str(error))
         finally:
             self.agent.session.state.manual_model_retry_requested = False
-            self._finish_live_tool_output()
+            if runtime_ui_running:
+                self._stop_runtime_ui()
             self.status_bar.pause()
-
-    def _live_preview_callbacks(self) -> dict[str, ToolLiveOutputCallback | ToolLiveDoneCallback]:
-        if not self._live_preview_enabled():
-            return {}
-        return {"on_live_output": self._show_live_tool_output, "on_live_done": self._finish_live_tool_output}
-
-    def _live_preview_enabled(self) -> bool:
-        return self.output_fn is print and sys.stderr.isatty()
-
-    def _show_live_tool_output(self, call: ParsedToolCall, chunk: str) -> None:
-        if not self._live_preview_enabled() or not chunk:
-            return
-        if not self._live_preview_active:
-            self._start_live_tool_output()
-        self._live_preview_text = (self._live_preview_text + chunk)[-self.LIVE_PREVIEW_MAX_CHARS :]
-        self._render_live_tool_output(throttled=True)
-
-    def _start_live_tool_output(self) -> None:
-        self._live_preview_active = True
-        self._live_preview_text = ""
-        self._live_preview_rendered_lines = 0
-        self._live_preview_last_render = 0.0
-        self._live_preview_started_at = time.monotonic()
-        self._live_preview_hint_shown = False
-        self._live_preview_resume_status = self.status_bar.is_running()
-        if self._live_preview_resume_status:
-            self.status_bar.pause()
-
-    def _finish_live_tool_output(self, call: ParsedToolCall | None = None) -> None:
-        if not self._live_preview_active:
-            return
-        self._render_live_tool_output(throttled=False)
-        # Keep the final live preview in terminal history instead of treating it
-        # as an active redraw region.
-        self._live_preview_rendered_lines = 0
-        self._live_preview_active = False
-        self._live_preview_text = ""
-        self._live_preview_started_at = 0.0
-        self._live_preview_hint_shown = False
-        if self._live_preview_resume_status:
-            self._live_preview_resume_status = False
-            self.status_bar.resume()
-
-    def _render_live_tool_output(self, *, throttled: bool) -> None:
-        lines = self._live_preview_lines()
-        if not any(line.strip() for line in lines):
-            return
-        now = time.monotonic()
-        if throttled and now - self._live_preview_last_render < self.LIVE_PREVIEW_REFRESH_INTERVAL:
-            return
-        self._live_preview_last_render = now
-        self._clear_live_tool_output()
-        segments: list[tuple[str, str]] = []
-        hint_visible = self._live_preview_interrupt_hint(now)
-        if hint_visible:
-            segments.append(("ansibrightblack", "  Ctrl-C interrupts current Bash; press again after it stops to cancel the session.\n"))
-        for line in lines:
-            segments.extend([("ansibrightblack", "  "), ("ansibrightblack", line + "\n")])
-        print_formatted_text(FormattedText(segments), output=self.status_bar.output, end="", flush=True)
-        self._live_preview_rendered_lines = len(lines) + (1 if hint_visible else 0)
-
-    def _live_preview_interrupt_hint(self, now: float) -> bool:
-        if self._live_preview_hint_shown:
-            return True
-        if self._live_preview_started_at <= 0:
-            return False
-        if now - self._live_preview_started_at < self.LIVE_PREVIEW_INTERRUPT_HINT_AFTER:
-            return False
-        self._live_preview_hint_shown = True
-        return True
-
-    def _clear_live_tool_output(self) -> None:
-        if self._live_preview_rendered_lines <= 0:
-            return
-        self.status_bar.output.cursor_up(self._live_preview_rendered_lines)
-        self.status_bar.output.erase_down()
-        self.status_bar.output.flush()
-        self._live_preview_rendered_lines = 0
-
-    def _live_preview_lines(self) -> list[str]:
-        text = self._live_preview_text.replace("\r", "\n")
-        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-        lines = [line for line in text.splitlines() if line.strip()][-self.LIVE_PREVIEW_MAX_LINES :]
-        width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-        return [_shorten(line, width) for line in lines]
 
     def _run_with_status(self, action: StatusAction) -> str:
         self.status_bar.reset_timer()
@@ -8031,10 +8095,10 @@ class AgentLoop:
             self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
             return self._wait_confirm("Proceed?", default=True)
 
-        return self._with_status_paused(action)
+        return self._with_runtime_ui_paused(lambda: self._with_status_paused(action))
 
     def _show_auto_tool_call(self, call: ParsedToolCall, tool: Tool) -> None:
-        self._with_status_paused(lambda: self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue"))
+        self._with_runtime_ui_paused(lambda: self._with_status_paused(lambda: self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")))
 
     def _with_status_paused(self, action: Callable[[], JsonValue]) -> JsonValue:
         was_running = self.status_bar.is_running()
@@ -8079,14 +8143,27 @@ class AgentLoop:
         self._with_status_paused(lambda: self._print_message(message))
 
     def _print_welcome(self) -> None:
-        self._emit_segments([("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")], "nanocode - AI coding assistant")
         self._emit_segments(
-            [("ansibrightblack", "  "), ("ansicyan", "/help [question]"), ("ansiwhite", " for help or source-aware questions\n")],
-            "  /help [question] for help or source-aware questions",
-        )
-        self._emit_segments(
-            [("ansibrightblack", "  "), ("ansicyan", "/status"), ("ansiwhite", " for current session state\n")],
-            "  /status for current session state",
+            [("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")]
+            + [
+                ("ansibrightblack", "  "),
+                ("ansicyan", "/help [question]"),
+                ("ansiwhite", " for help or source-aware questions\n"),
+                ("ansibrightblack", "  "),
+                ("ansicyan", "/status"),
+                ("ansiwhite", " for current session state;\n"),
+                ("ansibrightblack", "  "),
+                ("ansiwhite", "during work: enter queues, "),
+                ("ansicyan", "c-c"),
+                ("ansiwhite", " cancels, "),
+                ("ansicyan", "c-d"),
+                ("ansiwhite", " exits\n\n"),
+            ],
+            "nanocode - AI coding assistant\n"
+            "  /help [question] for help or source-aware questions\n"
+            "  /status for current session state;\n"
+            "  during work: enter queues, c-c cancels, c-d exits\n",
+            end="",
         )
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
@@ -8134,6 +8211,9 @@ class AgentLoop:
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
+            return
+        if message.startswith("sent:"):
+            self._emit_segments([("#67e8f9", message + "\n")], message)
             return
         if message.startswith("Error:"):
             self._emit_segments([("bold ansired", message + "\n")], message)
