@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 
 import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
@@ -22,6 +23,15 @@ def _seed_plan(agent, goal="test goal"):
 
 def _blocks_text(blocks):
     return "\n".join(blocks)
+
+
+def _observe_tool_result_context(agent):
+    return "\n\n".join(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
+
+
+def _set_context_budget(monkeypatch, agent, **overrides):
+    agent.session.settings.context_budget = "medium"
+    monkeypatch.setitem(nanocode.CONTEXT_BUDGETS, "medium", replace(nanocode.CONTEXT_BUDGETS["medium"], **overrides))
 
 
 def _session(
@@ -256,13 +266,12 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
-def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path):
+def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path, monkeypatch):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.TOOL_RESULT_INDEX_ITEMS = 2
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 4
+    _set_context_budget(monkeypatch, agent, index_items=2, observe_after_results=4)
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0,1"]}])
@@ -278,7 +287,7 @@ def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path):
     assert "<ReadToolResult>" in recent
     assert len(agent.tool_context.recent) == 3
     assert agent.mode == nanocode.AgentMode.OBSERVE
-    context = agent._format_observe_tool_result_context()
+    context = _observe_tool_result_context(agent)
     assert "one.txt" in context
     assert "two.txt" in context
     assert "three.txt" in context
@@ -287,17 +296,16 @@ def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path):
     assert len(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter)) == 4
 
 
-def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
+def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path, monkeypatch):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.TOOL_RESULT_RAW_CHARS = 10_000
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
 
-    context = agent._format_observe_tool_result_context()
+    context = _observe_tool_result_context(agent)
     assert agent.mode == nanocode.AgentMode.OBSERVE
     assert "one.txt" in context
     assert "<ReadToolResult>" in context
@@ -325,11 +333,11 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     assert "recall=tr.2" in _blocks_text(agent.tool_context.latest)
 
 
-def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
+def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monkeypatch):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.TOOL_RESULT_RAW_CHARS = 10_000
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000)
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
@@ -346,12 +354,11 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     assert "output:\n<ReadToolResult>" not in index
 
 
-def test_empty_observe_compacts_unreduced_tool_results(tmp_path):
+def test_empty_observe_compacts_unreduced_tool_results(tmp_path, monkeypatch):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.TOOL_RESULT_RAW_CHARS = 300
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
+    _set_context_budget(monkeypatch, agent, raw_chars=300, observe_after_results=2)
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
@@ -788,10 +795,10 @@ def test_observe_known_source_compacts_result_key_by_default(tmp_path):
     assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
 
 
-def test_kept_tool_results_respect_char_budget(tmp_path):
+def test_kept_tool_results_respect_char_budget(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.mode = nanocode.AgentMode.OBSERVE
-    agent.KEPT_TOOL_RESULT_CHARS = 100
+    _set_context_budget(monkeypatch, agent, kept_chars=100)
     agent.tool_context.latest = [
         '- ok tool=Read args=["a"] key=tr.1\n  output:\n' + ("a" * 30),
         '- ok tool=Read args=["b"] key=tr.2\n  output:\n' + ("b" * 30),
@@ -810,18 +817,17 @@ def test_kept_tool_results_respect_char_budget(tmp_path):
     assert "key=tr.2" in context
 
 
-def test_kept_tool_results_respect_per_block_char_budget(tmp_path):
+def test_kept_tool_results_respect_per_block_char_budget(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.mode = nanocode.AgentMode.OBSERVE
-    agent.KEPT_TOOL_RESULT_CHARS = 10_000
-    agent.KEPT_TOOL_RESULT_BLOCK_CHARS = 300
+    _set_context_budget(monkeypatch, agent, kept_chars=10_000, kept_block_chars=300)
     agent.tool_context.latest = [
         '- ok tool=Read args=["large.py"] key=tr.1\n  output:\n' + ("head\n" + ("x" * 2000) + "\ntail")
     ]
 
     agent.handle_response({"actions": [{"type": "keep", "source": ["tr.1"], "reason": "large output matters"}]})
 
-    assert len(agent.tool_context.kept_results[0]) <= 300
+    assert len(agent.tool_context.kept_results[0]) <= agent.context_budget().kept_block_chars
     assert "key=tr.1" in agent.tool_context.kept_results[0]
     assert "[tool result excerpt]" in agent.tool_context.kept_results[0]
 
@@ -839,32 +845,31 @@ def test_observe_checkpoint_clears_observe_errors(tmp_path):
     assert agent.observe_feedback_errors == []
 
 
-def test_agent_tool_result_raw_budget_triggers_observe(tmp_path):
+def test_agent_tool_result_raw_budget_triggers_observe(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.TOOL_RESULT_RAW_CHARS = 180
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 99
+    _set_context_budget(monkeypatch, agent, raw_chars=180, observe_after_results=99)
     path = tmp_path / "sample.txt"
     path.write_text("x" * 400 + "\n", encoding="utf-8")
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.TOOL_RESULT_RAW_CHARS
-    observe_context = agent._format_observe_tool_result_context()
+    assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.context_budget().raw_chars
+    observe_context = _observe_tool_result_context(agent)
     assert "sample.txt" in observe_context
     assert "x" * 50 in observe_context
 
 
-def test_agent_tool_result_index_has_count_limit(tmp_path):
+def test_agent_tool_result_index_has_count_limit(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.TOOL_RESULT_INDEX_ITEMS = 2
+    _set_context_budget(monkeypatch, agent, index_items=2)
 
     for index in range(4):
         agent.tool_context.append_recent(
             ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)],
-            max_index_items=agent.TOOL_RESULT_INDEX_ITEMS,
+            max_index_items=agent.context_budget().index_items,
             checkpoint=999,
         )
 
@@ -2824,7 +2829,7 @@ def test_agent_plain_text_cannot_finish_when_verification_required(tmp_path):
     assert messages == ["Done."]
 
 
-def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
+def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -2843,7 +2848,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
 
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 1
+    _set_context_budget(monkeypatch, agent, observe_after_results=1)
     _seed_plan(agent, "read sample")
     agent.model_client = FakeModelClient()
 
@@ -3255,10 +3260,10 @@ def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
     assert any("state update-only turn" in error for error in agent.agent_feedback_errors)
 
 
-def test_agent_warns_when_discovery_runs_long_without_plan(tmp_path):
+def test_agent_warns_when_discovery_runs_long_without_plan(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.goal = "investigate"
-    agent.PLANLESS_DISCOVERY_TOOL_CALLS = 2
+    _set_context_budget(monkeypatch, agent, planless_discovery_tool_calls=2)
 
     agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root", "args": ["."]}]})
     agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root again", "args": ["."]}]})

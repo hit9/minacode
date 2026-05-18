@@ -580,6 +580,7 @@ class ContextBudget:
 
 CONTEXT_BUDGETS: dict[str, ContextBudget] = {
     "low": ContextBudget(36_000, 16_000, 4_000, 20, 6, 6),
+    "medium": ContextBudget(72_000, 32_000, 6_000, 30, 10, 8),
     "high": ContextBudget(120_000, 64_000, 8_000, 60, 16, 12),
 }
 
@@ -5199,6 +5200,7 @@ class ResponseContext:
     has_plan_action: bool
     has_fresh_plan_action: bool
     has_user_rule_action: bool
+    has_non_readonly_tool_call: bool
     has_state_update_action: bool
     state_or_work_requested: bool
 
@@ -5230,16 +5232,6 @@ class Agent:
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
-    # Reducer trigger, not a pre-observe truncation limit: unreduced raw must stay visible until OBSERVE can keep or forget it.
-    TOOL_RESULT_RAW_CHARS: ClassVar[int] = 72_000
-    # Raw results explicitly kept by OBSERVE are bounded separately from latest/unreduced raw.
-    KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 32_000
-    KEPT_TOOL_RESULT_BLOCK_CHARS: ClassVar[int] = 6_000
-    # Compact recall/timeline entries shown in Tool Result Index; current-task timeline has priority over archived entries.
-    TOOL_RESULT_INDEX_ITEMS: ClassVar[int] = 30
-    # Trigger observe after this many unresolved raw result blocks accumulate; raw-size pressure can still trigger earlier.
-    OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 10
-    PLANLESS_DISCOVERY_TOOL_CALLS: ClassVar[int] = 8
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
@@ -5272,15 +5264,6 @@ class Agent:
         self.mode = AgentMode.ACT
 
     def context_budget(self) -> ContextBudget:
-        if self.session.settings.context_budget == "medium":
-            return ContextBudget(
-                self.TOOL_RESULT_RAW_CHARS,
-                self.KEPT_TOOL_RESULT_CHARS,
-                self.KEPT_TOOL_RESULT_BLOCK_CHARS,
-                self.TOOL_RESULT_INDEX_ITEMS,
-                self.OBSERVE_AFTER_PENDING_RESULT_COUNT,
-                self.PLANLESS_DISCOVERY_TOOL_CALLS,
-            )
         return CONTEXT_BUDGETS[self.session.settings.context_budget]
 
     def apply_context_budget(self) -> None:
@@ -5310,7 +5293,7 @@ class Agent:
             current_focus=self._format_current_focus(),
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             verification_state=current.verification.format(),
-            errors=self._format_agent_feedback() or "(empty)",
+            errors="\n".join("- " + error for error in self.agent_feedback_errors) or "(empty)",
             recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
             user_request=self._format_user_request(),
         ).strip()
@@ -5325,6 +5308,7 @@ class Agent:
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard
+        unreduced = "\n\n".join(self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter))
         return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
@@ -5333,8 +5317,8 @@ class Agent:
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             stable_knowledge=self._format_stable_knowledge(),
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
-            errors=self._format_observe_feedback() or "(empty)",
-            unreduced_tool_results=self._format_observe_tool_result_context() or "(empty)",
+            errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
+            unreduced_tool_results=unreduced or "(empty)",
             user_request=self._format_user_request(),
         ).strip()
 
@@ -5531,29 +5515,18 @@ class Agent:
             ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results)
         )
         archived_limit = max(0, budget.index_items - len(timeline))
-        archived = self._format_archived_tool_result_index(visible_keys, limit=archived_limit)
-        index = self._format_tool_result_index(archived, timeline)
-        return index, "\n\n".join(unreduced), "\n\n".join(latest)
-
-    def _format_observe_tool_result_context(self) -> str:
-        return "\n\n".join(self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter))
-
-    def _format_archived_tool_result_index(self, visible_result_keys: set[str], *, limit: int) -> list[str]:
-        lines = [
+        archived = [
             item.format(result_key=key)
             for key, item in self.session.state.tool_result_store.items()
-            if key not in visible_result_keys
+            if key not in visible_keys
         ]
-        return lines[-limit:] if limit > 0 else lines
-
-    @staticmethod
-    def _format_tool_result_index(archived: list[str], timeline: list[str]) -> str:
+        archived = archived[-archived_limit:] if archived_limit > 0 else archived
         sections = []
         if archived:
             sections.append("Archived Recall Index:\n" + "\n".join(archived))
         if timeline:
             sections.append("Current Task Timeline:\n" + "\n".join(timeline))
-        return "\n\n".join(sections)
+        return "\n\n".join(sections), "\n\n".join(unreduced), "\n\n".join(latest)
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()
@@ -5619,16 +5592,6 @@ class Agent:
     def _reject_completion(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> AgentRunResult:
         self.blackboard.goal_reached = False
         return self._reject_result(self._remember_agent_error, on_message, feedback, retry, debug)
-
-    def _format_agent_feedback(self) -> str:
-        if not self.agent_feedback_errors:
-            return ""
-        return "\n".join("- " + error for error in self.agent_feedback_errors)
-
-    def _format_observe_feedback(self) -> str:
-        if not self.observe_feedback_errors:
-            return ""
-        return "\n".join("- " + error for error in self.observe_feedback_errors)
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         is_retry = message.startswith(("Retrying:", "Continuing:"))
@@ -5921,7 +5884,11 @@ class Agent:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return execution.output
-        params = ["filepath", "ranges"] if call.name == ReplaceRangeTool.NAME else self._exact_signature_params(tool_class.SIGNATURE)
+        match = re.search(r"\(([^)]*)\)", tool_class.SIGNATURE)
+        value = match.group(1) if match else ""
+        params = ["filepath", "ranges"] if call.name == ReplaceRangeTool.NAME else []
+        if not params and value and not any(token in value for token in "[]*") and "..." not in value:
+            params = [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
         if not params or len(call.args) == len(params):
             return execution.output
         detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
@@ -5930,15 +5897,6 @@ class Agent:
         else:
             detail += ", extra: " + str(len(call.args) - len(params))
         return detail
-
-    def _exact_signature_params(self, signature: str) -> list[str]:
-        match = re.search(r"\(([^)]*)\)", signature)
-        if not match:
-            return []
-        value = match.group(1)
-        if "[" in value or "]" in value or "*" in value or "..." in value:
-            return []
-        return [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
 
     def _remember_recent_edit(self, execution: ToolCallExecution) -> None:
         if not execution.call.args:
@@ -5992,34 +5950,6 @@ class Agent:
             "Protocol_Gate: invalid action type(s): " + ", ".join(invalid) + ".",
         )
         return AgentRunResult()
-
-    def _completion_fallback_message(self, ctx: ResponseContext) -> str:
-        if ctx.completion_message:
-            return ctx.completion_message
-        if ctx.assistant_text:
-            return ctx.assistant_text
-        return "Done."
-
-    def _incomplete_goal_update_from_actions(self, actions: list[Json]) -> str:
-        update = ""
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "goal" and action.get("complete") is not True:
-                update = _json_str(action.get("text")) or update
-        return update
-
-    def _has_fresh_plan_action(self, actions: list[Json]) -> bool:
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "plan" and action.get("mode") != "patch" and any(self._plan_item_has_text(raw) for raw in _json_list(action.get("items"))):
-                return True
-        return False
-
-    @staticmethod
-    def _plan_item_has_text(value: JsonValue) -> bool:
-        if isinstance(value, str):
-            return bool(value.strip())
-        return bool(_json_str(_json_dict(value).get("text")))
 
     def _plan_is_complete(self) -> bool:
         return bool(self.blackboard.plan) and all(
@@ -6126,29 +6056,40 @@ class Agent:
             return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
         return ""
 
-    def _has_non_readonly_tool_call(self, tool_calls: list[JsonValue]) -> bool:
-        for value in tool_calls:
-            try:
-                call = self.tool_runner.parse_tool_call(value)
-            except ToolCallArgError:
-                return True
-            tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
-                return True
-        return False
-
     def _build_response_context(self, response: Json) -> ResponseContext:
         raw_actions = self._response_actions(response)
         assistant_text = _json_str(response.get("_assistant_text")) or ""
         pending_verify_requested = any(self._is_pending_verify_action(action) for action in raw_actions)
         actions = [action for action in raw_actions if not self._is_pending_verify_action(action)]
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
-        has_goal_action = any(_json_str(action.get("type")) == "goal" for action in actions)
-        has_plan_action = any(_json_str(action.get("type")) == "plan" for action in actions)
-        has_forget_action = any(_json_str(action.get("type")) == "forget" for action in actions)
-        has_hypothesis_action = any(_json_str(action.get("type")) == "hypothesis" for action in actions)
-        has_state_update_action = any(_json_str(action.get("type")) in {"goal", "plan", "known", "hypothesis", "stable_knowledge"} for action in actions)
-        goal_update = self._incomplete_goal_update_from_actions(actions)
+        action_types = {_json_str(action.get("type")) for action in actions}
+        has_non_readonly_tool_call = False
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                has_non_readonly_tool_call = True
+                break
+            tool_class = TOOL_REGISTRY.get(call.name)
+            if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
+                has_non_readonly_tool_call = True
+                break
+        goal_update = next(
+            (
+                text
+                for action in reversed(actions)
+                if _json_str(action.get("type")) == "goal" and action.get("complete") is not True
+                for text in [_json_str(action.get("text"))]
+                if text
+            ),
+            "",
+        )
+        has_fresh_plan_action = any(
+            _json_str(action.get("type")) == "plan"
+            and action.get("mode") != "patch"
+            and any((raw.strip() if isinstance(raw, str) else _json_str(_json_dict(raw).get("text"))) for raw in _json_list(action.get("items")))
+            for action in actions
+        )
         completion_message = next(
             (
                 _json_str(action.get("message_for_complete")) or ""
@@ -6170,20 +6111,17 @@ class Agent:
             pending_verify_requested=pending_verify_requested,
             user_rule_message=self._user_rule_message_from_actions(actions),
             completion_message=completion_message,
-            has_goal_action=has_goal_action,
-            has_plan_action=has_plan_action,
-            has_fresh_plan_action=self._has_fresh_plan_action(actions),
-            has_user_rule_action=any(_json_str(action.get("type")) == "user_rule" for action in actions),
-            has_state_update_action=has_state_update_action,
+            has_goal_action="goal" in action_types,
+            has_plan_action="plan" in action_types,
+            has_fresh_plan_action=has_fresh_plan_action,
+            has_user_rule_action="user_rule" in action_types,
+            has_non_readonly_tool_call=has_non_readonly_tool_call,
+            has_state_update_action=bool(action_types & {"goal", "plan", "known", "hypothesis", "stable_knowledge"}),
             state_or_work_requested=bool(
                 tool_calls
                 or pending_verify_requested
                 or (assistant_text and actions and not completion_message)
-                or has_goal_action
-                or has_plan_action
-                or has_forget_action
-                or has_hypothesis_action
-                or has_state_update_action
+                or action_types & {"goal", "plan", "forget", "hypothesis", "known", "stable_knowledge"}
             ),
         )
 
@@ -6271,10 +6209,10 @@ class Agent:
             ctx.goal_was_empty
             and not ctx.has_goal_action
             and ctx.state_or_work_requested
-            and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
+            and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call)
         ):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
-        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls)):
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
             self._drop_goal_rewrite_actions(ctx)
         return False
@@ -6291,7 +6229,7 @@ class Agent:
         if (
             ctx.plan_was_empty
             and not self.blackboard.plan
-            and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
+            and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call)
         ):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if (
@@ -6498,7 +6436,7 @@ class Agent:
             return completion_gate
         if self.blackboard.goal_reached and not ctx.completion_message:
             self._warn_agent("filled missing message_for_complete with a fallback completion message.")
-        completion_message = self._completion_fallback_message(ctx) if self.blackboard.goal_reached else ""
+        completion_message = (ctx.completion_message or ctx.assistant_text or "Done.") if self.blackboard.goal_reached else ""
         if self.blackboard.goal_reached:
             self.session.append_conversation(AssistantMessage(content=completion_message))
             if on_message is not None:
@@ -6554,7 +6492,7 @@ class Agent:
                 "Retrying: confirm a hypothesis before completing.",
                 "Completion_Gate: " + investigate_completion_error + ".",
             )
-        completion_message = self._completion_fallback_message(ctx) if self.blackboard.goal_reached else ""
+        completion_message = (ctx.completion_message or ctx.assistant_text or "Done.") if self.blackboard.goal_reached else ""
         plan_mode_completion_error = self._plan_mode_completion_error(completion_message) if self.blackboard.goal_reached else ""
         if plan_mode_completion_error:
             return self._reject_completion(
