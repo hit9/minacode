@@ -7453,12 +7453,7 @@ class AgentLoop:
                 multiline=False,
                 enable_history_search=True,
                 refresh_interval=StatusBar.INTERVAL,
-                bottom_toolbar=lambda: self.status_bar._fragments(
-                    0.0,
-                    now=time.monotonic(),
-                    show_sweep=False,
-                    show_elapsed=False,
-                ),
+                bottom_toolbar=self._status_bar_fragments,
             )
 
     def _choice_style(self) -> Style:
@@ -7471,7 +7466,7 @@ class AgentLoop:
             }
         )
 
-    def _choice_bottom_toolbar(self):
+    def _status_bar_fragments(self):
         return self.status_bar._fragments(
             0.0,
             now=time.monotonic(),
@@ -7657,7 +7652,7 @@ class AgentLoop:
                     [
                         choice_window,
                         Window(
-                            FormattedTextControl(lambda: self._choice_bottom_toolbar(), style="class:bottom-toolbar.text"),
+                            FormattedTextControl(self._status_bar_fragments, style="class:bottom-toolbar.text"),
                             style="class:bottom-toolbar",
                             dont_extend_height=True,
                             height=Dimension(min=1),
