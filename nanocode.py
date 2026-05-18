@@ -47,7 +47,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.output.defaults import create_output
@@ -1602,6 +1602,7 @@ class ToolResultContext:
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
+ToolOutputCallback: TypeAlias = Callable[[str, str], None]
 MessageCallback: TypeAlias = Callable[[str], None]
 UserInputPoller: TypeAlias = Callable[[], str | None]
 StatusAction: TypeAlias = Callable[[], str]
@@ -2897,6 +2898,7 @@ class BashTool(Tool):
     bash_path: str = ""
     cwd: str = ""
     timeout: int = 60
+    live_output: ToolOutputCallback | None = None
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
@@ -2947,13 +2949,13 @@ class BashTool(Tool):
                         timed_out = True
                         self._kill_process_group(proc)
                         proc.wait()
-                        self._drain_selector(selector, stdout_parts, stderr_parts)
+                        self._drain_selector(selector, stdout_parts, stderr_parts, self.live_output)
                         break
                     events = selector.select(min(0.2, remaining))
                     if not events:
                         continue
                     for key, _ in events:
-                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts)
+                        self._read_stream_chunk(selector, key, stdout_parts, stderr_parts, self.live_output)
                 if proc.returncode is None:
                     proc.wait()
             except KeyboardInterrupt:
@@ -2967,6 +2969,8 @@ class BashTool(Tool):
                     proc.wait()
                 raise
             finally:
+                if self.live_output is not None:
+                    self.live_output("", "")
                 selector.close()
 
             stdout_text = "".join(stdout_parts)
@@ -3007,9 +3011,10 @@ class BashTool(Tool):
         selector: selectors.BaseSelector,
         stdout_parts: list[str],
         stderr_parts: list[str],
+        live_output: ToolOutputCallback | None = None,
     ) -> None:
         for key in list(selector.get_map().values()):
-            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts):
+            while cls._read_stream_chunk(selector, key, stdout_parts, stderr_parts, live_output):
                 pass
 
     @staticmethod
@@ -3018,6 +3023,7 @@ class BashTool(Tool):
         key: selectors.SelectorKey,
         stdout_parts: list[str],
         stderr_parts: list[str],
+        live_output: ToolOutputCallback | None = None,
     ) -> bool:
         try:
             data = os.read(key.fileobj.fileno(), 4096)
@@ -3034,10 +3040,16 @@ class BashTool(Tool):
                 pass
             return False
         text = data.decode("utf-8", errors="replace")
+        stream = "stdout" if key.data == "stdout" else "stderr"
         if key.data == "stdout":
             stdout_parts.append(text)
         else:
             stderr_parts.append(text)
+        if live_output is not None:
+            try:
+                live_output(stream, text)
+            except Exception:
+                pass
         return True
 
 
@@ -4630,6 +4642,7 @@ class ToolCallRunner:
     def __init__(self, session: Session, protected_result_keys: Callable[[], set[str]] | None = None):
         self.session = session
         self.protected_result_keys = protected_result_keys or (lambda: set())
+        self.live_output: ToolOutputCallback | None = None
         self.latest_executions: list[ToolCallExecution] = []
         self.skipped_after_failure_count = 0
         self.skipped_after_failure_key = ""
@@ -4655,6 +4668,8 @@ class ToolCallRunner:
             try:
                 call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
                 tool = self._make_tool(call)
+                if isinstance(tool, BashTool):
+                    tool.live_output = self.live_output
                 requires_verification = tool.EFFECT == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
                 if callable(preview_error):
@@ -7502,6 +7517,9 @@ class ModelRetryShortcut:
 
 
 class AgentLoop:
+    BASH_LIVE_PREVIEW_LINES: ClassVar[int] = 6
+    BASH_LIVE_PREVIEW_CHARS: ClassVar[int] = 8000
+
     def __init__(
         self,
         agent: Agent,
@@ -7522,6 +7540,8 @@ class AgentLoop:
         self._runtime_ui_app: Application | None = None
         self._runtime_ui_ready = threading.Event()
         self._runtime_ui_stop = threading.Event()
+        self._tool_live_preview_lock = threading.Lock()
+        self._tool_live_preview_text = ""
         self._exit_after_current_turn = False
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
@@ -7617,6 +7637,7 @@ class AgentLoop:
                 "queue-input": "#e5e7eb",
                 "selected-option": "bold #0f4c5c bg:#e6f2f3",
                 "choice-hint": "#6b7280",
+                "bash-preview": "#6b7280",
                 "bottom-toolbar": "noreverse bg:default fg:default",
                 "bottom-toolbar.text": "noreverse bg:default fg:default",
             }
@@ -7749,10 +7770,19 @@ class AgentLoop:
             height=Dimension(min=1),
             dont_extend_height=True,
         )
+        bash_preview = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._tool_live_preview_fragments, style="class:bash-preview"),
+                height=Dimension.exact(self.BASH_LIVE_PREVIEW_LINES),
+                dont_extend_height=True,
+            ),
+            filter=Condition(self._has_tool_live_preview),
+        )
         app = Application(
             layout=Layout(
                 HSplit(
                     [
+                        bash_preview,
                         status_line,
                         input_line,
                     ]
@@ -8089,11 +8119,15 @@ class AgentLoop:
 
     def _run_agent(self, user_input: str) -> None:
         runtime_ui_running = False
+        tool_runner = getattr(self.agent, "tool_runner", None)
+        old_live_output = getattr(tool_runner, "live_output", None)
         try:
             self.status_bar.reset_timer()
             runtime_ui_running = self._start_runtime_ui()
             if not runtime_ui_running:
                 self.status_bar.resume()
+            if tool_runner is not None:
+                tool_runner.live_output = self._show_tool_live_output
             with patch_stdout() if runtime_ui_running else nullcontext():
                 self.agent.run(
                     user_input,
@@ -8114,6 +8148,9 @@ class AgentLoop:
         except Exception as error:
             self._emit("Error: " + str(error))
         finally:
+            if tool_runner is not None:
+                tool_runner.live_output = old_live_output
+            self._clear_tool_live_preview()
             self.agent.session.state.manual_model_retry_requested = False
             if runtime_ui_running:
                 self._stop_runtime_ui()
@@ -8129,13 +8166,61 @@ class AgentLoop:
 
     def _confirm_tool_call(self, call: ParsedToolCall, tool: Tool) -> ConfirmationResult:
         def action() -> ConfirmationResult:
+            self._clear_tool_live_preview()
             self._print_tool_call_display("Confirm Tool Call", "manual approval required", call, tool, title_style="bold ansiyellow")
             return self._wait_confirm("Proceed?", default=True)
 
         return self._with_runtime_ui_paused(lambda: self._with_status_paused(action))
 
     def _show_auto_tool_call(self, call: ParsedToolCall, tool: Tool) -> None:
-        self._with_runtime_ui_paused(lambda: self._with_status_paused(lambda: self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")))
+        def action() -> None:
+            self._clear_tool_live_preview()
+            self._print_tool_call_display("Auto Tool Call", "auto approved", call, tool, title_style="bold ansiblue")
+
+        self._with_runtime_ui_paused(lambda: self._with_status_paused(action))
+
+    def _show_tool_live_output(self, _stream: str, text: str) -> None:
+        if self.output_fn is not print:
+            return
+        if not text:
+            self._finish_tool_live_preview()
+            return
+        app = self._runtime_ui_app
+        if app is None:
+            print_formatted_text(FormattedText([("ansibrightblack", text)]), end="", flush=True)
+            return
+        with self._tool_live_preview_lock:
+            self._tool_live_preview_text = (self._tool_live_preview_text + text)[-self.BASH_LIVE_PREVIEW_CHARS :]
+        app.invalidate()
+
+    def _finish_tool_live_preview(self) -> None:
+        frame = self._tool_live_preview_frame()
+        app = self._runtime_ui_app
+        self._clear_tool_live_preview()
+        if app is not None and frame:
+            print_formatted_text(FormattedText([("ansibrightblack", frame + "\n")]), end="", flush=True)
+
+    def _clear_tool_live_preview(self) -> None:
+        with self._tool_live_preview_lock:
+            self._tool_live_preview_text = ""
+        app = self._runtime_ui_app
+        if app is not None:
+            app.invalidate()
+
+    def _has_tool_live_preview(self) -> bool:
+        with self._tool_live_preview_lock:
+            return bool(self._tool_live_preview_text)
+
+    def _tool_live_preview_fragments(self):
+        frame = self._tool_live_preview_frame()
+        return [("class:bash-preview", frame)] if frame else [("", "")]
+
+    def _tool_live_preview_frame(self) -> str:
+        with self._tool_live_preview_lock:
+            text = self._tool_live_preview_text
+        if not text:
+            return ""
+        return "\n".join(text.splitlines()[-self.BASH_LIVE_PREVIEW_LINES :])
 
     def _with_status_paused(self, action: Callable[[], JsonValue]) -> JsonValue:
         was_running = self.status_bar.is_running()

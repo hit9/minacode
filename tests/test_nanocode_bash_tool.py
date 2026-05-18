@@ -34,6 +34,21 @@ def test_bash_tool_returns_nonzero_exit_and_stderr(tmp_path):
     assert "<stderr>\nnope\n</stderr>" in result
 
 
+def test_bash_tool_streams_live_output_while_collecting_result(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    tool = BashTool.make(session, ["printf out; printf err >&2"])
+    chunks = []
+    tool.live_output = lambda stream, text: chunks.append((stream, text))
+
+    result = tool.call()
+
+    assert "".join(text for stream, text in chunks if stream == "stdout") == "out"
+    assert "".join(text for stream, text in chunks if stream == "stderr") == "err"
+    assert chunks[-1] == ("", "")
+    assert "<stdout>\nout\n</stdout>" in result
+    assert "<stderr>\nerr\n</stderr>" in result
+
+
 def test_bash_tool_times_out_and_reports_timeout(tmp_path):
     session = Session(cwd=str(tmp_path), settings=RuntimeSettings(shell_timeout=0))
 
@@ -49,8 +64,8 @@ def test_bash_tool_kills_process_group_on_interrupt(tmp_path, monkeypatch):
     tool = BashTool.make(session, [f"echo $$ > {pid_file}; printf started; sleep 30"])
     original_read_chunk = BashTool._read_stream_chunk
 
-    def interrupt_on_output(selector, key, stdout_parts, stderr_parts):
-        result = original_read_chunk(selector, key, stdout_parts, stderr_parts)
+    def interrupt_on_output(selector, key, stdout_parts, stderr_parts, live_output=None):
+        result = original_read_chunk(selector, key, stdout_parts, stderr_parts, live_output)
         if "started" in "".join(stdout_parts):
             raise KeyboardInterrupt()
         return result

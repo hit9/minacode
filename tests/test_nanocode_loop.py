@@ -664,6 +664,37 @@ def test_agent_loop_runtime_ui_pause_restarts_for_confirm(tmp_path, monkeypatch)
     assert calls == ["stop-ui", "display", "start-ui"]
 
 
+def test_agent_loop_bash_live_preview_keeps_latest_lines(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidated = 0
+
+        def invalidate(self):
+            self.invalidated += 1
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "")
+    app = FakeApp()
+    loop._runtime_ui_app = app
+    printed = []
+    monkeypatch.setattr(nanocode, "print_formatted_text", lambda formatted, **kwargs: printed.append(list(formatted)))
+
+    loop._show_tool_live_output("stdout", "\n".join("line" + str(index) for index in range(8)))
+
+    assert app.invalidated == 1
+    assert loop._has_tool_live_preview() is True
+    assert loop._tool_live_preview_fragments() == [("class:bash-preview", "line2\nline3\nline4\nline5\nline6\nline7")]
+
+    loop._show_tool_live_output("", "")
+
+    assert app.invalidated == 2
+    assert loop._has_tool_live_preview() is False
+    assert printed == [[("ansibrightblack", "line2\nline3\nline4\nline5\nline6\nline7\n")]]
+
+
 def test_agent_loop_runtime_interrupt_requests_sigint(tmp_path, monkeypatch):
     class FakeAgent:
         def __init__(self):
