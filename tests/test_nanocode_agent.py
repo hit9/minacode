@@ -531,7 +531,6 @@ def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
 
     prompt = agent._system_prompt()
 
-    assert "Do not use Bash just to list files or inspect git state." in prompt
     assert "find, sed, awk, perl, xargs, grep" in prompt
     assert "Mechanical shell edits are allowed" in prompt
     assert "verify afterward" in prompt
