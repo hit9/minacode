@@ -531,7 +531,10 @@ def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
 
     prompt = agent._system_prompt()
 
-    assert "find, sed, awk, perl, xargs, grep" in prompt
+    assert "Bash is for shell semantics" in prompt
+    for name in ("find", "sed", "awk", "perl", "xargs", "grep"):
+        assert name in prompt
+    assert "structured repo access" in prompt
     assert "Mechanical shell edits are allowed" in prompt
     assert "verify afterward" in prompt
 
@@ -3695,6 +3698,29 @@ def test_agent_run_allows_assistant_text_without_task_context(tmp_path):
     assert response == {"actions": [], "_assistant_text": "hello"}
     assert messages == ["hello"]
     assert session.state.conversation[-1].content == "hello"
+
+
+def test_agent_run_allows_assistant_text_after_one_shot_tool_without_goal(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.responses = [
+                {"actions": [{"type": "tool", "name": "List", "intention": "list current directory", "args": []}]},
+                {"actions": [], "_assistant_text": "listed files"},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("ls", on_message=messages.append)
+
+    assert response == {"actions": [], "_assistant_text": "listed files"}
+    assert messages[-1] == "listed files"
+    assert agent.blackboard.task_code == nanocode.TaskCode.DONE
 
 
 def test_agent_run_treats_assistant_text_as_progress_with_unfinished_task_context(tmp_path):

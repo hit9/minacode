@@ -2897,7 +2897,8 @@ class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd.",
-        "Use for tests, builds, and fast Unix text-tool work such as find, sed, awk, perl, xargs, and grep when that is the clearest path.",
+        "Prefer dedicated tools when they provide structured repo access; use Bash when shell semantics or pipelines are the clearest path.",
+        "Good Bash uses include tests, builds, and Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.",
         "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
@@ -3467,7 +3468,8 @@ Complete with verify blocked only when blocker=user.
 
 TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
-Use Bash for explicit shell commands, tests/builds, and fast Unix text-tool work: find, sed, awk, perl, xargs, grep.
+Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.
+Prefer dedicated tools when they give cleaner structured repo access.
 Mechanical shell edits are allowed; verify afterward with Git diff, Read, tests, or another focused check.
 For complex code changes, prefer ReplaceRange or PatchFile over shell rewrites.
 
@@ -6326,7 +6328,8 @@ class Agent:
         self.session.append_conversation(AssistantMessage(content=ctx.assistant_text))
         if on_message is not None:
             on_message(ctx.assistant_text)
-        if self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start:
+        active_task = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+        if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start):
             return AgentRunResult()
         if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
             self._warn_agent("assistant text cannot finish while verification is required.", self.RULE_VERIFY_DIRECTLY)
