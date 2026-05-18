@@ -139,12 +139,7 @@ class PlanStatus(StrEnum):
     BLOCKED = "blocked"
 
     def __str__(self) -> str:
-        symbols = {
-            PlanStatus.TODO: "○",
-            PlanStatus.DOING: "◔",
-            PlanStatus.DONE: "✓",
-            PlanStatus.BLOCKED: "☒",
-        }
+        symbols = {PlanStatus.TODO: "○", PlanStatus.DOING: "◔", PlanStatus.DONE: "✓", PlanStatus.BLOCKED: "☒"}
         return f"{symbols.get(self, '')} {self.value}".strip()
 
 
@@ -441,10 +436,7 @@ ALIYUN_CHAT_PROFILE = ProviderProfile(
 # vendor-specific branches through request construction. DashScope intentionally
 # defaults to Chat because Responses support differs by model family and region.
 PROVIDER_PROFILES: dict[str, ProviderProfile] = {
-    "api.openai.com": ProviderProfile(
-        api="responses",
-        chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),),
-    ),
+    "api.openai.com": ProviderProfile(api="responses", chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)),
     "openrouter.ai": ProviderProfile(api="responses", chat_reasoning="reasoning"),
     "opencode.ai": ProviderProfile(chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),)),
     "api.deepseek.com": ProviderProfile(chat_reasoning="thinking"),
@@ -4202,10 +4194,7 @@ class ModelClient:
             if output_chars <= 0:
                 continue
             first_output_seen = self._mark_stream_output(
-                output_chars,
-                first_output_seen,
-                request_deadline=request_deadline,
-                first_token_timeout=first_token_timeout,
+                output_chars, first_output_seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout
             )
             if isinstance(content, str) and content:
                 parts.append(content)
@@ -4238,20 +4227,14 @@ class ModelClient:
                 if response_content and not parts and not completed_content:
                     completed_content = response_content
                     first_output_seen = self._mark_stream_output(
-                        len(response_content),
-                        first_output_seen,
-                        request_deadline=request_deadline,
-                        first_token_timeout=first_token_timeout,
+                        len(response_content), first_output_seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout
                     )
                 continue
             fallback_content = self._responses_event_content(data)
             if fallback_content and not parts and not completed_content:
                 completed_content = fallback_content
                 first_output_seen = self._mark_stream_output(
-                    len(fallback_content),
-                    first_output_seen,
-                    request_deadline=request_deadline,
-                    first_token_timeout=first_token_timeout,
+                    len(fallback_content), first_output_seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout
                 )
                 continue
             output = self._responses_stream_output(data)
@@ -4394,9 +4377,7 @@ class ModelClient:
         self.session.state.session_completion_tokens += completion_tokens
         self.session.state.session_total_tokens += total_tokens
         self.session.state.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens
         )
 
     @staticmethod
@@ -5135,13 +5116,7 @@ class AgentStateUpdater:
         if (
             plan_replaced
             and not any(_json_str(action.get("type")) == "verify" for action in actions)
-            and verification.status
-            in {
-                VerificationStatus.REQUIRED,
-                VerificationStatus.DONE,
-                VerificationStatus.FAILED,
-                VerificationStatus.BLOCKED,
-            }
+            and verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.FAILED, VerificationStatus.BLOCKED}
         ):
             verification.reset()
 
@@ -5254,18 +5229,7 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
-    blackboard: Blackboard
-    ACT_ACTION_TYPES: ClassVar[set[str]] = {
-        "goal",
-        "plan",
-        "hypothesis",
-        "known",
-        "stable_knowledge",
-        "tool",
-        "verify",
-        "user_rule",
-        "forget",
-    }
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "hypothesis", "known", "stable_knowledge", "tool", "verify", "user_rule", "forget"}
     PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"user_rule", "forget"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "stable_knowledge", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
@@ -5284,7 +5248,7 @@ class Agent:
 
     def __init__(self, session: Session):
         self.session = session
-        self.blackboard = Blackboard()
+        self.blackboard: Blackboard = Blackboard()
         self.recent_edits: list[str] = []
         self.tool_context = ToolResultContext()
         self.model_client = ModelClient(session)
@@ -5419,17 +5383,7 @@ class Agent:
                 delay = self.MODEL_TIMEOUT_RETRY_DELAYS[attempt]
                 self._set_status_notice("err:first_token" if timeout_reason == "request first token timeout" else "err:timeout")
                 if on_message is not None and self.session.settings.debug:
-                    on_message(
-                        "Retrying: "
-                        + timeout_reason
-                        + "; retry "
-                        + str(attempt + 1)
-                        + "/"
-                        + str(len(self.MODEL_TIMEOUT_RETRY_DELAYS))
-                        + " in "
-                        + str(delay)
-                        + "s."
-                    )
+                    on_message(f"Retrying: {timeout_reason}; retry {attempt + 1}/{len(self.MODEL_TIMEOUT_RETRY_DELAYS)} in {delay}s.")
                 attempt += 1
                 time.sleep(delay)
         raise LLMError("request model timeout")
@@ -5707,12 +5661,7 @@ class Agent:
                 return AgentRunResult(), response, False
             return (
                 self.handle_response(
-                    response,
-                    confirm=confirm,
-                    on_auto_approve=on_auto_approve,
-                    on_live_output=on_live_output,
-                    on_live_done=on_live_done,
-                    on_message=on_message,
+                    response, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done, on_message=on_message
                 ),
                 response,
                 False,
@@ -5772,12 +5721,7 @@ class Agent:
             return AgentRunResult(), invalid_response, False
         return (
             self.handle_response(
-                response,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_live_output=on_live_output,
-                on_live_done=on_live_done,
-                on_message=on_message,
+                response, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done, on_message=on_message
             ),
             response,
             False,
@@ -5839,13 +5783,7 @@ class Agent:
         on_live_output: ToolLiveOutputCallback | None = None,
         on_live_done: ToolLiveDoneCallback | None = None,
     ) -> str:
-        self.tool_runner.execute(
-            tool_calls,
-            confirm=confirm,
-            on_auto_approve=on_auto_approve,
-            on_live_output=on_live_output,
-            on_live_done=on_live_done,
-        )
+        self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve, on_live_output=on_live_output, on_live_done=on_live_done)
         self.tool_context.append_latest(
             self.tool_runner.latest_executions,
             max_index_items=self.context_budget().index_items,
@@ -5951,9 +5889,7 @@ class Agent:
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
             "actions": [],
-            "_format_error": "Invalid function-tool response: "
-            + reason
-            + ". Use the provided function tools. Bad output: "
+            "_format_error": f"Invalid function-tool response: {reason}. Use the provided function tools. Bad output: "
             + _shorten(json.dumps(response, ensure_ascii=False)),
         }
 
@@ -5992,11 +5928,7 @@ class Agent:
         if not invalid:
             return None
         (remember_error or self._remember_agent_error)(feedback_message + " Invalid action(s): " + ", ".join(invalid) + ".")
-        self._report_gate(
-            on_message,
-            retry_message,
-            "Protocol_Gate: invalid action type(s): " + ", ".join(invalid) + ".",
-        )
+        self._report_gate(on_message, retry_message, "Protocol_Gate: invalid action type(s): " + ", ".join(invalid) + ".")
         return AgentRunResult()
 
     def _plan_is_complete(self) -> bool:
@@ -6348,13 +6280,7 @@ class Agent:
             if report:
                 on_message(report)
             if self.session.settings.debug and self.tool_runner.skipped_after_failure_count:
-                on_message(
-                    "Tool Calls Skipped: "
-                    + str(self.tool_runner.skipped_after_failure_count)
-                    + " after "
-                    + self.tool_runner.skipped_after_failure_key
-                    + " failed"
-                )
+                on_message(f"Tool Calls Skipped: {self.tool_runner.skipped_after_failure_count} after {self.tool_runner.skipped_after_failure_key} failed")
         self.compactor.maybe_compact()
         return True
 
