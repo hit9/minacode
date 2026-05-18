@@ -1662,8 +1662,6 @@ class SessionLock:
         self.file = None
         try:
             os.remove(self.path)
-        except FileNotFoundError:
-            pass
         except OSError:
             pass
 
@@ -6119,16 +6117,13 @@ class Agent:
         )
 
     def _gate_protocol_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        action_gate = self._gate_action_types(
+        return self._gate_action_types(
             ctx.actions,
             allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
             on_message=on_message,
             retry_message="Retrying: use a valid agent action.",
             feedback_message=self._error("this step only accepts agent work actions."),
-        )
-        if action_gate is not None:
-            return True
-        return False
+        ) is not None
 
     def _gate_tool_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if self._gate_forget_actions(ctx.actions, on_message, self._remember_agent_error) is not None:
