@@ -2885,7 +2885,9 @@ class ReplaceRangeTool(Tool):
 class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Run one explicit shell command via bash -lc in cwd; not for search, listing, or file edits when dedicated tools exist.",
+        "Run one explicit shell command via bash -lc in cwd.",
+        "Use for tests, builds, and fast Unix text-tool work such as find, sed, awk, perl, xargs, and grep when that is the clearest path.",
+        "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
@@ -3441,8 +3443,10 @@ Do not use pending verification status.
 Complete with verify blocked only when blocker=user.
 
 TOOLS
-Prefer dedicated tools over Bash.
-Use Bash only for explicit shell commands or when no dedicated tool exists.
+Prefer dedicated tools for precise file reads/searches and structured edits.
+Use Bash for explicit shell commands, tests/builds, and fast Unix text-tool work: find, sed, awk, perl, xargs, grep.
+Mechanical shell edits are allowed; verify afterward with Git diff, Read, tests, or another focused check.
+For complex code changes, prefer ReplaceRange or PatchFile over shell rewrites.
 
 Git is for status, diff, history, and changed files.
 Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.

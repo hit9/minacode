@@ -474,6 +474,16 @@ def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
     assert "pending-feedback replies" in prompt
 
 
+def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    prompt = agent._system_prompt()
+
+    assert "find, sed, awk, perl, xargs, grep" in prompt
+    assert "Mechanical shell edits are allowed" in prompt
+    assert "verify afterward" in prompt
+
+
 def test_act_prompt_includes_kept_tool_results(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha unique\n", encoding="utf-8")
     (tmp_path / "other.txt").write_text("beta unique\n", encoding="utf-8")
