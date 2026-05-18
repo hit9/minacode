@@ -420,8 +420,13 @@ class ChatReasoningRule:
 @dataclass(frozen=True)
 class ProviderProfile:
     api: str = "chat"
-    chat_reasoning_payload: str = ""
+    chat_reasoning: str = "off"
     chat_reasoning_rules: tuple[ChatReasoningRule, ...] = ()
+
+
+REASONING_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+REASONING_CHOICES: tuple[str, ...] = ("off", *REASONING_LEVELS)
+CHAT_REASONING_CHOICES: tuple[str, ...] = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 
 
 ALIYUN_CHAT_PROFILE = ProviderProfile(
@@ -440,9 +445,9 @@ PROVIDER_PROFILES: dict[str, ProviderProfile] = {
         api="responses",
         chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),),
     ),
-    "openrouter.ai": ProviderProfile(api="responses", chat_reasoning_payload="reasoning"),
+    "openrouter.ai": ProviderProfile(api="responses", chat_reasoning="reasoning"),
     "opencode.ai": ProviderProfile(chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),)),
-    "api.deepseek.com": ProviderProfile(chat_reasoning_payload="thinking"),
+    "api.deepseek.com": ProviderProfile(chat_reasoning="thinking"),
     "dashscope.aliyuncs.com": ALIYUN_CHAT_PROFILE,
     "dashscope-intl.aliyuncs.com": ALIYUN_CHAT_PROFILE,
     "dashscope-us.aliyuncs.com": ALIYUN_CHAT_PROFILE,
@@ -476,9 +481,8 @@ class ProviderConfig:
     api: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
-    reasoning: bool | None = True
-    reasoning_effort: str = "medium"
-    chat_reasoning_payload: str = "auto"
+    reasoning: str = "medium"
+    chat_reasoning: str = "auto"
     stream: bool | None = True
     timeout: int | None = 180
     first_token_timeout: int | None = 90
@@ -493,9 +497,8 @@ class ProviderConfig:
             api=cls._api(data, defaults.api),
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", defaults.temperature),
-            reasoning=Config.bool(data, "reasoning", defaults.reasoning),
-            reasoning_effort=Config.str(data, "reasoning_effort", defaults.reasoning_effort),
-            chat_reasoning_payload=cls._chat_reasoning_payload(data, defaults.chat_reasoning_payload),
+            reasoning=cls._reasoning(data, defaults.reasoning),
+            chat_reasoning=cls._chat_reasoning(data, defaults.chat_reasoning),
             stream=Config.bool(data, "stream", defaults.stream),
             timeout=Config.int(data, "timeout", defaults.timeout),
             first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
@@ -509,23 +512,30 @@ class ProviderConfig:
         return value
 
     @classmethod
-    def _chat_reasoning_payload(cls, data: Json, default: str) -> str:
-        value = Config.str(data, "chat_reasoning_payload", default)
-        if value not in ("auto", "", "reasoning", "reasoning_effort", "thinking", "enable_thinking"):
-            raise ConfigError("config provider.chat_reasoning_payload must be one of: auto, reasoning, reasoning_effort, thinking, enable_thinking, empty")
+    def _reasoning(cls, data: Json, default: str) -> str:
+        value = Config.str(data, "reasoning", default)
+        if value not in REASONING_CHOICES:
+            raise ConfigError("config provider.reasoning must be one of: " + ", ".join(REASONING_CHOICES))
         return value
 
-    def resolved_chat_reasoning_payload(self) -> str:
-        if self.chat_reasoning_payload != "auto":
-            return self.chat_reasoning_payload
+    @classmethod
+    def _chat_reasoning(cls, data: Json, default: str) -> str:
+        value = Config.str(data, "chat_reasoning", default)
+        if value not in CHAT_REASONING_CHOICES:
+            raise ConfigError("config provider.chat_reasoning must be one of: " + ", ".join(CHAT_REASONING_CHOICES))
+        return value
+
+    def resolved_chat_reasoning(self) -> str:
+        if self.chat_reasoning != "auto":
+            return self.chat_reasoning
         profile = PROVIDER_PROFILES.get(self.host())
         if not profile:
-            return ""
+            return "off"
         model = self.model.lower()
         for rule in profile.chat_reasoning_rules:
             if any(model.startswith(prefix) for prefix in rule.model_prefixes):
                 return rule.payload
-        return profile.chat_reasoning_payload
+        return profile.chat_reasoning
 
     def host(self) -> str:
         return (urlparse(self.url).hostname or "").lower()
@@ -707,15 +717,14 @@ model = ""
 # /model choices above automatically discovered provider models.
 # Optional. Uncomment only for models/providers that support temperature.
 # temperature = 0.7
-reasoning = true
-reasoning_effort = "medium"
+reasoning = "medium"
 # Optional advanced override. Chat Completions reasoning shape is auto-detected
 # by provider/model profile where nanocode knows the provider. Responses API
 # always uses the standard reasoning.effort payload.
-# chat_reasoning_payload = "reasoning" sends {"reasoning":{"effort":...}}
-# chat_reasoning_payload = "reasoning_effort" sends a top-level effort.
-# chat_reasoning_payload = "thinking" sends {"thinking":{"type":"enabled/disabled"}, "reasoning_effort":"high/max"}.
-# chat_reasoning_payload = "enable_thinking" sends enable_thinking plus a budget mapped from effort.
+# chat_reasoning = "reasoning" sends {"reasoning":{"effort":...}}
+# chat_reasoning = "reasoning_effort" sends a top-level effort.
+# chat_reasoning = "thinking" sends {"thinking":{"type":"enabled/disabled"}, "reasoning_effort":"high/max"}.
+# chat_reasoning = "enable_thinking" sends enable_thinking plus a budget mapped from effort.
 stream = true
 timeout = 180
 # Stream mode only: retry if no first content token arrives within this many seconds.
@@ -3762,7 +3771,7 @@ class ModelClient:
             with ModelRetryShortcut(self.session):
                 self.session.state.current_model_call_started_at = time.monotonic()
                 self.session.state.current_model_call_label = model
-                self.session.state.current_model_call_reasoning_label = config.reasoning_effort if config.reasoning else "off"
+                self.session.state.current_model_call_reasoning_label = config.reasoning
                 self.session.state.current_model_call_activity = activity
                 self.session.state.current_model_call_has_content = False
                 self.session.state.current_model_call_streaming_chars = 0
@@ -3883,7 +3892,7 @@ class ModelClient:
 
     @staticmethod
     def _reasoning_effort(config: ProviderConfig) -> str:
-        return config.reasoning_effort or "medium"
+        return config.reasoning if config.reasoning in REASONING_LEVELS else "medium"
 
     def _chat_completion_params(
         self,
@@ -3905,18 +3914,19 @@ class ModelClient:
             params["tools"] = tool_schemas
             params["tool_choice"] = {"type": "function", "function": {"name": required_tool}} if required_tool else "auto"
             params["parallel_tool_calls"] = True
-        chat_reasoning_payload = config.resolved_chat_reasoning_payload()
-        if config.reasoning is not False and chat_reasoning_payload == "reasoning":
+        chat_reasoning = config.resolved_chat_reasoning()
+        reasoning_enabled = config.reasoning != "off"
+        if reasoning_enabled and chat_reasoning == "reasoning":
             extra_body["reasoning"] = {"effort": self._reasoning_effort(config)}
-        if config.reasoning is not False and chat_reasoning_payload == "reasoning_effort":
+        if reasoning_enabled and chat_reasoning == "reasoning_effort":
             params["reasoning_effort"] = self._reasoning_effort(config)
-        if chat_reasoning_payload == "thinking":
-            extra_body["thinking"] = {"type": "enabled" if config.reasoning is not False else "disabled"}
-            if config.reasoning is not False:
+        if chat_reasoning == "thinking":
+            extra_body["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
+            if reasoning_enabled:
                 params["reasoning_effort"] = DEEPSEEK_REASONING_EFFORT_BY_EFFORT.get(self._reasoning_effort(config), "high")
-        if chat_reasoning_payload == "enable_thinking":
-            extra_body["enable_thinking"] = config.reasoning is not False
-            if config.reasoning is not False:
+        if chat_reasoning == "enable_thinking":
+            extra_body["enable_thinking"] = reasoning_enabled
+            if reasoning_enabled:
                 extra_body["thinking_budget"] = ALIYUN_THINKING_BUDGET_BY_EFFORT.get(self._reasoning_effort(config), ALIYUN_THINKING_BUDGET_BY_EFFORT["medium"])
         if extra_body:
             params["extra_body"] = extra_body
@@ -4200,7 +4210,7 @@ class ModelClient:
             params["parallel_tool_calls"] = True
         if config.temperature is not None:
             params["temperature"] = config.temperature
-        if config.reasoning is not False:
+        if config.reasoning != "off":
             effort = self._reasoning_effort(config)
             params["reasoning"] = {"effort": "high" if effort in ("max", "xhigh") else effort}
         return params
@@ -6894,12 +6904,10 @@ COMMANDS: tuple[CommandSpec, ...] = (
 ############################
 
 
-CONFIG_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
-CHAT_REASONING_PAYLOAD_CHOICES: tuple[str, ...] = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 CONFIG_PROVIDER_ATTRS: dict[str, str] = {
     "provider.model": "model",
     "provider.reasoning": "reasoning",
-    "provider.effort": "reasoning_effort",
+    "provider.chat_reasoning": "chat_reasoning",
     "provider.stream": "stream",
     "provider.temperature": "temperature",
     "provider.timeout": "timeout",
@@ -6915,13 +6923,13 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
 }
 CONFIG_SET_KEYS: tuple[str, ...] = tuple(CONFIG_PROVIDER_ATTRS) + tuple(CONFIG_RUNTIME_ATTRS)
 CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
-    "provider.reasoning": ("on", "off"),
-    "provider.effort": CONFIG_EFFORTS,
+    "provider.reasoning": REASONING_CHOICES,
+    "provider.chat_reasoning": CHAT_REASONING_CHOICES,
     "provider.stream": ("on", "off"),
     "provider.temperature": ("off",),
     "runtime.yolo": ("on", "off"),
 }
-CONFIG_BOOL_KEYS: set[str] = {"provider.reasoning", "provider.stream", "runtime.yolo"}
+CONFIG_BOOL_KEYS: set[str] = {"provider.stream", "runtime.yolo"}
 CONFIG_INT_KEYS: set[str] = {
     "provider.timeout",
     "provider.first_token_timeout",
@@ -7108,30 +7116,26 @@ class CommandDispatcher:
         value = args.strip()
         provider = self.agent.session.config.provider
         if not value:
-            configured = provider.chat_reasoning_payload or "off"
-            resolved = provider.resolved_chat_reasoning_payload() or "off"
+            configured = provider.chat_reasoning or "off"
+            resolved = provider.resolved_chat_reasoning() or "off"
             return (
-                "provider.chat_reasoning_payload: "
+                "provider.chat_reasoning: "
                 + configured
-                + "\nprovider.resolved_chat_reasoning_payload: "
+                + "\nprovider.resolved_chat_reasoning: "
                 + resolved
                 + "\nUsage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
             )
-        if value not in CHAT_REASONING_PAYLOAD_CHOICES:
+        if value not in CHAT_REASONING_CHOICES:
             return "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
-        provider.chat_reasoning_payload = "" if value == "off" else value
-        return "Set provider.chat_reasoning_payload = " + value
+        provider.chat_reasoning = value
+        return "Set provider.chat_reasoning = " + value
 
     def _apply_reasoning_choice(self, choice: str) -> str:
         provider = self.agent.session.config.provider
-        if choice == "off":
-            provider.reasoning = False
-            return "Set provider.reasoning = off"
-        if choice not in CONFIG_EFFORTS:
-            return "Invalid reasoning effort: " + choice
-        provider.reasoning = True
-        provider.reasoning_effort = choice
-        return "Set provider.reasoning = on\nSet provider.effort = " + choice
+        if choice not in REASONING_CHOICES:
+            return "Invalid reasoning: " + choice
+        provider.reasoning = choice
+        return "Set provider.reasoning = " + choice
 
     def _provider(self, args: str) -> str:
         name = args.strip()
@@ -7257,10 +7261,9 @@ class CommandDispatcher:
                 "provider.model: " + (provider_config.model or "(empty)"),
                 "provider.api: " + provider_config.api,
                 "provider.available_models: " + (", ".join(provider_config.available_models) or "(empty)"),
-                "provider.reasoning: " + self._format_bool(provider_config.reasoning),
-                "provider.effort: " + (provider_config.reasoning_effort or "(empty)"),
-                "provider.chat_reasoning_payload: " + (provider_config.chat_reasoning_payload or "(empty)"),
-                "provider.resolved_chat_reasoning_payload: " + (provider_config.resolved_chat_reasoning_payload() or "(empty)"),
+                "provider.reasoning: " + provider_config.reasoning,
+                "provider.chat_reasoning: " + (provider_config.chat_reasoning or "(empty)"),
+                "provider.resolved_chat_reasoning: " + (provider_config.resolved_chat_reasoning() or "(empty)"),
                 "provider.stream: " + self._format_bool(provider_config.stream),
                 "provider.temperature: " + self._format_optional(provider_config.temperature),
                 "provider.timeout: " + self._format_optional(provider_config.timeout),
@@ -7334,9 +7337,14 @@ class CommandDispatcher:
                 return "Usage: /set " + key + " [on|off]"
             setattr(target, attr, value == "on")
             return ""
-        if key == "provider.effort":
-            if value not in CONFIG_EFFORTS:
-                return "Usage: /set " + key + " [" + "|".join(CONFIG_EFFORTS) + "]"
+        if key == "provider.reasoning":
+            if value not in REASONING_CHOICES:
+                return "Usage: /set " + key + " [" + "|".join(REASONING_CHOICES) + "]"
+            setattr(target, attr, value)
+            return ""
+        if key == "provider.chat_reasoning":
+            if value not in CHAT_REASONING_CHOICES:
+                return "Usage: /set " + key + " [" + "|".join(CHAT_REASONING_CHOICES) + "]"
             setattr(target, attr, value)
             return ""
         if key == "provider.temperature":
@@ -7386,12 +7394,11 @@ class CommandDispatcher:
         return "(fallback)" if value is None else ("on" if value else "off")
 
     def _format_provider_reasoning(self, provider: ProviderConfig) -> str:
-        if provider.reasoning is False:
+        if provider.reasoning == "off":
             return "off"
-        effort = provider.reasoning_effort or "medium"
         if provider.resolved_api() != "chat":
-            return effort
-        return effort + "(" + (provider.resolved_chat_reasoning_payload() or "no-payload") + ")"
+            return provider.reasoning
+        return provider.reasoning + "(" + provider.resolved_chat_reasoning() + ")"
 
     def _format_optional(self, value: object) -> str:
         return str(value) if value is not None else "(fallback)"
@@ -7496,7 +7503,7 @@ class StatusBar:
         active_model = session.state.current_model_call_label or session.config.provider.model
         model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
         reasoning = session.state.current_model_call_reasoning_label or (
-            session.config.provider.reasoning_effort if session.config.provider.reasoning else "off"
+            session.config.provider.reasoning
         )
         modes = "".join(" | " + label for label, enabled in (("yolo", session.settings.yolo), ("plan", session.settings.plan_mode)) if enabled)
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
@@ -7997,13 +8004,13 @@ class AgentLoop:
 
     def _select_reasoning(self) -> SelectionResult:
         provider = self.agent.session.config.provider
-        current = provider.reasoning_effort if provider.reasoning else "off"
+        current = provider.reasoning
         labels = {"off": "off - disable reasoning"}
         if current == "off":
             labels["off"] = "off - disable reasoning (current)"
-        elif current in CONFIG_EFFORTS:
+        elif current in REASONING_LEVELS:
             labels[current] = current + " (current)"
-        return self._select_choice("Reasoning effort", ("off", *CONFIG_EFFORTS), labels, current=current)
+        return self._select_choice("Reasoning effort", REASONING_CHOICES, labels, current=current)
 
     def _discard_pending_tty_input(self) -> None:
         if not sys.stdin.isatty():
@@ -8579,7 +8586,7 @@ class CommandCompleter(Completer):
             return
         if text.startswith("/reason-payload "):
             text = text[len("/reason-payload ") :]
-            for value in CHAT_REASONING_PAYLOAD_CHOICES:
+            for value in CHAT_REASONING_CHOICES:
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
             return

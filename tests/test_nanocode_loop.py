@@ -79,7 +79,8 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["url"] == ""
     assert "available_models" not in config["provider"]["default"]
     assert "temperature" not in config["provider"]["default"]
-    assert "chat_reasoning_payload" not in config["provider"]["default"]
+    assert config["provider"]["default"]["reasoning"] == "medium"
+    assert "chat_reasoning" not in config["provider"]["default"]
     assert config["provider"]["default"]["timeout"] == 180
     assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
@@ -376,8 +377,8 @@ def test_agent_loop_command_completer_matches_slash_commands():
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
     set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
-    set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
-    set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
+    set_reasoning_completions = list(completer.get_completions(Document("/set provider.reasoning h"), CompleteEvent(completion_requested=True)))
+    set_chat_reasoning_completions = list(completer.get_completions(Document("/set provider.chat_reasoning rea"), CompleteEvent(completion_requested=True)))
     set_plan_timeout_completions = list(completer.get_completions(Document("/set runtime.plan_"), CompleteEvent(completion_requested=True)))
     model_completions = list(nanocode.CommandCompleter(models=["qwen3", "deepseek"]).get_completions(Document("/model q"), CompleteEvent(completion_requested=True)))
     plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
@@ -390,8 +391,8 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert "/plan" in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
-    assert [completion.text for completion in set_bool_completions] == ["on", "off"]
-    assert [completion.text for completion in set_effort_completions] == ["high"]
+    assert [completion.text for completion in set_reasoning_completions] == ["high"]
+    assert [completion.text for completion in set_chat_reasoning_completions] == ["reasoning", "reasoning_effort"]
     assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
@@ -533,7 +534,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
 
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
-    assert any("model: model api=chat(auto) reasoning=medium(no-payload) stream=on" in output for output in outputs)
+    assert any("model: model api=chat(auto) reasoning=medium(off) stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
 
@@ -548,8 +549,7 @@ def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):
 
     assert loop.run() == 0
     assert loop.agent.session.config.provider.model == "new-model"
-    assert loop.agent.session.config.provider.reasoning is True
-    assert loop.agent.session.config.provider.reasoning_effort == "high"
+    assert loop.agent.session.config.provider.reasoning == "high"
 
 
 def test_agent_loop_model_command_prompts_for_model_when_available(tmp_path):
@@ -588,16 +588,14 @@ def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="old")
-            self.session.config.provider.reasoning = False
-            self.session.config.provider.reasoning_effort = "xhigh"
+            self.session.config.provider.reasoning = "xhigh"
 
     inputs = iter(["/model new-model", "", "/exit"])
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
 
     assert loop.run() == 0
     assert loop.agent.session.config.provider.model == "new-model"
-    assert loop.agent.session.config.provider.reasoning is False
-    assert loop.agent.session.config.provider.reasoning_effort == "xhigh"
+    assert loop.agent.session.config.provider.reasoning == "xhigh"
 
 
 def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tmp_path, monkeypatch):

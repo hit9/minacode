@@ -91,7 +91,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.
 
-Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason-payload off` disables Chat reasoning payloads when a provider/model rejects them. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
+Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason` sets `provider.reasoning` to `off` or an effort value; `/reason-payload` controls the Chat-only reasoning payload shape. `/model` lists configured models before discovered ones, then prompts for reasoning.
 During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
 
 ## Configuration

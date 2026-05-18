@@ -56,8 +56,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
     model_result = dispatcher.dispatch("/set provider.model new-model")
-    effort_result = dispatcher.dispatch("/set provider.effort high")
-    reason_result = dispatcher.dispatch("/set provider.reasoning off")
+    reason_result = dispatcher.dispatch("/set provider.reasoning high")
+    chat_reasoning_result = dispatcher.dispatch("/set provider.chat_reasoning reasoning")
     stream_result = dispatcher.dispatch("/set provider.stream off")
     first_token_result = dispatcher.dispatch("/set provider.first_token_timeout 6")
     yolo_result = dispatcher.dispatch("/set runtime.yolo on")
@@ -66,10 +66,10 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
     assert model_result.status == CommandStatus.HANDLED
     assert session.config.provider.model == "new-model"
-    assert effort_result.message == "Set provider.effort = high"
-    assert session.config.provider.reasoning_effort == "high"
-    assert reason_result.message == "Set provider.reasoning = off"
-    assert session.config.provider.reasoning is False
+    assert reason_result.message == "Set provider.reasoning = high"
+    assert session.config.provider.reasoning == "high"
+    assert chat_reasoning_result.message == "Set provider.chat_reasoning = reasoning"
+    assert session.config.provider.chat_reasoning == "reasoning"
     assert stream_result.message == "Set provider.stream = off"
     assert session.config.provider.stream is False
     assert first_token_result.message == "Set provider.first_token_timeout = 6"
@@ -94,7 +94,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
-    assert "model: model api=chat(auto) reasoning=medium(no-payload) stream=on" in result.message
+    assert "model: model api=chat(auto) reasoning=medium(off) stream=on" in result.message
     assert "session: " + session.session_id in result.message
     assert "runtime: yolo=off plan=off compact_at=50" in result.message
     assert "models:" in result.message
@@ -250,10 +250,9 @@ def test_model_command_can_select_reasoning_effort(tmp_path):
 
     result = dispatcher.dispatch("/model new-model")
 
-    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert result.message == "Set provider.model = new-model\nSet provider.reasoning = high"
     assert session.config.provider.model == "new-model"
-    assert session.config.provider.reasoning is True
-    assert session.config.provider.reasoning_effort == "high"
+    assert session.config.provider.reasoning == "high"
 
 
 def test_api_command_shows_and_sets_provider_api(tmp_path):
@@ -282,7 +281,7 @@ def test_model_command_can_disable_reasoning(tmp_path):
 
     assert result.message == "Set provider.model = new-model\nSet provider.reasoning = off"
     assert session.config.provider.model == "new-model"
-    assert session.config.provider.reasoning is False
+    assert session.config.provider.reasoning == "off"
 
 
 def test_model_command_reasoning_back_cancels_direct_model_change(tmp_path):
@@ -308,10 +307,9 @@ def test_model_command_reasoning_back_returns_to_model_selection(tmp_path):
 
     result = dispatcher.dispatch("/model")
 
-    assert result.message == "Set provider.model = second\nSet provider.reasoning = on\nSet provider.effort = high"
+    assert result.message == "Set provider.model = second\nSet provider.reasoning = high"
     assert session.config.provider.model == "second"
-    assert session.config.provider.reasoning is True
-    assert session.config.provider.reasoning_effort == "high"
+    assert session.config.provider.reasoning == "high"
 
 
 def test_reason_command_selects_reasoning_effort(tmp_path):
@@ -321,10 +319,9 @@ def test_reason_command_selects_reasoning_effort(tmp_path):
     result = dispatcher.dispatch("/reason")
     usage_result = dispatcher.dispatch("/reason high")
 
-    assert result.message == "Set provider.reasoning = on\nSet provider.effort = high"
+    assert result.message == "Set provider.reasoning = high"
     assert usage_result.message == "Usage: /reason"
-    assert session.config.provider.reasoning is True
-    assert session.config.provider.reasoning_effort == "high"
+    assert session.config.provider.reasoning == "high"
 
 
 def test_reason_command_back_keeps_current_reasoning(tmp_path):
@@ -334,8 +331,7 @@ def test_reason_command_back_keeps_current_reasoning(tmp_path):
     result = dispatcher.dispatch("/reason")
 
     assert result.message == "No change"
-    assert session.config.provider.reasoning is True
-    assert session.config.provider.reasoning_effort == "medium"
+    assert session.config.provider.reasoning == "medium"
 
 
 def test_reason_payload_command_shows_and_sets_chat_payload(tmp_path):
@@ -350,16 +346,16 @@ def test_reason_payload_command_shows_and_sets_chat_payload(tmp_path):
 
     assert show_result.message == "\n".join(
         [
-            "provider.chat_reasoning_payload: auto",
-            "provider.resolved_chat_reasoning_payload: off",
+            "provider.chat_reasoning: auto",
+            "provider.resolved_chat_reasoning: off",
             "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]",
         ]
     )
-    assert off_result.message == "Set provider.chat_reasoning_payload = off"
-    assert reasoning_result.message == "Set provider.chat_reasoning_payload = reasoning"
-    assert auto_result.message == "Set provider.chat_reasoning_payload = auto"
+    assert off_result.message == "Set provider.chat_reasoning = off"
+    assert reasoning_result.message == "Set provider.chat_reasoning = reasoning"
+    assert auto_result.message == "Set provider.chat_reasoning = auto"
     assert bad_result.message == "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
-    assert session.config.provider.chat_reasoning_payload == "auto"
+    assert session.config.provider.chat_reasoning == "auto"
 
 
 def test_model_command_selects_from_available_models(tmp_path):

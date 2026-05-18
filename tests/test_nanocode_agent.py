@@ -34,8 +34,8 @@ def _session(
     timeout: int | None = None,
     first_token_timeout: int | None = None,
     temperature: float | None = None,
-    reasoning_effort: str = "",
-    chat_reasoning_payload: str = "",
+    reasoning: str = "",
+    chat_reasoning: str = "",
     yolo: bool = False,
     plan_mode: bool = False,
     debug: bool = False,
@@ -52,10 +52,10 @@ def _session(
         provider["first_token_timeout"] = first_token_timeout
     if temperature is not None:
         provider["temperature"] = temperature
-    if reasoning_effort:
-        provider["reasoning_effort"] = reasoning_effort
-    if chat_reasoning_payload:
-        provider["chat_reasoning_payload"] = chat_reasoning_payload
+    if reasoning:
+        provider["reasoning"] = reasoning
+    if chat_reasoning:
+        provider["chat_reasoning"] = chat_reasoning
     data = {"provider": {"active": "default", "default": provider}, "paths": {"data_dir": str(tmp_path / ".nanocode")}}
     return Session(
         cwd=str(tmp_path),
@@ -971,7 +971,7 @@ def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypa
         model="model",
         api="responses",
         stream=False,
-        reasoning_effort="high",
+        reasoning="high",
     )
 
     response = Agent(session).request("system", "user")
@@ -992,7 +992,7 @@ def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypa
 def test_agent_request_responses_api_omits_reasoning_when_disabled(tmp_path, monkeypatch):
     calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, _responses_response())
     session = _session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="model", api="responses", stream=False)
-    session.config.provider.reasoning = False
+    session.config.provider.reasoning = "off"
 
     Agent(session).request("system", "user")
     payload = _sdk_payload(response_calls[0])
@@ -1459,15 +1459,15 @@ def test_agent_request_stream_hard_timeout_becomes_model_timeout(tmp_path, monke
     assert sleeps == [3, 10, 20, 30, 60, 120]
 
 
-def test_agent_request_uses_configured_chat_reasoning_payload(tmp_path, monkeypatch):
+def test_agent_request_uses_configured_chat_reasoning(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(
         tmp_path,
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
-        reasoning_effort="high",
-        chat_reasoning_payload="reasoning",
+        reasoning="high",
+        chat_reasoning="reasoning",
         stream=False,
     )
 
@@ -1485,8 +1485,8 @@ def test_agent_request_uses_configured_reasoning_effort_payload(tmp_path, monkey
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
-        reasoning_effort="high",
-        chat_reasoning_payload="reasoning_effort",
+        reasoning="high",
+        chat_reasoning="reasoning_effort",
         stream=False,
     )
 
@@ -1504,8 +1504,8 @@ def test_agent_request_uses_configured_thinking_payload(tmp_path, monkeypatch):
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
-        reasoning_effort="xhigh",
-        chat_reasoning_payload="thinking",
+        reasoning="xhigh",
+        chat_reasoning="thinking",
         stream=False,
     )
 
@@ -1524,10 +1524,10 @@ def test_agent_request_uses_configured_thinking_disabled_payload(tmp_path, monke
         api_url="https://example.test/v1",
         api_key="key",
         model="model",
-        chat_reasoning_payload="thinking",
+        chat_reasoning="thinking",
         stream=False,
     )
-    session.config.provider.reasoning = False
+    session.config.provider.reasoning = "off"
 
     Agent(session).request("system", "user")
     payload = _sdk_payload(calls[0])
@@ -1536,7 +1536,7 @@ def test_agent_request_uses_configured_thinking_disabled_payload(tmp_path, monke
     assert "reasoning_effort" not in payload
 
 
-def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp_path, monkeypatch):
+def test_agent_request_auto_detects_chat_reasoning_from_provider_url(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple(_chat_response() for _ in range(10)))
 
     Agent(
@@ -1545,7 +1545,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_url="https://api.deepseek.com",
             api_key="key",
             model="model",
-            reasoning_effort="xhigh",
+            reasoning="xhigh",
             stream=False,
         )
     ).request("system", "user")
@@ -1556,7 +1556,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_key="key",
             model="model",
             api="chat",
-            reasoning_effort="high",
+            reasoning="high",
             stream=False,
         )
     ).request("system", "user")
@@ -1567,7 +1567,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_key="key",
             model="qwen3.6-plus",
             api="chat",
-            reasoning_effort="high",
+            reasoning="high",
             stream=False,
         )
     ).request("system", "user")
@@ -1578,7 +1578,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_key="key",
             model="deepseek-v4-flash",
             api="chat",
-            reasoning_effort="xhigh",
+            reasoning="xhigh",
             stream=False,
         )
     ).request("system", "user")
@@ -1589,7 +1589,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_key="key",
             model="glm-5.1",
             api="chat",
-            reasoning_effort="high",
+            reasoning="high",
             stream=False,
         )
     ).request("system", "user")
@@ -1600,7 +1600,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_key="key",
             model="gpt-5",
             api="chat",
-            reasoning_effort="medium",
+            reasoning="medium",
             stream=False,
         )
     ).request("system", "user")
@@ -1610,7 +1610,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_url="https://opencode.ai/zen/go/v1",
             api_key="key",
             model="deepseek-v4-flash",
-            reasoning_effort="high",
+            reasoning="high",
             stream=False,
         )
     ).request("system", "user")
@@ -1620,7 +1620,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
             api_url="https://opencode.ai/zen/go/v1",
             api_key="key",
             model="kimi-k2.6",
-            reasoning_effort="high",
+            reasoning="high",
             stream=False,
         )
     ).request("system", "user")
@@ -1661,7 +1661,7 @@ def test_agent_request_auto_detects_chat_reasoning_payload_from_provider_url(tmp
         assert "enable_thinking" not in payload
 
 
-def test_provider_config_auto_resolves_api_and_chat_reasoning_payload_from_profiles():
+def test_provider_config_auto_resolves_api_and_chat_reasoning_from_profiles():
     openai_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "auto"})
     openai_reasoning_provider = nanocode.ProviderConfig.from_dict({"url": "https://api.openai.com/v1", "api": "chat", "model": "gpt-5"})
     openrouter_provider = nanocode.ProviderConfig.from_dict({"url": "https://openrouter.ai/api/v1", "api": "auto"})
@@ -1672,24 +1672,24 @@ def test_provider_config_auto_resolves_api_and_chat_reasoning_payload_from_profi
     unknown_provider = nanocode.ProviderConfig.from_dict({"url": "https://example.test/v1", "api": "auto"})
 
     assert openai_provider.resolved_api() == "responses"
-    assert openai_provider.resolved_chat_reasoning_payload() == ""
+    assert openai_provider.resolved_chat_reasoning() == "off"
     assert openai_reasoning_provider.resolved_api() == "chat"
-    assert openai_reasoning_provider.resolved_chat_reasoning_payload() == "reasoning_effort"
+    assert openai_reasoning_provider.resolved_chat_reasoning() == "reasoning_effort"
     assert openrouter_provider.resolved_api() == "responses"
-    assert openrouter_provider.resolved_chat_reasoning_payload() == "reasoning"
+    assert openrouter_provider.resolved_chat_reasoning() == "reasoning"
     assert opencode_deepseek_provider.resolved_api() == "chat"
-    assert opencode_deepseek_provider.resolved_chat_reasoning_payload() == "reasoning"
+    assert opencode_deepseek_provider.resolved_chat_reasoning() == "reasoning"
     assert opencode_kimi_provider.resolved_api() == "chat"
-    assert opencode_kimi_provider.resolved_chat_reasoning_payload() == ""
+    assert opencode_kimi_provider.resolved_chat_reasoning() == "off"
     assert dashscope_provider.resolved_api() == "chat"
-    assert dashscope_provider.resolved_chat_reasoning_payload() == "enable_thinking"
+    assert dashscope_provider.resolved_chat_reasoning() == "enable_thinking"
     assert dashscope_deepseek_provider.resolved_api() == "chat"
-    assert dashscope_deepseek_provider.resolved_chat_reasoning_payload() == "thinking"
+    assert dashscope_deepseek_provider.resolved_chat_reasoning() == "thinking"
     assert unknown_provider.resolved_api() == "chat"
-    assert unknown_provider.resolved_chat_reasoning_payload() == ""
+    assert unknown_provider.resolved_chat_reasoning() == "off"
 
 
-def test_agent_request_empty_chat_reasoning_payload_disables_auto_detection(tmp_path, monkeypatch):
+def test_agent_request_off_chat_reasoning_disables_auto_detection(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response())
     session = _session(
         tmp_path,
@@ -1698,7 +1698,7 @@ def test_agent_request_empty_chat_reasoning_payload_disables_auto_detection(tmp_
         model="model",
         stream=False,
     )
-    session.config.provider.chat_reasoning_payload = ""
+    session.config.provider.chat_reasoning = "off"
 
     Agent(session).request("system", "user")
     payload = _sdk_payload(calls[0])
