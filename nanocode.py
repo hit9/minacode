@@ -3378,6 +3378,9 @@ Goal:
 Plan:
 {plan}
 
+Current Focus:
+{current_focus}
+
 Hypotheses:
 {hypotheses}
 
@@ -5237,12 +5240,21 @@ class Agent:
             work_mode=current.work_mode,
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            current_focus=self._format_current_focus(),
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             verification_state=current.verification.format(),
             errors=self._format_agent_feedback() or "(empty)",
             recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
             user_request=self._format_user_request(),
         ).strip()
+
+    def _format_current_focus(self) -> str:
+        plan = self.blackboard.plan
+        item = next((item for item in plan if item.status == PlanStatus.DOING), None) or next(
+            (item for item in plan if item.status == PlanStatus.TODO),
+            None,
+        )
+        return item.format() if item else "(empty)"
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard

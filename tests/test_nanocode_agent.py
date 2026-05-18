@@ -427,6 +427,32 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     assert "old edit" not in prompt
 
 
+def test_act_prompt_includes_current_focus_from_doing_plan_item(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="inspect config", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="edit command handler", status=nanocode.PlanStatus.DOING, context="next change"),
+        nanocode.PlanItem(id="p3", text="run tests", status=nanocode.PlanStatus.TODO),
+    ]
+
+    prompt = agent.build_user_prompt()
+
+    assert "Current Focus:\n- [◔ doing] edit command handler (id=p2)\n  context: next change" in prompt
+
+
+def test_act_prompt_uses_first_todo_as_current_focus(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="inspect config", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="edit command handler", status=nanocode.PlanStatus.TODO),
+        nanocode.PlanItem(id="p3", text="run tests", status=nanocode.PlanStatus.TODO),
+    ]
+
+    prompt = agent.build_user_prompt()
+
+    assert "Current Focus:\n- [○ todo] edit command handler (id=p2)" in prompt
+
+
 def test_act_prompt_includes_kept_tool_results(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha unique\n", encoding="utf-8")
     (tmp_path / "other.txt").write_text("beta unique\n", encoding="utf-8")
