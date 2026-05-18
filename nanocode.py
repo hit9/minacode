@@ -4650,7 +4650,6 @@ class AgentStateUpdater:
         plan_replaced = self._apply_plan(actions)
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
-        self._apply_work_mode(actions)
         self._apply_known(actions)
         self._apply_hypotheses(actions)
         self._apply_user_rules(actions)
@@ -4673,7 +4672,7 @@ class AgentStateUpdater:
         before_hypotheses: list[str],
         before_known: list[str],
         before_user_rules: str,
-        before_extra_state: str,
+        before_extra_state: tuple[str, dict[str, list[str]]],
     ) -> str:
         current = self.blackboard
         lines = []
@@ -4786,22 +4785,23 @@ class AgentStateUpdater:
 
     def _apply_goal(self, actions: list[Json]) -> bool:
         changed = False
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "goal":
-                update = _json_str(action.get("text"))
-                complete = action.get("complete")
-                if update is not None:
-                    goal_changed = update != self.blackboard.goal
-                    changed = changed or (goal_changed and complete is not True)
-                    self.blackboard.goal = update
-                if isinstance(complete, bool):
-                    self.blackboard.goal_reached = complete
+        for action in self._actions_of_type(actions, "goal"):
+            update = _json_str(action.get("text"))
+            complete = action.get("complete")
+            if update is not None:
+                goal_changed = update != self.blackboard.goal
+                changed = changed or (goal_changed and complete is not True)
+                self.blackboard.goal = update
+            if isinstance(complete, bool):
+                self.blackboard.goal_reached = complete
+            if "work_mode" in action:
+                mode = _json_str(action.get("work_mode")) or WorkMode.NORMAL
+                self.blackboard.work_mode = WorkMode(mode) if mode in ALL_WORK_MODES else WorkMode.NORMAL
         return changed
 
     def _apply_plan(self, actions: list[Json]) -> bool:
         replaced = False
-        for update in [action for action in actions if _json_str(action.get("type")) == "plan"]:
+        for update in self._actions_of_type(actions, "plan"):
             items = _json_list(update.get("items"))
             if update.get("mode") != "patch":
                 if not items:
@@ -4876,29 +4876,16 @@ class AgentStateUpdater:
                 seen = True
 
     def _apply_known(self, actions: list[Json]) -> None:
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "known" else []
-            for raw in values:
-                item = KnownItem.from_json(raw)
-                if item is not None:
-                    self._add_known_item(item.text, item.source)
+        for raw in self._action_items(actions, "known"):
+            item = KnownItem.from_json(raw)
+            if item is not None:
+                self._add_known_item(item.text, item.source)
 
     def _apply_hypotheses(self, actions: list[Json]) -> None:
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "hypothesis" else []
-            for raw in values:
-                item = Hypothesis.from_json(raw)
-                if item is not None:
-                    self._add_hypothesis(item)
-
-    def _apply_work_mode(self, actions: list[Json]) -> None:
-        for action in actions:
-            if _json_str(action.get("type")) != "goal":
-                continue
-            if "work_mode" not in action:
-                continue
-            mode = _json_str(action.get("work_mode")) or WorkMode.NORMAL
-            self.blackboard.work_mode = WorkMode(mode) if mode in ALL_WORK_MODES else WorkMode.NORMAL
+        for raw in self._action_items(actions, "hypothesis"):
+            item = Hypothesis.from_json(raw)
+            if item is not None:
+                self._add_hypothesis(item)
 
     def _add_hypothesis(self, item: Hypothesis) -> None:
         for index, existing in enumerate(self.blackboard.hypotheses):
@@ -4922,9 +4909,7 @@ class AgentStateUpdater:
 
     def _apply_user_rules(self, actions: list[Json]) -> None:
         changed = False
-        for action in actions:
-            if _json_str(action.get("type")) != "user_rule":
-                continue
+        for action in self._actions_of_type(actions, "user_rule"):
             rule = (_json_str(action.get("text")) or "").strip()
             changed = self.session.state.user_rules.add(rule) or changed
         if changed:
@@ -4954,14 +4939,8 @@ class AgentStateUpdater:
     def _known_fact_key(self, fact: KnownItem | str) -> str:
         return re.sub(r"\s+", " ", KnownItem.text_of(fact)).strip(" \t\r\n。.;；").lower()
 
-    def _before_extra_state(self) -> str:
-        return json.dumps(
-            {
-                "verification": self.blackboard.verification.format(),
-                "stable_knowledge": self.blackboard.stable_knowledge,
-            },
-            ensure_ascii=False,
-        )
+    def _before_extra_state(self) -> tuple[str, dict[str, list[str]]]:
+        return self.blackboard.verification.format(), {key: list(value) for key, value in self.blackboard.stable_knowledge.items()}
 
     def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
         self._apply_stable_knowledge(actions)
@@ -4988,15 +4967,12 @@ class AgentStateUpdater:
         lines.append(title)
         lines.extend(rows or [])
 
-    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
-        try:
-            before = _json_dict(json.loads(before_extra_state))
-        except json.JSONDecodeError:
-            before = {}
-        if self.blackboard.stable_knowledge != before.get("stable_knowledge", []):
+    def _append_extra_state_report(self, lines: list[str], before_extra_state: tuple[str, dict[str, list[str]]]) -> None:
+        before_verification, before_stable_knowledge = before_extra_state
+        if self.blackboard.stable_knowledge != before_stable_knowledge:
             self._append_state_section(lines, "  Stable_Knowledge", self._format_stable_knowledge_rows())
         verification = self.blackboard.verification.format()
-        if verification == before.get("verification", ""):
+        if verification == before_verification:
             return
         self._append_state_section(lines, "  Verify  " + self._format_verification())
 
@@ -5018,12 +4994,17 @@ class AgentStateUpdater:
         return rows
 
     def _apply_stable_knowledge(self, actions: list[Json]) -> None:
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "stable_knowledge" else []
-            for raw in values:
-                category, fact = self._stable_knowledge_item_from_json(raw)
-                if fact:
-                    self._add_stable_knowledge_item(category, fact)
+        for raw in self._action_items(actions, "stable_knowledge"):
+            category, fact = self._stable_knowledge_item_from_json(raw)
+            if fact:
+                self._add_stable_knowledge_item(category, fact)
+
+    @staticmethod
+    def _actions_of_type(actions: list[Json], action_type: str) -> Iterator[Json]:
+        return (action for action in actions if _json_str(action.get("type")) == action_type)
+
+    def _action_items(self, actions: list[Json], action_type: str) -> Iterator[JsonValue]:
+        return (raw for action in self._actions_of_type(actions, action_type) for raw in _json_list(action.get("items")))
 
     def _stable_knowledge_item_from_json(self, value: JsonValue) -> tuple[str, str]:
         item = _json_dict(value)
@@ -5062,7 +5043,7 @@ class AgentStateUpdater:
         return " | ".join(parts)
 
     def _apply_verification(self, actions: list[Json]) -> None:
-        for data in [action for action in actions if _json_str(action.get("type")) == "verify"]:
+        for data in self._actions_of_type(actions, "verify"):
             kind = _json_str(data.get("kind"))
             if kind is not None:
                 self.blackboard.verification.kind = kind if kind and all(part in VALID_VERIFICATION_KINDS for part in kind.split("+")) else ""
