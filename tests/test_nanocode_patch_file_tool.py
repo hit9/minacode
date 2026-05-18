@@ -69,8 +69,9 @@ def test_patch_file_tool_rejects_context_mismatch_without_writing(tmp_path):
 
     tool = PatchFileTool.make(session, ["sample.txt", "@@\n alpha\n-missing\n+MISSING\n gamma\n"])
 
-    assert "hunk context did not match" in tool.preview()
-    with pytest.raises(ToolCallError, match="hunk context did not match"):
+    assert "hunk 1 context did not match" in tool.preview()
+    assert "first old line: 'alpha'" in tool.preview()
+    with pytest.raises(ToolCallError, match="hunk 1 context did not match"):
         tool.call()
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 

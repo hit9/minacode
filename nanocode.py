@@ -1178,7 +1178,7 @@ class DebugTrace:
             session,
             activity=activity,
             label="stream-action",
-            payload={"action": cls.response_summary({"actions": [action]})},
+            payload={"summary": cls.response_summary({"actions": [action]}), "action": action},
         )
 
     @classmethod
@@ -2456,6 +2456,7 @@ class PatchFileTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Apply a small single-file unified-diff-style patch for coordinated multi-location edits.",
         "Inside hunks, every line must start with space, -, or +.",
+        "Context lines must be exact file text, without Read display prefixes or added indentation.",
         "Each hunk must include enough unchanged context to match exactly once; all hunks must apply or nothing is written.",
     )
     SIGNATURE: ClassVar[str] = "PatchFile(filepath, patch) -> PatchFileToolResult<path, hunks>"
@@ -2513,7 +2514,11 @@ class PatchFileTool(Tool):
         with open(self.filepath, "r", encoding="utf-8") as f:
             original = f.read()
         lines = original.splitlines(keepends=True)
-        replacements = [(start, start + len(hunk.old), hunk.new) for hunk in self._parse_patch() for start in [self._match_hunk(lines, hunk)]]
+        replacements = [
+            (start, start + len(hunk.old), hunk.new)
+            for index, hunk in enumerate(self._parse_patch(), start=1)
+            for start in [self._match_hunk(lines, hunk, index)]
+        ]
         return original, "".join(self._patched_lines(lines, replacements)), replacements
 
     def _parse_patch(self) -> list[PatchFileHunk]:
@@ -2551,18 +2556,22 @@ class PatchFileTool(Tool):
                 raise ToolCallError(f"hunk {index} has no context or removed lines")
         return hunks
 
-    @staticmethod
-    def _match_hunk(lines: list[str], hunk: PatchFileHunk) -> int:
+    @classmethod
+    def _match_hunk(cls, lines: list[str], hunk: PatchFileHunk, index: int) -> int:
         matches = []
         limit = len(lines) - len(hunk.old)
         for start in range(max(0, limit + 1)):
             if lines[start : start + len(hunk.old)] == hunk.old:
                 matches.append(start)
         if not matches:
-            raise ToolCallError("hunk context did not match")
+            raise ToolCallError(f"hunk {index} context did not match; first old line: {cls._line_preview(hunk.old[0])}")
         if len(matches) > 1:
-            raise ToolCallError("hunk context matched multiple locations")
+            raise ToolCallError(f"hunk {index} context matched multiple locations")
         return matches[0]
+
+    @staticmethod
+    def _line_preview(line: str) -> str:
+        return repr(line.rstrip("\n"))[:120]
 
     @staticmethod
     def _patched_lines(lines: list[str], replacements: list[tuple[int, int, list[str]]]) -> list[str]:
@@ -3382,7 +3391,7 @@ Editing rules:
 - use Edit only for one tiny exact literal block that appears once
 - use ReplaceRange after Read for ranges, repeated text, insertions, and structural edits
 - use ReplaceRange(filepath, ranges) for several known independent ranges in one file
-- use PatchFile for coordinated multi-location edits in one file; keep patches small with enough unchanged context
+- use PatchFile for coordinated multi-location edits in one file; copy context exactly and keep patches small
 
 VERIFICATION
 Verification strength:
