@@ -168,6 +168,58 @@ def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
     assert os.path.isdir(session.tool_results_dir())
 
 
+def test_agent_tracks_unconsumed_tool_results_until_state_references_them(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+
+    assert agent.unconsumed_tool_result_keys == ["tr.1"]
+    prompt = agent.build_user_prompt()
+    assert "Unconsumed Tool Results:" in prompt
+    assert "- result_key: tr.1" in prompt
+    assert "read sample" in prompt
+
+    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "sample contains alpha"}]}]})
+
+    assert agent.unconsumed_tool_result_keys == []
+    assert "Unconsumed Tool Results:\n(empty)" in agent.build_user_prompt()
+
+
+def test_agent_tool_actions_do_not_consume_unconsumed_tool_results(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.handle_response({"actions": [{"type": "tool", "name": "Recall", "intention": "read full sample", "args": ["tr.1"]}]})
+
+    assert agent.unconsumed_tool_result_keys == ["tr.1"]
+
+
+def test_agent_state_update_without_sources_consumes_unconsumed_tool_results(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.handle_response({"actions": [{"type": "known", "items": [{"text": "sample contains alpha"}]}]})
+
+    assert agent.unconsumed_tool_result_keys == []
+
+
+def test_agent_forget_consumes_unconsumed_tool_result(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "not needed"}]})
+
+    assert agent.unconsumed_tool_result_keys == []
+
+
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -2225,6 +2277,7 @@ def test_new_goal_clears_task_local_kept_results_only(tmp_path):
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.tool_context.latest = ['- ok tool=Read args=["latest.py"] key=tr.3\n  output:\nlatest raw']
     agent.tool_context.recent = ['- ok tool=Read args=["recent.py"] key=tr.4\n  out: 3 lines, 12 chars; recall=tr.4']
+    agent.unconsumed_tool_result_keys = ["tr.1", "tr.3"]
 
     agent.apply_response(
         {
@@ -2239,6 +2292,7 @@ def test_new_goal_clears_task_local_kept_results_only(tmp_path):
     )
 
     assert agent.tool_context.kept_results == []
+    assert agent.unconsumed_tool_result_keys == []
     assert "latest.py" in _blocks_text(agent.tool_context.latest)
     assert "latest raw" not in _blocks_text(agent.tool_context.latest)
     assert "recent.py" in _blocks_text(agent.tool_context.recent)
@@ -2249,6 +2303,7 @@ def test_same_goal_keeps_task_local_tool_results(tmp_path):
     agent.blackboard.goal = "same goal"
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.tool_context.latest = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
+    agent.unconsumed_tool_result_keys = ["tr.2"]
 
     agent.apply_response(
         {
@@ -2264,6 +2319,7 @@ def test_same_goal_keeps_task_local_tool_results(tmp_path):
 
     assert "selected result" in _blocks_text(agent.tool_context.kept_results)
     assert "pending raw" in _blocks_text(agent.tool_context.latest)
+    assert agent.unconsumed_tool_result_keys == []
 
 
 def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_matches(tmp_path):

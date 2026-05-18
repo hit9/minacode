@@ -1389,6 +1389,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
 
 
 RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:(?:result_)?key|recall)[:=]\s*(tr\.\d+)\b")
+TOOL_RESULT_KEY_REF_PATTERN: re.Pattern[str] = re.compile(r"\btr\.\d+\b")
 
 
 def _format_tool_call_summary(call: ParsedToolCall) -> str:
@@ -1596,6 +1597,15 @@ class ToolResultContext:
         for action in actions:
             if _json_str(action.get("type")) == "forget":
                 keys.extend(key for key in _source_from_json(action) if key.startswith("tr."))
+        return list(dict.fromkeys(keys))
+
+    @staticmethod
+    def referenced_result_keys_from_actions(actions: list[Json]) -> list[str]:
+        keys: list[str] = []
+        for action in actions:
+            if _json_str(action.get("type")) == "tool":
+                continue
+            keys.extend(TOOL_RESULT_KEY_REF_PATTERN.findall(json.dumps(action, ensure_ascii=False)))
         return list(dict.fromkeys(keys))
 
 
@@ -3657,6 +3667,9 @@ Latest Tool Results:
 
 --- Current Decision ---
 
+Unconsumed Tool Results:
+{unconsumed_tool_results}
+
 Recent Edits:
 {recent_edits}
 
@@ -3701,6 +3714,7 @@ Pending feedback rules:
 - Do not rewrite Goal/Plan just to answer a side question or acknowledge a correction.
 If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
 If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
+Before repeating or broadening tool calls, summarize unconsumed tr.* keys into state or forget them. Prefer citing tr.* sources; do not Recall the same key again after summarizing it.
 
 --- Output ---
 
@@ -5429,6 +5443,7 @@ class Agent:
         self.blackboard: Blackboard = Blackboard()
         self.recent_edits: list[str] = []
         self.tool_context = ToolResultContext()
+        self.unconsumed_tool_result_keys: list[str] = []
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session, self._protected_tool_result_keys)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
@@ -5465,6 +5480,7 @@ class Agent:
             tool_result_index=tool_result_index or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
+            unconsumed_tool_results=self._format_unconsumed_tool_results(),
             task_code=current.task_code,
             work_mode=current.work_mode,
             goal=current.goal or "(empty)",
@@ -5485,6 +5501,14 @@ class Agent:
             None,
         )
         return item.format() if item else "(empty)"
+
+    def _format_unconsumed_tool_results(self) -> str:
+        keys = [key for key in self.unconsumed_tool_result_keys if key in self.session.state.tool_result_store]
+        if len(keys) != len(self.unconsumed_tool_result_keys):
+            self.unconsumed_tool_result_keys = keys
+        if not keys:
+            return "(empty)"
+        return "\n".join(self.session.state.tool_result_store[key].format(result_key=key) for key in keys)
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard
@@ -5701,6 +5725,7 @@ class Agent:
 
     def _protected_tool_result_keys(self) -> set[str]:
         keys = self.blackboard.source_result_keys()
+        keys.update(self.unconsumed_tool_result_keys)
         keys.update(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
         return keys
 
@@ -5909,11 +5934,14 @@ class Agent:
             actions = self._response_actions(response)
         if self._goal_changes_task(actions):
             self.tool_context.kept_results = []
+            self.unconsumed_tool_result_keys = []
             self.tool_context.compact_observed(self.tool_context.recent + self.tool_context.latest)
             self._mark_memory_checkpoint()
             self.blackboard.hypotheses = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
+        consumed = ToolResultContext.referenced_result_keys_from_actions(actions) + forgotten
+        self._consume_tool_results(consumed or (self.unconsumed_tool_result_keys if self._has_result_consuming_state_action(actions) else []))
         if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
             self._mark_memory_checkpoint()
         return forgotten
@@ -5946,6 +5974,13 @@ class Agent:
                 return True
         return False
 
+    def _has_result_consuming_state_action(self, actions: list[Json]) -> bool:
+        return any(
+            _json_str(action.get("type")) in {"goal", "plan", "known", "hypothesis", "stable_knowledge", "verify", "forget"}
+            and not self._is_pending_verify_action(action)
+            for action in actions
+        )
+
     def execute_tool_calls(
         self,
         tool_calls: list[JsonValue],
@@ -5963,9 +5998,22 @@ class Agent:
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
+        self._add_unconsumed_tool_results(execution.result_key for execution in self.tool_runner.latest_executions)
         if self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
+
+    def _add_unconsumed_tool_results(self, keys: Iterable[str]) -> None:
+        seen = set(self.unconsumed_tool_result_keys)
+        for key in keys:
+            if key and key not in seen:
+                self.unconsumed_tool_result_keys.append(key)
+                seen.add(key)
+
+    def _consume_tool_results(self, keys: Iterable[str]) -> None:
+        consumed = set(keys)
+        if consumed:
+            self.unconsumed_tool_result_keys = [key for key in self.unconsumed_tool_result_keys if key not in consumed]
 
     def _should_observe_after_tools(self) -> bool:
         pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
