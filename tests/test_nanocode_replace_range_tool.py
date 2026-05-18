@@ -387,19 +387,17 @@ def test_replace_range_tool_requires_boundary_context_for_insert_range(tmp_path)
     assert path.read_text(encoding="utf-8") == "alpha\ngamma\n"
 
 
-def test_replace_range_tool_rejects_wide_fingerprint_for_empty_insert_range(tmp_path):
+def test_replace_range_tool_accepts_wide_fingerprint_for_empty_insert_range_with_context(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt"]).call())
-    path.write_text("zero\nalpha\nbeta\ngamma\n", encoding="utf-8")
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 1, fingerprint, "alpha\n", "beta\n", "INSERT\n"))
+    result = tool.call()
 
-    assert "# preview unavailable: fingerprint mismatch" in tool.preview()
-    with pytest.raises(ToolCallError, match=r"call Read\(filepath, 1, 1\)"):
-        tool.call()
-    assert path.read_text(encoding="utf-8") == "zero\nalpha\nbeta\ngamma\n"
+    assert "* range: 1:1" in result
+    assert path.read_text(encoding="utf-8") == "alpha\nINSERT\nbeta\ngamma\n"
 
 
 def test_replace_range_tool_rejects_no_change(tmp_path):

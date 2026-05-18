@@ -884,7 +884,9 @@ class RangeFingerprintStore:
             if entry.fingerprint != fingerprint or entry.filepath != filepath:
                 continue
             if start == end:
-                if entry.start == start and entry.end == end and entry.content == "":
+                entry_lines = entry.content.splitlines(keepends=True)
+                cached_end = entry.start + len(entry_lines)
+                if entry.start <= start <= cached_end:
                     contents.append("")
                 continue
             entry_lines = entry.content.splitlines(keepends=True)
