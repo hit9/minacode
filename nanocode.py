@@ -2444,6 +2444,146 @@ class EditTool(Tool):
 
 
 @dataclass
+class PatchFileHunk:
+    old: list[str]
+    new: list[str]
+
+
+@dataclass
+class PatchFileTool(Tool):
+    NAME: ClassVar[str] = "PatchFile"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Apply a small single-file unified-diff-style patch for coordinated multi-location edits.",
+        "Inside hunks, every line must start with space, -, or +.",
+        "Each hunk must include enough unchanged context to match exactly once; all hunks must apply or nothing is written.",
+    )
+    SIGNATURE: ClassVar[str] = "PatchFile(filepath, patch) -> PatchFileToolResult<path, hunks>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["code.py", "@@\\n old\\n-old_call()\\n+new_call()\\n next\\n"]',
+    )
+
+    filepath: str = ""
+    patch: str = ""
+    cwd: str = ""
+
+    @classmethod
+    def cli_args(cls, args: list[str]) -> list[str]:
+        if len(args) < 2:
+            return [cls.cli_token(arg) for arg in args]
+        return [cls.cli_token(args[0]), cls.cli_content_summary(args[1])]
+
+    @classmethod
+    def make(cls, session: Session, args: list[str]) -> Self:
+        if len(args) != 2:
+            raise ToolCallArgError('requires exactly 2 args: filepath, patch. Example: PatchFile("code.py", "@@\\n old\\n-new\\n+new\\n")')
+        return cls(filepath=session.resolve_path(args[0]), patch=str(args[1]), cwd=session.cwd)
+
+    def preview(self) -> str:
+        label = f"PatchFile({self.filepath})"
+        try:
+            original, new_content, _ = self._preview()
+        except (OSError, ToolCallError) as error:
+            return label + "\n# preview unavailable: " + str(error)
+        return _make_unified_diff(original, new_content, self.filepath) or label
+
+    def preview_error(self) -> str:
+        try:
+            self._preview()
+        except (OSError, ToolCallError) as error:
+            return str(error)
+        return ""
+
+    def call(self) -> str:
+        original, new_content, replacements = self._preview()
+        if new_content == original:
+            raise ToolCallError("patch produced no changes")
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        return "\n".join(
+            [
+                "<PatchFileToolResult>",
+                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
+                f"* hunks: {len(replacements)}",
+                "</PatchFileToolResult>",
+            ]
+        )
+
+    def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
+        with open(self.filepath, "r", encoding="utf-8") as f:
+            original = f.read()
+        lines = original.splitlines(keepends=True)
+        replacements = [(start, start + len(hunk.old), hunk.new) for hunk in self._parse_patch() for start in [self._match_hunk(lines, hunk)]]
+        return original, "".join(self._patched_lines(lines, replacements)), replacements
+
+    def _parse_patch(self) -> list[PatchFileHunk]:
+        hunks: list[PatchFileHunk] = []
+        current: PatchFileHunk | None = None
+        for raw_line in self.patch.splitlines(keepends=True):
+            if raw_line.startswith("\\ No newline at end of file"):
+                continue
+            if raw_line.startswith("@@"):
+                current = PatchFileHunk(old=[], new=[])
+                hunks.append(current)
+                continue
+            if current is None:
+                if raw_line.startswith(("---", "+++", "diff --git ", "index ", "new file mode ", "deleted file mode ", "similarity index ", "rename from ", "rename to ")):
+                    continue
+                if raw_line.strip():
+                    raise ToolCallError("patch content before first hunk")
+                continue
+            if not raw_line:
+                continue
+            prefix, text = raw_line[0], raw_line[1:]
+            if prefix == " ":
+                current.old.append(text)
+                current.new.append(text)
+            elif prefix == "-":
+                current.old.append(text)
+            elif prefix == "+":
+                current.new.append(text)
+            else:
+                raise ToolCallError("invalid patch hunk line prefix: " + repr(prefix))
+        if not hunks:
+            raise ToolCallError("patch has no hunks")
+        for index, hunk in enumerate(hunks, start=1):
+            if not hunk.old:
+                raise ToolCallError(f"hunk {index} has no context or removed lines")
+        return hunks
+
+    @staticmethod
+    def _match_hunk(lines: list[str], hunk: PatchFileHunk) -> int:
+        matches = []
+        limit = len(lines) - len(hunk.old)
+        for start in range(max(0, limit + 1)):
+            if lines[start : start + len(hunk.old)] == hunk.old:
+                matches.append(start)
+        if not matches:
+            raise ToolCallError("hunk context did not match")
+        if len(matches) > 1:
+            raise ToolCallError("hunk context matched multiple locations")
+        return matches[0]
+
+    @staticmethod
+    def _patched_lines(lines: list[str], replacements: list[tuple[int, int, list[str]]]) -> list[str]:
+        output: list[str] = []
+        cursor = 0
+        for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
+            if start < cursor:
+                overlap = cursor - start
+                if overlap > len(replacement) or output[-overlap:] != replacement[:overlap]:
+                    raise ToolCallError("patch hunks overlap")
+                output.extend(replacement[overlap:])
+                cursor = max(cursor, end)
+                continue
+            output.extend(lines[cursor:start])
+            output.extend(replacement)
+            cursor = end
+        output.extend(lines[cursor:])
+        return output
+
+
+@dataclass
 class CreateFileTool(Tool):
     NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -3027,6 +3167,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
+    PatchFileTool.NAME: PatchFileTool,
     ReplaceRangeTool.NAME: ReplaceRangeTool,
     BashTool.NAME: BashTool,
     GitTool.NAME: GitTool,
@@ -3248,6 +3389,7 @@ Editing rules:
 - use Edit only for one tiny exact literal block that appears once
 - use ReplaceRange after Read for ranges, repeated text, insertions, and structural edits
 - use ReplaceRange(filepath, ranges) for several known independent ranges in one file
+- use PatchFile for coordinated multi-location edits in one file; keep patches small with enough unchanged context
 
 VERIFICATION
 Verification strength:
@@ -5831,7 +5973,7 @@ class Agent:
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
             rule = self.RULE_TOOL_SIGNATURE
-            if execution.call.name in {EditTool.NAME, ReplaceRangeTool.NAME}:
+            if execution.call.name in {EditTool.NAME, PatchFileTool.NAME, ReplaceRangeTool.NAME}:
                 rule = self.RULE_EDIT_SIGNATURE
             self._remember_agent_error(
                 self._error(
