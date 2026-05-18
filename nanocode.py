@@ -565,6 +565,25 @@ class ModelUsage:
         self.total_tokens += total_tokens
 
 
+CONTEXT_BUDGET_CHOICES: tuple[str, ...] = ("low", "medium", "high")
+
+
+@dataclass(frozen=True)
+class ContextBudget:
+    raw_chars: int
+    kept_chars: int
+    kept_block_chars: int
+    index_items: int
+    observe_after_results: int
+    planless_discovery_tool_calls: int
+
+
+CONTEXT_BUDGETS: dict[str, ContextBudget] = {
+    "low": ContextBudget(36_000, 16_000, 4_000, 20, 6, 6),
+    "high": ContextBudget(120_000, 64_000, 8_000, 60, 16, 12),
+}
+
+
 ############################
 # Config
 ############################
@@ -578,6 +597,7 @@ class RuntimeSettings:
     plan_timeout: int = 360
     plan_first_token_timeout: int = 180
     auto_clean_recent: str = "1d"
+    context_budget: str = "medium"
     yolo: bool = False
     plan_mode: bool = False
     debug: bool = False
@@ -592,6 +612,7 @@ class RuntimeSettings:
             plan_timeout=max(1, Config.int(runtime, "plan_timeout", 360) or 0),
             plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 180) or 0),
             auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "1d")),
+            context_budget=cls.clean_context_budget(Config.str(runtime, "context_budget", "medium")),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
             plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
@@ -613,6 +634,13 @@ class RuntimeSettings:
             return 0
         units = {"m": 60, "h": 3600, "d": 86400}
         return int(value[:-1]) * units[value[-1]]
+
+    @staticmethod
+    def clean_context_budget(value: str) -> str:
+        value = value.strip().lower()
+        if value not in CONTEXT_BUDGET_CHOICES:
+            raise ConfigError("runtime.context_budget must be one of: " + ", ".join(CONTEXT_BUDGET_CHOICES))
+        return value
 
 
 @dataclass
@@ -740,6 +768,7 @@ compact_at = 50
 max_agent_steps = 100
 plan_timeout = 360
 plan_first_token_timeout = 180
+context_budget = "medium"
 # Automatically delete inactive session directories older than this. Use "off" to disable.
 auto_clean_recent = "1d"
 yolo = false
@@ -1382,6 +1411,7 @@ def _tool_call_args_key(args: list[JsonValue]) -> tuple[str, ...]:
 
 @dataclass
 class ToolResultContext:
+    COMPACT_OUTPUT_SUMMARY_CHARS: ClassVar[int] = 120
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
     kept_results: list[str] = field(default_factory=list)
@@ -1409,7 +1439,7 @@ class ToolResultContext:
         self.recent = update(self.recent, compact=True)
         return list(dict.fromkeys(removed))
 
-    def keep_results(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
+    def keep_results(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int, max_block_chars: int) -> list[str]:
         wanted = []
         for action in actions:
             if _json_str(action.get("type")) == "keep":
@@ -1418,15 +1448,19 @@ class ToolResultContext:
         if not wanted:
             return []
         by_key = self.blocks_by_key(observed_blocks)
-        selected = {key: by_key[key] for key in wanted if key in by_key}
+        selected = {key: self.bound_block(by_key[key], max_chars=max_block_chars) for key in wanted if key in by_key}
         if not selected:
             return []
         existing = self.blocks_by_key(self.kept_results)
         self.kept_results = [block for key, block in existing.items() if key not in selected] + [selected[key] for key in wanted if key in selected]
-        while self.kept_results and len("\n\n".join(self.kept_results)) > max_chars:
-            del self.kept_results[0]
+        self.bound_kept(max_chars=max_chars, max_block_chars=max_block_chars)
         retained = self.blocks_by_key(self.kept_results)
         return [key for key in wanted if key in selected and key in retained]
+
+    def bound_kept(self, *, max_chars: int, max_block_chars: int) -> None:
+        self.kept_results = [self.bound_block(block, max_chars=max_block_chars) for block in self.kept_results]
+        while self.kept_results and len("\n\n".join(self.kept_results)) > max_chars:
+            del self.kept_results[0]
 
     def append_latest(self, executions: list[ToolCallExecution], *, max_index_items: int, checkpoint: int) -> None:
         if not executions:
@@ -1540,8 +1574,21 @@ class ToolResultContext:
         if match:
             parts.append("recall=" + match.group(1))
         elif output:
-            parts.append(_shorten(" ".join(output.split()), 220))
+            parts.append(_shorten(" ".join(output.split()), cls.COMPACT_OUTPUT_SUMMARY_CHARS))
         return header + "\n  out: " + ("; ".join(parts) if parts else "ok")
+
+    @classmethod
+    def bound_block(cls, block: str, *, max_chars: int) -> str:
+        if len(block) <= max_chars:
+            return block
+        if not cls.is_full_block(block):
+            return _shorten(block, max_chars)
+        header, output = block.split("\n  output:\n", 1)
+        separator = "\n  output:\n"
+        output_budget = max_chars - len(header) - len(separator)
+        if output_budget <= 0:
+            return _shorten(cls.compact_block(block), max_chars)
+        return header + separator + _bound_tool_output(output, max_chars=output_budget).value
 
     @classmethod
     def result_key(cls, block: str) -> str:
@@ -5186,11 +5233,13 @@ class Agent:
     # Reducer trigger, not a pre-observe truncation limit: unreduced raw must stay visible until OBSERVE can keep or forget it.
     TOOL_RESULT_RAW_CHARS: ClassVar[int] = 72_000
     # Raw results explicitly kept by OBSERVE are bounded separately from latest/unreduced raw.
-    KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 96_000
+    KEPT_TOOL_RESULT_CHARS: ClassVar[int] = 32_000
+    KEPT_TOOL_RESULT_BLOCK_CHARS: ClassVar[int] = 6_000
     # Compact recall/timeline entries shown in Tool Result Index; current-task timeline has priority over archived entries.
-    TOOL_RESULT_INDEX_ITEMS: ClassVar[int] = 40
+    TOOL_RESULT_INDEX_ITEMS: ClassVar[int] = 30
     # Trigger observe after this many unresolved raw result blocks accumulate; raw-size pressure can still trigger earlier.
     OBSERVE_AFTER_PENDING_RESULT_COUNT: ClassVar[int] = 10
+    PLANLESS_DISCOVERY_TOOL_CALLS: ClassVar[int] = 8
     PLAN_MODE_GIT_READONLY: ClassVar[frozenset[str]] = GIT_READONLY_COMMANDS
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
@@ -5221,6 +5270,24 @@ class Agent:
         self.incomplete_task_context_at_turn_start = False
         self.stream_stop_requested = False
         self.mode = AgentMode.ACT
+
+    def context_budget(self) -> ContextBudget:
+        if self.session.settings.context_budget == "medium":
+            return ContextBudget(
+                self.TOOL_RESULT_RAW_CHARS,
+                self.KEPT_TOOL_RESULT_CHARS,
+                self.KEPT_TOOL_RESULT_BLOCK_CHARS,
+                self.TOOL_RESULT_INDEX_ITEMS,
+                self.OBSERVE_AFTER_PENDING_RESULT_COUNT,
+                self.PLANLESS_DISCOVERY_TOOL_CALLS,
+            )
+        return CONTEXT_BUDGETS[self.session.settings.context_budget]
+
+    def apply_context_budget(self) -> None:
+        budget = self.context_budget()
+        checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
+        self.tool_context.bound_kept(max_chars=budget.kept_chars, max_block_chars=budget.kept_block_chars)
+        self.tool_context.prune_recent(max_index_items=budget.index_items, checkpoint=checkpoint)
 
     def build_user_prompt(self) -> str:
         tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
@@ -5456,13 +5523,14 @@ class Agent:
 
     def _format_act_tool_result_context(self) -> tuple[str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
-        timeline = self.tool_context.current_timeline_blocks()[-self.TOOL_RESULT_INDEX_ITEMS :]
+        budget = self.context_budget()
+        timeline = self.tool_context.current_timeline_blocks()[-budget.index_items :]
         unreduced = self.tool_context.unreduced_recent_blocks(checkpoint)
         latest = self.tool_context.latest_raw_blocks()
         visible_keys = set(
             ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results)
         )
-        archived_limit = max(0, self.TOOL_RESULT_INDEX_ITEMS - len(timeline))
+        archived_limit = max(0, budget.index_items - len(timeline))
         archived = self._format_archived_tool_result_index(visible_keys, limit=archived_limit)
         index = self._format_tool_result_index(archived, timeline)
         return index, "\n\n".join(unreduced), "\n\n".join(latest)
@@ -5776,7 +5844,7 @@ class Agent:
         )
         self.tool_context.append_latest(
             self.tool_runner.latest_executions,
-            max_index_items=self.TOOL_RESULT_INDEX_ITEMS,
+            max_index_items=self.context_budget().index_items,
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
@@ -5791,11 +5859,12 @@ class Agent:
         pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
         if not pending:
             return False
+        budget = self.context_budget()
         # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
         # Very large failures still trigger observe through raw-context pressure.
-        return len(pending) >= self.OBSERVE_AFTER_PENDING_RESULT_COUNT or self.tool_context.raw_context_chars(
+        return len(pending) >= budget.observe_after_results or self.tool_context.raw_context_chars(
             self.blackboard.memory_checkpoint_tool_result_counter
-        ) >= self.TOOL_RESULT_RAW_CHARS
+        ) >= budget.raw_chars
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
         self._remember_tool_failure(execution)
@@ -6225,6 +6294,13 @@ class Agent:
             and (ctx.pending_verify_requested or self._has_non_readonly_tool_call(ctx.tool_calls))
         ):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
+        if (
+            ctx.plan_was_empty
+            and not self.blackboard.plan
+            and ctx.tool_calls
+            and self.session.state.turn_tool_calls + len(ctx.tool_calls) >= self.context_budget().planless_discovery_tool_calls
+        ):
+            self._warn_agent("Plan is empty after discovery.", "set a short Plan before more broad exploration.")
 
         if (
             ctx.tool_calls
@@ -6353,7 +6429,12 @@ class Agent:
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_text(ctx, on_message)
         self.mode = AgentMode.ACT
-        kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
+        kept_keys = self.tool_context.keep_results(
+            ctx.actions,
+            observed_blocks,
+            max_chars=self.context_budget().kept_chars,
+            max_block_chars=self.context_budget().kept_block_chars,
+        )
         self.tool_context.compact_observed(observed_blocks)
         self._mark_memory_checkpoint(observed_counter)
         self.observe_feedback_errors = []
@@ -6498,7 +6579,7 @@ class Agent:
         self.failed_tool_call_key = None
         self.failed_tool_call_count = 0
         self.tool_context.prune_recent(
-            max_index_items=self.TOOL_RESULT_INDEX_ITEMS,
+            max_index_items=self.context_budget().index_items,
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self._prune_tool_result_store()
@@ -6648,6 +6729,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
+    CommandSpec("/context", "Show or set context budget", "Config", "/context [low|medium|high]"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
@@ -6682,6 +6764,7 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.max_agent_steps": "max_agent_steps",
     "runtime.plan_timeout": "plan_timeout",
     "runtime.plan_first_token_timeout": "plan_first_token_timeout",
+    "runtime.context_budget": "context_budget",
     "runtime.yolo": "yolo",
 }
 CONFIG_SET_KEYS: tuple[str, ...] = tuple(CONFIG_PROVIDER_ATTRS) + tuple(CONFIG_RUNTIME_ATTRS)
@@ -6690,6 +6773,7 @@ CONFIG_VALUE_COMPLETIONS: dict[str, tuple[str, ...]] = {
     "provider.chat_reasoning": CHAT_REASONING_CHOICES,
     "provider.stream": ("on", "off"),
     "provider.temperature": ("off",),
+    "runtime.context_budget": CONTEXT_BUDGET_CHOICES,
     "runtime.yolo": ("on", "off"),
 }
 CONFIG_BOOL_KEYS: set[str] = {"provider.stream", "runtime.yolo"}
@@ -6731,6 +6815,9 @@ class CommandDispatcher:
             "/rules": self._rules,
             "/compact": self._compact,
             "/config": self._config,
+            "/context": self._context,
+            "/context-budget": self._context,
+            "/context_budget": self._context,
             "/set": self._set,
             "/api": self._api,
             "/clean": self._clean,
@@ -6981,7 +7068,9 @@ class CommandDispatcher:
                 + " plan="
                 + self._format_bool(session.settings.plan_mode)
                 + " compact_at="
-                + str(session.settings.compact_at),
+                + str(session.settings.compact_at)
+                + " context_budget="
+                + session.settings.context_budget,
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
@@ -6997,6 +7086,29 @@ class CommandDispatcher:
         if args:
             return "Usage: /compact"
         return self._with_status(self._compact_history)
+
+    def _context(self, args: str) -> str:
+        value = args.strip()
+        if value:
+            if value not in CONTEXT_BUDGET_CHOICES:
+                return "Usage: /context [low|medium|high]"
+            self.agent.session.settings.context_budget = value
+            self.agent.apply_context_budget()
+            return "Set runtime.context_budget = " + value + "\n" + self._format_context_budget()
+        return self._format_context_budget()
+
+    def _format_context_budget(self) -> str:
+        budget = self.agent.context_budget()
+        return "\n".join(
+            [
+                "context_budget: " + self.agent.session.settings.context_budget,
+                "raw_chars: " + str(budget.raw_chars),
+                "kept_chars: " + str(budget.kept_chars),
+                "kept_block_chars: " + str(budget.kept_block_chars),
+                "index_items: " + str(budget.index_items),
+                "observe_after_results: " + str(budget.observe_after_results),
+            ]
+        )
 
     def _compact_history(self) -> str:
         before = len(self.agent.session.state.conversation)
@@ -7040,6 +7152,7 @@ class CommandDispatcher:
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
                 "runtime.plan_timeout: " + str(session.settings.plan_timeout),
                 "runtime.plan_first_token_timeout: " + str(session.settings.plan_first_token_timeout),
+                "runtime.context_budget: " + session.settings.context_budget,
                 "runtime.auto_clean_recent: " + session.settings.auto_clean_recent,
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
                 "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
@@ -7109,6 +7222,12 @@ class CommandDispatcher:
             if value not in CHAT_REASONING_CHOICES:
                 return "Usage: /set " + key + " [" + "|".join(CHAT_REASONING_CHOICES) + "]"
             setattr(target, attr, value)
+            return ""
+        if key == "runtime.context_budget":
+            if value not in CONTEXT_BUDGET_CHOICES:
+                return "Usage: /set " + key + " [" + "|".join(CONTEXT_BUDGET_CHOICES) + "]"
+            setattr(target, attr, value)
+            self.agent.apply_context_budget()
             return ""
         if key == "provider.temperature":
             if value == "off":

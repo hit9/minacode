@@ -86,6 +86,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["runtime"]["compact_at"] == 50
     assert config["runtime"]["plan_timeout"] == 360
     assert config["runtime"]["plan_first_token_timeout"] == 180
+    assert config["runtime"]["context_budget"] == "medium"
     assert config["runtime"]["auto_clean_recent"] == "1d"
     assert config["runtime"]["yolo"] is False
     assert config["runtime"]["plan_mode"] is False

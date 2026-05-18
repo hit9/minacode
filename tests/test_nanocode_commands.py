@@ -62,6 +62,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     first_token_result = dispatcher.dispatch("/set provider.first_token_timeout 6")
     yolo_result = dispatcher.dispatch("/set runtime.yolo on")
     compact_result = dispatcher.dispatch("/set runtime.compact_at 2")
+    context_result = dispatcher.dispatch("/set runtime.context_budget low")
     exit_result = dispatcher.dispatch("/exit")
 
     assert model_result.status == CommandStatus.HANDLED
@@ -78,6 +79,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert session.settings.yolo is True
     assert compact_result.message == "Set runtime.compact_at = 2"
     assert session.settings.compact_at == 2
+    assert context_result.message == "Set runtime.context_budget = low"
+    assert session.settings.context_budget == "low"
     assert len(session.state.conversation) == 3
     assert fake_client.requests == []
     assert exit_result.status == CommandStatus.EXIT
@@ -153,6 +156,7 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "runtime.max_agent_steps: 100" in result.message
     assert "runtime.plan_timeout: 360" in result.message
     assert "runtime.plan_first_token_timeout: 180" in result.message
+    assert "runtime.context_budget: medium" in result.message
     assert "runtime.auto_clean_recent: 1d" in result.message
     assert "runtime.plan_mode: off" in result.message
 
@@ -168,6 +172,26 @@ def test_set_command_updates_plan_timeouts(tmp_path):
     assert first_token_result.message == "Set runtime.plan_first_token_timeout = 80"
     assert session.settings.plan_timeout == 240
     assert session.settings.plan_first_token_timeout == 80
+
+
+def test_context_command_shows_and_sets_budget(tmp_path):
+    session = make_session(tmp_path)
+    agent = Agent(session)
+    agent.tool_context.kept_results = ['- ok tool=Read args=["large.py"] key=tr.1\n  output:\n' + ("x" * 10_000)]
+    dispatcher = CommandDispatcher(agent)
+
+    show_result = dispatcher.dispatch("/context")
+    set_result = dispatcher.dispatch("/context low")
+    alias_result = dispatcher.dispatch("/context_budget high")
+    invalid_result = dispatcher.dispatch("/context tiny")
+
+    assert "context_budget: medium" in show_result.message
+    assert "observe_after_results: 10" in show_result.message
+    assert set_result.message.startswith("Set runtime.context_budget = low\ncontext_budget: low")
+    assert session.settings.context_budget == "high"
+    assert len(agent.tool_context.kept_results[0]) <= agent.context_budget().kept_block_chars
+    assert alias_result.message.startswith("Set runtime.context_budget = high\ncontext_budget: high")
+    assert invalid_result.message == "Usage: /context [low|medium|high]"
 
 
 def test_plan_command_toggles_plan_mode(tmp_path):

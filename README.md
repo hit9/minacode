@@ -102,6 +102,7 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 - Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, selected OpenCode models, and DashScope models use their matching Chat reasoning payload shapes.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
+- `/context [low|medium|high]` shows or switches tool-result context budgets; lower budgets reduce token usage and observe overhead.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
 - Old inactive session directories are auto-cleaned after `runtime.auto_clean_recent` (default `1d`; use `off` to disable). `/clean` removes inactive sessions immediately.
 - Project data: user rules are stored under `~/.nanocode/projects/<project_key>/`.

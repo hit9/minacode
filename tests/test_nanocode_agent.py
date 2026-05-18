@@ -810,6 +810,22 @@ def test_kept_tool_results_respect_char_budget(tmp_path):
     assert "key=tr.2" in context
 
 
+def test_kept_tool_results_respect_per_block_char_budget(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.KEPT_TOOL_RESULT_CHARS = 10_000
+    agent.KEPT_TOOL_RESULT_BLOCK_CHARS = 300
+    agent.tool_context.latest = [
+        '- ok tool=Read args=["large.py"] key=tr.1\n  output:\n' + ("head\n" + ("x" * 2000) + "\ntail")
+    ]
+
+    agent.handle_response({"actions": [{"type": "keep", "source": ["tr.1"], "reason": "large output matters"}]})
+
+    assert len(agent.tool_context.kept_results[0]) <= 300
+    assert "key=tr.1" in agent.tool_context.kept_results[0]
+    assert "[tool result excerpt]" in agent.tool_context.kept_results[0]
+
+
 def test_observe_checkpoint_clears_observe_errors(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -3237,6 +3253,17 @@ def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert agent.blackboard.known == ["fact"]
     assert any("state update-only turn" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_warns_when_discovery_runs_long_without_plan(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "investigate"
+    agent.PLANLESS_DISCOVERY_TOOL_CALLS = 2
+
+    agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root", "args": ["."]}]})
+    agent.handle_response({"actions": [{"type": "tool", "name": "ListDir", "intention": "inspect root again", "args": ["."]}]})
+
+    assert any("Plan is empty after discovery" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
