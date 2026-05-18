@@ -7,15 +7,15 @@ def _fingerprint(read_result: str) -> str:
     return read_result.split("<fingerprint>", 1)[1].split("</fingerprint>", 1)[0]
 
 
-def _replace_args(filepath: str, start: int, end: int, fingerprint: str, before: str, after: str, content: str) -> list[str]:
-    return [filepath, str(start), str(end), fingerprint, before, after, content]
+def _replace_args(filepath: str, start: int, end: int, fingerprint: str, before: str, after: str, content: str) -> list[object]:
+    return [filepath, [[str(start), str(end), fingerprint, before, after, content]]]
 
 
 def test_replace_range_tool_replaces_range_when_fingerprint_matches(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA\n"))
     display = tool.preview()
@@ -42,7 +42,7 @@ def test_replace_range_tool_rejects_before_context_mismatch(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "wrong\n", "gamma\n", "BETA\n"))
 
@@ -56,7 +56,7 @@ def test_replace_range_tool_rejects_after_context_mismatch(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "wrong\n", "BETA\n"))
 
@@ -70,7 +70,7 @@ def test_replace_range_tool_allows_empty_boundary_context_for_non_empty_range(tm
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "", "", "BETA\n")).call()
 
@@ -81,7 +81,7 @@ def test_replace_range_tool_rejects_content_that_repeats_boundary_context(tmp_pa
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     before_tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "alpha\nBETA\n"))
     after_tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA\ngamma\n"))
@@ -127,8 +127,8 @@ def test_replace_range_tool_accepts_public_batch_ranges(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
+    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
+    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3,4"]).call())
 
     result = ReplaceRangeTool.make(
         session,
@@ -149,8 +149,8 @@ def test_agent_executes_replace_range_batch_args(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
+    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
+    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3,4"]).call())
     agent = Agent(session)
 
     latest = agent.execute_tool_calls(
@@ -174,35 +174,11 @@ def test_agent_executes_replace_range_batch_args(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
 
 
-def test_agent_merges_consecutive_same_file_replace_range_calls(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    beta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
-    delta_fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "3", "4"]).call())
-    agent = Agent(session)
-    confirmations = []
-
-    latest = agent.execute_tool_calls(
-        [
-            {"name": "ReplaceRange", "intention": "replace beta", "args": _replace_args("sample.txt", 1, 2, beta_fingerprint, "alpha\n", "gamma\n", "BETA\n")},
-            {"name": "ReplaceRange", "intention": "replace delta", "args": _replace_args("sample.txt", 3, 4, delta_fingerprint, "gamma\n", "", "DELTA\n")},
-        ],
-        confirm=lambda call, tool: confirmations.append(call.executed) or True,
-    )
-
-    assert len(agent.tool_runner.latest_executions) == 1
-    assert confirmations[0].startswith('ReplaceRange("sample.txt", "1", "2"')
-    assert "replace beta; replace delta" in session.state.tool_result_store["tr.1"].description
-    assert "* replacements: 2" in latest
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\nDELTA\n"
-
-
 def test_replace_range_tool_adds_line_break_before_following_content(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA")).call()
 
@@ -213,7 +189,7 @@ def test_replace_range_tool_relocates_cached_fingerprint_after_line_shift(tmp_pa
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "2", "3"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "2,3"]).call())
     path.write_text("zero\nalpha\nbeta\ngamma\n", encoding="utf-8")
 
     result = ReplaceRangeTool.make(session, _replace_args("sample.txt", 2, 3, fingerprint, "beta\n", "", "GAMMA\n")).call()
@@ -227,7 +203,7 @@ def test_replace_range_tool_rejects_ambiguous_cached_relocation(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
     path.write_text("zero\nalpha\nbeta\nbeta\ngamma\n", encoding="utf-8")
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA\n"))
@@ -259,7 +235,7 @@ def test_replace_range_tool_reports_fingerprint_cached_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0", "3"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "0,3"]).call())
     path.write_text("alpha\nBETA\ngamma\n", encoding="utf-8")
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "gamma\n", "BETA\n"))
@@ -302,7 +278,7 @@ def test_replace_range_cache_survives_goal_rewording(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     Agent(session).apply_response({"actions": [{"type": "goal", "text": "new goal"}]})
 
@@ -315,7 +291,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
     agent = Agent(session)
 
     agent.cancel_current_goal()
@@ -323,7 +299,7 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
     assert len(session.state.range_fingerprints) == 1
 
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [], "_assistant_text": "done"}
 
     agent.model_client = FakeModelClient()
@@ -334,13 +310,13 @@ def test_replace_range_cache_survives_cancel_until_next_run(tmp_path):
 
 def test_replace_range_cache_clears_when_new_main_run_starts(tmp_path):
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [], "_assistant_text": "done"}
 
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
     agent = Agent(session)
     agent.model_client = FakeModelClient()
 
@@ -353,7 +329,7 @@ def test_replace_range_tool_replaces_to_eof_when_end_is_zero(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "0"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,0"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 0, fingerprint, "alpha\n", "", "tail\n"))
     result = tool.call()
@@ -366,7 +342,7 @@ def test_replace_range_tool_inserts_when_start_equals_end(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "1"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,1"]).call())
 
     ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 1, fingerprint, "alpha\n", "gamma\n", "beta\n")).call()
 
@@ -377,7 +353,7 @@ def test_replace_range_tool_requires_boundary_context_for_insert_range(tmp_path)
     path = tmp_path / "sample.txt"
     path.write_text("alpha\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "1"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,1"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 1, fingerprint, "", "", "beta\n"))
 
@@ -404,7 +380,7 @@ def test_replace_range_tool_rejects_no_change(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1", "2"]).call())
+    fingerprint = _fingerprint(ReadTool.make(session, ["sample.txt", "1,2"]).call())
 
     tool = ReplaceRangeTool.make(session, _replace_args("sample.txt", 1, 2, fingerprint, "alpha\n", "", "beta\n"))
 

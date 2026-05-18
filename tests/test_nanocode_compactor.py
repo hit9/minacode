@@ -8,7 +8,7 @@ class FakeModelClient:
         self.known = known
         self.requests = []
 
-    def request(self, system_prompt, user_prompt, *, activity="agent"):
+    def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
         self.requests.append((system_prompt, user_prompt, activity))
         response = {"summary": self.summary}
         if self.known is not None:

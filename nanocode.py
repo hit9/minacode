@@ -788,7 +788,6 @@ class AgentMode(StrEnum):
 @dataclass
 class AgentRuntime:
     recent_edits: list[str] = field(default_factory=list)
-    consecutive_tool_turns: int = 0
 
 
 @dataclass
@@ -1338,12 +1337,6 @@ class ToolCallExecution:
 
 
 @dataclass
-class PreparedToolCall:
-    call: ParsedToolCall
-    tool: Tool
-
-
-@dataclass
 class BoundedToolOutput:
     value: str
     excerpted: bool
@@ -1747,7 +1740,6 @@ class ReadTool(Tool):
     start: int = 0
     end: int = 0
     ranges: list[tuple[int, int]] = field(default_factory=list)
-    filepaths: list[str] = field(default_factory=list)
     cwd: str = ""
     range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
@@ -1756,8 +1748,6 @@ class ReadTool(Tool):
         if not args:
             return []
         tokens = [cls.cli_token(args[0])]
-        if len(args) == 3 and args[1].isdigit() and args[2].isdigit():
-            return tokens + [args[1] + ":" + args[2]]
         return tokens + [str(arg) for arg in args[1:]]
 
     @staticmethod
@@ -1778,21 +1768,6 @@ class ReadTool(Tool):
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
             ranges = [cls._parse_line_range_token(arg) for arg in args[1:]]
-        elif len(args) == 3 and cls._is_integer_token(args[1]) and cls._is_integer_token(args[2]):
-            ranges = [_parse_line_range(args[1], args[2])]
-        elif cls._all_args_are_existing_files(session, args):
-            filepaths = [session.resolve_path(arg) for arg in args]
-            return cls(
-                filepath=filepaths[0],
-                start=0,
-                end=0,
-                ranges=[(0, 0)],
-                filepaths=filepaths,
-                cwd=session.cwd,
-                range_fingerprints=session.state.range_fingerprints,
-            )
-        elif len(args) == 3:
-            ranges = [_parse_line_range(args[1], args[2])]
         elif len(args) == 2:
             raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
         else:
@@ -1800,39 +1775,16 @@ class ReadTool(Tool):
         start, end = ranges[0]
         return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
 
-    @staticmethod
-    def _all_args_are_existing_files(session: Session, args: list[str]) -> bool:
-        if len(args) < 2:
-            return False
-        return all(os.path.isfile(session.resolve_path(arg)) for arg in args)
-
-    @staticmethod
-    def _is_integer_token(value: str) -> bool:
-        return re.fullmatch(r"\s*-?\d+\s*", str(value)) is not None
-
     def requires_confirmation(self, session: Session) -> bool:
-        return any(not session.is_path_in_cwd(filepath) for filepath in self._target_filepaths())
+        return not session.is_path_in_cwd(self.filepath)
 
     def preview(self) -> str:
-        if self.filepaths:
-            return "Read(" + ", ".join(self.filepaths) + ")"
         if len(self.ranges) > 1:
             ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
             return f"Read({self.filepath}, {ranges})"
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
-        if self.filepaths:
-            lines = ["<ReadToolResult>", "  <file_count>" + str(len(self.filepaths)) + "</file_count>"]
-            for filepath in self.filepaths:
-                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(0, 0, filepath=filepath)
-                lines.append("  <ReadFile>")
-                lines.append("    <path>" + filepath + "</path>")
-                lines.extend(self._format_range_result(0, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
-                lines.append("  </ReadFile>")
-            lines.append("</ReadToolResult>")
-            return "\n".join(lines)
-
         if len(self.ranges) > 1:
             lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
             for start, end in self.ranges:
@@ -1849,11 +1801,8 @@ class ReadTool(Tool):
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
-    def _target_filepaths(self) -> list[str]:
-        return self.filepaths or [self.filepath]
-
-    def _read_range(self, start: int, end: int, *, filepath: str | None = None) -> tuple[str, int, int, str, bool, int]:
-        target_filepath = filepath or self.filepath
+    def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
+        target_filepath = self.filepath
         total_lines = 0
         selected_lines = []
         truncated = False
@@ -2568,50 +2517,16 @@ class ReplaceRangeTool(Tool):
             ranges = _json_list(args[1])
             if ranges:
                 return [cls.cli_token(args[0]), str(len(ranges)) + " ranges"]
-        if len(args) < 3:
-            return [cls.cli_token(arg) for arg in args]
-        return [cls.cli_token(args[0]), str(args[1]) + ":" + str(args[2])]
-
-    @classmethod
-    def merge_key(cls, call: ParsedToolCall) -> tuple[str, ...] | None:
-        if len(call.args) != 7:
-            return None
-        return (str(call.args[0]),)
-
-    @classmethod
-    def merge_calls(cls, session: Session, calls: list[ParsedToolCall]) -> PreparedToolCall | None:
-        if len(calls) < 2:
-            return None
-        filepath = calls[0].args[0]
-        edits = []
-        intentions = []
-        for call in calls:
-            try:
-                start, end = _parse_line_range(str(call.args[1]), str(call.args[2]))
-            except ToolCallArgError:
-                return None
-            fingerprint = str(call.args[3])
-            if not fingerprint:
-                return None
-            edits.append(
-                ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(call.args[4]), after_context=str(call.args[5]), content=str(call.args[6]))
-            )
-            if call.intention:
-                intentions.append(call.intention)
-        tool = cls._from_edits(session, filepath=filepath, edits=edits)
-        call = ParsedToolCall(name=cls.NAME, intention="; ".join(intentions), args=list(calls[0].args))
-        return PreparedToolCall(call=call, tool=tool)
+        return [cls.cli_token(arg) for arg in args]
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) == 2:
-            ranges = _json_list(args[1])
-            if not ranges:
-                raise ToolCallArgError("ranges cannot be empty")
-            return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(_json_list(item)) for item in ranges])
-        if len(args) != 7:
-            raise ToolCallArgError("requires args: filepath, ranges where each range is [start,end,fingerprint,before_context,after_context,content]")
-        return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(args[1:])])
+        if len(args) != 2:
+            raise ToolCallArgError("requires args: filepath, ranges")
+        ranges = _json_list(args[1])
+        if not ranges:
+            raise ToolCallArgError("ranges cannot be empty")
+        return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(_json_list(item)) for item in ranges])
 
     @staticmethod
     def _edit_from_args(args: list[JsonValue]) -> ReplaceRangeEdit:
@@ -3604,110 +3519,6 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 """
 
 
-class PromptBuilder:
-    def __init__(
-        self,
-        session: Session,
-        *,
-        system_prompt_template: str = AGENT_SYSTEM_PROMPT,
-        user_prompt_template: str = AGENT_USER_PROMPT_TEMPLATE,
-        blackboard: Blackboard | None = None,
-        runtime: AgentRuntime | None = None,
-        tool_context: ToolResultContext | None = None,
-    ):
-        self.session = session
-        self.system_prompt_template = system_prompt_template
-        self.user_prompt_template = user_prompt_template
-        self.blackboard = blackboard or Blackboard()
-        self.runtime = runtime or AgentRuntime()
-        self.tool_context = tool_context or ToolResultContext()
-
-    def system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
-        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
-        return (
-            (template or self.system_prompt_template)
-            .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
-            .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
-            .strip()
-        )
-
-    def user_prompt(
-        self,
-        *,
-        tool_result_index: str,
-        unreduced_tool_results: str,
-        latest_tool_results: str,
-        errors: str,
-    ) -> str:
-        current = self.blackboard
-        conversation = self.session.state.conversation
-        return self.user_prompt_template.format(
-            environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
-            conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
-            user_rules=self.session.state.user_rules.format(),
-            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
-            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
-            stable_knowledge=self._format_stable_knowledge(),
-            tool_result_index=tool_result_index or "(empty)",
-            unreduced_tool_results=unreduced_tool_results or "(empty)",
-            latest_tool_results=latest_tool_results or "(empty)",
-            task_code=self.blackboard.task_code,
-            work_mode=self.blackboard.work_mode,
-            goal=current.goal or "(empty)",
-            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
-            verification_state=current.verification.format(),
-            errors=errors or "(empty)",
-            recent_edits="\n".join(self.runtime.recent_edits) if self.runtime.recent_edits else "(empty)",
-            user_request=self._format_user_request(),
-        ).strip()
-
-    def observe_user_prompt(self, unreduced_tool_results: str, errors: str) -> str:
-        current = self.blackboard
-        return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
-            user_rules=self.session.state.user_rules.format(),
-            goal=current.goal or "(empty)",
-            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
-            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
-            stable_knowledge=self._format_stable_knowledge(),
-            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
-            errors=errors or "(empty)",
-            unreduced_tool_results=unreduced_tool_results or "(empty)",
-            user_request=self._format_user_request(),
-        ).strip()
-
-    def _format_user_request(self) -> str:
-        user_request = self.blackboard.user_input or "(empty)"
-        fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
-        return fence + "text\n" + user_request + "\n" + fence
-
-    def _format_stable_knowledge(self) -> str:
-        knowledge = self.blackboard.stable_knowledge
-        if not any(knowledge.values()):
-            return "(empty)"
-        lines = []
-        for category in STABLE_KNOWLEDGE_CATEGORIES:
-            items = [item for item in knowledge.get(category, []) if item]
-            if not items:
-                continue
-            lines.append(category + ":")
-            lines.extend("- " + item for item in items)
-            lines.append("")
-        return "\n".join(lines).rstrip()
-
-    def format_archived_tool_result_index(self, visible_result_keys: set[str] | None = None, *, limit: int = 0) -> list[str]:
-        if not self.session.state.tool_result_store:
-            return []
-        hidden_keys = visible_result_keys or set()
-        lines = []
-        for key, item in self.session.state.tool_result_store.items():
-            if key in hidden_keys:
-                continue
-            lines.append(item.format(result_key=key))
-        return lines[-limit:] if limit > 0 else lines
-
-
 ############################
 # LLM Request (ModelClient)
 ############################
@@ -3984,20 +3795,41 @@ class ModelClient:
         for index in sorted(tool_calls):
             item = tool_calls[index]
             action = self._action_from_function_call(_json_str(item.get("name")) or "", _json_str(item.get("arguments")) or "{}")
-            DebugTrace.stream_action(self.session, activity=activity, action=action)
-            if text_parts and on_stream_action is not None:
-                action["_assistant_text"] = "".join(text_parts).strip()
-                text_parts.clear()
-            actions.append(action)
-            stopped, request_deadline = self._call_stream_action(
-                on_stream_action,
+            stopped, request_deadline = self._consume_stream_action(
+                actions,
+                text_parts,
                 action,
+                activity=activity,
+                on_stream_action=on_stream_action,
                 request_deadline=request_deadline,
                 first_token_timeout=first_token_timeout,
             )
             if stopped:
                 break
         return self._action_response(actions, "".join(text_parts)), usage
+
+    def _consume_stream_action(
+        self,
+        actions: list[Json],
+        text_parts: list[str],
+        action: Json,
+        *,
+        activity: str,
+        on_stream_action: Callable[[Json], bool] | None,
+        request_deadline: float,
+        first_token_timeout: int | None,
+    ) -> tuple[bool, float]:
+        DebugTrace.stream_action(self.session, activity=activity, action=action)
+        if text_parts and on_stream_action is not None:
+            action["_assistant_text"] = "".join(text_parts).strip()
+            text_parts.clear()
+        actions.append(action)
+        return self._call_stream_action(
+            on_stream_action,
+            action,
+            request_deadline=request_deadline,
+            first_token_timeout=first_token_timeout,
+        )
 
     def _accumulate_chat_tool_calls(self, tool_calls: dict[int, Json], delta: Json) -> None:
         for raw in _json_list(delta.get("tool_calls")):
@@ -4098,14 +3930,12 @@ class ModelClient:
                 name,
                 arguments,
             )
-            DebugTrace.stream_action(self.session, activity=activity, action=action)
-            if text_parts and on_stream_action is not None:
-                action["_assistant_text"] = "".join(text_parts).strip()
-                text_parts.clear()
-            actions.append(action)
-            stopped, request_deadline = self._call_stream_action(
-                on_stream_action,
+            stopped, request_deadline = self._consume_stream_action(
+                actions,
+                text_parts,
                 action,
+                activity=activity,
+                on_stream_action=on_stream_action,
                 request_deadline=request_deadline,
                 first_token_timeout=first_token_timeout,
             )
@@ -4551,7 +4381,7 @@ class ToolCallRunner:
         executions = []
         self.skipped_after_failure_count = 0
         self.skipped_after_failure_key = ""
-        items = self._merge_adjacent_tool_calls(self._dedupe_readonly_tool_calls(tool_calls))
+        items = self._dedupe_readonly_tool_calls(tool_calls)
         for index, item in enumerate(items):
             call: ParsedToolCall | None = None
             outcome = "success"
@@ -4560,12 +4390,8 @@ class ToolCallRunner:
             requires_confirmation = False
             requires_verification = False
             try:
-                if isinstance(item, PreparedToolCall):
-                    call = item.call
-                    tool = item.tool
-                else:
-                    call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
-                    tool = self._make_tool(call)
+                call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
+                tool = self._make_tool(call)
                 requires_verification = tool.EFFECT == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
                 if callable(preview_error):
@@ -4677,53 +4503,6 @@ class ToolCallRunner:
             filtered.append(call)
         return filtered
 
-    def _merge_adjacent_tool_calls(self, tool_calls: list[JsonValue | ParsedToolCall]) -> list[JsonValue | ParsedToolCall | PreparedToolCall]:
-        merged: list[JsonValue | ParsedToolCall | PreparedToolCall] = []
-        index = 0
-        while index < len(tool_calls):
-            item = tool_calls[index]
-            merge_key = self._merge_key(item)
-            if merge_key is None:
-                merged.append(item)
-                index += 1
-                continue
-
-            group = [item]
-            index += 1
-            while index < len(tool_calls):
-                next_item = tool_calls[index]
-                if self._merge_key(next_item) != merge_key:
-                    break
-                group.append(next_item)
-                index += 1
-
-            if len(group) == 1:
-                merged.append(item)
-                continue
-
-            prepared = self._merge_calls(group)
-            if prepared is None:
-                merged.extend(group)
-            else:
-                merged.append(prepared)
-        return merged
-
-    def _merge_key(self, item: JsonValue | ParsedToolCall) -> tuple[str, tuple[str, ...]] | None:
-        if not isinstance(item, ParsedToolCall) or item.name != ReplaceRangeTool.NAME:
-            return None
-        key = ReplaceRangeTool.merge_key(item)
-        if key is None:
-            return None
-        return (item.name, key)
-
-    def _merge_calls(self, group: list[JsonValue | ParsedToolCall]) -> PreparedToolCall | None:
-        parsed_group = [item for item in group if isinstance(item, ParsedToolCall)]
-        if len(parsed_group) != len(group):
-            return None
-        if parsed_group[0].name != ReplaceRangeTool.NAME:
-            return None
-        return ReplaceRangeTool.merge_calls(self.session, parsed_group)
-
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.session.state.tool_result_counter += 1
         key = "tr." + str(self.session.state.tool_result_counter)
@@ -4773,8 +4552,6 @@ class ToolCallRunner:
         name = _json_str(item.get("name"))
         if not name:
             raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
-        if name not in TOOL_REGISTRY and name == name.lower():
-            name = next((registered_name for registered_name in TOOL_REGISTRY if registered_name.lower() == name), name)
         intention = _json_str(item.get("intention")) or ""
         raw_args = _json_list(item.get("args"))
         args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.NAME else [_json_str(arg) or "" for arg in raw_args]
@@ -5356,8 +5133,7 @@ class ConversationCompactor:
             known="\n".join(KnownItem.format_item(item) for item in self.blackboard.known) or "(empty)",
             conversation="\n\n".join(item.format() for item in items),
         ).strip()
-        kwargs = {"tool_schemas": [COMPACT_TOOL_SCHEMA], "required_tool": "compact"} if isinstance(self.model_client, ModelClient) else {}
-        response = self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", **kwargs)
+        response = self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", tool_schemas=[COMPACT_TOOL_SCHEMA], required_tool="compact")
         if "actions" in response:
             response = next(
                 (_json_dict(action) for action in _json_list(response.get("actions")) if _json_str(_json_dict(action).get("type")) == "compact"),
@@ -5460,12 +5236,6 @@ class Agent:
         self.blackboard = Blackboard()
         self.runtime = AgentRuntime()
         self.tool_context = ToolResultContext()
-        self.prompt_builder = PromptBuilder(
-            session,
-            blackboard=self.blackboard,
-            runtime=self.runtime,
-            tool_context=self.tool_context,
-        )
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session, self._protected_tool_result_keys)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
@@ -5481,18 +5251,71 @@ class Agent:
 
     def build_user_prompt(self) -> str:
         tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
-        return self.prompt_builder.user_prompt(
-            tool_result_index=tool_result_index,
-            unreduced_tool_results=unreduced_tool_results,
-            latest_tool_results=latest_tool_results,
-            errors=self._format_agent_feedback(),
-        )
+        current = self.blackboard
+        conversation = self.session.state.conversation
+        return AGENT_USER_PROMPT_TEMPLATE.format(
+            environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
+            conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
+            user_rules=self.session.state.user_rules.format(),
+            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
+            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
+            stable_knowledge=self._format_stable_knowledge(),
+            tool_result_index=tool_result_index or "(empty)",
+            unreduced_tool_results=unreduced_tool_results or "(empty)",
+            latest_tool_results=latest_tool_results or "(empty)",
+            task_code=current.task_code,
+            work_mode=current.work_mode,
+            goal=current.goal or "(empty)",
+            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
+            verification_state=current.verification.format(),
+            errors=self._format_agent_feedback() or "(empty)",
+            recent_edits="\n".join(self.runtime.recent_edits) if self.runtime.recent_edits else "(empty)",
+            user_request=self._format_user_request(),
+        ).strip()
 
     def build_observe_prompt(self) -> str:
-        return self.prompt_builder.observe_user_prompt(
-            self._format_observe_tool_result_context(),
-            self._format_observe_feedback(),
+        current = self.blackboard
+        return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
+            user_rules=self.session.state.user_rules.format(),
+            goal=current.goal or "(empty)",
+            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
+            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
+            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
+            stable_knowledge=self._format_stable_knowledge(),
+            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
+            errors=self._format_observe_feedback() or "(empty)",
+            unreduced_tool_results=self._format_observe_tool_result_context() or "(empty)",
+            user_request=self._format_user_request(),
+        ).strip()
+
+    def _system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
+        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
+        return (
+            (template or AGENT_SYSTEM_PROMPT)
+            .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
+            .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
+            .strip()
         )
+
+    def _format_user_request(self) -> str:
+        user_request = self.blackboard.user_input or "(empty)"
+        fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
+        return fence + "text\n" + user_request + "\n" + fence
+
+    def _format_stable_knowledge(self) -> str:
+        knowledge = self.blackboard.stable_knowledge
+        if not any(knowledge.values()):
+            return "(empty)"
+        lines = []
+        for category in STABLE_KNOWLEDGE_CATEGORIES:
+            items = [item for item in knowledge.get(category, []) if item]
+            if not items:
+                continue
+            lines.append(category + ":")
+            lines.extend("- " + item for item in items)
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     def request(
         self,
@@ -5508,15 +5331,13 @@ class Agent:
         while attempt <= len(self.MODEL_TIMEOUT_RETRY_DELAYS):
             try:
                 self.session.state.turn_model_calls += 1
-                if isinstance(self.model_client, ModelClient):
-                    return self.model_client.request(
-                        system_prompt,
-                        user_prompt,
-                        activity=activity,
-                        on_stream_action=on_stream_action,
-                        tool_schemas=tool_schemas,
-                    )
-                return self.model_client.request(system_prompt, user_prompt, activity=activity)
+                return self.model_client.request(
+                    system_prompt,
+                    user_prompt,
+                    activity=activity,
+                    on_stream_action=on_stream_action,
+                    tool_schemas=tool_schemas,
+                )
             except ModelRequestRetry:
                 if on_message is not None and self.session.settings.debug:
                     on_message("Retrying: manual model retry requested.")
@@ -5660,12 +5481,20 @@ class Agent:
             ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results)
         )
         archived_limit = max(0, self.TOOL_RESULT_INDEX_ITEMS - len(timeline))
-        archived = self.prompt_builder.format_archived_tool_result_index(visible_keys, limit=archived_limit)
+        archived = self._format_archived_tool_result_index(visible_keys, limit=archived_limit)
         index = self._format_tool_result_index(archived, timeline)
         return index, "\n\n".join(unreduced), "\n\n".join(latest)
 
     def _format_observe_tool_result_context(self) -> str:
         return "\n\n".join(self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter))
+
+    def _format_archived_tool_result_index(self, visible_result_keys: set[str], *, limit: int) -> list[str]:
+        lines = [
+            item.format(result_key=key)
+            for key, item in self.session.state.tool_result_store.items()
+            if key not in visible_result_keys
+        ]
+        return lines[-limit:] if limit > 0 else lines
 
     @staticmethod
     def _format_tool_result_index(archived: list[str], timeline: list[str]) -> str:
@@ -5785,11 +5614,11 @@ class Agent:
 
     def _step_prompts(self) -> tuple[str, str, str]:
         if self.mode == AgentMode.OBSERVE:
-            system_prompt = self.prompt_builder.system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT)
+            system_prompt = self._system_prompt(AGENT_OBSERVE_SYSTEM_PROMPT)
             user_prompt = self.build_observe_prompt()
             activity = "observe"
         else:
-            system_prompt = self.prompt_builder.system_prompt(
+            system_prompt = self._system_prompt(
                 AGENT_PLAN_SYSTEM_PROMPT if self.session.settings.plan_mode else None,
                 tools=PLAN_MODE_TOOLS if self.session.settings.plan_mode else None,
             )
@@ -5975,7 +5804,6 @@ class Agent:
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
-        self.runtime.consecutive_tool_turns += 1
         if self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
@@ -6094,18 +5922,7 @@ class Agent:
         return None
 
     def _response_actions(self, response: Json) -> list[Json]:
-        actions = [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
-        for action in actions:
-            self._normalize_response_action(action)
-        return actions
-
-    def _normalize_response_action(self, action: Json) -> None:
-        action_type = _json_str(action.get("type"))
-        if not action_type:
-            return
-        lowered = action_type.lower()
-        if lowered in (self.ACT_ACTION_TYPES | self.OBSERVE_ACTION_TYPES):
-            action["type"] = lowered
+        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
     def _gate_action_types(
         self,
@@ -6585,7 +6402,6 @@ class Agent:
         kept_keys: list[str] = []
         if any(_json_str(action.get("type")) in {"keep", "forget", "known", "stable_knowledge"} for action in ctx.actions):
             self.mode = AgentMode.ACT
-            self.runtime.consecutive_tool_turns = 0
             kept_keys = self.tool_context.keep_results(ctx.actions, observed_blocks, max_chars=self.KEPT_TOOL_RESULT_CHARS)
             self.tool_context.compact_observed(observed_blocks)
             self._mark_memory_checkpoint(observed_counter)
@@ -6732,7 +6548,6 @@ class Agent:
         self.agent_feedback_errors = []
         self.failed_tool_call_key = None
         self.failed_tool_call_count = 0
-        self.runtime.consecutive_tool_turns = 0
         self.tool_context.prune_recent(
             max_index_items=self.TOOL_RESULT_INDEX_ITEMS,
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
@@ -6847,7 +6662,6 @@ class Agent:
         ):
             DebugTrace.handle_event(self, "handle-tools", ctx, response)
             return AgentRunResult()
-        self.runtime.consecutive_tool_turns = 0
         result = self._finish_or_continue(ctx, on_message)
         DebugTrace.handle_event(self, "handle-finish-or-continue", ctx, response, result=result)
         return result

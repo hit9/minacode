@@ -138,13 +138,13 @@ def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
             {
                 "name": "Read",
                 "intention": "read sample",
-                "args": ["sample.txt", "0", "1"],
+                "args": ["sample.txt", "0,1"],
             }
         ]
     )
 
     assert "alpha" in latest
-    assert '- ok tool=Read args=["sample.txt","0","1"] key=tr.1' in latest
+    assert '- ok tool=Read args=["sample.txt","0,1"] key=tr.1' in latest
     assert "why: read sample" in latest
     assert "output:\n<ReadToolResult>" in latest
     assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
@@ -156,27 +156,6 @@ def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
     assert (tmp_path / session.state.tool_result_store["tr.1"].log_path).read_text(encoding="utf-8") == session.state.tool_result_store["tr.1"].value
     assert session.state.conversation == []
     assert os.path.isdir(session.tool_results_dir())
-
-
-def test_agent_accepts_lowercase_tool_name_without_prompting_it(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    latest = agent.execute_tool_calls(
-        [
-            {
-                "name": "read",
-                "intention": "read sample",
-                "args": ["sample.txt", "0", "1"],
-            }
-        ]
-    )
-
-    assert "alpha" in latest
-    assert '- ok tool=Read args=["sample.txt","0","1"] key=tr.1' in latest
-    assert agent.tool_runner.latest_executions[0].call.name == "Read"
 
 
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
@@ -261,7 +240,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0", "1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0,1"]}])
 
     item = session.state.tool_result_store["tr.1"]
     assert item.excerpted is True
@@ -286,7 +265,7 @@ def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path):
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 4
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
-        agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0", "1"]}])
+        agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0,1"]}])
 
     latest = _blocks_text(agent.tool_context.latest)
     recent = _blocks_text(agent.tool_context.recent)
@@ -315,8 +294,8 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path):
     agent.TOOL_RESULT_RAW_CHARS = 10_000
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
 
     context = agent._format_observe_tool_result_context()
     assert agent.mode == nanocode.AgentMode.OBSERVE
@@ -352,8 +331,8 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.TOOL_RESULT_RAW_CHARS = 10_000
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
@@ -374,8 +353,8 @@ def test_observe_text_does_not_checkpoint_tool_results(tmp_path):
     agent.TOOL_RESULT_RAW_CHARS = 300
     agent.OBSERVE_AFTER_PENDING_RESULT_COUNT = 2
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0", "1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
 
     agent.handle_response({"actions": [], "_assistant_text": "checking result"})
 
@@ -389,7 +368,7 @@ def test_observe_text_does_not_checkpoint_tool_results(tmp_path):
 def test_assistant_text_does_not_mark_memory_checkpoint(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
     agent.apply_response({"actions": [], "_assistant_text": "reading sample"})
 
@@ -457,8 +436,8 @@ def test_act_prompt_includes_kept_tool_results(tmp_path):
 
     agent.execute_tool_calls(
         [
-            {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
-            {"name": "Read", "intention": "read other", "args": ["other.txt", "0", "1"]},
+            {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+            {"name": "Read", "intention": "read other", "args": ["other.txt", "0,1"]},
         ]
     )
     agent.mode = nanocode.AgentMode.OBSERVE
@@ -482,7 +461,7 @@ def test_kept_tool_results_deduplicate_by_tool_key(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.handle_response(
         {
@@ -500,7 +479,7 @@ def test_kept_tool_results_deduplicate_by_tool_key(tmp_path):
 def test_observe_reports_kept_tool_result_keys(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
     messages = []
 
@@ -697,7 +676,7 @@ def test_keep_tool_results_ignore_non_tool_sources(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.handle_response(
         {
@@ -725,7 +704,7 @@ def test_keep_action_is_observe_only(tmp_path):
 def test_observe_rejects_invalid_action_and_empty_actions(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
 
     agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": False}]})
@@ -807,7 +786,7 @@ def test_kept_tool_results_respect_char_budget(tmp_path):
 def test_observe_checkpoint_clears_observe_errors(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.observe_feedback_errors = ["old observe error"]
 
@@ -825,7 +804,7 @@ def test_agent_tool_result_raw_budget_triggers_observe(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("x" * 400 + "\n", encoding="utf-8")
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.TOOL_RESULT_RAW_CHARS
@@ -931,7 +910,7 @@ def test_agent_request_manual_retry_resends_same_model_prompt(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             if self.calls == 1:
                 raise nanocode.ModelRequestRetry()
@@ -1016,7 +995,7 @@ def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             if self.calls <= 3:
                 raise LLMError("request model timeout")
@@ -1040,7 +1019,7 @@ def test_agent_request_marks_first_token_timeout_notice(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             if self.calls == 1:
                 raise LLMError("request first token timeout")
@@ -1063,7 +1042,7 @@ def test_agent_request_hides_model_timeout_retries_without_debug(tmp_path, monke
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             if self.calls <= 2:
                 raise LLMError("request model timeout")
@@ -1133,7 +1112,7 @@ def test_agent_request_stops_after_model_timeout_retries(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             raise LLMError("request model timeout")
 
@@ -1159,7 +1138,7 @@ def test_agent_request_does_not_retry_other_llm_errors(tmp_path, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             raise LLMError("API request failed")
 
@@ -1708,24 +1687,6 @@ def test_agent_request_off_chat_reasoning_disables_auto_detection(tmp_path, monk
     assert "thinking" not in payload
 
 
-def test_agent_normalizes_harmless_action_type_aliases(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    actions = agent._response_actions(
-        {
-            "actions": [
-                {"type": "Plan", "items": []},
-                {"type": "Known", "items": []},
-            ]
-        }
-    )
-
-    assert actions == [
-        {"type": "plan", "items": []},
-        {"type": "known", "items": []},
-    ]
-
-
 def test_agent_request_wraps_non_json_model_content_as_format_error(tmp_path, monkeypatch):
     _patch_openai(monkeypatch, _chat_response("plain answer"))
     session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
@@ -1916,7 +1877,7 @@ def test_main_agent_user_rule_finishes_with_message(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             return {
                 "actions": [
@@ -1945,7 +1906,7 @@ def test_main_agent_state_updates_show_in_debug(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
 
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [{"type": "user_rule", "text": "Prompt-only changes do not need tests.", "message": "记住了。"}]}
 
     agent.model_client = FakeModelClient()
@@ -2425,7 +2386,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     confirmations = []
 
     latest = agent.execute_tool_calls(
-        [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", "0", "1", "bad", "", "", "new"]}],
+        [{"name": "ReplaceRange", "intention": "edit stale range", "args": ["sample.txt", [["0", "1", "bad", "", "", "new"]]]}],
         confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or True,
     )
 
@@ -2452,12 +2413,12 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}])
 
-    assert "ToolCallError: invalid start: should be an integer" in latest
-    assert agent.agent_feedback_errors == [
-        'Error: tool call args invalid: tool=Read args=["sample.txt","bad","1"] -> ToolCallError: invalid start: should be an integer. Rule: use the tool signature exactly.'
-    ]
+    assert "ToolCallError: Read args error: invalid range token" in latest
+    assert len(agent.agent_feedback_errors) == 1
+    assert 'tool=Read args=["sample.txt","bad,1"]' in agent.agent_feedback_errors[0]
+    assert "invalid range token" in agent.agent_feedback_errors[0]
 
 
 def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
@@ -2466,7 +2427,7 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
     latest = agent.execute_tool_calls([{"name": "ReplaceRange", "intention": "bad edit", "args": ["sample.txt", "0", "1", "abc", "", ""]}])
 
-    assert "ToolCallError: requires args: filepath, ranges where each range is [start,end,fingerprint,before_context,after_context,content]" in latest
+    assert "ToolCallError: requires args: filepath, ranges" in latest
     assert "got 6 args, expected 2, extra: 4" in agent.agent_feedback_errors[0]
     assert "use ReplaceRange for read ranges" in agent.agent_feedback_errors[0]
 
@@ -2475,7 +2436,7 @@ def test_tool_arg_error_does_not_force_observe(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert agent.agent_feedback_errors
@@ -2498,7 +2459,7 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     _seed_plan(agent, "read sample")
-    action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad", "1"]}
+    action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}
 
     agent.handle_response({"actions": [action]})
     agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "failed read has no useful result"}]})
@@ -2534,7 +2495,7 @@ def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0", "1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0,1"]}])
 
     assert "ToolCallError: " in latest
     assert agent.agent_feedback_errors == []
@@ -2585,7 +2546,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {
-                    "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]
+                    "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
@@ -2602,7 +2563,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2616,7 +2577,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
+    assert messages[0].startswith("[success] Read sample.txt 0,1 -> tr.1")
     assert "why:" not in messages[0]
     assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"
@@ -2625,7 +2586,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" in fake_client.user_prompts[2]
     assert "Kept Tool Results:" in fake_client.user_prompts[2]
     assert "<ReadToolResult>" in fake_client.user_prompts[2]
-    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.tool_context.latest)
+    assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
@@ -2711,7 +2672,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
                 {
                     "actions": [
                         {"type": "goal", "text": "answer sample", "complete": True, "message_for_complete": "sample contains alpha"},
@@ -2719,7 +2680,7 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2754,7 +2715,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect changed sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect changed sample", "args": ["sample.txt", "0,1"]}]},
                 {"actions": [{"type": "keep", "source": ["tr.2"], "reason": "keep useful result"}]},
                 {
                     "actions": [
@@ -2764,7 +2725,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2827,13 +2788,13 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
                 {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": _final_actions("read sample")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2851,7 +2812,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path):
     assert "<ReadToolResult>" in agent.model_client.user_prompts[2]
     assert "Kept Tool Results:" in agent.model_client.user_prompts[3]
     assert "<ReadToolResult>" in agent.model_client.user_prompts[3]
-    assert 'tool=Read args=["sample.txt","0","1"]' in _blocks_text(agent.tool_context.latest)
+    assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
 
 
@@ -2864,7 +2825,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "tool", "name": "Read", "intention": f"read {index}", "args": [f"sample-{index}.txt", "0", "1"]}
+                        {"type": "tool", "name": "Read", "intention": f"read {index}", "args": [f"sample-{index}.txt", "0,1"]}
                         for index in range(51)
                     ]
                 },
@@ -2872,7 +2833,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
                 {"actions": _final_actions("read samples")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -2911,12 +2872,12 @@ def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
                 {"actions": [{"type": "forget", "source": ["tr.1"], "reason": "sample content is not needed"}]},
                 {"actions": _final_actions("read sample", "done too early")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2945,7 +2906,7 @@ def test_agent_run_allows_readonly_tool_before_plan(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "read sample", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
                 {
@@ -2956,7 +2917,7 @@ def test_agent_run_allows_readonly_tool_before_plan(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -2982,13 +2943,13 @@ def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_p
                 {
                     "actions": [
                         {"type": "goal", "text": "new goal", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
                 {
                     "actions": [
                         {"type": "goal", "text": "new goal", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
                 {
@@ -2998,7 +2959,7 @@ def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_p
                             "type": "plan",
                             "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
@@ -3010,7 +2971,7 @@ def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_p
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3035,7 +2996,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
                 {
                     "actions": [
                         {"type": "goal", "text": "run lint", "complete": False},
@@ -3043,7 +3004,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
                             "type": "plan",
                             "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
                     ]
                 },
                 {
@@ -3054,7 +3015,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3089,7 +3050,7 @@ def test_agent_run_ignores_goal_rewrite_after_task_is_working(tmp_path):
                     ]
                 },
                 {"actions": [{"type": "goal", "text": "read sample again", "complete": False}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
                     "actions": [
@@ -3099,7 +3060,7 @@ def test_agent_run_ignores_goal_rewrite_after_task_is_working(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3164,7 +3125,7 @@ def test_agent_run_continues_when_no_tool_calls_and_goal_not_reached(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3187,7 +3148,7 @@ def test_agent_run_stops_after_assistant_text(tmp_path):
         def __init__(self):
             self.user_prompts = []
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return {"actions": [], "_assistant_text": "你好"}
 
@@ -3213,7 +3174,7 @@ def test_agent_run_does_not_report_continuation_for_action_only_turn(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3236,7 +3197,7 @@ def test_main_agent_accepts_memory_actions_during_act_turn(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3259,7 +3220,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3289,7 +3250,7 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
                 {"actions": _final_actions("change file")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3335,7 +3296,7 @@ def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
                 {"actions": _final_actions("change file")},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3364,7 +3325,7 @@ def test_agent_allows_tool_after_completed_plan_and_verification(tmp_path):
     result = agent.handle_response(
         {
             "actions": [
-                {"type": "tool", "name": "Read", "intention": "inspect again", "args": ["sample.txt", "0", "1"]}
+                {"type": "tool", "name": "Read", "intention": "inspect again", "args": ["sample.txt", "0,1"]}
             ]
         },
         on_message=messages.append,
@@ -3399,7 +3360,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path)
                         }
                     ],
                 },
-                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0,1"]},
             ]
         }
     )
@@ -3431,7 +3392,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_without_context(tmp_pa
                     "mode": "patch",
                     "items": [{"id": "p2", "text": "Inspect the remaining issue", "status": "doing"}],
                 },
-                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0", "1"]},
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0,1"]},
             ]
         },
         on_message=messages.append,
@@ -3497,7 +3458,7 @@ def test_agent_run_uses_fallback_when_goal_complete_has_no_message(tmp_path):
                 {"actions": [{"type": "goal", "text": "answer", "complete": True}]},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3519,7 +3480,7 @@ def test_agent_run_uses_fallback_when_goal_complete_has_no_message(tmp_path):
 
 def test_agent_run_allows_assistant_text_without_task_context(tmp_path):
     class FakeModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [], "_assistant_text": "hello"}
 
     session = Session(cwd=str(tmp_path))
@@ -3548,7 +3509,7 @@ def test_agent_run_treats_assistant_text_as_progress_with_unfinished_task_contex
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3587,7 +3548,7 @@ def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3651,7 +3612,7 @@ def test_goal_declares_investigate_work_mode(tmp_path):
         def __init__(self):
             self.user_prompts = []
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return {
                 "actions": [
@@ -3702,7 +3663,7 @@ def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path
                 },
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3730,7 +3691,7 @@ def test_agent_run_retries_format_error_with_tool_result_context(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3757,7 +3718,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3772,7 +3733,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
     assert agent.agent_feedback_errors
 
     class ChatModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [], "_assistant_text": "ok"}
 
     agent.model_client = ChatModelClient()
@@ -3804,7 +3765,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3840,7 +3801,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = Session(cwd=str(tmp_path))
@@ -3864,7 +3825,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
                 KeyboardInterrupt(),
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             response = self.responses.pop(0)
             if isinstance(response, KeyboardInterrupt):
                 raise response
@@ -3896,7 +3857,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     assert agent.blackboard.goal_reached is False
 
     class ChatModelClient:
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return {"actions": [], "_assistant_text": "ok"}
 
     agent.model_client = ChatModelClient()
@@ -3914,7 +3875,7 @@ def test_agent_run_rejects_extra_top_level_response_keys(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -3936,7 +3897,7 @@ def test_agent_run_shows_debug_gate_details_when_debug_enabled(tmp_path):
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             return self.responses.pop(0)
 
     session = _session(tmp_path, debug=True)
@@ -3954,7 +3915,7 @@ def test_agent_run_stops_after_repeated_format_errors(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.calls += 1
             return {"_format_error": "Invalid function-tool response: missing content", "actions": []}
 
@@ -3984,7 +3945,7 @@ def test_agent_run_no_retry_when_goal_complete_has_message_for_complete(tmp_path
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -4008,7 +3969,7 @@ def test_agent_run_uses_fallback_when_goal_complete_has_empty_message_for_comple
                 {"actions": [{"type": "goal", "text": "answer", "complete": True, "message_for_complete": ""}]},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -4045,7 +4006,7 @@ def test_agent_run_uses_message_for_complete_even_when_assistant_text_exists(tmp
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
@@ -4073,7 +4034,7 @@ def test_agent_run_ignores_message_for_complete_when_goal_not_complete(tmp_path)
                 {"actions": _final_actions()},
             ]
 
-        def request(self, system_prompt, user_prompt, *, activity="agent"):
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
             self.user_prompts.append(user_prompt)
             return self.responses.pop(0)
 
