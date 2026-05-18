@@ -168,58 +168,6 @@ def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
     assert os.path.isdir(session.tool_results_dir())
 
 
-def test_agent_tracks_unconsumed_tool_results_until_state_references_them(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-
-    assert agent.unconsumed_tool_result_keys == ["tr.1"]
-    prompt = agent.build_user_prompt()
-    assert "Unconsumed Tool Results:" in prompt
-    assert "- result_key: tr.1" in prompt
-    assert "read sample" in prompt
-
-    agent.handle_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "sample contains alpha"}]}]})
-
-    assert agent.unconsumed_tool_result_keys == []
-    assert "Unconsumed Tool Results:\n(empty)" in agent.build_user_prompt()
-
-
-def test_agent_tool_actions_do_not_consume_unconsumed_tool_results(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-    agent.handle_response({"actions": [{"type": "tool", "name": "Recall", "intention": "read full sample", "args": ["tr.1"]}]})
-
-    assert agent.unconsumed_tool_result_keys == ["tr.1"]
-
-
-def test_agent_state_update_without_sources_consumes_unconsumed_tool_results(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-    agent.handle_response({"actions": [{"type": "known", "items": [{"text": "sample contains alpha"}]}]})
-
-    assert agent.unconsumed_tool_result_keys == []
-
-
-def test_agent_forget_consumes_unconsumed_tool_result(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
-    agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "not needed"}]})
-
-    assert agent.unconsumed_tool_result_keys == []
-
-
 def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\n", encoding="utf-8")
@@ -524,6 +472,16 @@ def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
     assert "not a new task" in prompt
     assert "latest user language" in prompt
     assert "pending-feedback replies" in prompt
+
+
+def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    prompt = agent._system_prompt()
+
+    assert "simple conversation or a one-shot lookup" in prompt
+    assert "do not create Goal or Plan just to report the answer" in prompt
+    assert "inspect visible results before deciding the next action" in prompt
 
 
 def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
@@ -2280,7 +2238,6 @@ def test_new_goal_clears_task_local_kept_results_only(tmp_path):
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.tool_context.latest = ['- ok tool=Read args=["latest.py"] key=tr.3\n  output:\nlatest raw']
     agent.tool_context.recent = ['- ok tool=Read args=["recent.py"] key=tr.4\n  out: 3 lines, 12 chars; recall=tr.4']
-    agent.unconsumed_tool_result_keys = ["tr.1", "tr.3"]
 
     agent.apply_response(
         {
@@ -2295,7 +2252,6 @@ def test_new_goal_clears_task_local_kept_results_only(tmp_path):
     )
 
     assert agent.tool_context.kept_results == []
-    assert agent.unconsumed_tool_result_keys == []
     assert "latest.py" in _blocks_text(agent.tool_context.latest)
     assert "latest raw" not in _blocks_text(agent.tool_context.latest)
     assert "recent.py" in _blocks_text(agent.tool_context.recent)
@@ -2306,7 +2262,6 @@ def test_same_goal_keeps_task_local_tool_results(tmp_path):
     agent.blackboard.goal = "same goal"
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.tool_context.latest = ['- ok tool=Read args=["new.py"] key=tr.2\n  output:\npending raw']
-    agent.unconsumed_tool_result_keys = ["tr.2"]
 
     agent.apply_response(
         {
@@ -2322,7 +2277,6 @@ def test_same_goal_keeps_task_local_tool_results(tmp_path):
 
     assert "selected result" in _blocks_text(agent.tool_context.kept_results)
     assert "pending raw" in _blocks_text(agent.tool_context.latest)
-    assert agent.unconsumed_tool_result_keys == []
 
 
 def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_matches(tmp_path):
@@ -2909,14 +2863,6 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "inspect changed sample", "args": ["sample.txt", "0,1"]}]},
-                {"actions": [{"type": "keep", "source": ["tr.2"], "reason": "keep useful result"}]},
-                {
-                    "actions": [
-                        {"type": "verify", "kind": "change_check", "method": "Read sample.txt", "criteria": ["sample text is new"], "status": "passed", "context": "sample.txt contains new"},
-                        {"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"},
-                    ]
-                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
@@ -2933,15 +2879,13 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert any(message.startswith("[success] Edit sample.txt") for message in messages)
-    assert any(message.startswith("[success] Read sample.txt") for message in messages)
     assert not any(message.startswith("State Updated") for message in messages)
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
-    assert agent.blackboard.verification.context == "sample.txt contains new"
+    assert any("edited files need verification before completion" in error for error in agent.agent_feedback_errors)
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
     assert messages[-1] == "done"
 
 
-def test_agent_reports_edit_verification_gate_in_debug(tmp_path):
+def test_agent_warns_but_allows_completion_when_verification_required(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "change sample")
     agent.blackboard.goal_reached = True
@@ -2952,11 +2896,14 @@ def test_agent_reports_edit_verification_gate_in_debug(tmp_path):
 
     result = agent._finish_or_continue(ctx, messages.append)
 
-    assert result.done is False
-    assert messages == ["Verification_Gate: edit completion requires verification."]
+    assert result.done is True
+    assert messages == ["done"]
+    assert agent.agent_feedback_errors == [
+        'Warning: edited files need verification before completion. Rule: run verification tools, then report verify status="passed"|"failed"|"blocked".'
+    ]
 
 
-def test_agent_plain_text_cannot_finish_when_verification_required(tmp_path):
+def test_agent_plain_text_can_finish_without_active_task_when_verification_required(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.verification_required = True
     agent.blackboard.verification.status = VerificationStatus.REQUIRED
@@ -2967,11 +2914,9 @@ def test_agent_plain_text_cannot_finish_when_verification_required(tmp_path):
     result = agent._handle_text_response(ctx, messages.append)
 
     assert result is not None
-    assert result.done is False
-    assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
-    assert agent.agent_feedback_errors == [
-        'Warning: assistant text cannot finish while verification is required. Rule: run verification tools, then report verify status="passed"|"failed"|"blocked".'
-    ]
+    assert result.done is True
+    assert agent.blackboard.task_code == nanocode.TaskCode.DONE
+    assert agent.agent_feedback_errors == []
     assert messages == ["Done."]
 
 
@@ -3610,7 +3555,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_without_context(tmp_pa
     assert any("Continuing tools after completed Plan" in error for error in agent.agent_feedback_errors)
 
 
-def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path):
+def test_agent_warns_on_verify_blocked_completion_without_manual_context(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "verify")
     messages = []
@@ -3625,9 +3570,9 @@ def test_agent_blocks_verify_blocked_completion_without_manual_context(tmp_path)
         on_message=messages.append,
     )
 
-    assert result.done is False
-    assert messages[-1] == "Verification_Gate: verify blocked requires blocker=user before completion."
-    assert not agent.session.state.conversation
+    assert result.done is True
+    assert any("verify blocked requires blocker=user before completion" in error for error in agent.agent_feedback_errors)
+    assert messages[-1] == "done"
 
 
 def test_agent_allows_verify_blocked_completion_with_user_blocker(tmp_path):
@@ -3934,6 +3879,31 @@ def test_agent_run_retries_format_error_with_tool_result_context(tmp_path):
     assert len(agent.model_client.user_prompts) == 3
     assert "Retrying: invalid function/tool response: plain answer" not in messages
     assert messages[-1] == "done"
+
+
+def test_agent_run_retries_action_level_format_error(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+            self.responses = [
+                {"actions": [{"type": "goal", "_format_error": "invalid tool arguments: bad json"}]},
+                {"actions": _final_actions()},
+            ]
+
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
+            self.user_prompts.append(user_prompt)
+            return self.responses.pop(0)
+
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.model_client = FakeModelClient()
+    messages = []
+
+    response = agent.run("answer", on_message=messages.append)
+
+    assert response["actions"][-1]["message_for_complete"] == "done"
+    assert len(agent.model_client.user_prompts) == 2
+    assert agent.agent_feedback_errors
 
 
 def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):

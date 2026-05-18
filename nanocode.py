@@ -1599,16 +1599,6 @@ class ToolResultContext:
                 keys.extend(key for key in _source_from_json(action) if key.startswith("tr."))
         return list(dict.fromkeys(keys))
 
-    @staticmethod
-    def referenced_result_keys_from_actions(actions: list[Json]) -> list[str]:
-        keys: list[str] = []
-        for action in actions:
-            if _json_str(action.get("type")) == "tool":
-                continue
-            keys.extend(TOOL_RESULT_KEY_REF_PATTERN.findall(json.dumps(action, ensure_ascii=False)))
-        return list(dict.fromkeys(keys))
-
-
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
 ToolDisplayCallback: TypeAlias = Callable[[ParsedToolCall, Tool], None]
@@ -3372,11 +3362,16 @@ User Rules:
 
 Tool Results:
 - visible tool results are temporary support context
+- inspect visible results before deciding the next action
 - OBSERVE owns keep/forget cleanup
-- ACT may forget irrelevant visible results only after preserving useful conclusions in goal, plan, known, hypothesis, or verify
+- preserve useful conclusions in goal, plan, known, hypothesis, or verify; forget noise when it no longer helps
 
 WORKFLOW
-If there is no Goal:
+If the latest request is simple conversation or a one-shot lookup:
+- answer directly, using tools first only when needed
+- do not create Goal or Plan just to report the answer
+
+If there is no Goal and the request needs task tracking:
 - set a Goal
 - if enough context is known, also set a short Plan or call the first useful readonly tools
 
@@ -3670,9 +3665,6 @@ Latest Tool Results:
 
 --- Current Decision ---
 
-Unconsumed Tool Results:
-{unconsumed_tool_results}
-
 Recent Edits:
 {recent_edits}
 
@@ -3717,7 +3709,7 @@ Pending feedback rules:
 - Do not rewrite Goal/Plan just to answer a side question or acknowledge a correction.
 If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
 If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
-Before repeating or broadening tool calls, summarize unconsumed tr.* keys into state or forget them. Prefer citing tr.* sources; do not Recall the same key again after summarizing it.
+Before repeating or broadening tool calls, inspect visible tool results and use them to update state, choose the next frontier, or forget noise.
 
 --- Output ---
 
@@ -5446,7 +5438,6 @@ class Agent:
         self.blackboard: Blackboard = Blackboard()
         self.recent_edits: list[str] = []
         self.tool_context = ToolResultContext()
-        self.unconsumed_tool_result_keys: list[str] = []
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session, self._protected_tool_result_keys)
         self.state_updater = AgentStateUpdater(session, self.blackboard)
@@ -5483,7 +5474,6 @@ class Agent:
             tool_result_index=tool_result_index or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
-            unconsumed_tool_results=self._format_unconsumed_tool_results(),
             task_code=current.task_code,
             work_mode=current.work_mode,
             goal=current.goal or "(empty)",
@@ -5504,14 +5494,6 @@ class Agent:
             None,
         )
         return item.format() if item else "(empty)"
-
-    def _format_unconsumed_tool_results(self) -> str:
-        keys = [key for key in self.unconsumed_tool_result_keys if key in self.session.state.tool_result_store]
-        if len(keys) != len(self.unconsumed_tool_result_keys):
-            self.unconsumed_tool_result_keys = keys
-        if not keys:
-            return "(empty)"
-        return "\n".join(self.session.state.tool_result_store[key].format(result_key=key) for key in keys)
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard
@@ -5728,7 +5710,6 @@ class Agent:
 
     def _protected_tool_result_keys(self) -> set[str]:
         keys = self.blackboard.source_result_keys()
-        keys.update(self.unconsumed_tool_result_keys)
         keys.update(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
         return keys
 
@@ -5937,14 +5918,11 @@ class Agent:
             actions = self._response_actions(response)
         if self._goal_changes_task(actions):
             self.tool_context.kept_results = []
-            self.unconsumed_tool_result_keys = []
             self.tool_context.compact_observed(self.tool_context.recent + self.tool_context.latest)
             self._mark_memory_checkpoint()
             self.blackboard.hypotheses = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
-        consumed = ToolResultContext.referenced_result_keys_from_actions(actions) + forgotten
-        self._consume_tool_results(consumed or (self.unconsumed_tool_result_keys if self._has_result_consuming_state_action(actions) else []))
         if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
             self._mark_memory_checkpoint()
         return forgotten
@@ -5977,13 +5955,6 @@ class Agent:
                 return True
         return False
 
-    def _has_result_consuming_state_action(self, actions: list[Json]) -> bool:
-        return any(
-            _json_str(action.get("type")) in {"goal", "plan", "known", "hypothesis", "stable_knowledge", "verify", "forget"}
-            and not self._is_pending_verify_action(action)
-            for action in actions
-        )
-
     def execute_tool_calls(
         self,
         tool_calls: list[JsonValue],
@@ -6001,22 +5972,9 @@ class Agent:
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
-        self._add_unconsumed_tool_results(execution.result_key for execution in self.tool_runner.latest_executions)
         if self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
-
-    def _add_unconsumed_tool_results(self, keys: Iterable[str]) -> None:
-        seen = set(self.unconsumed_tool_result_keys)
-        for key in keys:
-            if key and key not in seen:
-                self.unconsumed_tool_result_keys.append(key)
-                seen.add(key)
-
-    def _consume_tool_results(self, keys: Iterable[str]) -> None:
-        consumed = set(keys)
-        if consumed:
-            self.unconsumed_tool_result_keys = [key for key in self.unconsumed_tool_result_keys if key not in consumed]
 
     def _should_observe_after_tools(self) -> bool:
         pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
@@ -6115,8 +6073,13 @@ class Agent:
         }
 
     def _validate_action_response(self, response: Json) -> Json | None:
-        if not isinstance(response.get("actions"), list):
+        actions = response.get("actions")
+        if not isinstance(actions, list):
             return self._invalid_action_response(response, "expected actions array")
+        action_errors = [_json_str(action.get("_format_error")) for action in (_json_dict(item) for item in actions)]
+        action_errors = [error for error in action_errors if error]
+        if action_errors:
+            return self._invalid_action_response(response, "; ".join(action_errors))
         extra_keys = sorted(str(key) for key in response.keys() if key not in {"actions", "_assistant_text"} and not str(key).startswith("_format_"))
         if extra_keys:
             return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
@@ -6330,10 +6293,6 @@ class Agent:
             on_message(ctx.assistant_text)
         active_task = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start):
-            return AgentRunResult()
-        if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            self._warn_agent("assistant text cannot finish while verification is required.", self.RULE_VERIFY_DIRECTLY)
-            self.blackboard.task_code = TaskCode.VERIFYING
             return AgentRunResult()
         self.blackboard.task_code = TaskCode.DONE
         return AgentRunResult(done=True, value=ctx.response)
@@ -6630,25 +6589,11 @@ class Agent:
     def _gate_completion(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             if self.blackboard.verification_required:
-                return self._reject_completion(
-                    on_message,
-                    self._error("edited files need verification before completion.", self.RULE_VERIFY_DIRECTLY),
-                    "Retrying: verify edited files before completion.",
-                    "Verification_Gate: edit completion requires verification.",
-                )
-            return self._reject_completion(
-                on_message,
-                self._error("verification required before completion.", self.RULE_VERIFY_DIRECTLY),
-                "Retrying: verification is required before completion.",
-                "Verification_Gate: retrying until verification is passed or blocked.",
-            )
+                self._warn_agent("edited files need verification before completion.", self.RULE_VERIFY_DIRECTLY)
+            else:
+                self._warn_agent("verification required before completion.", self.RULE_VERIFY_DIRECTLY)
         if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
-            return self._reject_completion(
-                on_message,
-                self._error("verification failed; fix the reported issue first."),
-                "Retrying: verification failed; fix the reported issue first.",
-                "Verification_Gate: verification failed; fix before completion.",
-            )
+            self._warn_agent("verification failed; fix the reported issue first.")
         completion_plan_error = self._completion_plan_error(ctx)
         if completion_plan_error:
             return self._reject_completion(
@@ -6659,12 +6604,7 @@ class Agent:
             )
         blocked_completion_error = self._blocked_verification_completion_error()
         if blocked_completion_error:
-            return self._reject_completion(
-                on_message,
-                self._error("blocked verification completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER),
-                "Retrying: blocked verification needs blocker=user.",
-                "Verification_Gate: " + blocked_completion_error + ".",
-            )
+            self._warn_agent("blocked verification completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
         investigate_completion_error = self._investigate_completion_error()
         if investigate_completion_error:
             return self._reject_completion(
