@@ -8611,7 +8611,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Missing config: " + ", ".join(missing), file=sys.stderr)
             print("Edit " + (os.path.expanduser(args.config) if args.config else ConfigFile.path()) + " or run `nanocode --init-config`.", file=sys.stderr)
             return 2
-        return AgentLoop(Agent(session)).run()
+        exit_code = AgentLoop(Agent(session)).run()
+        print("session: " + session.session_id, file=sys.stderr)
+        return exit_code
     except ConfigError as error:
         print("Error: " + str(error), file=sys.stderr)
         return 2
