@@ -2048,8 +2048,6 @@ class SearchTool(Tool):
         path_set = False
         for raw_option in args[1:]:
             option = str(raw_option)
-            if option.startswith("ignore_case") or option.startswith("case_sensitive"):
-                raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
             if option.startswith("path="):
                 if path_set:
                     raise ToolCallArgError("path option cannot be combined with positional path")
@@ -2060,7 +2058,7 @@ class SearchTool(Tool):
                 try:
                     context_lines = cls._parse_context_arg(option)
                 except ValueError:
-                    raise ToolCallArgError("context must be an integer between 0 and " + str(cls.MAX_CONTEXT_LINES))
+                    raise ToolCallArgError(f"context must be an integer between 0 and {cls.MAX_CONTEXT_LINES}")
                 continue
             if option.startswith("glob=") or option.startswith("glob_pattern="):
                 if glob_pattern:
@@ -2587,9 +2585,7 @@ class ReplaceRangeTool(Tool):
             return ""
         if self.start == 0 and self.end == 0 and not os.path.exists(self.filepath):
             return ""
-        if self.end == 0:
-            return "# warning: broad range replacement; prefer smaller semantic ranges"
-        if self.end - self.start > 20:
+        if self.end == 0 or self.end - self.start > 20:
             return "# warning: broad range replacement; prefer smaller semantic ranges"
         return ""
 
@@ -3194,6 +3190,13 @@ If there is a Goal and Plan:
 Prefer useful tool calls over state-only turns.
 Pair state updates with the next frontier tool call when tool arguments are already known.
 
+FORWARD PROGRESS
+- Advance as far as safely possible in each turn.
+- Batch independent tool calls whenever their arguments are known.
+- Do not stop after Goal, Plan, Known, or Hypothesis updates if a useful repository tool call is clear.
+- Serialize only when later arguments depend on earlier results.
+- Ask the user only when the blocker cannot be resolved by available tools.
+
 PLANNING
 Use a Plan only for real multi-step work.
 Usually keep it to 2-5 concrete outcome steps.
@@ -3758,7 +3761,7 @@ class ModelClient:
             raise LLMError("request model timeout")
         except APIStatusError as error:
             body = getattr(error.response, "text", "") or str(getattr(error, "body", "")) or str(error)
-            raise LLMError("API request failed: HTTP " + str(error.status_code) + ": " + _shorten(body))
+            raise LLMError(f"API request failed: HTTP {error.status_code}: {_shorten(body)}")
         except APIConnectionError as error:
             raise LLMError(str(error))
         except APIError as error:
@@ -3858,11 +3861,10 @@ class ModelClient:
         text_parts: list[str] = []
         first_output_seen = False
 
-        stream_params = dict(params)
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         stopped = False
         tool_calls: dict[int, Json] = {}
-        for event in client.chat.completions.create(**stream_params, timeout=timeout):
+        for event in client.chat.completions.create(**params, timeout=timeout):
             data = self._sdk_json(event)
             event_usage = _json_dict(data.get("usage"))
             if event_usage:
@@ -3967,10 +3969,9 @@ class ModelClient:
         first_output_seen = False
         function_calls: dict[str, Json] = {}
 
-        stream_params = dict(params)
         self._arm_stream_timeout(request_deadline=request_deadline, first_output_seen=False, first_token_timeout=first_token_timeout)
         stopped = False
-        for event in client.responses.create(**stream_params, timeout=timeout):
+        for event in client.responses.create(**params, timeout=timeout):
             data = self._sdk_json(event)
             event_type = _json_str(data.get("type")) or str(getattr(event, "type", "") or "")
             self._raise_responses_stream_error(data)
@@ -4075,11 +4076,8 @@ class ModelClient:
             for call in (_json_dict(raw) for raw in _json_list(message.get("tool_calls")))
             if call
         ]
-        if actions:
-            content = message.get("content")
-            return self._action_response(actions, content if isinstance(content, str) else "")
         content = message.get("content")
-        return self._action_response([], content if isinstance(content, str) else "")
+        return self._action_response(actions, content if isinstance(content, str) else "")
 
     def _responses_tool_response(self, result: JsonValue) -> Json:
         actions = [
@@ -4087,9 +4085,7 @@ class ModelClient:
             for item in (_json_dict(raw) for raw in _json_list(_json_dict(result).get("output")))
             if _json_str(item.get("type")) == "function_call"
         ]
-        if actions:
-            return self._action_response(actions, self._responses_content(result) or "")
-        return self._action_response([], self._responses_content(result) or "")
+        return self._action_response(actions, self._responses_content(result) or "")
 
     @staticmethod
     def _action_response(actions: list[Json], assistant_text: str = "") -> Json:
@@ -5480,13 +5476,11 @@ class Agent:
         if consecutive_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
             self._report_gate(
                 on_message,
-                "Stopped: invalid function/tool response " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row.",
-                "Format_Gate: stopped after "
-                + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS)
-                + " consecutive invalid function/tool responses. "
+                f"Stopped: invalid function/tool response {self.MAX_CONSECUTIVE_FORMAT_ERRORS} times in a row.",
+                f"Format_Gate: stopped after {self.MAX_CONSECUTIVE_FORMAT_ERRORS} consecutive invalid function/tool responses. "
                 + self._format_gate_debug_details(response, format_error),
             )
-            raise LLMError("invalid function/tool response " + str(self.MAX_CONSECUTIVE_FORMAT_ERRORS) + " times in a row: " + _shorten(format_error, 300))
+            raise LLMError(f"invalid function/tool response {self.MAX_CONSECUTIVE_FORMAT_ERRORS} times in a row: {_shorten(format_error, 300)}")
         self._report_gate(
             on_message,
             self._format_gate_user_message("Retrying: invalid function/tool response", format_error),
@@ -6682,6 +6676,8 @@ class CommandDispatcher:
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     COMMAND_ALIASES = {"/context-budget": "/context", "/context_budget": "/context"}
+    API_USAGE = "Usage: /api [auto|chat|responses]"
+    REASON_PAYLOAD_USAGE = "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
 
     def __init__(
         self,
@@ -6779,9 +6775,9 @@ class CommandDispatcher:
         if not value:
             resolved = provider.resolved_api()
             suffix = " (" + resolved + ")" if provider.api == "auto" else ""
-            return "provider.api: " + provider.api + suffix + "\nUsage: /api [auto|chat|responses]"
+            return "provider.api: " + provider.api + suffix + "\n" + self.API_USAGE
         if value not in {"auto", "chat", "responses"}:
-            return "Usage: /api [auto|chat|responses]"
+            return self.API_USAGE
         provider.api = value
         return "Set provider.api = " + value
 
@@ -6839,15 +6835,9 @@ class CommandDispatcher:
         if not value:
             configured = provider.chat_reasoning or "off"
             resolved = provider.resolved_chat_reasoning() or "off"
-            return (
-                "provider.chat_reasoning: "
-                + configured
-                + "\nprovider.resolved_chat_reasoning: "
-                + resolved
-                + "\nUsage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
-            )
+            return "provider.chat_reasoning: " + configured + "\nprovider.resolved_chat_reasoning: " + resolved + "\n" + self.REASON_PAYLOAD_USAGE
         if value not in CHAT_REASONING_CHOICES:
-            return "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+            return self.REASON_PAYLOAD_USAGE
         provider.chat_reasoning = value
         return "Set provider.chat_reasoning = " + value
 
@@ -7534,29 +7524,27 @@ class AgentLoop:
         bindings = KeyBindings()
         searching = Condition(lambda: bool(state["searching"]))
 
+        def move(event, delta: int) -> None:
+            options = enabled()
+            if options:
+                state["selected"] = min(max(int(state["selected"]) + delta, 0), len(options) - 1)
+            event.app.invalidate()
+
         @bindings.add("up", eager=True)
         def _up(event):
-            state["selected"] = max(0, int(state["selected"]) - 1)
-            event.app.invalidate()
+            move(event, -1)
 
         @bindings.add("k", filter=~searching, eager=True)
         def _k(event):
-            state["selected"] = max(0, int(state["selected"]) - 1)
-            event.app.invalidate()
+            move(event, -1)
 
         @bindings.add("down", eager=True)
         def _down(event):
-            options = enabled()
-            if options:
-                state["selected"] = min(len(options) - 1, int(state["selected"]) + 1)
-            event.app.invalidate()
+            move(event, 1)
 
         @bindings.add("j", filter=~searching, eager=True)
         def _j(event):
-            options = enabled()
-            if options:
-                state["selected"] = min(len(options) - 1, int(state["selected"]) + 1)
-            event.app.invalidate()
+            move(event, 1)
 
         @bindings.add("/", eager=True)
         def _search(event):
