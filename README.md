@@ -86,7 +86,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
+- Info: `/help [question]`, `/status`, `/rules`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
 - Maintenance: `/clean`.
 - Exit: `/exit`, `/quit`.

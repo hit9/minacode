@@ -6664,7 +6664,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/help", "Show commands or ask about nanocode", "Info", "/help [question]"),
     CommandSpec("/status", "Show session status", "Info", "/status"),
     CommandSpec("/rules", "Show long-term user rules", "Info", "/rules"),
-    CommandSpec("/knowledge", "Show stable knowledge", "Info", "/knowledge"),
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/context", "Show or set context budget", "Config", "/context [low|medium|high]"),
@@ -6765,7 +6764,6 @@ class CommandDispatcher:
             "/provider": self._provider,
             "/plan": self._plan,
             "/yolo": self._yolo,
-            "/knowledge": self._knowledge,
         }
 
     def dispatch(self, user_input: str) -> CommandResult:
@@ -7096,21 +7094,6 @@ class CommandDispatcher:
                 "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
             ]
         )
-
-    def _knowledge(self, args: str) -> str:
-        if args:
-            return "Usage: /knowledge"
-        knowledge = self.agent.blackboard.stable_knowledge
-        if not any(knowledge.values()):
-            return "No stable knowledge stored."
-        lines = ["Stable knowledge:"]
-        for category in STABLE_KNOWLEDGE_CATEGORIES:
-            items = knowledge.get(category, [])
-            if not items:
-                continue
-            lines.append(category + ":")
-            lines.extend("- " + item for item in items)
-        return "\n".join(lines)
 
     def _set(self, args: str) -> str:
         key, value = self._parse_set_args(args)
