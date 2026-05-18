@@ -786,11 +786,6 @@ class AgentMode(StrEnum):
 
 
 @dataclass
-class AgentRuntime:
-    recent_edits: list[str] = field(default_factory=list)
-
-
-@dataclass
 class AgentRunResult:
     done: bool = False
     value: JsonValue = None
@@ -1397,30 +1392,21 @@ class ToolResultContext:
             return []
         removed = []
 
-        def remove_blocks(blocks: list[str]) -> list[str]:
-            kept = []
+        def update(blocks: list[str], *, compact: bool) -> list[str]:
+            updated = []
             for block in blocks:
                 key = self.result_key(block)
                 if key in wanted:
                     removed.append(key)
+                    if compact:
+                        updated.append(self.compact_block(block))
                 else:
-                    kept.append(block)
-            return kept
+                    updated.append(block)
+            return updated
 
-        def compact_blocks(blocks: list[str]) -> list[str]:
-            compacted = []
-            for block in blocks:
-                key = self.result_key(block)
-                if key in wanted:
-                    removed.append(key)
-                    compacted.append(self.compact_block(block))
-                else:
-                    compacted.append(block)
-            return compacted
-
-        self.kept_results = remove_blocks(self.kept_results)
-        self.latest = compact_blocks(self.latest)
-        self.recent = compact_blocks(self.recent)
+        self.kept_results = update(self.kept_results, compact=False)
+        self.latest = update(self.latest, compact=True)
+        self.recent = update(self.recent, compact=True)
         return list(dict.fromkeys(removed))
 
     def keep_results(self, actions: list[Json], observed_blocks: list[str], *, max_chars: int) -> list[str]:
@@ -4602,7 +4588,7 @@ class AgentStateUpdater:
         self.changed = False
 
     def apply(self, response: Json) -> None:
-        actions = self._actions(response)
+        actions = [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
         before_hypotheses = [item.format() for item in self.blackboard.hypotheses]
@@ -4628,9 +4614,6 @@ class AgentStateUpdater:
             before_extra_state,
         )
         self.changed = bool(self.latest_report)
-
-    def _actions(self, response: Json) -> list[Json]:
-        return [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
 
     def _format_state_report(
         self,
@@ -4663,35 +4646,28 @@ class AgentStateUpdater:
         return "\n".join(lines)
 
     def _format_plan_rows(self) -> list[str]:
-        items = self.blackboard.plan
-        if not items:
-            return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text))
+        def render(index: int, item: PlanItem) -> list[str]:
+            rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
             if item.context:
                 rows.append("       context: " + self._compact(item.context))
-        return rows
+            return rows
+
+        return self._format_rows(self.blackboard.plan, render)
 
     def _format_known_rows(self) -> list[str]:
-        items = self.blackboard.known
-        if not items:
-            return ["    (empty)"]
-        offset = max(0, len(items) - self.DISPLAY_LIMIT)
-        rows = ["    ... " + str(offset) + " older"] if offset else []
-        for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(KnownItem.format_item(item)))
-        return rows
+        return self._format_rows(self.blackboard.known, lambda index, item: "    " + str(index) + ". " + self._compact(KnownItem.format_item(item)))
 
     def _format_hypothesis_rows(self) -> list[str]:
-        items = self.blackboard.hypotheses
+        return self._format_rows(self.blackboard.hypotheses, lambda index, item: "    " + str(index) + ". " + self._compact(item.format()))
+
+    def _format_rows(self, items: list[Any], render: Callable[[int, Any], str | list[str]]) -> list[str]:
         if not items:
             return ["    (empty)"]
         offset = max(0, len(items) - self.DISPLAY_LIMIT)
         rows = ["    ... " + str(offset) + " older"] if offset else []
         for index, item in enumerate(items[offset:], start=offset + 1):
-            rows.append("    " + str(index) + ". " + self._compact(item.format()))
+            rendered = render(index, item)
+            rows.extend(rendered if isinstance(rendered, list) else [rendered])
         return rows
 
     def compact_report(self) -> str:
@@ -4721,11 +4697,7 @@ class AgentStateUpdater:
         return "\n".join(lines)
 
     def _compact_plan_rows(self) -> list[str]:
-        items = self.blackboard.plan
-        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
-        rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend(self._compact_plan_row(index, item) for index, item in enumerate(items[offset:], start=offset + 1))
-        return rows
+        return self._compact_rows(self.blackboard.plan, lambda item: "[" + str(item.status) + "] " + self._compact(item.text, 90))
 
     def _compact_changed_plan_rows(self, before_plan: list[str], plan: list[str]) -> list[str]:
         if not before_plan:
@@ -4746,17 +4718,15 @@ class AgentStateUpdater:
         return "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
 
     def _compact_known_rows(self) -> list[str]:
-        items = self.blackboard.known
-        offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
-        rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend("  " + str(index) + ". " + self._compact(KnownItem.format_item(item), 100) for index, item in enumerate(items[offset:], start=offset + 1))
-        return rows
+        return self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100))
 
     def _compact_hypothesis_rows(self) -> list[str]:
-        items = self.blackboard.hypotheses
+        return self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100))
+
+    def _compact_rows(self, items: list[Any], render: Callable[[Any], str]) -> list[str]:
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " older"] if offset else []
-        rows.extend("  " + str(index) + ". " + self._compact(item.format(), 100) for index, item in enumerate(items[offset:], start=offset + 1))
+        rows.extend("  " + str(index) + ". " + render(item) for index, item in enumerate(items[offset:], start=offset + 1))
         return rows
 
     def _compact(self, text: str, limit: int = 140) -> str:
@@ -5234,7 +5204,7 @@ class Agent:
     def __init__(self, session: Session):
         self.session = session
         self.blackboard = Blackboard()
-        self.runtime = AgentRuntime()
+        self.recent_edits: list[str] = []
         self.tool_context = ToolResultContext()
         self.model_client = ModelClient(session)
         self.tool_runner = ToolCallRunner(session, self._protected_tool_result_keys)
@@ -5270,7 +5240,7 @@ class Agent:
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             verification_state=current.verification.format(),
             errors=self._format_agent_feedback() or "(empty)",
-            recent_edits="\n".join(self.runtime.recent_edits) if self.runtime.recent_edits else "(empty)",
+            recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
             user_request=self._format_user_request(),
         ).strip()
 
@@ -5546,9 +5516,6 @@ class Agent:
 
     def _warn_agent(self, text: str, rule: str = "") -> None:
         self._remember_agent_error(self._warning(text, rule))
-
-    def _warn_observe(self, text: str, rule: str = "") -> None:
-        self._remember_observe_error(self._warning(text, rule))
 
     def _reject_agent(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> bool:
         self.stream_stop_requested = True
@@ -5901,8 +5868,8 @@ class Agent:
         except ValueError:
             path = filepath
         intention = " ".join(execution.call.intention.split()) or execution.call.name
-        self.runtime.recent_edits.append("- " + path + ": " + _shorten(intention, 160))
-        self.runtime.recent_edits = self.runtime.recent_edits[-self.RECENT_EDITS :]
+        self.recent_edits.append("- " + path + ": " + _shorten(intention, 160))
+        self.recent_edits = self.recent_edits[-self.RECENT_EDITS :]
 
     def _invalid_action_response(self, response: Json, reason: str) -> Json:
         return {
@@ -6346,7 +6313,7 @@ class Agent:
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
         if ctx.pending_verify_requested:
-            self._warn_observe('ignored verify status="pending".', "observe must keep or forget latest results first.")
+            self._remember_observe_error(self._warning('ignored verify status="pending".', "observe must keep or forget latest results first."))
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
             return self._reject_result(

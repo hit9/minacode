@@ -400,7 +400,7 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     agent.blackboard.known = ["known fact"]
     agent.blackboard.stable_knowledge = {"workflow": ["use pytest"]}
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
-    agent.runtime.recent_edits = ["- sample.py: old edit"]
+    agent.recent_edits = ["- sample.py: old edit"]
     agent.agent_feedback_errors = ["act error"]
     agent.observe_feedback_errors = ["observe error"]
     agent.tool_context.latest = ['- ok tool=Read args=["sample.py"] key=tr.2\n  output:\nraw alpha']
@@ -2535,7 +2535,7 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert path.read_text(encoding="utf-8") == "new\n"
     assert agent.blackboard.verification_required is True
     assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
-    assert agent.runtime.recent_edits == ["- sample.txt: edit sample"]
+    assert agent.recent_edits == ["- sample.txt: edit sample"]
 
 
 def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
