@@ -72,6 +72,22 @@ def test_patch_file_tool_ignores_duplicate_empty_hunk_markers(tmp_path):
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
+def test_patch_file_tool_accepts_indented_context_without_extra_marker(tmp_path):
+    path = tmp_path / "sample.py"
+    path.write_text("def run():\n    while True:\n        if done:\n            return 0\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    PatchFileTool.make(
+        session,
+        [
+            "sample.py",
+            '@@\n    while True:\n        if done:\n+           print("done")\n            return 0\n',
+        ],
+    ).call()
+
+    assert path.read_text(encoding="utf-8") == 'def run():\n    while True:\n        if done:\n            print("done")\n            return 0\n'
+
+
 def test_patch_file_tool_rejects_context_mismatch_without_writing(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")

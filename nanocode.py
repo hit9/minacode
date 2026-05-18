@@ -1745,7 +1745,7 @@ class ReadTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
         "Each range returns at most 600 lines.",
-        'Content is line-numbered as "line | code"; edit text must use only code after " | ".',
+        'Content is line-numbered as "line |code"; edit text starts immediately after "|".',
     )
     SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, line-numbered content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
@@ -1820,7 +1820,7 @@ class ReadTool(Tool):
 
     @staticmethod
     def _numbered_content(content: str, start: int) -> str:
-        return "".join(f"{start + index:>7} | {line}" for index, line in enumerate(content.splitlines(keepends=True)))
+        return "".join(f"{start + index:>7} |{line}" for index, line in enumerate(content.splitlines(keepends=True)))
 
     def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
         target_filepath = self.filepath
@@ -1869,7 +1869,7 @@ class ReadTool(Tool):
         lines = [
             indent + "<range>" + str(start) + ":" + str(fingerprint_end) + "</range>",
             indent + "<fingerprint>" + fingerprint + "</fingerprint>",
-            indent + '<note>Line prefixes are display-only; use only code after " | " in edits.</note>',
+            indent + '<note>Line prefixes are display-only; code starts immediately after "|".</note>',
         ]
         if truncated:
             note = (
@@ -2447,6 +2447,8 @@ class EditTool(Tool):
 class PatchFileHunk:
     old: list[str]
     new: list[str]
+    alt_old: list[str]
+    alt_new: list[str]
 
 
 @dataclass
@@ -2455,8 +2457,8 @@ class PatchFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Apply a small single-file unified-diff-style patch for coordinated multi-location edits.",
-        "Inside hunks, every line must start with space, -, or +.",
-        "Context lines must be exact file text, without Read display prefixes or added indentation.",
+        "Inside hunks, every line should start with space, -, or +; indented context copied without the extra marker is tolerated.",
+        "Context lines must be exact file text, without Read display prefixes.",
         "Each hunk must include enough unchanged context to match exactly once; all hunks must apply or nothing is written.",
     )
     SIGNATURE: ClassVar[str] = "PatchFile(filepath, patch) -> PatchFileToolResult<path, hunks>"
@@ -2515,9 +2517,10 @@ class PatchFileTool(Tool):
             original = f.read()
         lines = original.splitlines(keepends=True)
         replacements = [
-            (start, start + len(hunk.old), hunk.new)
+            (start, start + len(old), new)
             for index, hunk in enumerate(self._parse_patch(), start=1)
-            for start in [self._match_hunk(lines, hunk, index)]
+            for old, new in [self._select_hunk_variant(lines, hunk, index)]
+            for start in [self._match_hunk(lines, old, index)]
         ]
         return original, "".join(self._patched_lines(lines, replacements)), replacements
 
@@ -2530,7 +2533,7 @@ class PatchFileTool(Tool):
             if raw_line.startswith("@@"):
                 if current is not None and not current.old and not current.new:
                     continue
-                current = PatchFileHunk(old=[], new=[])
+                current = PatchFileHunk(old=[], new=[], alt_old=[], alt_new=[])
                 hunks.append(current)
                 continue
             if current is None:
@@ -2545,10 +2548,14 @@ class PatchFileTool(Tool):
             if prefix == " ":
                 current.old.append(text)
                 current.new.append(text)
+                current.alt_old.append(raw_line)
+                current.alt_new.append(raw_line)
             elif prefix == "-":
                 current.old.append(text)
+                current.alt_old.append(text)
             elif prefix == "+":
                 current.new.append(text)
+                current.alt_new.append(" " + text)
             else:
                 raise ToolCallError("invalid patch hunk line prefix: " + repr(prefix))
         if not hunks:
@@ -2558,15 +2565,25 @@ class PatchFileTool(Tool):
                 raise ToolCallError(f"hunk {index} has no context or removed lines")
         return hunks
 
+    def _select_hunk_variant(self, lines: list[str], hunk: PatchFileHunk, index: int) -> tuple[list[str], list[str]]:
+        if self._hunk_matches(lines, hunk.old):
+            return hunk.old, hunk.new
+        if (hunk.alt_old != hunk.old or hunk.alt_new != hunk.new) and self._hunk_matches(lines, hunk.alt_old):
+            return hunk.alt_old, hunk.alt_new
+        raise ToolCallError(f"hunk {index} context did not match; first old line: {self._line_preview(hunk.old[0])}")
+
+    @staticmethod
+    def _hunk_matches(lines: list[str], old: list[str]) -> bool:
+        limit = len(lines) - len(old)
+        return any(lines[start : start + len(old)] == old for start in range(max(0, limit + 1)))
+
     @classmethod
-    def _match_hunk(cls, lines: list[str], hunk: PatchFileHunk, index: int) -> int:
+    def _match_hunk(cls, lines: list[str], old: list[str], index: int) -> int:
         matches = []
-        limit = len(lines) - len(hunk.old)
+        limit = len(lines) - len(old)
         for start in range(max(0, limit + 1)):
-            if lines[start : start + len(hunk.old)] == hunk.old:
+            if lines[start : start + len(old)] == old:
                 matches.append(start)
-        if not matches:
-            raise ToolCallError(f"hunk {index} context did not match; first old line: {cls._line_preview(hunk.old[0])}")
         if len(matches) > 1:
             raise ToolCallError(f"hunk {index} context matched multiple locations")
         return matches[0]
@@ -3384,7 +3401,7 @@ DISCOVERY AND EDITING
 Use Search/ListDir/LineCount when path, symbol, range, or target is unknown.
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
-Read line prefixes are display-only; edit text starts after " | ".
+Read line prefixes are display-only; edit text starts immediately after "|".
 
 Stop discovery once the next edit/check is clear.
 
