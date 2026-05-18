@@ -7716,17 +7716,18 @@ class AgentLoop:
             ],
             height=Dimension(min=1),
         )
+        status_line = Window(
+            FormattedTextControl(self._runtime_status_fragments, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=Dimension(min=1),
+            dont_extend_height=True,
+        )
         app = Application(
             layout=Layout(
                 HSplit(
                     [
+                        status_line,
                         input_line,
-                        Window(
-                            FormattedTextControl(self._runtime_status_fragments, style="class:bottom-toolbar.text"),
-                            style="class:bottom-toolbar",
-                            height=Dimension(min=1),
-                            dont_extend_height=True,
-                        ),
                     ]
                 ),
                 focused_element=buffer_control,
