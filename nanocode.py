@@ -3072,6 +3072,7 @@ class GitTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run git without a shell for repository state, history, status, diff, and changed files.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
+        "By default, stage/commit only files changed for the current task; include unrelated dirty files only when the user explicitly asks.",
     )
     SIGNATURE: ClassVar[str] = "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
