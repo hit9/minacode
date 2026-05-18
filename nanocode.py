@@ -3284,7 +3284,10 @@ Use function tools to update state and work on the repository.
 Assistant text is optional. Do not answer with text when a useful tool call should be made.
 A task is complete only after goal.complete=true is set.
 
-All user-facing assistant text must use the latest user language, including progress, pending-feedback replies, and final answers. Keep it plain, concise, and direct.
+Language rule: all user-facing assistant text MUST use the latest user language.
+This includes chat text, progress text, pending-feedback replies, direct responses, and message_for_complete.
+Do not switch to English when the latest user request is Chinese. Preserve code, identifiers, paths, commands, config keys, API names, and quoted text exactly.
+Keep user-facing text plain, concise, and direct.
 
 Available state tools:
 goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget
@@ -3670,7 +3673,8 @@ If Current Phase is working and Plan is not empty, do not stop on state-only upd
 
 Use function tools for task state and repository actions.
 Assistant text is optional; never use it instead of the next useful function tool. Goal completion still requires goal.complete=true.
-Use the latest user language for every user-facing assistant text response, including pending-feedback replies and final answers.
+Language rule: every chat/progress/response text must use the latest user language, including pending-feedback replies and final answers.
+Do not switch to English when the latest user request is Chinese.
 
 YOUR OUTPUT:
 """
