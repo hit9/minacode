@@ -3174,7 +3174,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     assert "previous task context is still present" in " ".join(agent.agent_feedback_errors)
 
 
-def test_agent_run_ignores_goal_rewrite_after_task_is_working(tmp_path):
+def test_agent_run_warns_on_goal_rewrite_after_task_is_working(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -3211,7 +3211,6 @@ def test_agent_run_ignores_goal_rewrite_after_task_is_working(tmp_path):
     response = agent.run("read sample")
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert agent.blackboard.goal == "read sample"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
     assert "rewrote Goal after the task was active" in " ".join(agent.agent_feedback_errors)
@@ -3243,7 +3242,7 @@ def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
     assert agent.agent_feedback_errors == []
 
 
-def test_agent_ignores_goal_rewrite_after_task_is_working(tmp_path):
+def test_agent_warns_but_keeps_goal_rewrite_after_task_is_working(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.task_code = nanocode.TaskCode.WORKING
     agent.blackboard.goal = "read sample"
@@ -3252,8 +3251,8 @@ def test_agent_ignores_goal_rewrite_after_task_is_working(tmp_path):
     result = agent.handle_response({"actions": [{"type": "goal", "text": "read sample again", "complete": False}]})
 
     assert result.done is False
-    assert agent.blackboard.goal == "read sample"
-    assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
+    assert agent.blackboard.goal == "read sample again"
+    assert agent.blackboard.plan == []
     assert "rewrote Goal after the task was active" in " ".join(agent.agent_feedback_errors)
 
 
@@ -3742,7 +3741,7 @@ def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
     assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
 
 
-def test_investigate_completion_requires_root_cause_hypothesis(tmp_path):
+def test_investigate_completion_without_root_cause_hypothesis_warns(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "find bug")
     agent.blackboard.work_mode = nanocode.WorkMode.INVESTIGATE
@@ -3758,10 +3757,10 @@ def test_investigate_completion_requires_root_cause_hypothesis(tmp_path):
         on_message=messages.append,
     )
 
-    assert result.done is False
+    assert result.done is True
     assert agent.blackboard.goal_reached is False
     assert any("confirmed hypothesis" in error for error in agent.agent_feedback_errors)
-    assert messages[-1] == "Completion_Gate: investigate completion requires a confirmed hypothesis."
+    assert messages[-1] == "done"
 
     result = agent.handle_response(
         {

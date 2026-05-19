@@ -6370,7 +6370,6 @@ class Agent:
             )
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
             self._warn_agent("rewrote Goal after the task was active.", "replace Plan when the task scope changes.")
-            self._drop_goal_rewrite_actions(ctx)
         if ctx.pending_verify_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
         if self.session.state.pending_user_feedback and ctx.goal_will_change:
@@ -6380,7 +6379,6 @@ class Agent:
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
-            self._drop_goal_rewrite_actions(ctx)
         return False
 
     def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
@@ -6611,12 +6609,7 @@ class Agent:
             self._warn_agent("blocked verification completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
         investigate_completion_error = self._investigate_completion_error()
         if investigate_completion_error:
-            return self._reject_completion(
-                on_message,
-                self._error(investigate_completion_error + ".", "mark a hypothesis confirmed before completing."),
-                "Retrying: confirm a hypothesis before completing.",
-                "Completion_Gate: " + investigate_completion_error + ".",
-            )
+            self._warn_agent(investigate_completion_error + ".", "mark a hypothesis confirmed when claiming a root cause.")
         completion_message = (ctx.completion_message or ctx.assistant_text or "Done.") if self.blackboard.goal_reached else ""
         plan_mode_completion_error = self._plan_mode_completion_error(completion_message) if self.blackboard.goal_reached else ""
         if plan_mode_completion_error:
