@@ -515,8 +515,10 @@ def test_codegraph_tool_is_visible_when_initialized(tmp_path, monkeypatch):
     assert "CodeGraphSymbol" in tool_names
     prompt = agent.build_user_prompt()
     assert "- codegraph: available" in prompt
-    assert "use CodeGraphSymbol for known names" in prompt
-    assert "use CodeGraphContext for cross-file context/call flow" in prompt
+    assert "CodeGraph is a whole-project static-analysis index" in prompt
+    assert "prefer CodeGraphSymbol for known names" in prompt
+    assert "CodeGraphContext for cross-file relationships" in prompt
+    assert "use Search/Read for exact literals, paths, and edit ranges" in prompt
 
 
 def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_path):

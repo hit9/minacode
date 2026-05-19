@@ -2364,8 +2364,9 @@ class CodeGraphContextTool(Tool):
     MAX_CODE_BLOCKS: ClassVar[int] = 8
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use local CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or implementation lookup.",
-        "Query works best as a concise search-style phrase with symbols, paths, concepts, or relationships; avoid broad chatty questions.",
+        "CodeGraph is a whole-project static-analysis index; use CodeGraphContext for semantic context that plain text search cannot infer well: cross-file relationships, call flow, ownership, architecture, and implementation lookup.",
+        "Prefer this when the question is about how code connects; use Search for exact literals and Read for exact paths/ranges.",
+        "Query works best as a concise search-style phrase with symbols, paths, concepts, or relationships.",
         'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
     )
     SIGNATURE: ClassVar[str] = "CodeGraphContext(query) -> CodeGraphContextToolResult<context>"
@@ -2463,8 +2464,8 @@ class CodeGraphSymbolTool(Tool):
     MAX_RESULTS: ClassVar[int] = 12
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use local CodeGraph to find symbol definitions and locations by exact or partial name.",
-        "Prefer this over broad text Search when you know a class, function, method, or variable name.",
+        "Use CodeGraph's whole-project static-analysis index to find symbol definitions and locations by exact or partial name.",
+        "Prefer this over broad text Search when you know a class, function, method, variable, or qualified name; it returns structured locations directly.",
         "Use Read on the returned file/range before exact edits.",
     )
     SIGNATURE: ClassVar[str] = "CodeGraphSymbol(symbol) -> CodeGraphSymbolToolResult<locations>"
@@ -5717,7 +5718,7 @@ class Agent:
         ]
         if self._codegraph_available():
             lines.append(
-                "- codegraph_hint: use CodeGraphSymbol for known names; use CodeGraphContext for cross-file context/call flow; use Search/Read for exact paths or literals."
+                "- codegraph_hint: CodeGraph is a whole-project static-analysis index; prefer CodeGraphSymbol for known names and CodeGraphContext for cross-file relationships, call flow, architecture, or implementation lookup; use Search/Read for exact literals, paths, and edit ranges."
             )
         return "\n".join(lines)
 
