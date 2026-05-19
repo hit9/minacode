@@ -479,11 +479,62 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
 
     prompt = agent._system_prompt()
 
-    assert "simple conversation or a one-shot lookup" in prompt
-    assert "then answer directly with assistant text and stop" in prompt
-    assert "do not create Goal, Plan, or Known just to report the answer" in prompt
-    assert "inspect visible results before deciding the next action" in prompt
+    assert "TASK SHAPES" in prompt
+    assert "Chat:" in prompt
+    assert "One-shot:" in prompt
+    assert "Tracked task:" in prompt
+    assert "Classify the latest request as Chat, One-shot, or Tracked task" in prompt
+    assert "call needed tools, then answer with assistant text and stop" in prompt
+    assert "do not create Goal, Plan, Known, or Verify just to report the result" in prompt
+    assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
     assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
+
+
+def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    prompt = agent.build_user_prompt()
+
+    assert "Chat: answer with assistant text only." in prompt
+    assert "One-shot with no Goal or Plan: assistant text is the final answer" in prompt
+    assert "Tracked task: assistant text is optional" in prompt
+    assert "Goal completion requires goal.complete=true" in prompt
+
+
+def test_one_shot_bash_does_not_require_goal_or_plan(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "tool", "name": "Bash", "intention": "run one-shot check", "args": ["printf ok"]}
+            ]
+        },
+        confirm=lambda call, tool: True,
+    )
+
+    assert result.done is False
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert not any("mutating work before" in error for error in agent.agent_feedback_errors)
+
+
+def test_edit_tool_without_goal_or_plan_warns(tmp_path):
+    (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "tool", "name": "Edit", "intention": "edit sample", "args": ["sample.txt", "old", "new"]}
+            ]
+        },
+        confirm=lambda call, tool: True,
+    )
+
+    assert result.done is False
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
+    assert any("mutating work before Goal/Plan was set" in error for error in agent.agent_feedback_errors)
+    assert any("mutating work before Plan was set" in error for error in agent.agent_feedback_errors)
 
 
 def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):

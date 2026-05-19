@@ -3344,6 +3344,23 @@ Current Phase:
 Do not rewrite the Goal when Current Phase is working/verifying unless the user changed the task.
 Never repeat a previous completion as the answer.
 
+TASK SHAPES
+Chat:
+- direct conversation, clarification, or explanation that needs no repository action
+- answer with assistant text only
+- do not use Goal, Plan, Known, or Verify
+
+One-shot:
+- one bounded lookup/check/tool batch whose visible result answers the request
+- call needed tools, then answer with assistant text and stop
+- do not create Goal, Plan, Known, or Verify just to report the result
+
+Tracked task:
+- multi-step work, edits, debugging, investigation, explicit verification, or work that may span turns
+- set Goal; set Plan once enough context is known
+- record Verify only after edits, explicit checks, or correctness-sensitive work
+- complete with goal.complete=true
+
 STATE
 Known:
 - settled current-task facts that matter after tool results disappear
@@ -3367,12 +3384,16 @@ Tool Results:
 - preserve useful conclusions in goal, plan, known, hypothesis, or verify; forget noise when it no longer helps
 
 WORKFLOW
-If the latest request is simple conversation or a one-shot lookup:
-- use tools only until the requested answer is visible
-- then answer directly with assistant text and stop
-- do not create Goal, Plan, or Known just to report the answer
+Classify the latest request as Chat, One-shot, or Tracked task before deciding state tools.
 
-If there is no Goal and the request needs task tracking:
+If the request is Chat:
+- answer directly and stop
+
+If the request is One-shot:
+- use tools only until the requested answer is visible
+- answer directly and stop
+
+If there is no Goal and the request is a Tracked task:
 - set a Goal
 - if enough context is known, also set a short Plan or call the first useful readonly tools
 
@@ -3483,7 +3504,7 @@ You are a planning agent, not an implementation agent.
 OUTPUT PROTOCOL
 - Use function tools for state updates and readonly repository actions.
 - Assistant text is optional; never use it instead of the next useful function tool.
-- A completed plan-mode task still needs goal.complete=true.
+- PLAN MODE is a tracked planning task; complete it with goal.complete=true.
 - Allowed state tools: goal, plan, hypothesis, known, stable_knowledge, verify.
 - Allowed repository tools: Read, LineCount, List, Search, Recall, and readonly Git.
 - Repository tool calls require intention and args.
@@ -3717,8 +3738,9 @@ Otherwise use them to update state, choose the next frontier, or forget noise.
 --- Output ---
 
 Use function tools for task state and repository actions.
-For one-shot requests with no Goal or Plan, assistant text is the final answer once visible results answer the request.
-For tracked tasks, assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
+Chat: answer with assistant text only.
+One-shot with no Goal or Plan: assistant text is the final answer once visible results answer the request.
+Tracked task: assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
 Language rule: every chat/progress/response text must use the latest user language, including pending-feedback replies and final answers.
 Do not switch to English when the latest user request is Chinese.
 
@@ -5405,7 +5427,7 @@ class ResponseContext:
     has_plan_action: bool
     has_fresh_plan_action: bool
     has_user_rule_action: bool
-    has_non_readonly_tool_call: bool
+    has_edit_tool_call: bool
     has_state_update_action: bool
     state_or_work_requested: bool
 
@@ -6227,16 +6249,15 @@ class Agent:
         actions = [action for action in raw_actions if not self._is_pending_verify_action(action)]
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
         action_types = {_json_str(action.get("type")) for action in actions}
-        has_non_readonly_tool_call = False
+        has_edit_tool_call = False
         for value in tool_calls:
             try:
                 call = self.tool_runner.parse_tool_call(value)
             except ToolCallArgError:
-                has_non_readonly_tool_call = True
-                break
+                continue
             tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None or tool_class.EFFECT != ToolEffect.READONLY:
-                has_non_readonly_tool_call = True
+            if tool_class is not None and tool_class.EFFECT == ToolEffect.EDIT:
+                has_edit_tool_call = True
                 break
         goal_update = next(
             (
@@ -6279,7 +6300,7 @@ class Agent:
             has_plan_action="plan" in action_types,
             has_fresh_plan_action=has_fresh_plan_action,
             has_user_rule_action="user_rule" in action_types,
-            has_non_readonly_tool_call=has_non_readonly_tool_call,
+            has_edit_tool_call=has_edit_tool_call,
             has_state_update_action=bool(action_types & {"goal", "plan", "known", "hypothesis", "stable_knowledge"}),
             state_or_work_requested=bool(
                 tool_calls
@@ -6375,9 +6396,9 @@ class Agent:
         if self.session.state.pending_user_feedback and ctx.goal_will_change:
             self._warn_agent("Pending User Feedback is not a new task by default.", "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.")
             self._drop_goal_rewrite_actions(ctx)
-        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
+        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
-        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
         return False
 
@@ -6390,7 +6411,7 @@ class Agent:
             on_message(ctx.assistant_text)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_verify_requested or ctx.has_non_readonly_tool_call):
+        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if (
             ctx.plan_was_empty
