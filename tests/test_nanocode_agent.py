@@ -2928,6 +2928,23 @@ def test_agent_normalizes_direct_repo_tool_action_type(tmp_path):
     assert not any("Protocol_Gate" in message for message in messages)
 
 
+def test_agent_normalizes_lowercase_repo_tool_names(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("needle\n", encoding="utf-8")
+    agent = Agent(_session(tmp_path, debug=True))
+    _seed_plan(agent, "find sample")
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "search", "intention": "find sample", "args": ["needle", "sample.txt"]}]},
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.tool_runner.latest_executions[0].call.name == "Search"
+    assert not any("Protocol_Gate" in message for message in messages)
+
+
 def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
     agent = Agent(_session(tmp_path, plan_mode=True))
     _seed_plan(agent, "plan change")

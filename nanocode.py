@@ -3396,6 +3396,12 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
 PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, CodeGraphContextTool, CodeGraphSymbolTool, PlanModeGitTool, ToolResultTool)
 
 
+def _canonical_tool_name(name: str | None) -> str:
+    if not name:
+        return ""
+    return next((tool_name for tool_name in TOOL_REGISTRY if tool_name.lower() == name.lower()), name)
+
+
 TOOL_STRING_SCHEMA: Json = {"type": "string"}
 TOOL_NULLABLE_STRING_SCHEMA: Json = {"type": ["string", "null"]}
 TOOL_ITEMS_SCHEMA: Json = {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA}
@@ -5025,6 +5031,7 @@ class ToolCallRunner:
         name = _json_str(item.get("name"))
         if not name:
             raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
+        name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
         raw_args = _json_list(item.get("args"))
         args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.NAME else [_json_str(arg) or "" for arg in raw_args]
@@ -6334,11 +6341,12 @@ class Agent:
     @staticmethod
     def _normalize_action(action: Json) -> Json:
         action_type = _json_str(action.get("type"))
-        if action_type not in TOOL_REGISTRY:
+        tool_name = _canonical_tool_name(action_type)
+        if tool_name not in TOOL_REGISTRY:
             return action
         normalized = dict(action)
         normalized["type"] = "tool"
-        normalized["name"] = action_type
+        normalized["name"] = tool_name
         return normalized
 
     def _gate_action_types(
