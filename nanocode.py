@@ -3903,7 +3903,7 @@ Hypotheses:
 Verification:
 {verification_state}
 
-Errors:
+Blocking Feedback - Fix Before Next Action:
 {errors}
 
 Pending User Feedback:
@@ -5702,7 +5702,7 @@ class Agent:
             current_focus=self._format_current_focus(),
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             verification_state=current.verification.format(),
-            errors="\n".join("- " + error for error in self.agent_feedback_errors) or "(empty)",
+            errors="\n".join("! " + error for error in self.agent_feedback_errors) or "(empty)",
             recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
             pending_user_feedback=self.session.state.pending_user_feedback or "(empty)",
             user_request=self._format_user_request(),
@@ -5909,7 +5909,7 @@ class Agent:
 
     def _remember_format_gate(self, format_error: str) -> None:
         remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
-        remember_error(self._format_gate_user_message("Error: invalid function/tool response", format_error) + " Rule: " + self.RULE_FUNCTION_TOOLS)
+        remember_error(self._format_gate_user_message("Error: invalid function/tool response", format_error) + " Next: " + self.RULE_FUNCTION_TOOLS)
 
     def _handle_format_gate(self, response: Json, format_error: str, consecutive_errors: int, on_message: MessageCallback | None) -> None:
         self._set_status_notice("err:format")
@@ -5981,7 +5981,7 @@ class Agent:
 
     @staticmethod
     def _feedback(level: str, text: str, rule: str = "") -> str:
-        return level + ": " + text + ((" Rule: " + rule) if rule else "")
+        return level + " blocked: " + text + ((" Next: " + rule) if rule else "")
 
     def _error(self, text: str, rule: str = "") -> str:
         return self._feedback("Error", text, rule)
@@ -6541,7 +6541,7 @@ class Agent:
         self.session.append_conversation(AssistantMessage(content=ctx.assistant_text))
         if on_message is not None:
             on_message(ctx.assistant_text)
-        active_task = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+        active_task = bool(self.blackboard.plan or self.blackboard.hypotheses)
         if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start):
             return AgentRunResult()
         self.blackboard.task_code = TaskCode.DONE
@@ -6613,11 +6613,11 @@ class Agent:
             return self._reject_agent(
                 on_message,
                 self._error(
-                    "successful command result is already visible with no active task.",
-                    "answer the one-shot result or create Goal/Plan before more tool calls.",
+                    "last command result is visible with no active task.",
+                    "answer the user now, or create Goal/Plan before calling more tools.",
                 ),
-                "Retrying: answer the visible command result or start a tracked task.",
-                "Task_Gate: planless command loop.",
+                "Retrying: answer the visible command result, or create Goal/Plan before more tools.",
+                "Task_Gate: visible command result needs answer or Goal/Plan.",
             )
         if (
             self.blackboard.task_code == TaskCode.NEW

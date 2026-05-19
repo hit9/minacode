@@ -581,7 +581,7 @@ def test_planless_successful_bash_requires_answer_or_tracked_task_before_more_to
     assert first.done is False
     assert second.done is False
     assert agent.session.state.turn_tool_calls == 1
-    assert any("successful command result is already visible" in error for error in agent.agent_feedback_errors)
+    assert any("last command result is visible" in error for error in agent.agent_feedback_errors)
 
 
 def test_planless_successful_bash_allows_tracked_task_before_more_tools(tmp_path):
@@ -3058,7 +3058,7 @@ def test_agent_warns_but_allows_completion_when_verification_required(tmp_path):
     assert result.done is True
     assert messages == ["done"]
     assert agent.agent_feedback_errors == [
-        'Warning: edited files need verification before completion. Rule: run verification tools, then report verify status="passed"|"failed"|"blocked".'
+        'Warning blocked: edited files need verification before completion. Next: run verification tools, then report verify status="passed"|"failed"|"blocked".'
     ]
 
 
