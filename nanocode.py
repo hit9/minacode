@@ -2365,8 +2365,8 @@ class CodeGraphContextTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Use CodeGraphContext for indexed, low-noise context from the whole-project static-analysis graph.",
-        "Best for cross-file relationships, call flow, ownership, architecture, and implementation lookup.",
-        "Use Search for exact literals and Read for exact paths/ranges.",
+        "Prefer it over Search for structural code questions: implementation locations, cross-file relationships, call flow, ownership, and architecture.",
+        "Use Search only for exact literals; use Read for exact paths/ranges.",
         "Query should be search-like, not chat-like: symbols, paths, concepts, or relationships.",
         'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
     )
@@ -2467,7 +2467,7 @@ class CodeGraphSymbolTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Use CodeGraphSymbol for indexed, low-noise symbol lookup from the whole-project static-analysis graph.",
-        "Best when you know a class, function, method, variable, or qualified name.",
+        "Prefer it over Search when you know or can guess a class, function, method, variable, or qualified name.",
         "Use Search for exact literals or non-symbol text.",
         "Use Read on the returned file/range before exact edits.",
     )
@@ -3386,9 +3386,9 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.NAME: ReadTool,
     LineCountTool.NAME: LineCountTool,
     ListTool.NAME: ListTool,
-    SearchTool.NAME: SearchTool,
-    CodeGraphContextTool.NAME: CodeGraphContextTool,
     CodeGraphSymbolTool.NAME: CodeGraphSymbolTool,
+    CodeGraphContextTool.NAME: CodeGraphContextTool,
+    SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
     PatchFileTool.NAME: PatchFileTool,
@@ -3397,7 +3397,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, CodeGraphContextTool, CodeGraphSymbolTool, PlanModeGitTool, ToolResultTool)
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, CodeGraphSymbolTool, CodeGraphContextTool, SearchTool, PlanModeGitTool, ToolResultTool)
 
 
 def _canonical_tool_name(name: str | None) -> str:
@@ -3513,7 +3513,8 @@ Tracked tasks are complete only after goal.complete=true is set.
 Language rule: all user-facing assistant text MUST use the latest user language.
 This includes chat text, progress text, pending-feedback replies, direct responses, and message_for_complete.
 Do not switch to English when the latest user request is Chinese. Preserve code, identifiers, paths, commands, config keys, API names, and quoted text exactly.
-Keep user-facing text plain, concise, and direct.
+User-facing text is read in a terminal: keep it plain, concise, direct, and CLI-friendly.
+Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless the user asks for them.
 
 Available state tools:
 goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget
@@ -3714,6 +3715,8 @@ LANGUAGE
 - Use the latest user language for all user-facing text, including progress and the final proposed plan.
 - Preserve code, identifiers, filenames, command names, config keys, API names, and quoted text exactly.
 - If the user mixes languages, follow the dominant language of the latest request.
+- User-facing text is read in a terminal: keep it plain, concise, direct, and CLI-friendly.
+- Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless the user asks for them.
 
 READONLY DISCOVERY
 - Allowed tools: Read, LineCount, List, Search, Recall.
@@ -3937,6 +3940,7 @@ One-shot with no Goal or Plan: assistant text is the final answer once visible r
 Tracked task: assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
 Language rule: every chat/progress/response text must use the latest user language, including pending-feedback replies and final answers.
 Do not switch to English when the latest user request is Chinese.
+Terminal output rule: every chat/progress/response text should be plain, concise, and CLI-friendly. Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless requested.
 
 YOUR OUTPUT:
 """
@@ -5721,7 +5725,7 @@ class Agent:
         ]
         if self._codegraph_available():
             lines.append(
-                "- codegraph_hint: CodeGraph is a whole-project static-analysis index; prefer CodeGraphSymbol for known names and CodeGraphContext for cross-file relationships, call flow, architecture, or implementation lookup; use Search/Read for exact literals, paths, and edit ranges."
+                "- codegraph_hint: CodeGraph is a whole-project static-analysis index. For structural code lookup, prefer CodeGraphSymbol for known or guessed names and CodeGraphContext for implementation locations, relationships, call flow, and architecture. Use Search only for exact literals; use Read for exact paths/ranges."
             )
         return "\n".join(lines)
 
