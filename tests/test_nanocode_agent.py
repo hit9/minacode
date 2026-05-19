@@ -488,8 +488,8 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
     assert "do not create Goal, Plan, Known, or Verify just to report the result" in prompt
     assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
     assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
-    assert "When Environment says codegraph is available" in prompt
-    assert "CodeGraph line prefixes are location hints" in prompt
+    assert "CodeGraphContext" not in prompt
+    assert "CodeGraphSymbol" not in prompt
 
 
 def test_codegraph_tool_is_hidden_until_available(tmp_path, monkeypatch):
@@ -498,7 +498,8 @@ def test_codegraph_tool_is_hidden_until_available(tmp_path, monkeypatch):
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "CodeGraph" not in tool_names
+    assert "CodeGraphContext" not in tool_names
+    assert "CodeGraphSymbol" not in tool_names
     assert "- codegraph: not installed" in agent.build_user_prompt()
 
 
@@ -509,7 +510,8 @@ def test_codegraph_tool_is_visible_when_initialized(tmp_path, monkeypatch):
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "CodeGraph" in tool_names
+    assert "CodeGraphContext" in tool_names
+    assert "CodeGraphSymbol" in tool_names
     assert "- codegraph: available" in agent.build_user_prompt()
 
 

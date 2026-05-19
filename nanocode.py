@@ -2358,83 +2358,58 @@ class SearchTool(Tool):
 
 
 @dataclass
-class CodeGraphTool(Tool):
-    NAME: ClassVar[str] = "CodeGraph"
+class CodeGraphContextTool(Tool):
+    NAME: ClassVar[str] = "CodeGraphContext"
     MAX_NODES: ClassVar[int] = 40
     MAX_CODE_BLOCKS: ClassVar[int] = 8
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use local CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or impact analysis.",
-        "If paths is empty, builds AI-ready context for query; if paths is non-empty, reports affected tests/symbols/files.",
+        "Use local CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or implementation lookup.",
+        "Query works best as a concise search-style phrase with symbols, paths, concepts, or relationships; avoid broad chatty questions.",
         'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
     )
-    SIGNATURE: ClassVar[str] = "CodeGraph(query[, paths]) -> CodeGraphToolResult<context>"
+    SIGNATURE: ClassVar[str] = "CodeGraphContext(query) -> CodeGraphContextToolResult<context>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["How does tool execution work?"]',
-        'Impact args: ["What is affected by these changes?", ["nanocode.py"]]',
+        'Example args: ["Tool class schema generation"]',
+        'Example args: ["Agent tool result context layout"]',
     )
 
     query: str = ""
-    paths: list[str] = field(default_factory=list)
     codegraph_path: str = ""
     cwd: str = ""
     timeout: int = 60
 
     @classmethod
-    def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        if len(args) == 2:
-            return [cls.cli_token(args[0]), str(len(_json_list(args[1])) or 1) + " paths"]
-        return [cls.cli_token(arg) for arg in args]
-
-    @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) not in (1, 2):
-            raise ToolCallArgError("requires args: query[, paths]")
+        if len(args) != 1:
+            raise ToolCallArgError("requires args: query")
         query = str(args[0]).strip()
         if not query:
             raise ToolCallArgError("query cannot be empty")
         codegraph_path = shutil.which("codegraph")
         if not codegraph_path:
             raise ToolCallError("codegraph not found; install CodeGraph first")
-        paths = cls._paths_from_arg(session, args[1]) if len(args) == 2 else []
-        return cls(query=query, paths=paths, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
-
-    @staticmethod
-    def _paths_from_arg(session: Session, value: JsonValue) -> list[str]:
-        raw_paths = _json_list(value) or ([value] if value else [])
-        paths = []
-        for raw_path in raw_paths:
-            resolved = session.resolve_path(str(raw_path))
-            if not session.is_path_in_cwd(resolved):
-                raise ToolCallError("path outside cwd: " + str(raw_path))
-            paths.append(os.path.relpath(resolved, session.cwd))
-        return paths
+        return cls(query=query, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
 
     def preview(self) -> str:
-        if self.paths:
-            return "CodeGraph(" + json.dumps(self.query, ensure_ascii=False) + ", " + json.dumps(self.paths, ensure_ascii=False) + ")"
-        return "CodeGraph(" + json.dumps(self.query, ensure_ascii=False) + ")"
+        return "CodeGraphContext(" + json.dumps(self.query, ensure_ascii=False) + ")"
 
     def call(self) -> str:
         if not os.path.isdir(os.path.join(self.cwd, ".codegraph")):
             raise ToolCallError("CodeGraph not initialized; run /codegraph init")
-        cmd = (
-            [self.codegraph_path, "affected", "--path", self.cwd, *self.paths]
-            if self.paths
-            else [
-                self.codegraph_path,
-                "context",
-                self.query,
-                "--path",
-                self.cwd,
-                "--max-nodes",
-                str(self.MAX_NODES),
-                "--max-code",
-                str(self.MAX_CODE_BLOCKS),
-                "--format",
-                "markdown",
-            ]
-        )
+        cmd = [
+            self.codegraph_path,
+            "context",
+            self.query,
+            "--path",
+            self.cwd,
+            "--max-nodes",
+            str(self.MAX_NODES),
+            "--max-code",
+            str(self.MAX_CODE_BLOCKS),
+            "--format",
+            "markdown",
+        ]
         try:
             proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
         except subprocess.TimeoutExpired as error:
@@ -2442,12 +2417,12 @@ class CodeGraphTool(Tool):
         return self._format(proc.returncode, self._number_code_blocks(_clean_terminal_output(proc.stdout)), _clean_terminal_output(proc.stderr))
 
     def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<CodeGraphToolResult>", "* mode: " + ("impact" if self.paths else "context"), "* exit_code: " + str(exit_code)]
+        lines = ["<CodeGraphContextToolResult>", "* exit_code: " + str(exit_code)]
         if stdout:
             lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
         if stderr:
             lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</CodeGraphToolResult>")
+        lines.append("</CodeGraphContextToolResult>")
         return "\n".join(lines)
 
     @classmethod
@@ -2480,6 +2455,87 @@ class CodeGraphTool(Tool):
                 continue
             numbered.append(line)
         return "".join(numbered)
+
+
+@dataclass
+class CodeGraphSymbolTool(Tool):
+    NAME: ClassVar[str] = "CodeGraphSymbol"
+    MAX_RESULTS: ClassVar[int] = 12
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Use local CodeGraph to find symbol definitions and locations by exact or partial name.",
+        "Prefer this over broad text Search when you know a class, function, method, or variable name.",
+        "Use Read on the returned file/range before exact edits.",
+    )
+    SIGNATURE: ClassVar[str] = "CodeGraphSymbol(symbol) -> CodeGraphSymbolToolResult<locations>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["Tool"]',
+        'Example args: ["Agent.run"]',
+    )
+
+    symbol: str = ""
+    codegraph_path: str = ""
+    cwd: str = ""
+    timeout: int = 60
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        if len(args) != 1:
+            raise ToolCallArgError("requires args: symbol")
+        symbol = str(args[0]).strip()
+        if not symbol:
+            raise ToolCallArgError("symbol cannot be empty")
+        codegraph_path = shutil.which("codegraph")
+        if not codegraph_path:
+            raise ToolCallError("codegraph not found; install CodeGraph first")
+        return cls(symbol=symbol, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+
+    def preview(self) -> str:
+        return "CodeGraphSymbol(" + json.dumps(self.symbol, ensure_ascii=False) + ")"
+
+    def call(self) -> str:
+        if not os.path.isdir(os.path.join(self.cwd, ".codegraph")):
+            raise ToolCallError("CodeGraph not initialized; run /codegraph init")
+        cmd = [self.codegraph_path, "query", self.symbol, "--path", self.cwd, "--limit", str(self.MAX_RESULTS), "-j"]
+        try:
+            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
+        except subprocess.TimeoutExpired as error:
+            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
+        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
+
+    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
+        lines = ["<CodeGraphSymbolToolResult>", "* exit_code: " + str(exit_code)]
+        symbols = self._symbols(stdout)
+        if symbols:
+            lines.extend(["<symbols>", *symbols, "</symbols>"])
+        elif stdout:
+            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+        if stderr:
+            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+        lines.append("</CodeGraphSymbolToolResult>")
+        return "\n".join(lines)
+
+    @classmethod
+    def _symbols(cls, stdout: str) -> list[str]:
+        try:
+            values = _json_list(json.loads(stdout))
+        except json.JSONDecodeError:
+            return []
+        lines = []
+        for index, item in enumerate(values, 1):
+            node = _json_dict(_json_dict(item).get("node"))
+            if not node:
+                continue
+            line_range = str(node.get("startLine") or "?")
+            if node.get("endLine") and node.get("endLine") != node.get("startLine"):
+                line_range += "-" + str(node["endLine"])
+            text = f"{index}. {node.get('kind') or 'symbol'} {node.get('qualifiedName') or node.get('name') or '(unknown)'} {node.get('filePath') or '?'}:{line_range}"
+            if node.get("signature"):
+                text += " " + str(node["signature"])
+            if isinstance(_json_dict(item).get("score"), int | float):
+                text += " score=" + f"{float(_json_dict(item)['score']):.1f}"
+            lines.append(text)
+        return lines
 
 
 @dataclass
@@ -3327,7 +3383,8 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     LineCountTool.NAME: LineCountTool,
     ListTool.NAME: ListTool,
     SearchTool.NAME: SearchTool,
-    CodeGraphTool.NAME: CodeGraphTool,
+    CodeGraphContextTool.NAME: CodeGraphContextTool,
+    CodeGraphSymbolTool.NAME: CodeGraphSymbolTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
     PatchFileTool.NAME: PatchFileTool,
@@ -3336,7 +3393,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, CodeGraphTool, PlanModeGitTool, ToolResultTool)
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, CodeGraphContextTool, CodeGraphSymbolTool, PlanModeGitTool, ToolResultTool)
 
 
 TOOL_STRING_SCHEMA: Json = {"type": "string"}
@@ -3568,11 +3625,9 @@ Rules:
 
 DISCOVERY AND EDITING
 Use Search/List/LineCount when path, symbol, range, or target is unknown.
-When Environment says codegraph is available and CodeGraph is in available tools, use CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or impact analysis.
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 Read line prefixes are display-only; edit text starts immediately after "|".
-CodeGraph line prefixes are location hints; use Read before exact edits.
 
 Stop discovery once the next edit/check is clear.
 
@@ -5690,7 +5745,7 @@ class Agent:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
         if self._codegraph_available():
             return tool_classes
-        return tuple(tool for tool in tool_classes if tool is not CodeGraphTool)
+        return tuple(tool for tool in tool_classes if tool not in (CodeGraphContextTool, CodeGraphSymbolTool))
 
     def _codegraph_available(self) -> bool:
         return bool(shutil.which("codegraph") and os.path.isdir(os.path.join(self.session.cwd, ".codegraph")))

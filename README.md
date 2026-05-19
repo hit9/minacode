@@ -80,7 +80,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Tools
 
 - File: `Read`, `LineCount`, `List`, `Search`.
-- Codebase: `CodeGraph` when the local `codegraph` CLI is installed and initialized.
+- Codebase: `CodeGraphSymbol`, `CodeGraphContext` when the local `codegraph` CLI is installed and initialized.
 - Edit: `Edit`, `ReplaceRange`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.

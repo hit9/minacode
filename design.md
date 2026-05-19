@@ -89,9 +89,9 @@ OBSERVE receives a smaller cleanup context:
 
 OBSERVE reduces tool-result noise before ACT continues.
 
-Optional tools can be environment-gated. For example, CodeGraph is shown to the
-model only when the local `codegraph` CLI exists and the current project has a
-`.codegraph` index.
+Optional tools can be environment-gated. For example, CodeGraph tools are shown
+to the model only when the local `codegraph` CLI exists and the current project
+has a `.codegraph` index.
 
 Context layout:
 
