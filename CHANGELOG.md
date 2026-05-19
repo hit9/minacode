@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1 - 2026-05-19
+## 0.4.2 - 2026-05-19
 
 ### Added
 - Added indexed code inspection tools for symbol lookup, symbol investigation, and file outlines when the local index is available.
