@@ -2358,6 +2358,131 @@ class SearchTool(Tool):
 
 
 @dataclass
+class CodeGraphTool(Tool):
+    NAME: ClassVar[str] = "CodeGraph"
+    MAX_NODES: ClassVar[int] = 40
+    MAX_CODE_BLOCKS: ClassVar[int] = 8
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Use local CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or impact analysis.",
+        "If paths is empty, builds AI-ready context for query; if paths is non-empty, reports affected tests/symbols/files.",
+        'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
+    )
+    SIGNATURE: ClassVar[str] = "CodeGraph(query[, paths]) -> CodeGraphToolResult<context>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["How does tool execution work?"]',
+        'Impact args: ["What is affected by these changes?", ["nanocode.py"]]',
+    )
+
+    query: str = ""
+    paths: list[str] = field(default_factory=list)
+    codegraph_path: str = ""
+    cwd: str = ""
+    timeout: int = 60
+
+    @classmethod
+    def cli_args(cls, args: list[JsonValue]) -> list[str]:
+        if len(args) == 2:
+            return [cls.cli_token(args[0]), str(len(_json_list(args[1])) or 1) + " paths"]
+        return [cls.cli_token(arg) for arg in args]
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        if len(args) not in (1, 2):
+            raise ToolCallArgError("requires args: query[, paths]")
+        query = str(args[0]).strip()
+        if not query:
+            raise ToolCallArgError("query cannot be empty")
+        codegraph_path = shutil.which("codegraph")
+        if not codegraph_path:
+            raise ToolCallError("codegraph not found; install CodeGraph first")
+        paths = cls._paths_from_arg(session, args[1]) if len(args) == 2 else []
+        return cls(query=query, paths=paths, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+
+    @staticmethod
+    def _paths_from_arg(session: Session, value: JsonValue) -> list[str]:
+        raw_paths = _json_list(value) or ([value] if value else [])
+        paths = []
+        for raw_path in raw_paths:
+            resolved = session.resolve_path(str(raw_path))
+            if not session.is_path_in_cwd(resolved):
+                raise ToolCallError("path outside cwd: " + str(raw_path))
+            paths.append(os.path.relpath(resolved, session.cwd))
+        return paths
+
+    def preview(self) -> str:
+        if self.paths:
+            return "CodeGraph(" + json.dumps(self.query, ensure_ascii=False) + ", " + json.dumps(self.paths, ensure_ascii=False) + ")"
+        return "CodeGraph(" + json.dumps(self.query, ensure_ascii=False) + ")"
+
+    def call(self) -> str:
+        if not os.path.isdir(os.path.join(self.cwd, ".codegraph")):
+            raise ToolCallError("CodeGraph not initialized; run /codegraph init")
+        cmd = (
+            [self.codegraph_path, "affected", "--path", self.cwd, *self.paths]
+            if self.paths
+            else [
+                self.codegraph_path,
+                "context",
+                self.query,
+                "--path",
+                self.cwd,
+                "--max-nodes",
+                str(self.MAX_NODES),
+                "--max-code",
+                str(self.MAX_CODE_BLOCKS),
+                "--format",
+                "markdown",
+            ]
+        )
+        try:
+            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
+        except subprocess.TimeoutExpired as error:
+            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
+        return self._format(proc.returncode, self._number_code_blocks(_clean_terminal_output(proc.stdout)), _clean_terminal_output(proc.stderr))
+
+    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
+        lines = ["<CodeGraphToolResult>", "* mode: " + ("impact" if self.paths else "context"), "* exit_code: " + str(exit_code)]
+        if stdout:
+            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+        if stderr:
+            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+        lines.append("</CodeGraphToolResult>")
+        return "\n".join(lines)
+
+    @classmethod
+    def _number_code_blocks(cls, text: str) -> str:
+        heading_pattern = re.compile(r"^#### .+ \(([^():]+):(\d+)\)\s*$")
+        lines = text.splitlines(keepends=True)
+        numbered: list[str] = []
+        pending_start: int | None = None
+        in_code_block = False
+        current_line = 0
+        for line in lines:
+            heading = heading_pattern.match(line.rstrip("\n"))
+            if not in_code_block and heading:
+                try:
+                    pending_start = int(heading.group(2))
+                except ValueError:
+                    pending_start = None
+                numbered.append(line)
+                continue
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+                current_line = pending_start or 0
+                numbered.append(line)
+                if not in_code_block:
+                    pending_start = None
+                continue
+            if in_code_block and pending_start is not None:
+                numbered.append(f"{current_line:>7} |{line}")
+                current_line += 1
+                continue
+            numbered.append(line)
+        return "".join(numbered)
+
+
+@dataclass
 class EditTool(Tool):
     NAME: ClassVar[str] = "Edit"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
@@ -3202,6 +3327,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     LineCountTool.NAME: LineCountTool,
     ListTool.NAME: ListTool,
     SearchTool.NAME: SearchTool,
+    CodeGraphTool.NAME: CodeGraphTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
     PatchFileTool.NAME: PatchFileTool,
@@ -3210,7 +3336,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, PlanModeGitTool, ToolResultTool)
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, SearchTool, CodeGraphTool, PlanModeGitTool, ToolResultTool)
 
 
 TOOL_STRING_SCHEMA: Json = {"type": "string"}
@@ -3442,9 +3568,11 @@ Rules:
 
 DISCOVERY AND EDITING
 Use Search/List/LineCount when path, symbol, range, or target is unknown.
+When Environment says codegraph is available and CodeGraph is in available tools, use CodeGraph for semantic codebase context, call-flow exploration, architecture questions, or impact analysis.
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 Read line prefixes are display-only; edit text starts immediately after "|".
+CodeGraph line prefixes are location hints; use Read before exact edits.
 
 Stop discovery once the next edit/check is clear.
 
@@ -5491,7 +5619,14 @@ class Agent:
         current = self.blackboard
         conversation = self.session.state.conversation
         return AGENT_USER_PROMPT_TEMPLATE.format(
-            environment="\n".join(["- system: " + self.session.system, "- arch: " + self.session.arch, "- cwd: " + self.session.cwd]),
+            environment="\n".join(
+                [
+                    "- system: " + self.session.system,
+                    "- arch: " + self.session.arch,
+                    "- cwd: " + self.session.cwd,
+                    "- codegraph: " + self._codegraph_status_label(),
+                ]
+            ),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
@@ -5538,13 +5673,29 @@ class Agent:
         ).strip()
 
     def _system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
-        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
+        tool_classes = self._available_tool_classes(tools)
         return (
             (template or AGENT_SYSTEM_PROMPT)
             .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
             .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
             .strip()
         )
+
+    def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
+        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
+        if self._codegraph_available():
+            return tool_classes
+        return tuple(tool for tool in tool_classes if tool is not CodeGraphTool)
+
+    def _codegraph_available(self) -> bool:
+        return bool(shutil.which("codegraph") and os.path.isdir(os.path.join(self.session.cwd, ".codegraph")))
+
+    def _codegraph_status_label(self) -> str:
+        if not shutil.which("codegraph"):
+            return "not installed"
+        if not os.path.isdir(os.path.join(self.session.cwd, ".codegraph")):
+            return "not initialized; run /codegraph init"
+        return "available"
 
     def _format_user_request(self) -> str:
         user_request = self.blackboard.user_input or "(empty)"
@@ -5840,10 +5991,10 @@ class Agent:
             tool_classes: Iterable[ToolClass] = ()
         elif self.session.settings.plan_mode:
             action_names = self.PLAN_ACTION_TYPES - {"tool"}
-            tool_classes = PLAN_MODE_TOOLS
+            tool_classes = self._available_tool_classes(PLAN_MODE_TOOLS)
         else:
             action_names = self.ACT_ACTION_TYPES - {"tool"}
-            tool_classes = TOOL_REGISTRY.values()
+            tool_classes = self._available_tool_classes()
         actions = [_state_tool_schema(name) for name in STATE_TOOL_PARAMS if name in action_names]
         return actions + [tool.tool_schema() for tool in tool_classes]
 
@@ -6805,6 +6956,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/context", "Show or set context budget", "Config", "/context [low|medium|high]"),
+    CommandSpec("/codegraph", "Run CodeGraph maintenance", "Config", "/codegraph [status|sync|init|index]"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
@@ -6873,6 +7025,7 @@ class CommandDispatcher:
     COMMAND_ALIASES = {"/context-budget": "/context", "/context_budget": "/context"}
     API_USAGE = "Usage: /api [auto|chat|responses]"
     REASON_PAYLOAD_USAGE = "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
+    CODEGRAPH_USAGE = "Usage: /codegraph [status|sync|init|index]"
 
     def __init__(
         self,
@@ -7159,6 +7312,81 @@ class CommandDispatcher:
             self.agent.apply_context_budget()
             return "Set runtime.context_budget = " + value + "\n" + self._format_context_budget()
         return self._format_context_budget()
+
+    def _codegraph(self, args: str) -> str:
+        command = args.strip()
+        if command not in {"status", "sync", "init", "index"}:
+            return self.CODEGRAPH_USAGE
+        codegraph_path = shutil.which("codegraph")
+        if not codegraph_path:
+            return "codegraph not found; install CodeGraph first"
+        argv = {
+            "status": [codegraph_path, "status", "-j", "."],
+            "sync": [codegraph_path, "sync", "-q", "."],
+            "init": [codegraph_path, "init", ".", "--index"],
+            "index": [codegraph_path, "index", "-q", "."],
+        }[command]
+        return self._with_status(lambda: self._run_codegraph(command, argv))
+
+    def _run_codegraph(self, command: str, argv: list[str]) -> str:
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=self.agent.session.cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=max(300, self.agent.session.settings.shell_timeout),
+                env=_plain_command_env(),
+            )
+            return self._format_codegraph_command_result(command, proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
+        except subprocess.TimeoutExpired as error:
+            return self._format_codegraph_command_result(
+                command,
+                -1,
+                _clean_terminal_output(error.stdout or ""),
+                _clean_terminal_output(error.stderr or "") + "timeout",
+            )
+
+    def _format_codegraph_command_result(self, command: str, exit_code: int, stdout: str, stderr: str) -> str:
+        if command == "status" and exit_code == 0:
+            return self._format_codegraph_status(stdout)
+        if exit_code == 0:
+            detail = stdout or stderr
+            return "CodeGraph " + command + " completed." + ("\n" + detail if detail else "")
+        lines = ["CodeGraph " + command + " failed (exit " + str(exit_code) + ")."]
+        if stderr:
+            lines.append(stderr)
+        if stdout:
+            lines.append(stdout)
+        return "\n".join(lines)
+
+    def _format_codegraph_status(self, stdout: str) -> str:
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            return stdout or "CodeGraph status unavailable."
+        pending = _json_dict(data.get("pendingChanges"))
+        return "\n".join(
+            [
+                "CodeGraph: " + ("initialized" if data.get("initialized") else "not initialized"),
+                "project: " + (_json_str(data.get("projectPath")) or self.agent.session.cwd),
+                "index: files="
+                + str(data.get("fileCount", 0))
+                + " nodes="
+                + str(data.get("nodeCount", 0))
+                + " edges="
+                + str(data.get("edgeCount", 0))
+                + " backend="
+                + (_json_str(data.get("backend")) or "unknown"),
+                "pending: added="
+                + str(pending.get("added", 0))
+                + " modified="
+                + str(pending.get("modified", 0))
+                + " removed="
+                + str(pending.get("removed", 0)),
+            ]
+        )
 
     def _format_context_budget(self) -> str:
         budget = self.agent.context_budget()
@@ -8528,6 +8756,28 @@ def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str
     )
 
 
+TERMINAL_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _plain_command_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update({"CI": "1", "NO_COLOR": "1", "TERM": "dumb"})
+    return env
+
+
+def _clean_terminal_output(text: str) -> str:
+    lines = []
+    for raw_line in TERMINAL_ESCAPE_RE.sub("", text.replace("\r", "\n")).splitlines():
+        line = raw_line.rstrip()
+        if re.search(r"\b\d{1,3}%$", line) and ("█" in line or "░" in line):
+            continue
+        if lines and line == lines[-1]:
+            continue
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    return "\n".join(lines).strip("\n")
+
+
 def _format_process_result(tag: str, exit_code: int, stdout: str, stderr: str) -> str:
     lines = [f"<{tag}>", f"* exit_code: {exit_code}"]
     if stdout:
@@ -8626,6 +8876,12 @@ class CommandCompleter(Completer):
         if text.startswith("/api "):
             text = text[len("/api ") :]
             for value in ("auto", "chat", "responses"):
+                if value.startswith(text):
+                    yield Completion(value, start_position=-len(text))
+            return
+        if text.startswith("/codegraph "):
+            text = text[len("/codegraph ") :]
+            for value in ("status", "sync", "init", "index"):
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
             return

@@ -67,6 +67,7 @@ When the model outputs `goal` with a different current-task goal:
 ACT mode receives a working context:
 
 - goal, plan, hypotheses, verification
+- environment, including whether local CodeGraph is available
 - Tool Result Index
 - Kept Tool Results
 - Unreduced Tool Results
@@ -87,6 +88,10 @@ OBSERVE receives a smaller cleanup context:
 - unreduced raw tool results selected from recent/latest storage
 
 OBSERVE reduces tool-result noise before ACT continues.
+
+Optional tools can be environment-gated. For example, CodeGraph is shown to the
+model only when the local `codegraph` CLI exists and the current project has a
+`.codegraph` index.
 
 Context layout:
 
