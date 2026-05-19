@@ -520,12 +520,14 @@ def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_pat
 
     assert "Chat: answer with assistant text only." in prompt
     assert "One-shot with no Goal or Plan: assistant text is the final answer" in prompt
+    assert "If Current Phase is new and visible tool results answer the request" in prompt
     assert "Tracked task: assistant text is optional" in prompt
     assert "Goal completion requires goal.complete=true" in prompt
 
 
 def test_one_shot_bash_does_not_require_goal_or_plan(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
 
     result = agent.handle_response(
         {
@@ -538,7 +540,65 @@ def test_one_shot_bash_does_not_require_goal_or_plan(tmp_path):
 
     assert result.done is False
     assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.blackboard.task_code == nanocode.TaskCode.NEW
+    assert "Current Phase:\nnew" in agent.build_user_prompt()
     assert not any("mutating work before" in error for error in agent.agent_feedback_errors)
+
+
+def test_tracked_task_tool_keeps_working_phase(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "inspect sample"
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
+
+    result = agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["printf ok"]}]},
+        confirm=lambda call, tool: True,
+    )
+
+    assert result.done is False
+    assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
+
+
+def test_planless_successful_bash_requires_answer_or_tracked_task_before_more_tools(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
+
+    first = agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["printf ok"]}]},
+        confirm=lambda call, tool: True,
+    )
+    second = agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "repeat check", "args": ["printf ok"]}]},
+        confirm=lambda call, tool: True,
+    )
+
+    assert first.done is False
+    assert second.done is False
+    assert agent.session.state.turn_tool_calls == 1
+    assert any("successful command result is already visible" in error for error in agent.agent_feedback_errors)
+
+
+def test_planless_successful_bash_allows_tracked_task_before_more_tools(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.task_code = nanocode.TaskCode.NEW
+
+    agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Bash", "intention": "run check", "args": ["printf ok"]}]},
+        confirm=lambda call, tool: True,
+    )
+    result = agent.handle_response(
+        {
+            "actions": [
+                {"type": "goal", "text": "run more checks", "complete": False},
+                {"type": "tool", "name": "Bash", "intention": "run another check", "args": ["printf ok"]},
+            ]
+        },
+        confirm=lambda call, tool: True,
+    )
+
+    assert result.done is False
+    assert agent.session.state.turn_tool_calls == 2
+    assert agent.blackboard.goal == "run more checks"
 
 
 def test_edit_tool_without_goal_or_plan_warns(tmp_path):

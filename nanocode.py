@@ -3860,6 +3860,7 @@ Pending feedback rules:
 If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
 If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
 Before repeating or broadening tool calls, inspect visible tool results.
+If Current Phase is new and visible tool results answer the request, answer with assistant text and stop.
 If they already answer a one-shot request, answer directly instead of calling more tools.
 Otherwise use them to update state, choose the next frontier, or forget noise.
 
@@ -5338,7 +5339,11 @@ class AgentStateUpdater:
         if "verify" in action_types:
             self.blackboard.task_code = TaskCode.WORKING
             return
-        if any(action_type in action_types for action_type in ("goal", "plan", "known", "stable_knowledge", "tool")) and not self.blackboard.goal_reached:
+        tracked_state = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+        if (
+            ("goal" in action_types or "plan" in action_types or "hypothesis" in action_types or (tracked_state and "tool" in action_types))
+            and not self.blackboard.goal_reached
+        ):
             self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
@@ -6529,6 +6534,23 @@ class Agent:
 
     def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if (
+            not (self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+            and self._latest_successful_bash_result()
+            and ctx.tool_calls
+            and not ctx.assistant_text
+            and not ctx.has_goal_action
+            and not ctx.has_plan_action
+        ):
+            return self._reject_agent(
+                on_message,
+                self._error(
+                    "successful command result is already visible with no active task.",
+                    "answer the one-shot result or create Goal/Plan before more tool calls.",
+                ),
+                "Retrying: answer the visible command result or start a tracked task.",
+                "Task_Gate: planless command loop.",
+            )
+        if (
             self.blackboard.task_code == TaskCode.NEW
             and self.task_alignment_required
             and (ctx.tool_calls or ctx.pending_verify_requested)
@@ -6552,6 +6574,9 @@ class Agent:
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
         return False
+
+    def _latest_successful_bash_result(self) -> bool:
+        return any(execution.call.name == BashTool.NAME and execution.outcome == "success" for execution in self.tool_runner.latest_executions)
 
     def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
