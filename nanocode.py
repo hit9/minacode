@@ -6618,14 +6618,9 @@ class Agent:
             and not ctx.has_goal_action
             and not ctx.has_plan_action
         ):
-            return self._reject_agent(
-                on_message,
-                self._error(
-                    "last command result is visible with no active task.",
-                    "answer the user now, or create Goal/Plan before calling more tools.",
-                ),
-                "Retrying: answer the visible command result, or create Goal/Plan before more tools.",
-                "Task_Gate: visible command result needs answer or Goal/Plan.",
+            self._warn_agent(
+                "last command result is visible with no active task.",
+                "answer the user when results are sufficient; create Goal/Plan for extended work.",
             )
         if (
             self.blackboard.task_code == TaskCode.NEW

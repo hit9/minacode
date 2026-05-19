@@ -567,7 +567,7 @@ def test_tracked_task_tool_keeps_working_phase(tmp_path):
     assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
 
 
-def test_planless_successful_bash_requires_answer_or_tracked_task_before_more_tools(tmp_path):
+def test_planless_successful_bash_warns_before_more_tools(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     agent.blackboard.task_code = nanocode.TaskCode.NEW
 
@@ -582,7 +582,7 @@ def test_planless_successful_bash_requires_answer_or_tracked_task_before_more_to
 
     assert first.done is False
     assert second.done is False
-    assert agent.session.state.turn_tool_calls == 1
+    assert agent.session.state.turn_tool_calls == 2
     assert any("last command result is visible" in error for error in agent.agent_feedback_errors)
 
 
