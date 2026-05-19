@@ -3754,6 +3754,7 @@ If the request is One-shot:
 If there is no Goal and the request is a Tracked task:
 - set a Goal
 - if enough context is known, also set a short Plan or call the first useful readonly tools
+- for root-cause work, set work_mode=investigate and use hypotheses to track competing explanations
 
 If there is a Goal but no Plan:
 - set a short Plan
@@ -4144,7 +4145,9 @@ Unreduced Raw Tool Results:
 --- Output ---
 
 Use function tools only.
-Prefer explicit keep/forget decisions. Omitted results are compacted by default.
+Prefer explicit KEEP/FORGET decisions. Omitted results are compacted by default.
+Known/hypothesis entries from tool results should cite SOURCE tr.N keys.
+Path-only or vague facts do not replace raw results; KEEP the raw result or record a SOURCE-backed, decision-useful conclusion before forgetting/omitting it.
 
 YOUR OUTPUT:
 """
@@ -4155,11 +4158,11 @@ Use function tools only. No prose.
 
 Job:
 - Reduce Unreduced Raw Tool Results before ACT continues.
-- Prefer declaring keep or forget for each result you reviewed.
-- keep only raw results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion.
-- forget routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
+- Prefer declaring KEEP or FORGET for each result you reviewed.
+- KEEP only raw results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion.
+- FORGET routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
 - If you omit a tr.N key, nanocode compacts it by default; use omission only for unimportant results.
-- Before forgetting an important conclusion, preserve it with known, hypothesis, or stable_knowledge.
+- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed known, hypothesis, or stable_knowledge.
 - Do not update Plan, Verify, or Goal.
 
 Allowed tools: keep, forget, known, hypothesis, stable_knowledge.
@@ -6960,9 +6963,23 @@ class Agent:
         self.tool_context.compact_observed(observed_blocks)
         self._mark_memory_checkpoint(observed_counter)
         self.observe_feedback_errors = []
+        self._warn_weak_observe_memory(ctx.actions)
         self._emit_tool_context_update(kept_keys, forgotten_keys, on_message)
         self._promote_required_verification(ctx)
         return AgentRunResult()
+
+    def _warn_weak_observe_memory(self, actions: list[Json]) -> None:
+        if any(_json_str(action.get("type")) in {"keep", "forget", "hypothesis", "stable_knowledge"} for action in actions):
+            return
+        known_actions = [action for action in actions if _json_str(action.get("type")) == "known"]
+        if not known_actions:
+            return
+        for action in known_actions:
+            for raw in _json_list(action.get("items")):
+                item = KnownItem.from_json(raw)
+                if item is not None and KnownItem.source_of(item):
+                    return
+        self._remember_observe_error(self._warning("weak observe memory: known facts need source tr.N or keep/forget coverage.", "use source-backed known/hypothesis or keep important raw results."))
 
     def _forget_tool_result_error(self, actions: list[Json]) -> str:
         keys = ToolResultContext.forget_result_keys_from_actions(actions)

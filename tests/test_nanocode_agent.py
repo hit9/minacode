@@ -488,6 +488,7 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch)
     assert "call needed tools, then answer with assistant text and stop" in prompt
     assert "do not create Goal, Plan, Known, or Verify just to report the result" in prompt
     assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
+    assert "for root-cause work, set work_mode=investigate and use hypotheses" in prompt
     assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
     assert "InspectCodeSymbol" not in prompt
     assert "OutlineCodeFile" not in prompt
@@ -999,6 +1000,18 @@ def test_observe_known_source_compacts_result_key_by_default(tmp_path):
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert [nanocode.KnownItem.format_item(item) for item in agent.blackboard.known] == ["[tr.1] a exists"]
+    assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
+
+
+def test_observe_warns_on_weak_known_without_source_or_coverage(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.latest = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+
+    agent.handle_response({"actions": [{"type": "known", "items": ["a exists"]}]})
+
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert any("weak observe memory" in error for error in agent.observe_feedback_errors)
     assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
 
 
