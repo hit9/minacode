@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 - 2026-05-19
+
+### Added
+- Added CodeGraph integration with separate `CodeGraphSymbol` and `CodeGraphContext` tools, plus `/codegraph` maintenance commands.
+- Added queued user feedback during long-running turns.
+- Added `PatchFile` for multi-location file edits.
+
+### Changed
+- Moved model calls to the OpenAI SDK and function-tool protocol.
+- Reworked task-shape prompts for chat, one-shot tasks, and tracked tasks.
+- Prioritized CodeGraph for structural code lookup while keeping Search/Read for exact literals and edit ranges.
+- Improved terminal UX with persistent status, queued-input handling, Bash live preview, and terminal-friendly assistant output rules.
+- Renamed `ListDir` to `List`.
+- Improved `Read`, `Edit`, `ReplaceRange`, `PatchFile`, `Bash`, and `Git` tool guidance.
+- Simplified gate behavior so only deterministic, correctable model errors are refused.
+
+### Fixed
+- Fixed duplicate final replies for goal-only text answers.
+- Fixed repeated recall loops and several format/tool-name compatibility issues.
+- Fixed PatchFile diagnostics and empty-hunk handling.
+- Fixed queued feedback delivery, Ctrl-C/Ctrl-D handling, and Bash interrupt reporting.
+
 ## 0.3.35 - 2026-05-16
 
 ### Changed

@@ -54,7 +54,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.3.35"
+__version__ = "0.4.0"
 
 
 JsonValue: TypeAlias = Any
