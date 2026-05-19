@@ -501,6 +501,7 @@ def test_codegraph_tool_is_hidden_until_available(tmp_path, monkeypatch):
     assert "CodeGraphContext" not in tool_names
     assert "CodeGraphSymbol" not in tool_names
     assert "- codegraph: not installed" in agent.build_user_prompt()
+    assert "codegraph_hint" not in agent.build_user_prompt()
 
 
 def test_codegraph_tool_is_visible_when_initialized(tmp_path, monkeypatch):
@@ -512,7 +513,10 @@ def test_codegraph_tool_is_visible_when_initialized(tmp_path, monkeypatch):
 
     assert "CodeGraphContext" in tool_names
     assert "CodeGraphSymbol" in tool_names
-    assert "- codegraph: available" in agent.build_user_prompt()
+    prompt = agent.build_user_prompt()
+    assert "- codegraph: available" in prompt
+    assert "use CodeGraphSymbol for known names" in prompt
+    assert "use CodeGraphContext for cross-file context/call flow" in prompt
 
 
 def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_path):

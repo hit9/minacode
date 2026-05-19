@@ -5679,14 +5679,7 @@ class Agent:
         current = self.blackboard
         conversation = self.session.state.conversation
         return AGENT_USER_PROMPT_TEMPLATE.format(
-            environment="\n".join(
-                [
-                    "- system: " + self.session.system,
-                    "- arch: " + self.session.arch,
-                    "- cwd: " + self.session.cwd,
-                    "- codegraph: " + self._codegraph_status_label(),
-                ]
-            ),
+            environment=self._format_environment(),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
@@ -5707,6 +5700,19 @@ class Agent:
             pending_user_feedback=self.session.state.pending_user_feedback or "(empty)",
             user_request=self._format_user_request(),
         ).strip()
+
+    def _format_environment(self) -> str:
+        lines = [
+            "- system: " + self.session.system,
+            "- arch: " + self.session.arch,
+            "- cwd: " + self.session.cwd,
+            "- codegraph: " + self._codegraph_status_label(),
+        ]
+        if self._codegraph_available():
+            lines.append(
+                "- codegraph_hint: use CodeGraphSymbol for known names; use CodeGraphContext for cross-file context/call flow; use Search/Read for exact paths or literals."
+            )
+        return "\n".join(lines)
 
     def _format_current_focus(self) -> str:
         plan = self.blackboard.plan
