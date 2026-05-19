@@ -2364,15 +2364,17 @@ class CodeGraphContextTool(Tool):
     MAX_CODE_BLOCKS: ClassVar[int] = 8
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "CodeGraph is a whole-project static-analysis index; use CodeGraphContext for semantic context that plain text search cannot infer well: cross-file relationships, call flow, ownership, architecture, and implementation lookup.",
-        "Prefer this when the question is about how code connects; use Search for exact literals and Read for exact paths/ranges.",
-        "Query works best as a concise search-style phrase with symbols, paths, concepts, or relationships.",
+        "Use CodeGraphContext for indexed, low-noise context from the whole-project static-analysis graph.",
+        "Best for cross-file relationships, call flow, ownership, architecture, and implementation lookup.",
+        "Use Search for exact literals and Read for exact paths/ranges.",
+        "Query should be search-like, not chat-like: symbols, paths, concepts, or relationships.",
         'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
     )
     SIGNATURE: ClassVar[str] = "CodeGraphContext(query) -> CodeGraphContextToolResult<context>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["Tool class schema generation"]',
         'Example args: ["Agent tool result context layout"]',
+        'Example args: ["ToolCallRunner parse_tool_call"]',
     )
 
     query: str = ""
@@ -2464,8 +2466,9 @@ class CodeGraphSymbolTool(Tool):
     MAX_RESULTS: ClassVar[int] = 12
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use CodeGraph's whole-project static-analysis index to find symbol definitions and locations by exact or partial name.",
-        "Prefer this over broad text Search when you know a class, function, method, variable, or qualified name; it returns structured locations directly.",
+        "Use CodeGraphSymbol for indexed, low-noise symbol lookup from the whole-project static-analysis graph.",
+        "Best when you know a class, function, method, variable, or qualified name.",
+        "Use Search for exact literals or non-symbol text.",
         "Use Read on the returned file/range before exact edits.",
     )
     SIGNATURE: ClassVar[str] = "CodeGraphSymbol(symbol) -> CodeGraphSymbolToolResult<locations>"
