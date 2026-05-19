@@ -1258,6 +1258,14 @@ def _function_tool_schema(name: str, description: str, parameters: Json) -> Json
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
 
+def _cymbal_available() -> bool:
+    return bool(shutil.which("cymbal"))
+
+
+def _cymbal_status_label() -> str:
+    return "available" if _cymbal_available() else "not installed"
+
+
 def _json_value_schema(depth: int = 3) -> Json:
     values: list[Json] = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]
     if depth > 0:
@@ -1892,7 +1900,10 @@ class ReadTool(Tool):
 class LineCountTool(Tool):
     NAME: ClassVar[str] = "LineCount"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
-    DESCRIPTION: ClassVar[tuple[str, ...]] = ("Count lines for one or more files. Useful before reading large files or deciding Read ranges.",)
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Count lines for one or more files. Useful before reading large files or deciding Read ranges.",
+        "Returns total line count across all requested files.",
+    )
     SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "other.py"]',)
 
@@ -1935,6 +1946,7 @@ class ListTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "List one directory non-recursively; optional glob filters immediate entry names.",
+        "Returns each immediate entry with type and relative path.",
         "Batch multiple List actions in one turn when checking several known directories.",
     )
     SIGNATURE: ClassVar[str] = "List([dirpath][, glob]) -> ListToolResult<entries>"
@@ -2006,6 +2018,7 @@ class SearchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
+        "Returns matching file paths, 0-based line numbers, matched lines, and requested context lines.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
@@ -2357,130 +2370,197 @@ class SearchTool(Tool):
         return self._call_python()
 
 
+class CymbalResultFormatter:
+    MAX_OUTLINE_ITEMS: ClassVar[int] = 160
+    MAX_SEARCH_ITEMS: ClassVar[int] = 80
+
+    @staticmethod
+    def read_start(value: JsonValue) -> int:
+        try:
+            return max(0, int(value) - 1)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def location(cls, item: Json) -> str:
+        path = _json_str(item.get("rel_path")) or _json_str(item.get("file")) or "?"
+        start_value = item.get("start_line", item.get("line"))
+        if start_value is None:
+            return path
+        start = cls.read_start(start_value)
+        end_value = item.get("end_line")
+        if end_value is None:
+            return path + ":" + str(start)
+        try:
+            end = max(start, int(end_value))
+        except (TypeError, ValueError):
+            end = start
+        return path + ":" + str(start) + ":" + str(end)
+
+    @classmethod
+    def symbol_line(cls, item: Json) -> str:
+        name = _json_str(item.get("name")) or _json_str(item.get("implementer")) or _json_str(item.get("caller")) or _json_str(item.get("symbol")) or "(unknown)"
+        kind = _json_str(item.get("kind"))
+        extras = []
+        if _json_str(item.get("caller")) and _json_str(item.get("symbol")):
+            extras.append("symbol=" + str(item["symbol"]))
+        if _json_str(item.get("target")):
+            extras.append("target=" + str(item["target"]))
+        if _json_str(item.get("signature")):
+            extras.append(str(item["signature"]))
+        if item.get("resolved") is False:
+            extras.append("unresolved")
+        return " ".join(part for part in (kind, name, cls.location(item), " ".join(extras)) if part)
+
+    @classmethod
+    def format_investigate(cls, result: Json) -> list[str]:
+        lines: list[str] = []
+        symbol = _json_dict(result.get("symbol"))
+        if symbol:
+            lines.append('<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>')
+            lines.append("* symbol: " + cls.symbol_line(symbol))
+        source = _json_str(result.get("source"))
+        if source and symbol:
+            lines.extend(["<source line-numbered>", ReadTool._numbered_content(source, cls.read_start(symbol.get("start_line"))).rstrip("\n"), "</source>"])
+        for label, key in (("members", "members"), ("references", "refs"), ("impact", "impact"), ("implementors", "implementors")):
+            items = [_json_dict(item) for item in _json_list(result.get(key))]
+            if items:
+                lines.extend(["<" + label + ">", *(cls.symbol_line(item) for item in items[:50]), "</" + label + ">"])
+        return lines
+
+    @classmethod
+    def format_outline(cls, items: list[Json]) -> list[str]:
+        lines = ['<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>', "<outline>"]
+        lines.extend(cls.symbol_line(item) for item in items[: cls.MAX_OUTLINE_ITEMS])
+        if len(items) > cls.MAX_OUTLINE_ITEMS:
+            lines.append("... " + str(len(items) - cls.MAX_OUTLINE_ITEMS) + " more")
+        lines.append("</outline>")
+        return lines
+
+    @classmethod
+    def format_symbol_search(cls, items: list[Json]) -> list[str]:
+        lines = ['<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>', "<symbols>"]
+        lines.extend(cls.symbol_line(item) for item in items[: cls.MAX_SEARCH_ITEMS])
+        if len(items) > cls.MAX_SEARCH_ITEMS:
+            lines.append("... " + str(len(items) - cls.MAX_SEARCH_ITEMS) + " more")
+        lines.append("</symbols>")
+        return lines
+
+
 @dataclass
-class CodeGraphContextTool(Tool):
-    NAME: ClassVar[str] = "CodeGraphContext"
-    MAX_NODES: ClassVar[int] = 40
-    MAX_CODE_BLOCKS: ClassVar[int] = 8
+class FindCodeSymbolTool(Tool):
+    NAME: ClassVar[str] = "FindCodeSymbol"
+    DEFAULT_LIMIT: ClassVar[int] = 20
+    MAX_LIMIT: ClassVar[int] = 80
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use CodeGraphContext for indexed, low-noise context from the whole-project static-analysis graph.",
-        "Prefer it over Search for structural code questions: implementation locations, cross-file relationships, call flow, ownership, and architecture.",
-        "Use Search only for exact literals; use Read for exact paths/ranges.",
-        "Query should be search-like, not chat-like: symbols, paths, concepts, or relationships.",
-        'Returned code snippets are line-numbered as "line |code" location hints; use Read before exact edits.',
+        "Find indexed symbols by one name or prefix; results rank exact, prefix, then fuzzy matches.",
+        "Returns candidate name, kind, language, 0-based file/range, and signature.",
+        "Optional limit controls max returned symbols; default 20, max 80.",
+        "Input must be one symbol-like token, not natural language or literal text patterns.",
     )
-    SIGNATURE: ClassVar[str] = "CodeGraphContext(query) -> CodeGraphContextToolResult<context>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["Tool class schema generation"]',
-        'Example args: ["Agent tool result context layout"]',
-        'Example args: ["ToolCallRunner parse_tool_call"]',
-    )
+    SIGNATURE: ClassVar[str] = "FindCodeSymbol(query[, limit]) -> FindCodeSymbolToolResult<symbols>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["Tool"]', 'Example args: ["tool_schema"]', 'Example args: ["Tool", 40]')
 
     query: str = ""
-    codegraph_path: str = ""
+    limit: int = DEFAULT_LIMIT
+    cymbal_path: str = ""
     cwd: str = ""
     timeout: int = 60
 
     @classmethod
+    def tool_schema(cls) -> Json:
+        schema = super().tool_schema()
+        schema["function"]["parameters"]["properties"]["args"] = {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": {"type": ["string", "number"], "description": "Symbol name/prefix, then optional max result count."},
+        }
+        return schema
+
+    @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) != 1:
-            raise ToolCallArgError("requires args: query")
+        if not 1 <= len(args) <= 2:
+            raise ToolCallArgError("requires args: query[, limit]")
         query = str(args[0]).strip()
         if not query:
             raise ToolCallArgError("query cannot be empty")
-        codegraph_path = shutil.which("codegraph")
-        if not codegraph_path:
-            raise ToolCallError("codegraph not found; install CodeGraph first")
-        return cls(query=query, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+        if re.search(r"\s", query):
+            raise ToolCallArgError("query must be one symbol name or prefix; do not pass natural language")
+        limit = cls.DEFAULT_LIMIT
+        if len(args) == 2:
+            try:
+                limit = min(cls.MAX_LIMIT, max(1, int(args[1])))
+            except (TypeError, ValueError):
+                raise ToolCallArgError("limit must be an integer")
+        cymbal_path = shutil.which("cymbal")
+        if not cymbal_path:
+            raise ToolCallError("cymbal not found")
+        return cls(query=query, limit=limit, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
 
     def preview(self) -> str:
-        return "CodeGraphContext(" + json.dumps(self.query, ensure_ascii=False) + ")"
+        return "FindCodeSymbol(" + json.dumps(self.query, ensure_ascii=False) + ")"
 
     def call(self) -> str:
-        if not os.path.isdir(os.path.join(self.cwd, ".codegraph")):
-            raise ToolCallError("CodeGraph not initialized; run /codegraph init")
-        cmd = [
-            self.codegraph_path,
-            "context",
-            self.query,
-            "--path",
-            self.cwd,
-            "--max-nodes",
-            str(self.MAX_NODES),
-            "--max-code",
-            str(self.MAX_CODE_BLOCKS),
-            "--format",
-            "markdown",
-        ]
+        cmd = [self.cymbal_path, "search", self.query, "--limit", str(self.limit), "--json"]
         try:
             proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
         except subprocess.TimeoutExpired as error:
             return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
-        return self._format(proc.returncode, self._number_code_blocks(_clean_terminal_output(proc.stdout)), _clean_terminal_output(proc.stderr))
+        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
 
     def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<CodeGraphContextToolResult>", "* exit_code: " + str(exit_code)]
-        if stdout:
+        lines = ["<FindCodeSymbolToolResult>", "* exit_code: " + str(exit_code)]
+        if items := self._symbol_results(stdout):
+            lines.extend(CymbalResultFormatter.format_symbol_search(items))
+        elif stdout:
             lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
         if stderr:
             lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</CodeGraphContextToolResult>")
+        lines.append("</FindCodeSymbolToolResult>")
         return "\n".join(lines)
 
-    @classmethod
-    def _number_code_blocks(cls, text: str) -> str:
-        heading_pattern = re.compile(r"^#### .+ \(([^():]+):(\d+)\)\s*$")
-        lines = text.splitlines(keepends=True)
-        numbered: list[str] = []
-        pending_start: int | None = None
-        in_code_block = False
-        current_line = 0
-        for line in lines:
-            heading = heading_pattern.match(line.rstrip("\n"))
-            if not in_code_block and heading:
-                try:
-                    pending_start = int(heading.group(2))
-                except ValueError:
-                    pending_start = None
-                numbered.append(line)
-                continue
-            if line.startswith("```"):
-                in_code_block = not in_code_block
-                current_line = pending_start or 0
-                numbered.append(line)
-                if not in_code_block:
-                    pending_start = None
-                continue
-            if in_code_block and pending_start is not None:
-                numbered.append(f"{current_line:>7} |{line}")
-                current_line += 1
-                continue
-            numbered.append(line)
-        return "".join(numbered)
+    @staticmethod
+    def _symbol_results(stdout: str) -> list[Json]:
+        try:
+            return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
+        except json.JSONDecodeError:
+            return []
 
 
 @dataclass
-class CodeGraphSymbolTool(Tool):
-    NAME: ClassVar[str] = "CodeGraphSymbol"
-    MAX_RESULTS: ClassVar[int] = 12
+class InspectCodeSymbolTool(Tool):
+    NAME: ClassVar[str] = "InspectCodeSymbol"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use CodeGraphSymbol for indexed, low-noise symbol lookup from the whole-project static-analysis graph.",
-        "Prefer it over Search when you know or can guess a class, function, method, variable, or qualified name.",
-        "Use Search for exact literals or non-symbol text.",
-        "Use Read on the returned file/range before exact edits.",
+        "Inspect one indexed symbol, Class.member, or symbol prefix.",
+        "Returns line-numbered source plus members, references, shallow impact/callers, and implementors when available.",
+        "Use it to understand a class/function/API and nearby relationships from the index.",
+        "Symbol matching is case-insensitive; returned line numbers are 0-based.",
+        "Not for files, directories, module paths, natural language, or literal text patterns.",
     )
-    SIGNATURE: ClassVar[str] = "CodeGraphSymbol(symbol) -> CodeGraphSymbolToolResult<locations>"
+    SIGNATURE: ClassVar[str] = "InspectCodeSymbol(symbol) -> InspectCodeSymbolToolResult<context>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["Tool"]',
         'Example args: ["Agent.run"]',
     )
 
     symbol: str = ""
-    codegraph_path: str = ""
+    cymbal_path: str = ""
     cwd: str = ""
     timeout: int = 60
+
+    @classmethod
+    def tool_schema(cls) -> Json:
+        schema = super().tool_schema()
+        schema["function"]["parameters"]["properties"]["args"] = {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {"type": "string", "description": "One symbol, Class.member, or symbol prefix."},
+        }
+        return schema
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
@@ -2489,18 +2569,24 @@ class CodeGraphSymbolTool(Tool):
         symbol = str(args[0]).strip()
         if not symbol:
             raise ToolCallArgError("symbol cannot be empty")
-        codegraph_path = shutil.which("codegraph")
-        if not codegraph_path:
-            raise ToolCallError("codegraph not found; install CodeGraph first")
-        return cls(symbol=symbol, codegraph_path=codegraph_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+        cymbal_path = shutil.which("cymbal")
+        if not cymbal_path:
+            raise ToolCallError("cymbal not found")
+        path_target = session.resolve_path(symbol)
+        dotted_path = session.resolve_path(symbol.replace(".", os.sep)) if "." in symbol and os.sep not in symbol else ""
+        if os.path.exists(path_target) or (dotted_path and os.path.exists(dotted_path)):
+            raise ToolCallArgError("symbol target looks like a file or directory; use OutlineCodeFile, List, Search, or Read")
+        if re.search(r"\s", symbol):
+            raise ToolCallArgError("symbol must be one symbol, Class.member, or symbol prefix; do not pass natural language")
+        if "." in symbol and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", symbol):
+            raise ToolCallArgError("symbol looks like a module path; use List/Search/Read for modules/packages, or pass a specific symbol")
+        return cls(symbol=symbol, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
 
     def preview(self) -> str:
-        return "CodeGraphSymbol(" + json.dumps(self.symbol, ensure_ascii=False) + ")"
+        return "InspectCodeSymbol(" + json.dumps(self.symbol, ensure_ascii=False) + ")"
 
     def call(self) -> str:
-        if not os.path.isdir(os.path.join(self.cwd, ".codegraph")):
-            raise ToolCallError("CodeGraph not initialized; run /codegraph init")
-        cmd = [self.codegraph_path, "query", self.symbol, "--path", self.cwd, "--limit", str(self.MAX_RESULTS), "-j"]
+        cmd = [self.cymbal_path, "investigate", self.symbol, "--json"]
         try:
             proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
         except subprocess.TimeoutExpired as error:
@@ -2508,38 +2594,97 @@ class CodeGraphSymbolTool(Tool):
         return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
 
     def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<CodeGraphSymbolToolResult>", "* exit_code: " + str(exit_code)]
-        symbols = self._symbols(stdout)
-        if symbols:
-            lines.extend(["<symbols>", *symbols, "</symbols>"])
+        lines = ["<InspectCodeSymbolToolResult>", "* exit_code: " + str(exit_code)]
+        if result := self._investigate_result(stdout):
+            lines.extend(CymbalResultFormatter.format_investigate(result))
         elif stdout:
             lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
         if stderr:
             lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</CodeGraphSymbolToolResult>")
+        lines.append("</InspectCodeSymbolToolResult>")
         return "\n".join(lines)
 
-    @classmethod
-    def _symbols(cls, stdout: str) -> list[str]:
+    @staticmethod
+    def _investigate_result(stdout: str) -> Json | None:
         try:
-            values = _json_list(json.loads(stdout))
+            data = _json_dict(json.loads(stdout))
+        except json.JSONDecodeError:
+            return None
+        result = _json_dict(_json_dict(data.get("results")).get("result"))
+        return result or None
+
+
+@dataclass
+class OutlineCodeFileTool(Tool):
+    NAME: ClassVar[str] = "OutlineCodeFile"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Outline indexed symbols in one file.",
+        "Pass a file path only; directories and symbols are not supported.",
+        "Returns classes, functions, methods, kinds, signatures, and 0-based locations.",
+    )
+    SIGNATURE: ClassVar[str] = "OutlineCodeFile(filepath) -> OutlineCodeFileToolResult<outline>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["nanocode.py"]',)
+
+    filepath: str = ""
+    cymbal_path: str = ""
+    cwd: str = ""
+    timeout: int = 60
+
+    @classmethod
+    def tool_schema(cls) -> Json:
+        schema = super().tool_schema()
+        schema["function"]["parameters"]["properties"]["args"] = {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {"type": "string", "description": "One file path."},
+        }
+        return schema
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        if len(args) != 1:
+            raise ToolCallArgError("requires args: filepath")
+        filepath = session.resolve_path(str(args[0]).strip())
+        if not os.path.isfile(filepath):
+            raise ToolCallArgError("filepath must be an existing file; directories and symbols are not supported")
+        cymbal_path = shutil.which("cymbal")
+        if not cymbal_path:
+            raise ToolCallError("cymbal not found")
+        return cls(filepath=filepath, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+
+    def requires_confirmation(self, session: Session) -> bool:
+        return not session.is_path_in_cwd(self.filepath)
+
+    def preview(self) -> str:
+        return "OutlineCodeFile(" + json.dumps(os.path.relpath(self.filepath, self.cwd), ensure_ascii=False) + ")"
+
+    def call(self) -> str:
+        cmd = [self.cymbal_path, "outline", self.filepath, "--json"]
+        try:
+            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
+        except subprocess.TimeoutExpired as error:
+            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
+        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
+
+    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
+        lines = ["<OutlineCodeFileToolResult>", "* exit_code: " + str(exit_code)]
+        if items := self._outline_results(stdout):
+            lines.extend(CymbalResultFormatter.format_outline(items))
+        elif stdout:
+            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+        if stderr:
+            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+        lines.append("</OutlineCodeFileToolResult>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _outline_results(stdout: str) -> list[Json]:
+        try:
+            return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
         except json.JSONDecodeError:
             return []
-        lines = []
-        for index, item in enumerate(values, 1):
-            node = _json_dict(_json_dict(item).get("node"))
-            if not node:
-                continue
-            line_range = str(node.get("startLine") or "?")
-            if node.get("endLine") and node.get("endLine") != node.get("startLine"):
-                line_range += "-" + str(node["endLine"])
-            text = f"{index}. {node.get('kind') or 'symbol'} {node.get('qualifiedName') or node.get('name') or '(unknown)'} {node.get('filePath') or '?'}:{line_range}"
-            if node.get("signature"):
-                text += " " + str(node["signature"])
-            if isinstance(_json_dict(item).get("score"), int | float):
-                text += " score=" + f"{float(_json_dict(item)['score']):.1f}"
-            lines.append(text)
-        return lines
 
 
 @dataclass
@@ -2548,6 +2693,7 @@ class EditTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace/delete exact literal text in an existing file; default requires one unique match, optional 'all' replaces every match.",
+        "Returns changed path plus replacement count or created=true.",
         "If the target is structural or line ranges are clearer, use ReplaceRange.",
     )
     SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace[, all]) -> EditToolResult<path, replacements>"
@@ -2643,6 +2789,7 @@ class PatchFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Apply a small single-file unified-diff-style patch for coordinated multi-location edits.",
+        "Returns changed path and applied hunk count.",
         "Inside hunks, every line should start with space, -, or +; indented context copied without the extra marker is tolerated.",
         "Context lines must be exact file text, without Read display prefixes.",
         "Each hunk must include enough unchanged context to match exactly once; all hunks must apply or nothing is written.",
@@ -2803,6 +2950,7 @@ class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Create a new UTF-8 file with short initial content; target file must not exist.",
+        "Returns changed path and created=true.",
         "For substantial new files, create only a small skeleton first, then grow it with focused ReplaceRange edits.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
@@ -2869,6 +3017,7 @@ class ReplaceRangeTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
+        "Returns changed path plus resolved ranges, fingerprints, and relocation info when applicable.",
         "Pass ranges as [[start,end,fingerprint,before_context,after_context,content], ...].",
         "Pass exact before_context and after_context when known; empty boundary context is allowed for non-empty replacements.",
         "Content is only the replacement for that range; do not include boundary lines.",
@@ -3072,6 +3221,7 @@ class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd.",
+        "Returns exit_code plus stdout/stderr; long output is stored and bounded in context.",
         "Prefer dedicated tools when they provide structured repo access; use Bash when shell semantics or pipelines are the clearest path.",
         "Good Bash uses include tests, builds, and Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.",
         "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
@@ -3247,6 +3397,7 @@ class GitTool(Tool):
     NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run git without a shell for repository state, history, status, diff, and changed files.",
+        "Returns exit_code plus stdout/stderr.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
         "By default, stage/commit only files changed for the current task; include unrelated dirty files only when the user explicitly asks.",
     )
@@ -3310,6 +3461,7 @@ class PlanModeGitTool(GitTool):
     NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run readonly git commands only: status, diff, log, show, rev-parse, ls-files, grep, blame.",
+        "Returns exit_code plus stdout/stderr.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
     )
 
@@ -3320,6 +3472,7 @@ class ToolResultTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Recall stored tool results by tr.* key; pass optional 0-based line ranges to read exact slices from the stored full log.",
+        "Returns recalled result metadata plus bounded content or requested full-log slices.",
     )
     SIGNATURE: ClassVar[str] = "Recall(key...[, range_token...]) -> RecallToolResult<content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
@@ -3386,8 +3539,9 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ReadTool.NAME: ReadTool,
     LineCountTool.NAME: LineCountTool,
     ListTool.NAME: ListTool,
-    CodeGraphSymbolTool.NAME: CodeGraphSymbolTool,
-    CodeGraphContextTool.NAME: CodeGraphContextTool,
+    FindCodeSymbolTool.NAME: FindCodeSymbolTool,
+    OutlineCodeFileTool.NAME: OutlineCodeFileTool,
+    InspectCodeSymbolTool.NAME: InspectCodeSymbolTool,
     SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
     EditTool.NAME: EditTool,
@@ -3397,7 +3551,17 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (ReadTool, LineCountTool, ListTool, CodeGraphSymbolTool, CodeGraphContextTool, SearchTool, PlanModeGitTool, ToolResultTool)
+PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (
+    ReadTool,
+    LineCountTool,
+    ListTool,
+    FindCodeSymbolTool,
+    OutlineCodeFileTool,
+    InspectCodeSymbolTool,
+    SearchTool,
+    PlanModeGitTool,
+    ToolResultTool,
+)
 
 
 def _canonical_tool_name(name: str | None) -> str:
@@ -3635,7 +3799,7 @@ Rules:
 - stop investigating when the exact target and next edit/check are clear
 
 DISCOVERY AND EDITING
-Use Search/List/LineCount when path, symbol, range, or target is unknown.
+{ __discovery_hint__ }
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 Read line prefixes are display-only; edit text starts immediately after "|".
@@ -5721,11 +5885,10 @@ class Agent:
             "- system: " + self.session.system,
             "- arch: " + self.session.arch,
             "- cwd: " + self.session.cwd,
-            "- codegraph: " + self._codegraph_status_label(),
         ]
-        if self._codegraph_available():
+        if self._inspect_code_available():
             lines.append(
-                "- codegraph_hint: CodeGraph is a whole-project static-analysis index. For structural code lookup, prefer CodeGraphSymbol for known or guessed names and CodeGraphContext for implementation locations, relationships, call flow, and architecture. Use Search only for exact literals; use Read for exact paths/ranges."
+                "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (case-insensitive, optional limit default 20 max 80), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )
         return "\n".join(lines)
 
@@ -5758,25 +5921,31 @@ class Agent:
         return (
             (template or AGENT_SYSTEM_PROMPT)
             .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
+            .replace("{ __discovery_hint__ }", self._discovery_prompt_hint(tool_classes))
             .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
             .strip()
         )
 
     def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
-        if self._codegraph_available():
+        if self._inspect_code_available():
             return tool_classes
-        return tuple(tool for tool in tool_classes if tool not in (CodeGraphContextTool, CodeGraphSymbolTool))
+        return tuple(tool for tool in tool_classes if tool not in (FindCodeSymbolTool, OutlineCodeFileTool, InspectCodeSymbolTool))
 
-    def _codegraph_available(self) -> bool:
-        return bool(shutil.which("codegraph") and os.path.isdir(os.path.join(self.session.cwd, ".codegraph")))
+    def _inspect_code_available(self) -> bool:
+        return _cymbal_available()
 
-    def _codegraph_status_label(self) -> str:
-        if not shutil.which("codegraph"):
-            return "not installed"
-        if not os.path.isdir(os.path.join(self.session.cwd, ".codegraph")):
-            return "not initialized; run /codegraph init"
-        return "available"
+    def _discovery_prompt_hint(self, tool_classes: Iterable[ToolClass]) -> str:
+        if FindCodeSymbolTool not in tool_classes and OutlineCodeFileTool not in tool_classes and InspectCodeSymbolTool not in tool_classes:
+            return "Use Search/List/LineCount when path, symbol, range, or target is unknown."
+        return (
+            "For structural code discovery, prefer indexed code tools before Search/Read.\n"
+            "- Use FindCodeSymbol for symbol candidates by name or prefix.\n"
+            "- Use InspectCodeSymbol for line-numbered source, members, references, and implementors of one symbol.\n"
+            "- Use OutlineCodeFile for a file-level symbol outline.\n"
+            "- Use Search for exact literal text, config, comments, logs, or when no useful path/symbol guess exists.\n"
+            "- Use List/LineCount when path shape or file size is unknown."
+        )
 
     def _format_user_request(self) -> str:
         user_request = self.blackboard.user_input or "(empty)"
@@ -7053,7 +7222,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/compact", "Compact conversation history", "Info", "/compact"),
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/context", "Show or set context budget", "Config", "/context [low|medium|high]"),
-    CommandSpec("/codegraph", "Run CodeGraph maintenance", "Config", "/codegraph [status|sync|init|index]"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
     CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
@@ -7122,7 +7290,6 @@ class CommandDispatcher:
     COMMAND_ALIASES = {"/context-budget": "/context", "/context_budget": "/context"}
     API_USAGE = "Usage: /api [auto|chat|responses]"
     REASON_PAYLOAD_USAGE = "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
-    CODEGRAPH_USAGE = "Usage: /codegraph [status|sync|init|index]"
 
     def __init__(
         self,
@@ -7386,6 +7553,7 @@ class CommandDispatcher:
                 + session.settings.context_budget,
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
+                "tools: cymbal=" + _cymbal_status_label(),
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 model_usage,
@@ -7409,81 +7577,6 @@ class CommandDispatcher:
             self.agent.apply_context_budget()
             return "Set runtime.context_budget = " + value + "\n" + self._format_context_budget()
         return self._format_context_budget()
-
-    def _codegraph(self, args: str) -> str:
-        command = args.strip()
-        if command not in {"status", "sync", "init", "index"}:
-            return self.CODEGRAPH_USAGE
-        codegraph_path = shutil.which("codegraph")
-        if not codegraph_path:
-            return "codegraph not found; install CodeGraph first"
-        argv = {
-            "status": [codegraph_path, "status", "-j", "."],
-            "sync": [codegraph_path, "sync", "-q", "."],
-            "init": [codegraph_path, "init", ".", "--index"],
-            "index": [codegraph_path, "index", "-q", "."],
-        }[command]
-        return self._with_status(lambda: self._run_codegraph(command, argv))
-
-    def _run_codegraph(self, command: str, argv: list[str]) -> str:
-        try:
-            proc = subprocess.run(
-                argv,
-                cwd=self.agent.session.cwd,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=max(300, self.agent.session.settings.shell_timeout),
-                env=_plain_command_env(),
-            )
-            return self._format_codegraph_command_result(command, proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
-        except subprocess.TimeoutExpired as error:
-            return self._format_codegraph_command_result(
-                command,
-                -1,
-                _clean_terminal_output(error.stdout or ""),
-                _clean_terminal_output(error.stderr or "") + "timeout",
-            )
-
-    def _format_codegraph_command_result(self, command: str, exit_code: int, stdout: str, stderr: str) -> str:
-        if command == "status" and exit_code == 0:
-            return self._format_codegraph_status(stdout)
-        if exit_code == 0:
-            detail = stdout or stderr
-            return "CodeGraph " + command + " completed." + ("\n" + detail if detail else "")
-        lines = ["CodeGraph " + command + " failed (exit " + str(exit_code) + ")."]
-        if stderr:
-            lines.append(stderr)
-        if stdout:
-            lines.append(stdout)
-        return "\n".join(lines)
-
-    def _format_codegraph_status(self, stdout: str) -> str:
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            return stdout or "CodeGraph status unavailable."
-        pending = _json_dict(data.get("pendingChanges"))
-        return "\n".join(
-            [
-                "CodeGraph: " + ("initialized" if data.get("initialized") else "not initialized"),
-                "project: " + (_json_str(data.get("projectPath")) or self.agent.session.cwd),
-                "index: files="
-                + str(data.get("fileCount", 0))
-                + " nodes="
-                + str(data.get("nodeCount", 0))
-                + " edges="
-                + str(data.get("edgeCount", 0))
-                + " backend="
-                + (_json_str(data.get("backend")) or "unknown"),
-                "pending: added="
-                + str(pending.get("added", 0))
-                + " modified="
-                + str(pending.get("modified", 0))
-                + " removed="
-                + str(pending.get("removed", 0)),
-            ]
-        )
 
     def _format_context_budget(self) -> str:
         budget = self.agent.context_budget()
@@ -8973,12 +9066,6 @@ class CommandCompleter(Completer):
         if text.startswith("/api "):
             text = text[len("/api ") :]
             for value in ("auto", "chat", "responses"):
-                if value.startswith(text):
-                    yield Completion(value, start_position=-len(text))
-            return
-        if text.startswith("/codegraph "):
-            text = text[len("/codegraph ") :]
-            for value in ("status", "sync", "init", "index"):
                 if value.startswith(text):
                     yield Completion(value, start_position=-len(text))
             return

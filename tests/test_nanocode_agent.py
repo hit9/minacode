@@ -474,7 +474,8 @@ def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
     assert "pending-feedback replies" in prompt
 
 
-def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
+def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
     agent = Agent(Session(cwd=str(tmp_path)))
 
     prompt = agent._system_prompt()
@@ -488,37 +489,49 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path):
     assert "do not create Goal, Plan, Known, or Verify just to report the result" in prompt
     assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
     assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
-    assert "CodeGraphContext" not in prompt
-    assert "CodeGraphSymbol" not in prompt
+    assert "InspectCodeSymbol" not in prompt
+    assert "OutlineCodeFile" not in prompt
+    assert "FindCodeSymbol" not in prompt
+    assert "Use Search/List/LineCount when path, symbol, range, or target is unknown" in prompt
+    assert "__discovery_hint__" not in prompt
 
 
-def test_codegraph_tool_is_hidden_until_available(tmp_path, monkeypatch):
+def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "CodeGraphContext" not in tool_names
-    assert "CodeGraphSymbol" not in tool_names
-    assert "- codegraph: not installed" in agent.build_user_prompt()
-    assert "codegraph_hint" not in agent.build_user_prompt()
+    assert "FindCodeSymbol" not in tool_names
+    assert "InspectCodeSymbol" not in tool_names
+    assert "OutlineCodeFile" not in tool_names
+    prompt = agent.build_user_prompt()
+    assert "- inspect_code:" not in prompt
+    assert "inspect_code_hint" not in prompt
 
 
-def test_codegraph_tool_is_visible_when_initialized(tmp_path, monkeypatch):
-    (tmp_path / ".codegraph").mkdir()
+def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/codegraph" if name == "codegraph" else "")
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/cymbal" if name == "cymbal" else "")
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "CodeGraphContext" in tool_names
-    assert "CodeGraphSymbol" in tool_names
+    assert "FindCodeSymbol" in tool_names
+    assert "InspectCodeSymbol" in tool_names
+    assert "OutlineCodeFile" in tool_names
+    system_prompt = agent._system_prompt()
+    assert "prefer indexed code tools before Search/Read" in system_prompt
+    assert "Use FindCodeSymbol for symbol candidates by name or prefix" in system_prompt
+    assert "Use InspectCodeSymbol for line-numbered source, members, references, and implementors" in system_prompt
     prompt = agent.build_user_prompt()
-    assert "- codegraph: available" in prompt
-    assert "CodeGraph is a whole-project static-analysis index" in prompt
-    assert "prefer CodeGraphSymbol for known or guessed names" in prompt
-    assert "CodeGraphContext for implementation locations, relationships, call flow, and architecture" in prompt
-    assert "Use Search only for exact literals; use Read for exact paths/ranges" in prompt
+    assert "Use FindCodeSymbol for symbol/prefix candidates" in prompt
+    assert "InspectCodeSymbol for chosen symbols" in prompt
+    assert "OutlineCodeFile for known file structure" in prompt
+    assert "cymbal" not in prompt
+    assert "case-insensitive" in prompt
+    assert "optional limit default 20 max 80" in prompt
+    assert "Do not pass natural language" in prompt
+    assert "Use Search/Read for text, config, logs, commands, and exact ranges" in prompt
 
 
 def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_path):

@@ -3,14 +3,14 @@
 ## 0.4.0 - 2026-05-19
 
 ### Added
-- Added CodeGraph integration with separate `CodeGraphSymbol` and `CodeGraphContext` tools, plus `/codegraph` maintenance commands.
+- Added indexed code inspection tools for symbol lookup, symbol investigation, and file outlines when the local index is available.
 - Added queued user feedback during long-running turns.
 - Added `PatchFile` for multi-location file edits.
 
 ### Changed
 - Moved model calls to the OpenAI SDK and function-tool protocol.
 - Reworked task-shape prompts for chat, one-shot tasks, and tracked tasks.
-- Prioritized CodeGraph for structural code lookup while keeping Search/Read for exact literals and edit ranges.
+- Prioritized indexed code inspection for structural lookup while keeping Search/Read for exact literals and edit ranges.
 - Improved terminal UX with persistent status, queued-input handling, Bash live preview, and terminal-friendly assistant output rules.
 - Renamed `ListDir` to `List`.
 - Improved `Read`, `Edit`, `ReplaceRange`, `PatchFile`, `Bash`, and `Git` tool guidance.

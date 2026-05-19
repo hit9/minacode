@@ -103,6 +103,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
+    assert "tools: cymbal=" in result.message
     assert "task: done" in result.message
     assert "blackboard" not in result.message
 
@@ -192,68 +193,6 @@ def test_context_command_shows_and_sets_budget(tmp_path):
     assert len(agent.tool_context.kept_results[0]) <= agent.context_budget().kept_block_chars
     assert alias_result.message.startswith("Set runtime.context_budget = high\ncontext_budget: high")
     assert invalid_result.message == "Usage: /context [low|medium|high]"
-
-
-def test_codegraph_command_runs_maintenance_subcommands(tmp_path, monkeypatch):
-    session = make_session(tmp_path)
-    dispatcher = CommandDispatcher(Agent(session))
-    seen = {}
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/codegraph" if name == "codegraph" else "")
-
-    def fake_run(cmd, **kwargs):
-        seen["cmd"] = cmd
-        seen["cwd"] = kwargs["cwd"]
-        return nanocode.subprocess.CompletedProcess(
-            cmd,
-            0,
-            '{"initialized":true,"projectPath":"/repo","fileCount":2,"nodeCount":3,"edgeCount":4,"backend":"native","pendingChanges":{"added":1,"modified":0,"removed":0}}\n',
-            "",
-        )
-
-    monkeypatch.setattr(nanocode.subprocess, "run", fake_run)
-
-    result = dispatcher.dispatch("/codegraph status")
-    usage_result = dispatcher.dispatch("/codegraph nope")
-
-    assert result.status == CommandStatus.HANDLED
-    assert seen == {"cmd": ["/fake/codegraph", "status", "-j", "."], "cwd": str(tmp_path)}
-    assert result.message == "\n".join(
-        [
-            "CodeGraph: initialized",
-            "project: /repo",
-            "index: files=2 nodes=3 edges=4 backend=native",
-            "pending: added=1 modified=0 removed=0",
-        ]
-    )
-    assert usage_result.message == "Usage: /codegraph [status|sync|init|index]"
-
-
-def test_codegraph_command_strips_terminal_control_output(tmp_path, monkeypatch):
-    session = make_session(tmp_path)
-    dispatcher = CommandDispatcher(Agent(session))
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/codegraph" if name == "codegraph" else "")
-
-    def fake_run(cmd, **kwargs):
-        return nanocode.subprocess.CompletedProcess(cmd, 0, "\x1b[1mTitle\x1b[0m\r\x1b[KParsing ███░ 50%\nDone\nDone\n", "")
-
-    monkeypatch.setattr(nanocode.subprocess, "run", fake_run)
-
-    result = dispatcher.dispatch("/codegraph sync")
-
-    assert "CodeGraph sync completed." in result.message
-    assert "Title" in result.message
-    assert "Done" in result.message
-    assert "\x1b" not in result.message
-    assert "50%" not in result.message
-    assert result.message.count("Done") == 1
-
-
-def test_codegraph_command_reports_missing_binary(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
-
-    result = CommandDispatcher(Agent(make_session(tmp_path))).dispatch("/codegraph status")
-
-    assert result.message == "codegraph not found; install CodeGraph first"
 
 
 def test_plan_command_toggles_plan_mode(tmp_path):

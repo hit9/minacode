@@ -67,7 +67,7 @@ When the model outputs `goal` with a different current-task goal:
 ACT mode receives a working context:
 
 - goal, plan, hypotheses, verification
-- environment, including whether local CodeGraph is available
+- environment, including whether local symbol inspection is available
 - Tool Result Index
 - Kept Tool Results
 - Unreduced Tool Results
@@ -89,9 +89,10 @@ OBSERVE receives a smaller cleanup context:
 
 OBSERVE reduces tool-result noise before ACT continues.
 
-Optional tools can be environment-gated. For example, CodeGraph tools are shown
-to the model only when the local `codegraph` CLI exists and the current project
-has a `.codegraph` index.
+Optional tools can be environment-gated. For example, `FindCodeSymbol`,
+`InspectCodeSymbol`, and `OutlineCodeFile` are shown only when the local
+`cymbal` CLI exists. They accept symbol queries or file paths, not
+natural-language questions.
 
 Context layout:
 

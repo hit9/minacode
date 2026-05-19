@@ -372,11 +372,9 @@ def test_agent_loop_command_completer_matches_slash_commands():
     model_completions = list(nanocode.CommandCompleter(models=["qwen3", "deepseek"]).get_completions(Document("/model q"), CompleteEvent(completion_requested=True)))
     plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
     api_completions = list(completer.get_completions(Document("/api r"), CompleteEvent(completion_requested=True)))
-    codegraph_completions = list(completer.get_completions(Document("/codegraph s"), CompleteEvent(completion_requested=True)))
     reason_payload_completions = list(completer.get_completions(Document("/reason-payload rea"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
-    assert "/codegraph" in [completion.text for completion in slash_completions]
     assert "/api" in [completion.text for completion in slash_completions]
     assert "/reason-payload" in [completion.text for completion in slash_completions]
     assert "/plan" in [completion.text for completion in slash_completions]
@@ -388,7 +386,6 @@ def test_agent_loop_command_completer_matches_slash_commands():
     assert [completion.text for completion in model_completions] == ["qwen3"]
     assert [completion.text for completion in plan_completions] == ["on", "off"]
     assert [completion.text for completion in api_completions] == ["responses"]
-    assert [completion.text for completion in codegraph_completions] == ["status", "sync"]
     assert [completion.text for completion in reason_payload_completions] == ["reasoning", "reasoning_effort"]
 
 
