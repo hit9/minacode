@@ -17,14 +17,18 @@ class FakeRepository:
         self.create_index = create_index
         self.events.append(("repo", root, db_path, create_index))
 
-    def refresh(self):
-        self.events.append(("refresh", self.root, self.db_path))
+    def refresh(self, *, progress=None):
+        self.events.append(("refresh", self.root, self.db_path, progress is not None))
+        if progress is not None:
+            progress("scan")
+            progress("start", done=0, total=2)
+            progress("file", done=1, total=2, path="code.py")
         if self.refresh_status is not None:
             type(self).status = self.refresh_status
         return self
 
-    def update(self, paths=None):
-        self.events.append(("update", tuple(paths or ()), self.root, self.db_path))
+    def update(self, paths=None, *, progress=None):
+        self.events.append(("update", tuple(paths or ()), self.root, self.db_path, progress is not None))
         return self
 
     def search_text(self, query, *, limit):
@@ -106,7 +110,8 @@ def test_code_index_sync_initializes_missing_index_in_project_data(tmp_path, mon
 
     db_path = str(tmp_path / "data" / "projects" / session.project_key() / "code-symbol-index" / "index.sqlite")
     assert ("repo", str(tmp_path), db_path, True) in FakeRepository.events
-    assert ("refresh", str(tmp_path), db_path) in FakeRepository.events
+    assert ("refresh", str(tmp_path), db_path, True) in FakeRepository.events
+    assert session.state.status_notice == "index:done"
     assert result == "code_index: initialized\nstatus: ready\npath: " + db_path
 
 
@@ -122,6 +127,7 @@ def test_code_index_force_rebuild_removes_project_index_dir(tmp_path, monkeypatc
 
     assert not (index_dir / "old.sqlite").exists()
     assert ("repo", str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
+    assert ("refresh", str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
     assert result == "code_index: rebuilt\nstatus: ready\npath: " + nanocode._code_index_db_path(session)
 
 
@@ -131,7 +137,7 @@ def test_code_index_update_existing_syncs_ready_index_only(tmp_path, monkeypatch
 
     nanocode._code_index_update_existing(session)
 
-    assert ("update", tuple(), str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
+    assert ("update", tuple(), str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
 
 
 def test_find_code_symbol_uses_search_text(tmp_path, monkeypatch):

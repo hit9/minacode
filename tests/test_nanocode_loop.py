@@ -207,7 +207,7 @@ def test_status_bar_shows_recent_status_notice(tmp_path):
     session.state.status_notice_until = time.monotonic() + 5
     bar = StatusBar(session)
 
-    assert _status_text(bar).endswith(" | err:format")
+    assert "model (medium) | err:format | ctx:" in _status_text(bar)
 
     session.state.status_notice_until = 0
 
@@ -543,6 +543,32 @@ def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
     AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=outputs.append)._print_welcome()
 
     assert any("tip: /index initializes indexed code tools" in output for output in outputs)
+
+
+def test_agent_loop_starts_existing_index_sync_in_background(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("ready", ""))
+
+    class FakeThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            started.append((self.target, self.daemon))
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+
+    monkeypatch.setattr(nanocode.threading, "Thread", FakeThread)
+    outputs = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "/exit", output_fn=outputs.append)
+
+    assert loop.run() == 0
+    assert len(started) == 1
+    assert started[0][1] is True
 
 
 def test_agent_loop_consumes_queued_input_before_prompt(tmp_path):
