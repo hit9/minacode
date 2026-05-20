@@ -39,7 +39,6 @@ The main task state lives in the blackboard:
 - plan
 - hypotheses
 - known facts: settled facts for the current task
-- stable knowledge: rare reusable codebase facts
 - verification state
 - recent edits
 
@@ -60,7 +59,7 @@ When the model outputs `goal` with a different current-task goal:
 - kept tool results are cleared
 - visible raw tool results are compacted into summaries
 - full tool logs remain available through `Recall tr.N`
-- known and stable knowledge remain available
+- known facts remain available
 
 ## Context Construction
 
@@ -74,7 +73,7 @@ ACT mode receives a working context:
 - Latest Tool Results
 - errors
 - recent edits
-- known and stable knowledge
+- known facts
 - conversation history
 - latest user request
 
@@ -82,7 +81,7 @@ OBSERVE receives a smaller cleanup context:
 
 - latest user request
 - goal, plan, hypotheses
-- known and stable knowledge
+- known facts
 - kept tool results
 - observe errors
 - unreduced raw tool results selected from recent/latest storage
@@ -111,7 +110,6 @@ ACT user prompt, top -> bottom
 +--------------------------------------------------+------------------------------+
 | Background                                       | compact_at                   |
 |   - Environment                                  |                              |
-|   - Stable Knowledge                             |                              |
 |   - User Rules                                   |                              |
 |   - Conversation History                         |                              |
 +--------------------------------------------------+------------------------------+

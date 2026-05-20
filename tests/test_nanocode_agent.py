@@ -403,7 +403,6 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect failing path", status=nanocode.PlanStatus.DOING)]
     agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="cache branch", status=nanocode.HypothesisStatus.ACTIVE, source=("tr.1",))]
     agent.blackboard.known = ["known fact"]
-    agent.blackboard.stable_knowledge = {"workflow": ["use pytest"]}
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.recent_edits = ["- sample.py: old edit"]
     agent.agent_feedback_errors = ["act error"]
@@ -418,7 +417,6 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     assert "inspect failing path" in prompt
     assert "cache branch" in prompt
     assert "known fact" in prompt
-    assert "use pytest" in prompt
     assert "selected result" in prompt
     assert "raw alpha" in prompt
     assert "Observe Errors" in prompt
@@ -2059,52 +2057,6 @@ def test_agent_keeps_latest_500_known_items(tmp_path):
     assert agent.blackboard.known[-1] == "fact 500"
 
 
-def test_main_agent_applies_stable_knowledge_action(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {"type": "known", "items": ["Read pyproject.toml."]},
-                {
-                    "type": "stable_knowledge",
-                    "items": [
-                        {"category": "workflow", "text": "Project test command is make test."},
-                        {"category": "workflow", "text": "Project test command is make test."},
-                    ],
-                }
-            ]
-        }
-    )
-
-    assert agent.blackboard.known == ["Read pyproject.toml."]
-    assert agent.blackboard.stable_knowledge == {"workflow": ["Project test command is make test."]}
-    assert "  Stable_Knowledge\n" in agent.state_updater.latest_report
-    assert "    workflow\n" in agent.state_updater.latest_report
-    assert "      1. Project test command is make test." in agent.state_updater.latest_report
-
-
-def test_main_agent_keeps_latest_30_stable_knowledge_items_per_category(tmp_path):
-    session = Session(cwd=str(tmp_path))
-    agent = Agent(session)
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "stable_knowledge",
-                    "items": [{"category": "workflow", "text": "stable fact " + str(index)} for index in range(31)],
-                }
-            ]
-        }
-    )
-
-    assert len(agent.blackboard.stable_knowledge["workflow"]) == 30
-    assert agent.blackboard.stable_knowledge["workflow"][0] == "stable fact 1"
-    assert agent.blackboard.stable_knowledge["workflow"][-1] == "stable fact 30"
-
-
 def test_main_agent_applies_user_rule_and_saves(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -3164,7 +3116,6 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     agent.blackboard.goal = "read samples"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     agent.blackboard.known = ["keep this fact"]
-    agent.blackboard.stable_knowledge = {"workflow": ["Project test command is make test."]}
     agent.tool_context.latest = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -3183,7 +3134,6 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.stable_knowledge == {"workflow": ["Project test command is make test."]}
     assert agent.blackboard.verification.status == VerificationStatus.IDLE
     assert agent.blackboard.goal_reached is False
 

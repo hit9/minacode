@@ -400,7 +400,6 @@ class Blackboard:
     hypotheses: list[Hypothesis] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
     memory_checkpoint_tool_result_counter: int = 0
-    stable_knowledge: dict[str, list[str]] = field(default_factory=dict)
     verification_required: bool = False
     verification: Verification = field(default_factory=Verification)
 
@@ -3587,7 +3586,6 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
     "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
     "hypothesis": ("Update investigation hypotheses.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
-    "stable_knowledge": ("Record rare reusable codebase facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
         "Remember an explicit future behavior rule from the user.",
         {"text": TOOL_STRING_SCHEMA, "message": TOOL_STRING_SCHEMA},
@@ -3652,7 +3650,7 @@ User-facing text is read in a terminal: keep it plain, concise, direct, and CLI-
 Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless the user asks for them.
 
 Available state tools:
-goal, plan, hypothesis, known, stable_knowledge, user_rule, verify, forget
+goal, plan, hypothesis, known, user_rule, verify, forget
 
 Available repository tools:
 { __tool_names__ }
@@ -3662,7 +3660,7 @@ All repository tool calls require:
 - args: tool arguments
 
 PRIORITY
-Latest User Request > User Rules > Current Goal > Plan/Known/Stable Knowledge > Conversation History.
+Latest User Request > User Rules > Current Goal > Plan/Known > Conversation History.
 
 Current Phase:
 - new: align latest request with current state, or start readonly discovery
@@ -3699,9 +3697,6 @@ Hypotheses:
 - competing investigation directions
 - status: { __hypothesis_status_text__ }
 - each hypothesis should imply a concrete check
-
-Stable Knowledge:
-- rare reusable codebase facts: stack, structure, workflow, convention, gotcha
 
 User Rules:
 - only explicit future-behavior requests from the user
@@ -3835,7 +3830,7 @@ OUTPUT PROTOCOL
 - Use function tools for state updates and readonly repository actions.
 - Assistant text is optional; never use it instead of the next useful function tool.
 - PLAN MODE is a tracked planning task; complete it with goal.complete=true.
-- Allowed state tools: goal, plan, hypothesis, known, stable_knowledge, verify.
+- Allowed state tools: goal, plan, hypothesis, known, verify.
 - Allowed repository tools: Read, LineCount, List, Search, Recall, and readonly Git.
 - Repository tool calls require intention and args.
 - Do not invent fields when a tool schema already fits.
@@ -3943,17 +3938,15 @@ DISCOVERY STRATEGY
 1. When Current Phase is new, set one concise planning goal and 2-4 discovery steps when enough context is known.
 2. Search for owners before reading large files.
 3. Prefer support from code, tests, docs, and recent relevant Git history.
-4. After tool results, use Latest Tool Results, Unreduced Tool Results, and Kept Tool Results; use known for settled current-task facts and stable_knowledge only for rare reusable codebase facts.
-5. Use stable_knowledge sparingly for broadly true technical facts that are not repository-specific.
-6. Update plan status as discovery progresses.
-7. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
-8. Complete with goal.complete=true only when the final proposal is ready.
+4. After tool results, use Latest Tool Results, Unreduced Tool Results, and Kept Tool Results; use known for settled current-task facts.
+5. Update plan status as discovery progresses.
+6. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
+7. Complete with goal.complete=true only when the final proposal is ready.
 
 FUNCTION TOOL SEMANTICS
 - goal: initialize or update the planning goal; set work_mode when useful.
 - plan: update discovery or planning item status.
 - known: record durable repository findings from discovery. Do not include guesses.
-- stable_knowledge: record stable external/technical knowledge. Use sparingly.
 - assistant text: brief user-facing status update in the latest user language.
 - repository tools: request readonly discovery.
 - verify: record only concrete verification status from readonly discovery; put planned checks in the final proposed plan.
@@ -3993,9 +3986,6 @@ AGENT_USER_PROMPT_TEMPLATE = """
 
 Environment:
 {environment}
-
-Stable Knowledge:
-{stable_knowledge}
 
 User Rules:
 {user_rules}
@@ -4101,9 +4091,6 @@ Hypotheses:
 Known:
 {known}
 
-Stable Knowledge:
-{stable_knowledge}
-
 Kept Tool Results:
 {kept_tool_results}
 
@@ -4133,10 +4120,10 @@ Job:
 - KEEP only raw results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion.
 - FORGET routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
 - If you omit a tr.N key, nanocode compacts it by default; use omission only for unimportant results.
-- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed known, hypothesis, or stable_knowledge.
+- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed known or hypothesis.
 - Do not update Plan, Verify, or Goal.
 
-Allowed tools: keep, forget, known, hypothesis, stable_knowledge.
+Allowed tools: keep, forget, known, hypothesis.
 """
 
 
@@ -5203,14 +5190,10 @@ class ToolCallRunner:
 ############################
 
 
-STABLE_KNOWLEDGE_CATEGORIES: tuple[str, ...] = ("stack", "structure", "workflow", "convention", "gotcha")
-
-
 class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     COMPACT_DISPLAY_LIMIT: ClassVar[int] = 3
     MAX_KNOWN_ITEMS: ClassVar[int] = 500
-    MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY: ClassVar[int] = 30
     VERIFY_STATUS_ACTIONS: ClassVar[dict[str, VerificationStatus]] = {
         "passed": VerificationStatus.DONE,
         "failed": VerificationStatus.FAILED,
@@ -5262,7 +5245,7 @@ class AgentStateUpdater:
         before_hypotheses: list[str],
         before_known: list[str],
         before_user_rules: str,
-        before_extra_state: tuple[str, dict[str, list[str]]],
+        before_extra_state: str,
     ) -> str:
         current = self.blackboard
         lines = []
@@ -5320,7 +5303,6 @@ class AgentStateUpdater:
                     "  Known" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
-                ("Stable Knowledge", "  Stable_Knowledge" in self.latest_report, ["  updated"]),
                 ("Verification", "  Verify" in self.latest_report, ["  " + self._format_verification()]),
                 ("User Rules", "  User_Rules" in self.latest_report, ["  updated"]),
             )
@@ -5523,11 +5505,10 @@ class AgentStateUpdater:
     def _known_fact_key(self, fact: KnownItem | str) -> str:
         return re.sub(r"\s+", " ", KnownItem.text_of(fact)).strip(" \t\r\n。.;；").lower()
 
-    def _before_extra_state(self) -> tuple[str, dict[str, list[str]]]:
-        return self.blackboard.verification.format(), {key: list(value) for key, value in self.blackboard.stable_knowledge.items()}
+    def _before_extra_state(self) -> str:
+        return self.blackboard.verification.format()
 
     def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
-        self._apply_stable_knowledge(actions)
         if goal_changed:
             self.blackboard.verification_required = False
         self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
@@ -5553,37 +5534,12 @@ class AgentStateUpdater:
         lines.append(title)
         lines.extend(rows or [])
 
-    def _append_extra_state_report(self, lines: list[str], before_extra_state: tuple[str, dict[str, list[str]]]) -> None:
-        before_verification, before_stable_knowledge = before_extra_state
-        if self.blackboard.stable_knowledge != before_stable_knowledge:
-            self._append_state_section(lines, "  Stable_Knowledge", self._format_stable_knowledge_rows())
+    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
+        before_verification = before_extra_state
         verification = self.blackboard.verification.format()
         if verification == before_verification:
             return
         self._append_state_section(lines, "  Verify  " + self._format_verification())
-
-    def _format_stable_knowledge_rows(self) -> list[str]:
-        knowledge = self.blackboard.stable_knowledge
-        if not any(knowledge.values()):
-            return ["    (empty)"]
-        rows = []
-        for category in STABLE_KNOWLEDGE_CATEGORIES:
-            items = knowledge.get(category, [])
-            if not items:
-                continue
-            rows.append("    " + category)
-            offset = max(0, len(items) - self.DISPLAY_LIMIT)
-            if offset:
-                rows.append("      ... " + str(offset) + " older")
-            for index, item in enumerate(items[offset:], start=offset + 1):
-                rows.append("      " + str(index) + ". " + self._compact(item))
-        return rows
-
-    def _apply_stable_knowledge(self, actions: list[Json]) -> None:
-        for raw in self._action_items(actions, "stable_knowledge"):
-            category, fact = self._stable_knowledge_item_from_json(raw)
-            if fact:
-                self._add_stable_knowledge_item(category, fact)
 
     @staticmethod
     def _actions_of_type(actions: list[Json], action_type: str) -> Iterator[Json]:
@@ -5591,26 +5547,6 @@ class AgentStateUpdater:
 
     def _action_items(self, actions: list[Json], action_type: str) -> Iterator[JsonValue]:
         return (raw for action in self._actions_of_type(actions, action_type) for raw in _json_list(action.get("items")))
-
-    def _stable_knowledge_item_from_json(self, value: JsonValue) -> tuple[str, str]:
-        item = _json_dict(value)
-        if item:
-            category = _json_str(item.get("category")) or "gotcha"
-            fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
-        else:
-            category = "gotcha"
-            fact = (_json_str(value) or "").strip()
-        if category not in STABLE_KNOWLEDGE_CATEGORIES:
-            category = "gotcha"
-        return category, fact
-
-    def _add_stable_knowledge_item(self, category: str, fact: str) -> None:
-        knowledge = self.blackboard.stable_knowledge
-        items = knowledge.setdefault(category, [])
-        if fact in items:
-            return
-        items.append(fact)
-        del items[: max(0, len(items) - self.MAX_STABLE_KNOWLEDGE_ITEMS_PER_CATEGORY)]
 
     def _format_verification(self) -> str:
         verification = self.blackboard.verification
@@ -5778,9 +5714,9 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
-    ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "hypothesis", "known", "stable_knowledge", "tool", "verify", "user_rule", "forget"}
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "hypothesis", "known", "tool", "verify", "user_rule", "forget"}
     PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"user_rule", "forget"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "stable_knowledge", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
@@ -5832,7 +5768,6 @@ class Agent:
             user_rules=self.session.state.user_rules.format(),
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
-            stable_knowledge=self._format_stable_knowledge(),
             tool_result_index=tool_result_index or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
@@ -5878,7 +5813,6 @@ class Agent:
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
             hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
-            stable_knowledge=self._format_stable_knowledge(),
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
             unreduced_tool_results=unreduced or "(empty)",
@@ -5917,20 +5851,6 @@ class Agent:
         user_request = self.blackboard.user_input or "(empty)"
         fence = "`" * max(3, max((len(match.group(0)) for match in re.finditer(r"`{3,}", user_request)), default=0) + 1)
         return fence + "text\n" + user_request + "\n" + fence
-
-    def _format_stable_knowledge(self) -> str:
-        knowledge = self.blackboard.stable_knowledge
-        if not any(knowledge.values()):
-            return "(empty)"
-        lines = []
-        for category in STABLE_KNOWLEDGE_CATEGORIES:
-            items = [item for item in knowledge.get(category, []) if item]
-            if not items:
-                continue
-            lines.append(category + ":")
-            lines.extend("- " + item for item in items)
-            lines.append("")
-        return "\n".join(lines).rstrip()
 
     def request(
         self,
@@ -6340,8 +6260,6 @@ class Agent:
                 return True
             if action_type == "known" and any(_memory_fact_from_json(raw) for raw in _json_list(action.get("items"))):
                 return True
-            if action_type == "stable_knowledge" and _json_list(action.get("items")):
-                return True
         return False
 
     def execute_tool_calls(
@@ -6668,12 +6586,12 @@ class Agent:
             has_fresh_plan_action=has_fresh_plan_action,
             has_user_rule_action="user_rule" in action_types,
             has_edit_tool_call=has_edit_tool_call,
-            has_state_update_action=bool(action_types & {"goal", "plan", "known", "hypothesis", "stable_knowledge"}),
+            has_state_update_action=bool(action_types & {"goal", "plan", "known", "hypothesis"}),
             state_or_work_requested=bool(
                 tool_calls
                 or pending_verify_requested
                 or (assistant_text and actions and not completion_message)
-                or action_types & {"goal", "plan", "forget", "hypothesis", "known", "stable_knowledge"}
+                or action_types & {"goal", "plan", "forget", "hypothesis", "known"}
             ),
         )
 
@@ -6931,7 +6849,7 @@ class Agent:
         return AgentRunResult()
 
     def _warn_weak_observe_memory(self, actions: list[Json]) -> None:
-        if any(_json_str(action.get("type")) in {"keep", "forget", "hypothesis", "stable_knowledge"} for action in actions):
+        if any(_json_str(action.get("type")) in {"keep", "forget", "hypothesis"} for action in actions):
             return
         known_actions = [action for action in actions if _json_str(action.get("type")) == "known"]
         if not known_actions:
