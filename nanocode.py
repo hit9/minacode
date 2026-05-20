@@ -409,6 +409,15 @@ class Blackboard:
         keys.update(key for item in self.hypotheses for key in item.source if key.startswith("tr."))
         return keys
 
+    def protected_result_sources(self) -> dict[str, str]:
+        return {
+            key: "active hypothesis"
+            for item in self.hypotheses
+            if item.status == HypothesisStatus.ACTIVE
+            for key in item.source
+            if key.startswith("tr.")
+        }
+
 
 @dataclass(frozen=True)
 class ChatReasoningRule:
@@ -450,22 +459,23 @@ PROVIDER_PROFILES: dict[str, ProviderProfile] = {
 }
 
 
-ALIYUN_THINKING_BUDGET_BY_EFFORT = {
-    "minimal": 256,
-    "low": 1024,
-    "medium": 4096,
-    "high": 8192,
-    "xhigh": 16384,
-    "max": 16384,
-}
-
-DEEPSEEK_REASONING_EFFORT_BY_EFFORT = {
-    "minimal": "high",
-    "low": "high",
-    "medium": "high",
-    "high": "high",
-    "xhigh": "max",
-    "max": "max",
+CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
+    "thinking": {
+        "minimal": "high",
+        "low": "high",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+    },
+    "enable_thinking": {
+        "minimal": 256,
+        "low": 1024,
+        "medium": 4096,
+        "high": 8192,
+        "xhigh": 16384,
+        "max": 16384,
+    },
 }
 
 
@@ -1273,6 +1283,7 @@ class Tool:
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
     SIGNATURE: ClassVar[str]
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
+    PARAM_NAMES: ClassVar[tuple[str, ...]] = ()
     EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = None
 
@@ -2973,6 +2984,7 @@ class ReplaceRangeEdit:
 @dataclass
 class ReplaceRangeTool(Tool):
     NAME: ClassVar[str] = "ReplaceRange"
+    PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "ranges")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
@@ -4388,11 +4400,12 @@ class ModelClient:
         if chat_reasoning == "thinking":
             extra_body["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled:
-                params["reasoning_effort"] = DEEPSEEK_REASONING_EFFORT_BY_EFFORT.get(self._reasoning_effort(config), "high")
+                params["reasoning_effort"] = CHAT_REASONING_EFFORT_VALUES["thinking"].get(self._reasoning_effort(config), "high")
         if chat_reasoning == "enable_thinking":
             extra_body["enable_thinking"] = reasoning_enabled
             if reasoning_enabled:
-                extra_body["thinking_budget"] = ALIYUN_THINKING_BUDGET_BY_EFFORT.get(self._reasoning_effort(config), ALIYUN_THINKING_BUDGET_BY_EFFORT["medium"])
+                values = CHAT_REASONING_EFFORT_VALUES["enable_thinking"]
+                extra_body["thinking_budget"] = values.get(self._reasoning_effort(config), values["medium"])
         if extra_body:
             params["extra_body"] = extra_body
         return params
@@ -5772,7 +5785,7 @@ class Agent:
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
-    RULE_CLOSE_SOURCE: ClassVar[str] = "close the hypothesis before forgetting its source."
+    RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
     RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures prefer ReplaceRange after Read."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
@@ -6377,9 +6390,8 @@ class Agent:
             )
         if execution.error_type is not None and issubclass(execution.error_type, ToolCallArgError):
             detail = self._format_tool_arg_error(execution)
-            rule = self.RULE_TOOL_SIGNATURE
-            if execution.call.name in {EditTool.NAME, PatchFileTool.NAME, ReplaceRangeTool.NAME}:
-                rule = self.RULE_EDIT_SIGNATURE
+            tool_class = TOOL_REGISTRY.get(execution.call.name)
+            rule = self.RULE_EDIT_SIGNATURE if tool_class is not None and tool_class.EFFECT == ToolEffect.EDIT else self.RULE_TOOL_SIGNATURE
             self._remember_agent_error(
                 self._error(
                     "tool call args invalid: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".",
@@ -6417,7 +6429,7 @@ class Agent:
             return execution.output
         match = re.search(r"\(([^)]*)\)", tool_class.SIGNATURE)
         value = match.group(1) if match else ""
-        params = ["filepath", "ranges"] if call.name == ReplaceRangeTool.NAME else []
+        params = list(tool_class.PARAM_NAMES)
         if not params and value and not any(token in value for token in "[]*") and "..." not in value:
             params = [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
         if not params or len(call.args) == len(params):
@@ -6546,10 +6558,8 @@ class Agent:
             else "investigate completion requires a confirmed hypothesis"
         )
 
-    def _forget_active_hypothesis_error(self, actions: list[Json]) -> str:
-        forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
-        if not forgotten:
-            return ""
+    @staticmethod
+    def _released_result_sources_from_actions(actions: list[Json]) -> set[str]:
         released = set()
         for action in actions:
             values = _json_list(action.get("items")) if _json_str(action.get("type")) == "hypothesis" else []
@@ -6557,9 +6567,15 @@ class Agent:
                 item = Hypothesis.from_json(raw)
                 if item is not None and item.status != HypothesisStatus.ACTIVE:
                     released.update(key for key in item.source if key.startswith("tr."))
-        protected = {key for item in self.blackboard.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
-        conflict = sorted((forgotten & protected) - released)
-        return "active hypothesis source: " + ", ".join(conflict) if conflict else ""
+        return released
+
+    def _forget_protected_result_error(self, actions: list[Json]) -> str:
+        forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
+        if not forgotten:
+            return ""
+        protected = self.blackboard.protected_result_sources()
+        conflict = sorted((forgotten & set(protected)) - self._released_result_sources_from_actions(actions))
+        return "protected source: " + ", ".join(key + " (" + protected[key] + ")" for key in conflict) if conflict else ""
 
     def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
         if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
@@ -6952,14 +6968,14 @@ class Agent:
                 "Retrying: forget only visible tool result keys.",
                 "ToolResult_Gate: " + forget_error + ".",
             )
-        forget_hypothesis_error = self._forget_active_hypothesis_error(actions)
-        if forget_hypothesis_error:
+        forget_protected_error = self._forget_protected_result_error(actions)
+        if forget_protected_error:
             return self._reject_result(
                 remember_error,
                 on_message,
-                self._error("forget conflicts with active hypothesis: " + forget_hypothesis_error + ".", self.RULE_CLOSE_SOURCE),
-                "Retrying: close hypothesis before forgetting its source result.",
-                "ToolResult_Gate: " + forget_hypothesis_error + ".",
+                self._error("forget conflicts with protected result source: " + forget_protected_error + ".", self.RULE_CLOSE_SOURCE),
+                "Retrying: close dependent state before forgetting its source result.",
+                "ToolResult_Gate: " + forget_protected_error + ".",
             )
         return None
 

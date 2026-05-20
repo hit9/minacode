@@ -785,8 +785,8 @@ def test_forget_rejects_active_hypothesis_source(tmp_path):
 
     assert result.done is False
     assert "tr.1" in _blocks_text(agent.tool_context.kept_results)
-    assert any("active hypothesis source: tr.1" in error for error in agent.agent_feedback_errors)
-    assert messages == ["ToolResult_Gate: active hypothesis source: tr.1."]
+    assert any("protected source: tr.1 (active hypothesis)" in error for error in agent.agent_feedback_errors)
+    assert messages == ["ToolResult_Gate: protected source: tr.1 (active hypothesis)."]
 
 
 def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
@@ -1892,7 +1892,7 @@ def test_agent_request_auto_detects_chat_reasoning_from_provider_url(tmp_path, m
     assert payloads[0]["reasoning_effort"] == "max"
     assert payloads[1]["reasoning"] == {"effort": "high"}
     assert payloads[2]["enable_thinking"] is True
-    assert payloads[2]["thinking_budget"] == nanocode.ALIYUN_THINKING_BUDGET_BY_EFFORT["high"]
+    assert payloads[2]["thinking_budget"] == nanocode.CHAT_REASONING_EFFORT_VALUES["enable_thinking"]["high"]
     assert payloads[3]["thinking"] == {"type": "enabled"}
     assert payloads[3]["reasoning_effort"] == "max"
     assert payloads[4] == {"model": "glm-5.1", "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}], "stream": False}
