@@ -15,6 +15,10 @@ def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool 
     return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode))
 
 
+def _status_text(bar: StatusBar) -> str:
+    return "".join(text for _, text in bar._fragments(0.0, now=time.monotonic(), show_sweep=False, show_elapsed=False))
+
+
 def test_session_reports_missing_required_config(tmp_path):
     session = Session(cwd=str(tmp_path))
 
@@ -158,7 +162,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "turn:1.2s" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
-    snapshot = bar.snapshot()
+    snapshot = _status_text(bar)
     assert snapshot == "model (medium) | ctx:0/9 | tool:3 | tok:last:42 sess:1k"
     assert ">" not in snapshot
 
@@ -194,7 +198,7 @@ def test_status_bar_shows_active_modes(tmp_path):
     session = make_session(tmp_path, model="provider/model", yolo=True, plan_mode=True)
     bar = StatusBar(session)
 
-    assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tool:0 | tok:last:- sess:-"
+    assert _status_text(bar) == "model (medium) | yolo | plan | ctx:0/50 | tool:0 | tok:last:- sess:-"
 
 
 def test_status_bar_shows_recent_status_notice(tmp_path):
@@ -203,11 +207,11 @@ def test_status_bar_shows_recent_status_notice(tmp_path):
     session.state.status_notice_until = time.monotonic() + 5
     bar = StatusBar(session)
 
-    assert bar.snapshot().endswith(" | err:format")
+    assert _status_text(bar).endswith(" | err:format")
 
     session.state.status_notice_until = 0
 
-    assert "err:format" not in bar.snapshot()
+    assert "err:format" not in _status_text(bar)
 
 
 def test_agent_loop_highlights_only_diff_previews(tmp_path):

@@ -486,40 +486,28 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json) -> "ProviderConfig":
         defaults = cls()
+        api = Config.str(data, "api", defaults.api)
+        reasoning = Config.str(data, "reasoning", defaults.reasoning)
+        chat_reasoning = Config.str(data, "chat_reasoning", defaults.chat_reasoning)
+        if api not in ("chat", "responses", "auto"):
+            raise ConfigError("config provider.api must be one of: chat, responses, auto")
+        if reasoning not in REASONING_CHOICES:
+            raise ConfigError("config provider.reasoning must be one of: " + ", ".join(REASONING_CHOICES))
+        if chat_reasoning not in CHAT_REASONING_CHOICES:
+            raise ConfigError("config provider.chat_reasoning must be one of: " + ", ".join(CHAT_REASONING_CHOICES))
         return cls(
             url=Config.str(data, "url", defaults.url),
             key=Config.str(data, "key", defaults.key),
             model=Config.str(data, "model", defaults.model),
-            api=cls._api(data, defaults.api),
+            api=api,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", defaults.temperature),
-            reasoning=cls._reasoning(data, defaults.reasoning),
-            chat_reasoning=cls._chat_reasoning(data, defaults.chat_reasoning),
+            reasoning=reasoning,
+            chat_reasoning=chat_reasoning,
             stream=Config.bool(data, "stream", defaults.stream),
             timeout=Config.int(data, "timeout", defaults.timeout),
             first_token_timeout=Config.int(data, "first_token_timeout", defaults.first_token_timeout),
         )
-
-    @classmethod
-    def _api(cls, data: Json, default: str) -> str:
-        value = Config.str(data, "api", default)
-        if value not in ("chat", "responses", "auto"):
-            raise ConfigError("config provider.api must be one of: chat, responses, auto")
-        return value
-
-    @classmethod
-    def _reasoning(cls, data: Json, default: str) -> str:
-        value = Config.str(data, "reasoning", default)
-        if value not in REASONING_CHOICES:
-            raise ConfigError("config provider.reasoning must be one of: " + ", ".join(REASONING_CHOICES))
-        return value
-
-    @classmethod
-    def _chat_reasoning(cls, data: Json, default: str) -> str:
-        value = Config.str(data, "chat_reasoning", default)
-        if value not in CHAT_REASONING_CHOICES:
-            raise ConfigError("config provider.chat_reasoning must be one of: " + ", ".join(CHAT_REASONING_CHOICES))
-        return value
 
     def resolved_chat_reasoning(self) -> str:
         if self.chat_reasoning != "auto":
@@ -1475,10 +1463,7 @@ class ToolResultContext:
         self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
 
     def prune_recent(self, *, max_index_items: int, checkpoint: int) -> None:
-        def compact_if_observed(block: str) -> str:
-            return block if self._needs_reduction(block, checkpoint) else self.compact_block(block)
-
-        self.recent = [compact_if_observed(block) for block in self.recent]
+        self.recent = [block if self._needs_reduction(block, checkpoint) else self.compact_block(block) for block in self.recent]
         while len(self.current_timeline_blocks()) > max_index_items:
             index = next((i for i, block in enumerate(self.recent) if not self._needs_reduction(block, checkpoint)), -1)
             if index < 0:
@@ -1529,9 +1514,6 @@ class ToolResultContext:
 
     def raw_context_chars(self, checkpoint: int) -> int:
         return len("\n\n".join(self.unreduced_recent_blocks(checkpoint) + self.latest_raw_blocks()))
-
-    def visible_counter(self) -> int:
-        return self.max_counter(self.recent + self.latest)
 
     @classmethod
     def _needs_reduction(cls, block: str, checkpoint: int) -> bool:
@@ -5889,7 +5871,7 @@ class Agent:
             "- arch: " + self.session.arch,
             "- cwd: " + self.session.cwd,
         ]
-        if self._inspect_code_available():
+        if _cymbal_available():
             lines.append(
                 "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (case-insensitive, optional limit default 20 max 80), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )
@@ -5931,12 +5913,9 @@ class Agent:
 
     def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
-        if self._inspect_code_available():
+        if _cymbal_available():
             return tool_classes
         return tuple(tool for tool in tool_classes if tool not in (FindCodeSymbolTool, OutlineCodeFileTool, InspectCodeSymbolTool))
-
-    def _inspect_code_available(self) -> bool:
-        return _cymbal_available()
 
     def _discovery_prompt_hint(self, tool_classes: Iterable[ToolClass]) -> str:
         if FindCodeSymbolTool not in tool_classes and OutlineCodeFileTool not in tool_classes and InspectCodeSymbolTool not in tool_classes:
@@ -6369,7 +6348,7 @@ class Agent:
         )
 
     def _mark_memory_checkpoint(self, counter: int = 0) -> None:
-        checkpoint = counter or self.tool_context.visible_counter() or self.session.state.tool_result_counter
+        checkpoint = counter or self.tool_context.max_counter(self.tool_context.recent + self.tool_context.latest) or self.session.state.tool_result_counter
         self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
 
     def _has_memory_update_action(self, actions: list[Json]) -> bool:
@@ -7807,9 +7786,6 @@ class StatusBar:
 
     def is_running(self) -> bool:
         return self.thread is not None
-
-    def snapshot(self, turn_elapsed: float = 0.0) -> str:
-        return "".join(text for _, text in self._fragments(turn_elapsed, now=time.monotonic(), show_sweep=False, show_elapsed=False))
 
     def resume(self) -> None:
         if self.thread is not None or not sys.stderr.isatty():
