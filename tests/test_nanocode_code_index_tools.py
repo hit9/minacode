@@ -110,6 +110,21 @@ def test_code_index_sync_initializes_missing_index_in_project_data(tmp_path, mon
     assert result == "code_index: initialized\nstatus: ready\npath: " + db_path
 
 
+def test_code_index_force_rebuild_removes_project_index_dir(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
+    module = fake_code_index_module("ready")
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: module)
+    index_dir = tmp_path / "data" / "projects" / session.project_key() / "code-symbol-index"
+    index_dir.mkdir(parents=True)
+    (index_dir / "old.sqlite").write_text("old", encoding="utf-8")
+
+    result = nanocode._code_index_sync(session, force=True)
+
+    assert not (index_dir / "old.sqlite").exists()
+    assert ("repo", str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
+    assert result == "code_index: rebuilt\nstatus: ready\npath: " + nanocode._code_index_db_path(session)
+
+
 def test_code_index_update_existing_syncs_ready_index_only(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("ready"))

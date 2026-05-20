@@ -2392,8 +2392,12 @@ def _code_index_update_existing(session: Session) -> None:
         session.state.code_index_error = str(error)
 
 
-def _code_index_sync(session: Session) -> str:
+def _code_index_sync(session: Session, *, force: bool = False) -> str:
     before, _message = _code_index_status(session)
+    if force:
+        if _code_index_module() is None:
+            return "code_index: error\ncode index is unavailable"
+        shutil.rmtree(os.path.dirname(_code_index_db_path(session)), ignore_errors=True)
     try:
         _code_index_repository(session, create_index=True).refresh()
     except Exception as error:
@@ -2401,7 +2405,8 @@ def _code_index_sync(session: Session) -> str:
         return "code_index: error\n" + str(error)
     session.state.code_index_error = ""
     status, message = _code_index_status(session)
-    lines = ["code_index: " + ("initialized" if before == "missing" else "synced"), "status: " + status, "path: " + _code_index_db_path(session)]
+    action = "rebuilt" if force else ("initialized" if before == "missing" else "synced")
+    lines = ["code_index: " + action, "status: " + status, "path: " + _code_index_db_path(session)]
     if message:
         lines.append("note: " + message)
     return "\n".join(lines)
@@ -7069,7 +7074,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
-    CommandSpec("/index", "Initialize or sync code index", "Maintenance", "/index"),
+    CommandSpec("/index", "Initialize, sync, or rebuild code index", "Maintenance", "/index [force]"),
     CommandSpec("/clean", "Clean inactive session directories", "Maintenance", "/clean"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
@@ -7414,9 +7419,10 @@ class CommandDispatcher:
         return self._with_status(self._compact_history)
 
     def _index(self, args: str) -> str:
-        if args:
-            return "Usage: /index"
-        return self._with_status(lambda: _code_index_sync(self.agent.session))
+        value = args.strip()
+        if value not in {"", "force"}:
+            return "Usage: /index [force]"
+        return self._with_status(lambda: _code_index_sync(self.agent.session, force=value == "force"))
 
     def _context(self, args: str) -> str:
         value = args.strip()

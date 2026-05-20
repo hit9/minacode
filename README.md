@@ -89,7 +89,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 
 - Info: `/help [question]`, `/status`, `/rules`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
-- Maintenance: `/index`, `/clean`.
+- Maintenance: `/index [force]`, `/clean`.
 - Exit: `/exit`, `/quit`.
 
 Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason` sets `provider.reasoning` to `off` or an effort value; `/reason-payload` controls the Chat-only reasoning payload shape. `/model` lists configured models before discovered ones, then prompts for reasoning.

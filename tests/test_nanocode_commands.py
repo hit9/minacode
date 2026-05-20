@@ -110,15 +110,19 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
 
 
 def test_index_command_syncs_code_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_sync", lambda session: "code_index: synced")
+    calls = []
+    monkeypatch.setattr(nanocode, "_code_index_sync", lambda session, *, force=False: calls.append(force) or "code_index: synced")
     dispatcher = CommandDispatcher(Agent(make_session(tmp_path)))
 
     result = dispatcher.dispatch("/index")
+    force_result = dispatcher.dispatch("/index force")
     usage_result = dispatcher.dispatch("/index extra")
 
     assert result.status == CommandStatus.HANDLED
     assert result.message == "code_index: synced"
-    assert usage_result.message == "Usage: /index"
+    assert force_result.message == "code_index: synced"
+    assert calls == [False, True]
+    assert usage_result.message == "Usage: /index [force]"
 
 
 def test_set_command_shows_and_validates_runtime_config(tmp_path):
