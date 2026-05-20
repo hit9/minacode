@@ -1006,14 +1006,9 @@ class Session:
 
     def project_key(self) -> str:
         cwd = os.path.realpath(self.cwd)
-        basename = self._safe_path_name(os.path.basename(cwd.rstrip(os.sep)) or "root")
+        basename = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(cwd.rstrip(os.sep)) or "root").strip(".-") or "project"
         digest = hashlib.sha1(cwd.encode("utf-8")).hexdigest()[:10]
         return basename + "-" + digest
-
-    @staticmethod
-    def _safe_path_name(value: str) -> str:
-        value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
-        return value or "project"
 
     @staticmethod
     def _new_session_id() -> str:
@@ -1250,10 +1245,6 @@ def _cymbal_available() -> bool:
     return bool(shutil.which("cymbal"))
 
 
-def _cymbal_status_label() -> str:
-    return "available" if _cymbal_available() else "not installed"
-
-
 def _json_value_schema(depth: int = 3) -> Json:
     values: list[Json] = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]
     if depth > 0:
@@ -1452,14 +1443,9 @@ class ToolResultContext:
     def append_latest(self, executions: list[ToolCallExecution], *, max_index_items: int, checkpoint: int) -> None:
         if not executions:
             return
-        self.append_recent(self.latest, max_index_items=max_index_items, checkpoint=checkpoint)
+        if self.latest:
+            self.recent.extend(self.latest)
         self.latest = [self.format_execution(execution) for execution in executions]
-        self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
-
-    def append_recent(self, blocks: list[str], *, max_index_items: int, checkpoint: int) -> None:
-        if not blocks:
-            return
-        self.recent.extend(blocks)
         self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
 
     def prune_recent(self, *, max_index_items: int, checkpoint: int) -> None:
@@ -2429,6 +2415,13 @@ class CymbalResultFormatter:
         return lines
 
 
+def _cymbal_json_results(stdout: str) -> list[Json]:
+    try:
+        return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
+    except json.JSONDecodeError:
+        return []
+
+
 @dataclass
 class FindCodeSymbolTool(Tool):
     NAME: ClassVar[str] = "FindCodeSymbol"
@@ -2494,7 +2487,7 @@ class FindCodeSymbolTool(Tool):
 
     def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
         lines = ["<FindCodeSymbolToolResult>", "* exit_code: " + str(exit_code)]
-        if items := self._symbol_results(stdout):
+        if items := _cymbal_json_results(stdout):
             lines.extend(CymbalResultFormatter.format_symbol_search(items))
         elif stdout:
             lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
@@ -2502,14 +2495,6 @@ class FindCodeSymbolTool(Tool):
             lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
         lines.append("</FindCodeSymbolToolResult>")
         return "\n".join(lines)
-
-    @staticmethod
-    def _symbol_results(stdout: str) -> list[Json]:
-        try:
-            return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
-        except json.JSONDecodeError:
-            return []
-
 
 @dataclass
 class InspectCodeSymbolTool(Tool):
@@ -2652,7 +2637,7 @@ class OutlineCodeFileTool(Tool):
 
     def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
         lines = ["<OutlineCodeFileToolResult>", "* exit_code: " + str(exit_code)]
-        if items := self._outline_results(stdout):
+        if items := _cymbal_json_results(stdout):
             lines.extend(CymbalResultFormatter.format_outline(items))
         elif stdout:
             lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
@@ -2660,14 +2645,6 @@ class OutlineCodeFileTool(Tool):
             lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
         lines.append("</OutlineCodeFileToolResult>")
         return "\n".join(lines)
-
-    @staticmethod
-    def _outline_results(stdout: str) -> list[Json]:
-        try:
-            return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
-        except json.JSONDecodeError:
-            return []
-
 
 @dataclass
 class EditTool(Tool):
@@ -5285,10 +5262,10 @@ class AgentStateUpdater:
             self._append_state_section(lines, "  Plan", self._format_plan_rows())
         hypotheses = [item.format() for item in current.hypotheses]
         if hypotheses != before_hypotheses:
-            self._append_state_section(lines, "  Hypotheses", self._format_hypothesis_rows())
+            self._append_state_section(lines, "  Hypotheses", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}"))
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
-            self._append_state_section(lines, "  Known", self._format_known_rows())
+            self._append_state_section(lines, "  Known", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}"))
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
             self._append_state_section(lines, "  User_Rules    updated")
@@ -5303,12 +5280,6 @@ class AgentStateUpdater:
             return rows
 
         return self._format_rows(self.blackboard.plan, render)
-
-    def _format_known_rows(self) -> list[str]:
-        return self._format_rows(self.blackboard.known, lambda index, item: "    " + str(index) + ". " + self._compact(KnownItem.format_item(item)))
-
-    def _format_hypothesis_rows(self) -> list[str]:
-        return self._format_rows(self.blackboard.hypotheses, lambda index, item: "    " + str(index) + ". " + self._compact(item.format()))
 
     def _format_rows(self, items: list[Any], render: Callable[[int, Any], str | list[str]]) -> list[str]:
         if not items:
@@ -6138,15 +6109,11 @@ class Agent:
     def _remember_observe_error(self, text: str) -> None:
         self._remember_feedback_error(self.observe_feedback_errors, text)
 
-    @staticmethod
-    def _feedback(level: str, text: str, rule: str = "") -> str:
-        return level + " blocked: " + text + ((" Next: " + rule) if rule else "")
-
     def _error(self, text: str, rule: str = "") -> str:
-        return self._feedback("Error", text, rule)
+        return "Error blocked: " + text + ((" Next: " + rule) if rule else "")
 
     def _warning(self, text: str, rule: str = "") -> str:
-        return self._feedback("Warning", text, rule)
+        return "Warning blocked: " + text + ((" Next: " + rule) if rule else "")
 
     def _warn_agent(self, text: str, rule: str = "") -> None:
         self._remember_agent_error(self._warning(text, rule))
@@ -7549,7 +7516,7 @@ class CommandDispatcher:
                 + session.settings.context_budget,
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
-                "tools: cymbal=" + _cymbal_status_label(),
+                "tools: cymbal=" + ("available" if _cymbal_available() else "not installed"),
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 model_usage,
@@ -7842,7 +7809,7 @@ class StatusBar:
         if show_elapsed:
             parts.append(f"turn:{turn_elapsed:.1f}s")
         if session.state.current_model_call_started_at > 0:
-            activity = self._activity_label(session.state.current_model_call_activity)
+            activity = {"compact": "compacting", "observe": "observing"}.get(session.state.current_model_call_activity, "working")
             if session.state.current_model_call_has_content:
                 activity += "*"
             elapsed = max(0.0, now - session.state.current_model_call_started_at)
@@ -7854,10 +7821,6 @@ class StatusBar:
         if session.state.status_notice and session.state.status_notice_until > now:
             parts.append(session.state.status_notice)
         return " | ".join(parts)
-
-    @staticmethod
-    def _activity_label(activity: str) -> str:
-        return {"compact": "compacting", "observe": "observing"}.get(activity, "working")
 
     def _sweep_fragments(self, text: str, now: float) -> list[tuple[str, str]]:
         if not text:

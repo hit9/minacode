@@ -1087,11 +1087,8 @@ def test_agent_tool_result_index_has_count_limit(tmp_path, monkeypatch):
     _set_context_budget(monkeypatch, agent, index_items=2)
 
     for index in range(4):
-        agent.tool_context.append_recent(
-            ['- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20)],
-            max_index_items=agent.context_budget().index_items,
-            checkpoint=999,
-        )
+        agent.tool_context.recent.append('- ok tool=Read args=["' + str(index) + '"] key=tr.' + str(index + 1) + "\n  output:\n" + ("x" * 20))
+        agent.tool_context.prune_recent(max_index_items=agent.context_budget().index_items, checkpoint=999)
 
     recent = _blocks_text(agent.tool_context.recent)
     assert "recall=tr.1" not in recent
