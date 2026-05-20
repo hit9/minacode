@@ -88,10 +88,11 @@ OBSERVE receives a smaller cleanup context:
 
 OBSERVE reduces tool-result noise before ACT continues.
 
-Optional tools can be environment-gated. For example, `FindCodeSymbol`,
-`InspectCodeSymbol`, and `OutlineCodeFile` are shown only when the local
-`cymbal` CLI exists. They accept symbol queries or file paths, not
-natural-language questions.
+Code navigation tools are environment-gated. `FindCodeSymbol`,
+`InspectCodeSymbol`, and `OutlineCodeFile` are shown only when the built-in code
+index is available. They accept symbol queries or file paths, not
+natural-language questions. The index is created explicitly with `/index`; if an
+index already exists, startup performs a lightweight incremental update.
 
 Context layout:
 

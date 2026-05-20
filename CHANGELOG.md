@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4 - 2026-05-20
+
+### Added
+- Added built-in indexed code navigation backed by project data and `/index` for manual init/sync.
+
+### Changed
+- Replaced the external code-navigation CLI integration with the bundled code index API.
+- Hid code navigation tools until an index exists, while lightly updating existing indexes at startup.
+- Updated status/docs to describe code index availability without exposing dependency-install wording.
+
 ## 0.4.3 - 2026-05-20
 
 ### Changed

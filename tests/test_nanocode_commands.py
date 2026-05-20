@@ -86,7 +86,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert exit_result.status == CommandStatus.EXIT
 
 
-def test_status_reports_tokens_in_human_readable_format(tmp_path):
+def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("unavailable", ""))
     session = make_session(tmp_path, model="model")
     session.state.last_total_tokens = 1200
     session.state.session_total_tokens = 2_345_678
@@ -103,9 +104,21 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path):
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
-    assert "tools: cymbal=" in result.message
+    assert "tools: code_index=unavailable" in result.message
     assert "task: done" in result.message
     assert "blackboard" not in result.message
+
+
+def test_index_command_syncs_code_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_sync", lambda session: "code_index: synced")
+    dispatcher = CommandDispatcher(Agent(make_session(tmp_path)))
+
+    result = dispatcher.dispatch("/index")
+    usage_result = dispatcher.dispatch("/index extra")
+
+    assert result.status == CommandStatus.HANDLED
+    assert result.message == "code_index: synced"
+    assert usage_result.message == "Usage: /index"
 
 
 def test_set_command_shows_and_validates_runtime_config(tmp_path):

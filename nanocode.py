@@ -12,6 +12,7 @@ import difflib
 import fcntl
 import fnmatch
 import hashlib
+import importlib
 import inspect
 import itertools
 import json
@@ -54,7 +55,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 
 JsonValue: TypeAlias = Any
@@ -966,6 +967,7 @@ class RuntimeState:
     session_tool_calls: int = 0
     turn_model_calls: int = 0
     debug_log_count: int = 0
+    code_index_error: str = ""
 
 
 @dataclass
@@ -1248,10 +1250,6 @@ def _tool_object_schema(properties: Json, required: list[str]) -> Json:
 
 def _function_tool_schema(name: str, description: str, parameters: Json) -> Json:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
-
-
-def _cymbal_available() -> bool:
-    return bool(shutil.which("cymbal"))
 
 
 def _json_value_schema(depth: int = 3) -> Json:
@@ -2345,103 +2343,87 @@ class SearchTool(Tool):
         return self._call_python()
 
 
-class CymbalResultFormatter:
-    MAX_OUTLINE_ITEMS: ClassVar[int] = 160
-    MAX_SEARCH_ITEMS: ClassVar[int] = 80
-
-    @staticmethod
-    def read_start(value: JsonValue) -> int:
-        try:
-            return max(0, int(value) - 1)
-        except (TypeError, ValueError):
-            return 0
-
-    @classmethod
-    def location(cls, item: Json) -> str:
-        path = _json_str(item.get("rel_path")) or _json_str(item.get("file")) or "?"
-        start_value = item.get("start_line", item.get("line"))
-        if start_value is None:
-            return path
-        start = cls.read_start(start_value)
-        end_value = item.get("end_line")
-        if end_value is None:
-            return path + ":" + str(start)
-        try:
-            end = max(start, int(end_value))
-        except (TypeError, ValueError):
-            end = start
-        return path + ":" + str(start) + ":" + str(end)
-
-    @classmethod
-    def symbol_line(cls, item: Json) -> str:
-        name = _json_str(item.get("name")) or _json_str(item.get("implementer")) or _json_str(item.get("caller")) or _json_str(item.get("symbol")) or "(unknown)"
-        kind = _json_str(item.get("kind"))
-        extras = []
-        if _json_str(item.get("caller")) and _json_str(item.get("symbol")):
-            extras.append("symbol=" + str(item["symbol"]))
-        if _json_str(item.get("target")):
-            extras.append("target=" + str(item["target"]))
-        if _json_str(item.get("signature")):
-            extras.append(str(item["signature"]))
-        if item.get("resolved") is False:
-            extras.append("unresolved")
-        return " ".join(part for part in (kind, name, cls.location(item), " ".join(extras)) if part)
-
-    @classmethod
-    def format_investigate(cls, result: Json) -> list[str]:
-        lines: list[str] = []
-        symbol = _json_dict(result.get("symbol"))
-        if symbol:
-            lines.append('<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>')
-            lines.append("* symbol: " + cls.symbol_line(symbol))
-        source = _json_str(result.get("source"))
-        if source and symbol:
-            lines.extend(["<source line-numbered>", _numbered_content(source, cls.read_start(symbol.get("start_line"))).rstrip("\n"), "</source>"])
-        for label, key in (("members", "members"), ("references", "refs"), ("impact", "impact"), ("implementors", "implementors")):
-            items = [_json_dict(item) for item in _json_list(result.get(key))]
-            if items:
-                lines.extend(["<" + label + ">", *(cls.symbol_line(item) for item in items[:50]), "</" + label + ">"])
-        return lines
-
-    @classmethod
-    def format_outline(cls, items: list[Json]) -> list[str]:
-        lines = ['<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>', "<outline>"]
-        lines.extend(cls.symbol_line(item) for item in items[: cls.MAX_OUTLINE_ITEMS])
-        if len(items) > cls.MAX_OUTLINE_ITEMS:
-            lines.append("... " + str(len(items) - cls.MAX_OUTLINE_ITEMS) + " more")
-        lines.append("</outline>")
-        return lines
-
-    @classmethod
-    def format_symbol_search(cls, items: list[Json]) -> list[str]:
-        lines = ['<note>Line numbers are 0-based and match Read/ReplaceRange ranges.</note>', "<symbols>"]
-        lines.extend(cls.symbol_line(item) for item in items[: cls.MAX_SEARCH_ITEMS])
-        if len(items) > cls.MAX_SEARCH_ITEMS:
-            lines.append("... " + str(len(items) - cls.MAX_SEARCH_ITEMS) + " more")
-        lines.append("</symbols>")
-        return lines
-
-
-def _cymbal_json_results(stdout: str) -> list[Json]:
+def _code_index_module() -> Any | None:
     try:
-        return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
-    except json.JSONDecodeError:
-        return []
+        return importlib.import_module("code_symbol_index")
+    except ImportError:
+        return None
 
 
-def _run_cymbal_command(tag: str, cmd: list[str], *, cwd: str, timeout: int, render: Callable[[str], list[str]]) -> str:
+def _code_index_db_path(session: Session) -> str:
+    return os.path.join(session.project_dir(), "code-symbol-index", "index.sqlite")
+
+
+def _code_index_repository(session: Session, *, create_index: bool = False) -> Any:
+    module = _code_index_module()
+    if module is None:
+        raise ToolCallError("code index is unavailable")
+    db_path = _code_index_db_path(session)
+    if create_index:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    return module.Repository(session.cwd, db_path=db_path, create_index=create_index)
+
+
+def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, str]:
+    module = _code_index_module()
+    if module is None:
+        return "unavailable", ""
     try:
-        proc = subprocess.run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=_plain_command_env())
-        exit_code, stdout, stderr = proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr)
-    except subprocess.TimeoutExpired as error:
-        exit_code, stdout, stderr = -1, error.stdout or "", (error.stderr or "") + "timeout"
-    lines = ["<" + tag + ">", "* exit_code: " + str(exit_code)]
-    if rendered := render(stdout):
-        lines.extend(rendered)
-    elif stdout:
-        lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
-    if stderr:
-        lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=check, format="object")
+    except Exception as error:
+        return "error", str(error)
+    return str(getattr(status, "status", "error")), str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
+
+
+def _code_index_available(session: Session) -> bool:
+    status, message = _code_index_status(session)
+    session.state.code_index_error = message if status == "error" else ""
+    return status in {"ready", "stale"}
+
+
+def _code_index_update_existing(session: Session) -> None:
+    status, _message = _code_index_status(session)
+    if status not in {"ready", "stale"}:
+        return
+    try:
+        _code_index_repository(session).update()
+        session.state.code_index_error = ""
+    except Exception as error:
+        session.state.code_index_error = str(error)
+
+
+def _code_index_sync(session: Session) -> str:
+    before, _message = _code_index_status(session)
+    try:
+        _code_index_repository(session, create_index=True).refresh()
+    except Exception as error:
+        session.state.code_index_error = str(error)
+        return "code_index: error\n" + str(error)
+    session.state.code_index_error = ""
+    status, message = _code_index_status(session)
+    lines = ["code_index: " + ("initialized" if before == "missing" else "synced"), "status: " + status, "path: " + _code_index_db_path(session)]
+    if message:
+        lines.append("note: " + message)
+    return "\n".join(lines)
+
+
+def _code_index_update(session: Session, filepath: str) -> None:
+    if _code_index_module() is None or not session.is_path_in_cwd(filepath):
+        return
+    status, _message = _code_index_status(session)
+    if status == "missing":
+        return
+    try:
+        _code_index_repository(session).update([filepath])
+        session.state.code_index_error = ""
+    except Exception as error:
+        session.state.code_index_error = str(error)
+
+
+def _format_code_index_result(tag: str, text: str) -> str:
+    lines = ["<" + tag + ">"]
+    if text.strip():
+        lines.append(text.rstrip("\n"))
     lines.append("</" + tag + ">")
     return "\n".join(lines)
 
@@ -2463,9 +2445,7 @@ class FindCodeSymbolTool(Tool):
 
     query: str = ""
     limit: int = DEFAULT_LIMIT
-    cymbal_path: str = ""
-    cwd: str = ""
-    timeout: int = 60
+    session: Session | None = None
 
     @classmethod
     def tool_schema(cls) -> Json:
@@ -2493,23 +2473,18 @@ class FindCodeSymbolTool(Tool):
                 limit = min(cls.MAX_LIMIT, max(1, int(args[1])))
             except (TypeError, ValueError):
                 raise ToolCallArgError("limit must be an integer")
-        cymbal_path = shutil.which("cymbal")
-        if not cymbal_path:
-            raise ToolCallError("cymbal not found")
-        return cls(query=query, limit=limit, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+        if not _code_index_available(session):
+            raise ToolCallError("code index is not available")
+        return cls(query=query, limit=limit, session=session)
 
     def preview(self) -> str:
         return "FindCodeSymbol(" + json.dumps(self.query, ensure_ascii=False) + ")"
 
     def call(self) -> str:
-        cmd = [self.cymbal_path, "search", self.query, "--limit", str(self.limit), "--json"]
-        return _run_cymbal_command(
-            "FindCodeSymbolToolResult",
-            cmd,
-            cwd=self.cwd,
-            timeout=self.timeout,
-            render=lambda stdout: CymbalResultFormatter.format_symbol_search(_cymbal_json_results(stdout)),
-        )
+        if self.session is None:
+            raise ToolCallError("missing session")
+        text = _code_index_repository(self.session).search_text(self.query, limit=self.limit)
+        return _format_code_index_result("FindCodeSymbolToolResult", text)
 
 @dataclass
 class InspectCodeSymbolTool(Tool):
@@ -2529,9 +2504,7 @@ class InspectCodeSymbolTool(Tool):
     )
 
     symbol: str = ""
-    cymbal_path: str = ""
-    cwd: str = ""
-    timeout: int = 60
+    session: Session | None = None
 
     @classmethod
     def tool_schema(cls) -> Json:
@@ -2551,9 +2524,8 @@ class InspectCodeSymbolTool(Tool):
         symbol = str(args[0]).strip()
         if not symbol:
             raise ToolCallArgError("symbol cannot be empty")
-        cymbal_path = shutil.which("cymbal")
-        if not cymbal_path:
-            raise ToolCallError("cymbal not found")
+        if not _code_index_available(session):
+            raise ToolCallError("code index is not available")
         path_target = session.resolve_path(symbol)
         dotted_path = session.resolve_path(symbol.replace(".", os.sep)) if "." in symbol and os.sep not in symbol else ""
         if os.path.exists(path_target) or (dotted_path and os.path.exists(dotted_path)):
@@ -2562,29 +2534,15 @@ class InspectCodeSymbolTool(Tool):
             raise ToolCallArgError("symbol must be one symbol, Class.member, or symbol prefix; do not pass natural language")
         if "." in symbol and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", symbol):
             raise ToolCallArgError("symbol looks like a module path; use List/Search/Read for modules/packages, or pass a specific symbol")
-        return cls(symbol=symbol, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+        return cls(symbol=symbol, session=session)
 
     def preview(self) -> str:
         return "InspectCodeSymbol(" + json.dumps(self.symbol, ensure_ascii=False) + ")"
 
     def call(self) -> str:
-        cmd = [self.cymbal_path, "investigate", self.symbol, "--json"]
-        return _run_cymbal_command(
-            "InspectCodeSymbolToolResult",
-            cmd,
-            cwd=self.cwd,
-            timeout=self.timeout,
-            render=lambda stdout: CymbalResultFormatter.format_investigate(self._investigate_result(stdout) or {}),
-        )
-
-    @staticmethod
-    def _investigate_result(stdout: str) -> Json | None:
-        try:
-            data = _json_dict(json.loads(stdout))
-        except json.JSONDecodeError:
-            return None
-        result = _json_dict(_json_dict(data.get("results")).get("result"))
-        return result or None
+        if self.session is None:
+            raise ToolCallError("missing session")
+        return _format_code_index_result("InspectCodeSymbolToolResult", _code_index_repository(self.session).inspect_text(self.symbol))
 
 
 @dataclass
@@ -2600,9 +2558,7 @@ class OutlineCodeFileTool(Tool):
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["nanocode.py"]',)
 
     filepath: str = ""
-    cymbal_path: str = ""
-    cwd: str = ""
-    timeout: int = 60
+    session: Session | None = None
 
     @classmethod
     def tool_schema(cls) -> Json:
@@ -2622,26 +2578,21 @@ class OutlineCodeFileTool(Tool):
         filepath = session.resolve_path(str(args[0]).strip())
         if not os.path.isfile(filepath):
             raise ToolCallArgError("filepath must be an existing file; directories and symbols are not supported")
-        cymbal_path = shutil.which("cymbal")
-        if not cymbal_path:
-            raise ToolCallError("cymbal not found")
-        return cls(filepath=filepath, cymbal_path=cymbal_path, cwd=session.cwd, timeout=session.settings.shell_timeout)
+        if not _code_index_available(session):
+            raise ToolCallError("code index is not available")
+        return cls(filepath=filepath, session=session)
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
 
     def preview(self) -> str:
-        return "OutlineCodeFile(" + json.dumps(os.path.relpath(self.filepath, self.cwd), ensure_ascii=False) + ")"
+        cwd = self.session.cwd if self.session is not None else os.getcwd()
+        return "OutlineCodeFile(" + json.dumps(os.path.relpath(self.filepath, cwd), ensure_ascii=False) + ")"
 
     def call(self) -> str:
-        cmd = [self.cymbal_path, "outline", self.filepath, "--json"]
-        return _run_cymbal_command(
-            "OutlineCodeFileToolResult",
-            cmd,
-            cwd=self.cwd,
-            timeout=self.timeout,
-            render=lambda stdout: CymbalResultFormatter.format_outline(_cymbal_json_results(stdout)),
-        )
+        if self.session is None:
+            raise ToolCallError("missing session")
+        return _format_code_index_result("OutlineCodeFileToolResult", _code_index_repository(self.session).outline_text(self.filepath))
 
 @dataclass
 class EditTool(Tool):
@@ -5777,7 +5728,7 @@ class Agent:
             "- arch: " + self.session.arch,
             "- cwd: " + self.session.cwd,
         ]
-        if _cymbal_available():
+        if _code_index_available(self.session):
             lines.append(
                 "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (case-insensitive, optional limit default 20 max 80), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )
@@ -5818,7 +5769,7 @@ class Agent:
 
     def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
-        if _cymbal_available():
+        if _code_index_available(self.session):
             return tool_classes
         return tuple(tool for tool in tool_classes if tool not in (FindCodeSymbolTool, OutlineCodeFileTool, InspectCodeSymbolTool))
 
@@ -6307,6 +6258,8 @@ class Agent:
             self.blackboard.verification_required = True
             self.blackboard.task_code = TaskCode.VERIFYING
             self._remember_recent_edit(execution)
+            if execution.call.args:
+                _code_index_update(self.session, self.session.resolve_path(str(execution.call.args[0])))
 
     def _remember_tool_failure(self, execution: ToolCallExecution) -> None:
         if execution.outcome != "failure":
@@ -7116,6 +7069,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
+    CommandSpec("/index", "Initialize or sync code index", "Maintenance", "/index"),
     CommandSpec("/clean", "Clean inactive session directories", "Maintenance", "/clean"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
@@ -7415,6 +7369,13 @@ class CommandDispatcher:
             else "  (empty)"
         )
         verification_status = blackboard.verification.status
+        code_index_status, code_index_message = _code_index_status(session)
+        if session.state.code_index_error:
+            code_index_status = "error"
+            code_index_message = session.state.code_index_error
+        elif code_index_status in {"missing", "stale"}:
+            code_index_message = (code_index_message + "; " if code_index_message else "") + "run /index"
+        code_index = code_index_status + (": " + _shorten(code_index_message, 80) if code_index_message else "")
         return "\n".join(
             [
                 "provider: " + session.config.active_provider,
@@ -7437,7 +7398,7 @@ class CommandDispatcher:
                 + session.settings.context_budget,
                 "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
                 "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
-                "tools: cymbal=" + ("available" if _cymbal_available() else "not installed"),
+                "tools: code_index=" + code_index,
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 model_usage,
@@ -7451,6 +7412,11 @@ class CommandDispatcher:
         if args:
             return "Usage: /compact"
         return self._with_status(self._compact_history)
+
+    def _index(self, args: str) -> str:
+        if args:
+            return "Usage: /index"
+        return self._with_status(lambda: _code_index_sync(self.agent.session))
 
     def _context(self, args: str) -> str:
         value = args.strip()
@@ -7857,6 +7823,7 @@ class AgentLoop:
             seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
             if seconds > 0:
                 SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
+            self._sync_existing_code_index()
             dispatcher = CommandDispatcher(
                 self.agent,
                 run_agent=self._run_agent,
@@ -8570,6 +8537,9 @@ class AgentLoop:
         self._with_status_paused(lambda: self._print_message(message))
 
     def _print_welcome(self) -> None:
+        index_status, _index_message = _code_index_status(self.agent.session)
+        index_tip = [("ansibrightblack", "  tip: "), ("ansicyan", "/index"), ("ansiwhite", " initializes indexed code tools\n")] if index_status == "missing" else []
+        plain_tip = "  tip: /index initializes indexed code tools\n" if index_status == "missing" else ""
         self._emit_segments(
             [("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")]
             + [
@@ -8585,13 +8555,18 @@ class AgentLoop:
                 ("ansiwhite", " cancels, "),
                 ("ansicyan", "c-d"),
                 ("ansiwhite", " exits\n\n"),
-            ],
+            ]
+            + index_tip,
             "nanocode - AI coding assistant\n"
             "  /help [question] for help or source-aware questions\n"
             "  /status for current session state;\n"
-            "  during work: enter queues, c-c cancels, c-d exits\n",
+            "  during work: enter queues, c-c cancels, c-d exits\n"
+            + plain_tip,
             end="",
         )
+
+    def _sync_existing_code_index(self) -> None:
+        _code_index_update_existing(self.agent.session)
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
         self._discard_pending_tty_input()

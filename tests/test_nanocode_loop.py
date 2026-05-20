@@ -532,6 +532,19 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     assert loop.agent.runs == ["hello"]
 
 
+def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("missing", ""))
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    outputs = []
+    AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=outputs.append)._print_welcome()
+
+    assert any("tip: /index initializes indexed code tools" in output for output in outputs)
+
+
 def test_agent_loop_consumes_queued_input_before_prompt(tmp_path):
     class FakeAgent:
         def __init__(self):

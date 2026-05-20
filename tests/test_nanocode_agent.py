@@ -473,7 +473,7 @@ def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
 
 
 def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: False)
     agent = Agent(Session(cwd=str(tmp_path)))
 
     prompt = agent._system_prompt()
@@ -496,8 +496,8 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch)
 
 
 def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: False)
     agent = Agent(Session(cwd=str(tmp_path)))
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
@@ -510,8 +510,8 @@ def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
 
 
 def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: True)
     agent = Agent(Session(cwd=str(tmp_path)))
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/fake/cymbal" if name == "cymbal" else "")
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
@@ -526,7 +526,7 @@ def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
     assert "Use FindCodeSymbol for symbol/prefix candidates" in prompt
     assert "InspectCodeSymbol for chosen symbols" in prompt
     assert "OutlineCodeFile for known file structure" in prompt
-    assert "cymbal" not in prompt
+    assert "code-symbol-index" not in prompt
     assert "case-insensitive" in prompt
     assert "optional limit default 20 max 80" in prompt
     assert "Do not pass natural language" in prompt

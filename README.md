@@ -80,7 +80,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Tools
 
 - File: `Read`, `LineCount`, `List`, `Search`.
-- Codebase: `FindCodeSymbol`, `InspectCodeSymbol`, and `OutlineCodeFile` when the local `cymbal` CLI is installed.
+- Code navigation: `FindCodeSymbol`, `InspectCodeSymbol`, and `OutlineCodeFile` after `/index` builds the project index.
 - Edit: `Edit`, `ReplaceRange`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
@@ -89,7 +89,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 
 - Info: `/help [question]`, `/status`, `/rules`, `/compact`.
 - Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
-- Maintenance: `/clean`.
+- Maintenance: `/index`, `/clean`.
 - Exit: `/exit`, `/quit`.
 
 Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason` sets `provider.reasoning` to `off` or an effort value; `/reason-payload` controls the Chat-only reasoning payload shape. `/model` lists configured models before discovered ones, then prompts for reasoning.
@@ -106,7 +106,7 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 - `/context [low|medium|high]` shows or switches tool-result context budgets; lower budgets reduce token usage and observe overhead.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
 - Old inactive session directories are auto-cleaned after `runtime.auto_clean_recent` (default `1d`; use `off` to disable). `/clean` removes inactive sessions immediately.
-- Project data: user rules are stored under `~/.nanocode/projects/<project_key>/`.
+- Project data: user rules and code indexes are stored under `~/.nanocode/projects/<project_key>/`.
 
 ## Status
 
