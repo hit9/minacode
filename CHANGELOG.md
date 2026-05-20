@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3 - 2026-05-20
+
+### Changed
+- Removed stable knowledge state while keeping current-task known facts.
+- Extracted shared numbered-content and line-range helpers for tool output/range handling.
+- Trimmed thin helper wrappers in List and indexed code-inspection tools.
+
 ## 0.4.2 - 2026-05-19
 
 ### Added
