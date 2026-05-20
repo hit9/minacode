@@ -1724,6 +1724,17 @@ def _range_fingerprint(content: str) -> str:
 ############################
 
 
+def _numbered_content(content: str, start: int) -> str:
+    return "".join(f"{start + index:>7} |{line}" for index, line in enumerate(content.splitlines(keepends=True)))
+
+
+def _parse_line_range_token(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
+    if match is None:
+        raise ToolCallArgError("invalid range: use a comma token like 0,120")
+    return _parse_line_range(match.group(1), match.group(2))
+
+
 @dataclass
 class ReadTool(Tool):
     NAME: ClassVar[str] = "Read"
@@ -1754,13 +1765,6 @@ class ReadTool(Tool):
         tokens = [cls.cli_token(args[0])]
         return tokens + [str(arg) for arg in args[1:]]
 
-    @staticmethod
-    def _parse_line_range_token(value: str) -> tuple[int, int]:
-        match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
-        if match is None:
-            raise ToolCallArgError("invalid range: use a comma token like 0,120")
-        return _parse_line_range(match.group(1), match.group(2))
-
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         if len(args) == 0:
@@ -1771,7 +1775,7 @@ class ReadTool(Tool):
         if len(args) == 1:
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
-            ranges = [cls._parse_line_range_token(arg) for arg in args[1:]]
+            ranges = [_parse_line_range_token(arg) for arg in args[1:]]
         elif len(args) == 2:
             raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
         else:
@@ -1804,10 +1808,6 @@ class ReadTool(Tool):
         lines.extend(self._format_range_result(self.start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
-
-    @staticmethod
-    def _numbered_content(content: str, start: int) -> str:
-        return "".join(f"{start + index:>7} |{line}" for index, line in enumerate(content.splitlines(keepends=True)))
 
     def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
         target_filepath = self.filepath
@@ -1870,7 +1870,7 @@ class ReadTool(Tool):
                     indent + "<note>" + note + "</note>",
                 ]
             )
-        lines.extend([indent + "<content line-numbered>", self._numbered_content(content, start), indent + "</content>"])
+        lines.extend([indent + "<content line-numbered>", _numbered_content(content, start), indent + "</content>"])
         return lines
 
 
@@ -1950,34 +1950,31 @@ class ListTool(Tool):
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.dirpath)
 
-    def _dir_entry_type(self, entry: os.DirEntry[str]) -> str:
-        if entry.is_symlink():
-            return "symlink"
-        if entry.is_dir(follow_symlinks=False):
-            return "dir"
-        if entry.is_file(follow_symlinks=False):
-            return "file"
-        return "other"
-
-    def _entry_type_sort_key(self, entry_type: str) -> int:
-        return {"dir": 0, "file": 1, "symlink": 2, "other": 3}.get(entry_type, 4)
-
     def call(self) -> str:
         if not os.path.isdir(self.dirpath):
             raise ToolCallError("not a directory")
+        sort_order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
         entries = []
         with os.scandir(self.dirpath) as scan:
             for entry in scan:
                 if self.glob_pattern and not fnmatch.fnmatch(entry.name, self.glob_pattern):
                     continue
+                if entry.is_symlink():
+                    entry_type = "symlink"
+                elif entry.is_dir(follow_symlinks=False):
+                    entry_type = "dir"
+                elif entry.is_file(follow_symlinks=False):
+                    entry_type = "file"
+                else:
+                    entry_type = "other"
                 entries.append(
                     {
                         "name": entry.name,
                         "path": entry.path,
-                        "type": self._dir_entry_type(entry),
+                        "type": entry_type,
                     }
                 )
-        entries.sort(key=lambda item: (self._entry_type_sort_key(str(item["type"])), str(item["name"])))
+        entries.sort(key=lambda item: (sort_order.get(str(item["type"]), 4), str(item["name"])))
         lines = ["<ListToolResult>"]
         for e in entries:
             lines.append(f"* ({e['type']}): {os.path.relpath(str(e['path']), self.cwd)}")
@@ -2399,7 +2396,7 @@ class CymbalResultFormatter:
             lines.append("* symbol: " + cls.symbol_line(symbol))
         source = _json_str(result.get("source"))
         if source and symbol:
-            lines.extend(["<source line-numbered>", ReadTool._numbered_content(source, cls.read_start(symbol.get("start_line"))).rstrip("\n"), "</source>"])
+            lines.extend(["<source line-numbered>", _numbered_content(source, cls.read_start(symbol.get("start_line"))).rstrip("\n"), "</source>"])
         for label, key in (("members", "members"), ("references", "refs"), ("impact", "impact"), ("implementors", "implementors")):
             items = [_json_dict(item) for item in _json_list(result.get(key))]
             if items:
@@ -2430,6 +2427,23 @@ def _cymbal_json_results(stdout: str) -> list[Json]:
         return [_json_dict(item) for item in _json_list(_json_dict(json.loads(stdout)).get("results"))]
     except json.JSONDecodeError:
         return []
+
+
+def _run_cymbal_command(tag: str, cmd: list[str], *, cwd: str, timeout: int, render: Callable[[str], list[str]]) -> str:
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=_plain_command_env())
+        exit_code, stdout, stderr = proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr)
+    except subprocess.TimeoutExpired as error:
+        exit_code, stdout, stderr = -1, error.stdout or "", (error.stderr or "") + "timeout"
+    lines = ["<" + tag + ">", "* exit_code: " + str(exit_code)]
+    if rendered := render(stdout):
+        lines.extend(rendered)
+    elif stdout:
+        lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
+    if stderr:
+        lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
+    lines.append("</" + tag + ">")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -2489,22 +2503,13 @@ class FindCodeSymbolTool(Tool):
 
     def call(self) -> str:
         cmd = [self.cymbal_path, "search", self.query, "--limit", str(self.limit), "--json"]
-        try:
-            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
-        except subprocess.TimeoutExpired as error:
-            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
-        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
-
-    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<FindCodeSymbolToolResult>", "* exit_code: " + str(exit_code)]
-        if items := _cymbal_json_results(stdout):
-            lines.extend(CymbalResultFormatter.format_symbol_search(items))
-        elif stdout:
-            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
-        if stderr:
-            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</FindCodeSymbolToolResult>")
-        return "\n".join(lines)
+        return _run_cymbal_command(
+            "FindCodeSymbolToolResult",
+            cmd,
+            cwd=self.cwd,
+            timeout=self.timeout,
+            render=lambda stdout: CymbalResultFormatter.format_symbol_search(_cymbal_json_results(stdout)),
+        )
 
 @dataclass
 class InspectCodeSymbolTool(Tool):
@@ -2564,22 +2569,13 @@ class InspectCodeSymbolTool(Tool):
 
     def call(self) -> str:
         cmd = [self.cymbal_path, "investigate", self.symbol, "--json"]
-        try:
-            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
-        except subprocess.TimeoutExpired as error:
-            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
-        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
-
-    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<InspectCodeSymbolToolResult>", "* exit_code: " + str(exit_code)]
-        if result := self._investigate_result(stdout):
-            lines.extend(CymbalResultFormatter.format_investigate(result))
-        elif stdout:
-            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
-        if stderr:
-            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</InspectCodeSymbolToolResult>")
-        return "\n".join(lines)
+        return _run_cymbal_command(
+            "InspectCodeSymbolToolResult",
+            cmd,
+            cwd=self.cwd,
+            timeout=self.timeout,
+            render=lambda stdout: CymbalResultFormatter.format_investigate(self._investigate_result(stdout) or {}),
+        )
 
     @staticmethod
     def _investigate_result(stdout: str) -> Json | None:
@@ -2639,22 +2635,13 @@ class OutlineCodeFileTool(Tool):
 
     def call(self) -> str:
         cmd = [self.cymbal_path, "outline", self.filepath, "--json"]
-        try:
-            proc = subprocess.run(cmd, cwd=self.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, env=_plain_command_env())
-        except subprocess.TimeoutExpired as error:
-            return self._format(-1, error.stdout or "", (error.stderr or "") + "timeout")
-        return self._format(proc.returncode, _clean_terminal_output(proc.stdout), _clean_terminal_output(proc.stderr))
-
-    def _format(self, exit_code: int, stdout: str, stderr: str) -> str:
-        lines = ["<OutlineCodeFileToolResult>", "* exit_code: " + str(exit_code)]
-        if items := _cymbal_json_results(stdout):
-            lines.extend(CymbalResultFormatter.format_outline(items))
-        elif stdout:
-            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
-        if stderr:
-            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</OutlineCodeFileToolResult>")
-        return "\n".join(lines)
+        return _run_cymbal_command(
+            "OutlineCodeFileToolResult",
+            cmd,
+            cwd=self.cwd,
+            timeout=self.timeout,
+            render=lambda stdout: CymbalResultFormatter.format_outline(_cymbal_json_results(stdout)),
+        )
 
 @dataclass
 class EditTool(Tool):
@@ -3460,7 +3447,7 @@ class ToolResultTool(Tool):
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
         keys = [arg for arg in args if not re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
-        ranges = [ReadTool._parse_line_range_token(arg) for arg in args if re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
+        ranges = [_parse_line_range_token(arg) for arg in args if re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
         return cls(keys=keys, results=session.state.tool_result_store, cwd=session.cwd, ranges=ranges)
 
     def preview(self) -> str:
@@ -4967,7 +4954,7 @@ class ToolCallDisplayFormatter:
     @classmethod
     def _format_execution(cls, execution: ToolCallExecution) -> str:
         marker = "[success]" if execution.outcome == "success" else "[failure]"
-        text = marker + " " + cls._format_call(execution.call)
+        text = marker + " " + cls.format_call(execution.call)
         if execution.result_key:
             text += " -> " + execution.result_key
         if execution.outcome != "success":
@@ -4979,7 +4966,7 @@ class ToolCallDisplayFormatter:
         return text
 
     @classmethod
-    def _format_call(cls, call: ParsedToolCall) -> str:
+    def format_call(cls, call: ParsedToolCall) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         tokens = tool_class.cli_args(call.args) if tool_class is not None else [Tool.cli_token(arg) for arg in call.args]
         return " ".join([call.name] + tokens)
@@ -5119,7 +5106,7 @@ class ToolCallRunner:
     def _store_tool_result(self, call: ParsedToolCall, outcome: str, output: str) -> str:
         self.session.state.tool_result_counter += 1
         key = "tr." + str(self.session.state.tool_result_counter)
-        description = outcome + " " + ToolCallDisplayFormatter._format_call(call)
+        description = outcome + " " + ToolCallDisplayFormatter.format_call(call)
         if call.intention:
             description += " - " + call.intention
         log_path = self._write_tool_result_log(key, output)
