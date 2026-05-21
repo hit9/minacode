@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-    "code-symbol-index>=0.1.4",
+    "code-symbol-index>=0.1.6",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",
     "socksio>=1.0.0",

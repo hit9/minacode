@@ -545,11 +545,11 @@ def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
     assert any("tip: /index initializes indexed code tools" in output for output in outputs)
 
 
-def test_agent_loop_syncs_existing_index_before_prompt(tmp_path, monkeypatch):
-    synced = []
+def test_agent_loop_starts_existing_index_refresh_async(tmp_path, monkeypatch):
+    refreshed = []
 
-    def sync_existing(session, *, progress=None):
-        synced.append(progress is not None)
+    def refresh_existing(session, *, progress=None):
+        refreshed.append(progress is not None)
         if progress is not None:
             progress("file", done=1, total=2)
         return True
@@ -559,12 +559,12 @@ def test_agent_loop_syncs_existing_index_before_prompt(tmp_path, monkeypatch):
             self.session = make_session(tmp_path, model="model")
             self.blackboard = Blackboard()
 
-    monkeypatch.setattr(nanocode, "_code_index_sync_existing", sync_existing)
+    monkeypatch.setattr(nanocode, "_code_index_refresh_existing_async", refresh_existing)
     outputs = []
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "/exit", output_fn=outputs.append)
 
     assert loop.run() == 0
-    assert synced == [True]
+    assert refreshed == [True]
     assert loop.agent.session.state.status_notice == "index:parse 1/2"
 
 

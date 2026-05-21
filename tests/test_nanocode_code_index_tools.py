@@ -56,7 +56,14 @@ def fake_code_index_module(status="ready", *, refresh_status=None):
         FakeRepository.events.append(("status", root, db_path, check, format))
         return SimpleNamespace(status=status, reason="index not initialized" if status == "missing" else "", message="")
 
-    return SimpleNamespace(Repository=FakeRepository, status=status_fn)
+    def refresh_async(root, *, db_path=None, progress=None, **kwargs):
+        FakeRepository.events.append(("refresh_async", root, db_path, progress is not None, kwargs))
+        if progress is not None:
+            progress("scan")
+            progress("finish", done=1, total=1)
+        return SimpleNamespace()
+
+    return SimpleNamespace(Repository=FakeRepository, refresh_async=refresh_async, status=status_fn)
 
 
 @pytest.fixture(autouse=True)
@@ -134,15 +141,22 @@ def test_code_index_force_rebuild_removes_project_index_dir(tmp_path, monkeypatc
     assert result == "code_index: rebuilt\nstatus: ready\npath: " + nanocode._code_index_db_path(session)
 
 
-def test_code_index_sync_existing_updates_ready_index_and_caches_repository(tmp_path, monkeypatch):
+def test_code_index_refresh_existing_async_starts_for_ready_index(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("ready"))
 
-    assert nanocode._code_index_sync_existing(session) is True
+    assert nanocode._code_index_refresh_existing_async(session) is True
 
-    assert ("update", tuple(), str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
+    assert ("refresh_async", str(tmp_path), nanocode._code_index_db_path(session), True, {}) in FakeRepository.events
+    assert session.code_index_repository is None
+    assert session.state.status_notice == "index:done 1/1"
+    assert session.state.code_index_refreshing is False
+    assert session.state.code_index_reload_needed is True
+
+    nanocode._code_index_reload_if_ready(session)
+
     assert isinstance(session.code_index_repository, FakeRepository)
-    assert session.state.status_notice == "index:done"
+    assert session.state.code_index_reload_needed is False
 
 
 def test_find_code_symbol_uses_search_text(tmp_path, monkeypatch):

@@ -968,6 +968,8 @@ class RuntimeState:
     turn_model_calls: int = 0
     debug_log_count: int = 0
     code_index_error: str = ""
+    code_index_refreshing: bool = False
+    code_index_reload_needed: bool = False
 
 
 @dataclass
@@ -2392,6 +2394,7 @@ def _set_code_index_notice(session: Session, event: str, *, done: int = 0, total
     suffix = (" " + str(done) + "/" + str(total)) if total > 0 else ""
     session.state.status_notice = "index:" + phase + suffix
     session.state.status_notice_until = time.monotonic() + seconds
+    session.state.code_index_refreshing = phase not in {"done", "error"}
 
 
 def _code_index_progress(session: Session) -> Callable[..., None]:
@@ -2401,20 +2404,43 @@ def _code_index_progress(session: Session) -> Callable[..., None]:
     return update
 
 
-def _code_index_sync_existing(session: Session, progress: Callable[..., None] | None = None) -> bool:
+def _code_index_refresh_existing_async(session: Session, progress: Callable[..., None] | None = None) -> bool:
     status, _message = _code_index_status(session)
     if status not in {"ready", "stale"}:
         return False
+    module = _code_index_module()
+    if module is None:
+        return False
+    session.code_index_repository = None
+    session.state.code_index_error = ""
+    session.state.code_index_refreshing = True
+    session.state.code_index_reload_needed = False
+    callback = progress or _code_index_progress(session)
+
+    def refresh_progress(event: str, *, done: int = 0, total: int = 0, **kwargs: object) -> None:
+        callback(event, done=done, total=total, **kwargs)
+        if {"finish": "done", "done": "done"}.get(event, event) == "done":
+            session.state.code_index_reload_needed = True
+
     try:
-        repository = _code_index_repository(session)
-        repository.update(progress=progress or _code_index_progress(session))
-        session.code_index_repository = repository
+        module.refresh_async(session.cwd, db_path=_code_index_db_path(session), progress=refresh_progress)
+    except Exception as error:
+        session.state.code_index_refreshing = False
+        session.state.code_index_reload_needed = False
+        session.state.code_index_error = str(error)
+    return True
+
+
+def _code_index_reload_if_ready(session: Session) -> None:
+    if not session.state.code_index_reload_needed or session.state.code_index_refreshing:
+        return
+    try:
+        _code_index_repository(session)
         session.state.code_index_error = ""
-        _set_code_index_notice(session, "done", seconds=2)
     except Exception as error:
         session.code_index_repository = None
         session.state.code_index_error = str(error)
-    return True
+    session.state.code_index_reload_needed = False
 
 
 def _code_index_sync(session: Session, *, force: bool = False) -> str:
@@ -2428,6 +2454,7 @@ def _code_index_sync(session: Session, *, force: bool = False) -> str:
         repository = _code_index_repository(session, create_index=True)
         repository.refresh(progress=_code_index_progress(session))
         session.code_index_repository = repository
+        session.state.code_index_reload_needed = False
     except Exception as error:
         session.code_index_repository = None
         session.state.code_index_error = str(error)
@@ -7408,6 +7435,9 @@ class CommandDispatcher:
         if session.state.code_index_error:
             code_index_status = "error"
             code_index_message = session.state.code_index_error
+        elif session.state.code_index_refreshing:
+            code_index_status = "syncing"
+            code_index_message = session.state.status_notice.removeprefix("index:")
         elif code_index_status in {"missing", "stale"}:
             code_index_message = (code_index_message + "; " if code_index_message else "") + "run /index"
         code_index = code_index_status + (": " + _shorten(code_index_message, 80) if code_index_message else "")
@@ -7859,7 +7889,7 @@ class AgentLoop:
             seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
             if seconds > 0:
                 SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
-            self._sync_existing_code_index_before_prompt()
+            self._start_existing_code_index_refresh()
             dispatcher = CommandDispatcher(
                 self.agent,
                 run_agent=self._run_agent,
@@ -7869,6 +7899,7 @@ class AgentLoop:
                 select_provider=self._select_provider,
             )
             while True:
+                _code_index_reload_if_ready(self.agent.session)
                 if self._exit_after_current_turn:
                     return 0
                 try:
@@ -7886,6 +7917,7 @@ class AgentLoop:
                     continue
                 if not user_input:
                     continue
+                _code_index_reload_if_ready(self.agent.session)
                 try:
                     result = dispatcher.dispatch(user_input)
                 except Exception as error:
@@ -7907,36 +7939,11 @@ class AgentLoop:
             labels.append("plan")
         return "[" + ",".join(labels) + "] > " if labels else "> "
 
-    def _sync_existing_code_index_before_prompt(self) -> None:
+    def _start_existing_code_index_refresh(self) -> None:
         def progress(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
             _set_code_index_notice(self.agent.session, event, done=done, total=total)
-            if self.output_fn is not print or not sys.stderr.isatty():
-                return
-            phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
-            self.status_bar.output.write_raw("\r")
-            self.status_bar.output.erase_end_of_line()
-            print_formatted_text(FormattedText(self._index_progress_fragments(phase, done, total)), output=self.status_bar.output, end="", flush=True)
 
-        attempted = _code_index_sync_existing(self.agent.session, progress=progress)
-        if not attempted or self.output_fn is not print or not sys.stderr.isatty():
-            return
-        self.status_bar.output.write_raw("\r")
-        self.status_bar.output.erase_end_of_line()
-        status = "error" if self.agent.session.state.code_index_error else "sync done"
-        print_formatted_text(FormattedText(self._index_progress_fragments(status, 1, 1)), output=self.status_bar.output, end="\n", flush=True)
-        self.status_bar.rendered = False
-
-    def _index_progress_fragments(self, phase: str, done: int, total: int) -> list[tuple[str, str]]:
-        width = 18
-        if total > 0:
-            filled = min(width, max(0, int(width * done / max(total, 1))))
-            bar = "#" * filled + "-" * (width - filled)
-            count = " " + str(done) + "/" + str(total)
-        else:
-            bar = "-" * width
-            count = ""
-        style = "ansired" if phase == "error" else "ansicyan"
-        return [("ansibrightblack", "  index "), (style, phase), ("ansibrightblack", " [" + bar + "]" + count)]
+        _code_index_refresh_existing_async(self.agent.session, progress=progress)
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:
