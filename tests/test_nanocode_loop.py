@@ -545,30 +545,27 @@ def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
     assert any("tip: /index initializes indexed code tools" in output for output in outputs)
 
 
-def test_agent_loop_starts_existing_index_sync_in_background(tmp_path, monkeypatch):
-    started = []
-    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("ready", ""))
+def test_agent_loop_syncs_existing_index_before_prompt(tmp_path, monkeypatch):
+    synced = []
 
-    class FakeThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
-            self.daemon = daemon
-
-        def start(self):
-            started.append((self.target, self.daemon))
+    def sync_existing(session, *, progress=None):
+        synced.append(progress is not None)
+        if progress is not None:
+            progress("file", done=1, total=2)
+        return True
 
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="model")
             self.blackboard = Blackboard()
 
-    monkeypatch.setattr(nanocode.threading, "Thread", FakeThread)
+    monkeypatch.setattr(nanocode, "_code_index_sync_existing", sync_existing)
     outputs = []
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "/exit", output_fn=outputs.append)
 
     assert loop.run() == 0
-    assert len(started) == 1
-    assert started[0][1] is True
+    assert synced == [True]
+    assert loop.agent.session.state.status_notice == "index:parse 1/2"
 
 
 def test_agent_loop_consumes_queued_input_before_prompt(tmp_path):

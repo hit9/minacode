@@ -981,6 +981,7 @@ class Session:
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     state: RuntimeState = field(default_factory=RuntimeState)
     session_id: str = field(default_factory=lambda: Session._new_session_id())
+    code_index_repository: Any | None = None
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
@@ -2355,13 +2356,18 @@ def _code_index_db_path(session: Session) -> str:
 
 
 def _code_index_repository(session: Session, *, create_index: bool = False) -> Any:
+    if not create_index and session.code_index_repository is not None:
+        return session.code_index_repository
     module = _code_index_module()
     if module is None:
         raise ToolCallError("code index is unavailable")
     db_path = _code_index_db_path(session)
     if create_index:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    return module.Repository(session.cwd, db_path=db_path, create_index=create_index)
+    repository = module.Repository(session.cwd, db_path=db_path, create_index=create_index)
+    if not create_index:
+        session.code_index_repository = repository
+    return repository
 
 
 def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, str]:
@@ -2381,25 +2387,34 @@ def _code_index_available(session: Session) -> bool:
     return status in {"ready", "stale"}
 
 
-def _code_index_update_existing(session: Session) -> None:
-    status, _message = _code_index_status(session)
-    if status not in {"ready", "stale"}:
-        return
-    try:
-        _code_index_repository(session).update(progress=_code_index_progress(session))
-        session.state.code_index_error = ""
-    except Exception as error:
-        session.state.code_index_error = str(error)
+def _set_code_index_notice(session: Session, event: str, *, done: int = 0, total: int = 0, seconds: int = 30) -> None:
+    phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
+    suffix = (" " + str(done) + "/" + str(total)) if total > 0 else ""
+    session.state.status_notice = "index:" + phase + suffix
+    session.state.status_notice_until = time.monotonic() + seconds
 
 
 def _code_index_progress(session: Session) -> Callable[..., None]:
     def update(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
-        phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
-        suffix = (" " + str(done) + "/" + str(total)) if total > 0 else ""
-        session.state.status_notice = "index:" + phase + suffix
-        session.state.status_notice_until = time.monotonic() + 30
+        _set_code_index_notice(session, event, done=done, total=total)
 
     return update
+
+
+def _code_index_sync_existing(session: Session, progress: Callable[..., None] | None = None) -> bool:
+    status, _message = _code_index_status(session)
+    if status not in {"ready", "stale"}:
+        return False
+    try:
+        repository = _code_index_repository(session)
+        repository.update(progress=progress or _code_index_progress(session))
+        session.code_index_repository = repository
+        session.state.code_index_error = ""
+        _set_code_index_notice(session, "done", seconds=2)
+    except Exception as error:
+        session.code_index_repository = None
+        session.state.code_index_error = str(error)
+    return True
 
 
 def _code_index_sync(session: Session, *, force: bool = False) -> str:
@@ -2407,15 +2422,18 @@ def _code_index_sync(session: Session, *, force: bool = False) -> str:
     if force:
         if _code_index_module() is None:
             return "code_index: error\ncode index is unavailable"
+        session.code_index_repository = None
         shutil.rmtree(os.path.dirname(_code_index_db_path(session)), ignore_errors=True)
     try:
-        _code_index_repository(session, create_index=True).refresh(progress=_code_index_progress(session))
+        repository = _code_index_repository(session, create_index=True)
+        repository.refresh(progress=_code_index_progress(session))
+        session.code_index_repository = repository
     except Exception as error:
+        session.code_index_repository = None
         session.state.code_index_error = str(error)
         return "code_index: error\n" + str(error)
     session.state.code_index_error = ""
-    session.state.status_notice = "index:done"
-    session.state.status_notice_until = time.monotonic() + 2
+    _set_code_index_notice(session, "done", seconds=2)
     status, message = _code_index_status(session)
     action = "rebuilt" if force else ("initialized" if before == "missing" else "synced")
     lines = ["code_index: " + action, "status: " + status, "path: " + _code_index_db_path(session)]
@@ -7831,7 +7849,6 @@ class AgentLoop:
         self._runtime_ui_stop = threading.Event()
         self._tool_live_preview_lock = threading.Lock()
         self._tool_live_preview_text = ""
-        self._startup_index_thread: threading.Thread | None = None
         self._exit_after_current_turn = False
         if self.prompt_session is None and input_fn is input and sys.stdin.isatty():
             self.prompt_session = self._make_prompt_session()
@@ -7842,7 +7859,7 @@ class AgentLoop:
             seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
             if seconds > 0:
                 SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
-            self._start_existing_code_index_sync()
+            self._sync_existing_code_index_before_prompt()
             dispatcher = CommandDispatcher(
                 self.agent,
                 run_agent=self._run_agent,
@@ -7889,6 +7906,37 @@ class AgentLoop:
         if self.agent.session.settings.plan_mode:
             labels.append("plan")
         return "[" + ",".join(labels) + "] > " if labels else "> "
+
+    def _sync_existing_code_index_before_prompt(self) -> None:
+        def progress(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
+            _set_code_index_notice(self.agent.session, event, done=done, total=total)
+            if self.output_fn is not print or not sys.stderr.isatty():
+                return
+            phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
+            self.status_bar.output.write_raw("\r")
+            self.status_bar.output.erase_end_of_line()
+            print_formatted_text(FormattedText(self._index_progress_fragments(phase, done, total)), output=self.status_bar.output, end="", flush=True)
+
+        attempted = _code_index_sync_existing(self.agent.session, progress=progress)
+        if not attempted or self.output_fn is not print or not sys.stderr.isatty():
+            return
+        self.status_bar.output.write_raw("\r")
+        self.status_bar.output.erase_end_of_line()
+        status = "error" if self.agent.session.state.code_index_error else "sync done"
+        print_formatted_text(FormattedText(self._index_progress_fragments(status, 1, 1)), output=self.status_bar.output, end="\n", flush=True)
+        self.status_bar.rendered = False
+
+    def _index_progress_fragments(self, phase: str, done: int, total: int) -> list[tuple[str, str]]:
+        width = 18
+        if total > 0:
+            filled = min(width, max(0, int(width * done / max(total, 1))))
+            bar = "#" * filled + "-" * (width - filled)
+            count = " " + str(done) + "/" + str(total)
+        else:
+            bar = "-" * width
+            count = ""
+        style = "ansired" if phase == "error" else "ansicyan"
+        return [("ansibrightblack", "  index "), (style, phase), ("ansibrightblack", " [" + bar + "]" + count)]
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:
@@ -8583,15 +8631,6 @@ class AgentLoop:
             + plain_tip,
             end="",
         )
-
-    def _sync_existing_code_index(self) -> None:
-        _code_index_update_existing(self.agent.session)
-
-    def _start_existing_code_index_sync(self) -> None:
-        if self._startup_index_thread is not None or _code_index_status(self.agent.session)[0] not in {"ready", "stale"}:
-            return
-        self._startup_index_thread = threading.Thread(target=self._sync_existing_code_index, daemon=True)
-        self._startup_index_thread.start()
 
     def _wait_confirm(self, prompt: str, *, default: bool) -> ConfirmationResult:
         self._discard_pending_tty_input()

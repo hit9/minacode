@@ -29,6 +29,9 @@ class FakeRepository:
 
     def update(self, paths=None, *, progress=None):
         self.events.append(("update", tuple(paths or ()), self.root, self.db_path, progress is not None))
+        if progress is not None:
+            progress("scan")
+            progress("finish", done=1, total=1)
         return self
 
     def search_text(self, query, *, limit):
@@ -131,13 +134,15 @@ def test_code_index_force_rebuild_removes_project_index_dir(tmp_path, monkeypatc
     assert result == "code_index: rebuilt\nstatus: ready\npath: " + nanocode._code_index_db_path(session)
 
 
-def test_code_index_update_existing_syncs_ready_index_only(tmp_path, monkeypatch):
+def test_code_index_sync_existing_updates_ready_index_and_caches_repository(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("ready"))
 
-    nanocode._code_index_update_existing(session)
+    assert nanocode._code_index_sync_existing(session) is True
 
     assert ("update", tuple(), str(tmp_path), nanocode._code_index_db_path(session), True) in FakeRepository.events
+    assert isinstance(session.code_index_repository, FakeRepository)
+    assert session.state.status_notice == "index:done"
 
 
 def test_find_code_symbol_uses_search_text(tmp_path, monkeypatch):
