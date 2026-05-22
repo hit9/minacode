@@ -81,7 +81,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 
 - File: `Read`, `LineCount`, `List`, `Search`.
 - Code navigation: `FindCodeSymbol`, `InspectCodeSymbol`, and `OutlineCodeFile` after `/index` builds the project index.
-- Edit: `Edit`, `ReplaceRange`.
+- Edit: `CreateFile`, `EditFile`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 

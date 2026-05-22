@@ -40,23 +40,23 @@ def test_search_tool_rejects_many_plain_args_without_explicit_path(tmp_path):
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallError, match="requires 1 to 4 args"):
-        SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class ReplaceRange"])
+        SearchTool.make(session, ["class EditFile", "class Bash", "class Search", "class Read", "class CreateFile"])
 
 
 def test_search_tool_treats_second_plain_arg_as_path(tmp_path):
     path = tmp_path / "sample.py"
-    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    path.write_text("class EditFileTool:\nclass BashTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = SearchTool.make(session, ["class Edit|class Bash", "sample.py"])
+    tool = SearchTool.make(session, ["class EditFile|class Bash", "sample.py"])
 
-    assert tool.pattern == "class Edit|class Bash"
+    assert tool.pattern == "class EditFile|class Bash"
     assert tool.target_path == str(path)
 
 
 def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_path, monkeypatch):
     path = tmp_path / "nanocode.py"
-    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    path.write_text("class EditFileTool:\nclass BashTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
 
@@ -65,16 +65,16 @@ def test_search_tool_accepts_explicit_path_option_with_regex_and_context(tmp_pat
 
     assert tool.target_path == str(path)
     assert tool.context_lines == 0
-    assert "* nanocode.py:1: class EditTool:" in result
+    assert "* nanocode.py:1: class EditFileTool:" in result
     assert "* nanocode.py:2: class BashTool:" in result
 
 
 def test_search_tool_accepts_explicit_path_option_as_second_arg(tmp_path):
     path = tmp_path / "nanocode.py"
-    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    path.write_text("class EditFileTool:\nclass BashTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = SearchTool.make(session, ["class Edit", "path=nanocode.py"])
+    tool = SearchTool.make(session, ["class EditFile", "path=nanocode.py"])
 
     assert tool.target_path == str(path)
     assert tool.context_lines == SearchTool.CONTEXT_LINES
@@ -82,12 +82,12 @@ def test_search_tool_accepts_explicit_path_option_as_second_arg(tmp_path):
 
 def test_search_tool_accepts_explicit_path_option_with_multiple_terms(tmp_path):
     path = tmp_path / "nanocode.py"
-    path.write_text("class EditTool:\nclass BashTool:\n", encoding="utf-8")
+    path.write_text("class EditFileTool:\nclass BashTool:\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = SearchTool.make(session, ["class Edit", "class Bash", "path=nanocode.py"])
+    tool = SearchTool.make(session, ["class EditFile", "class Bash", "path=nanocode.py"])
 
-    assert tool.pattern == "class Edit|class Bash"
+    assert tool.pattern == "class EditFile|class Bash"
     assert tool.target_path == str(path)
 
 

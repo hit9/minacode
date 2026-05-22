@@ -367,7 +367,8 @@ class UserRules:
 
     def add(self, rule: str) -> bool:
         rule = self._clean_rule(rule)
-        if not rule or rule in self._rules():
+        rules = {item for line in self.content.splitlines() if (item := self._clean_rule(line)) and not item.startswith("#")}
+        if not rule or rule in rules:
             return False
         prefix = "# User Rules\n\n" if not self.content.strip() else self.content.rstrip() + "\n"
         self.content = prefix + "- " + rule
@@ -380,9 +381,6 @@ class UserRules:
 
     def format(self, indent: str = "") -> str:
         return _format_lines((self.content.strip() or "(empty)").splitlines(), indent)
-
-    def _rules(self) -> set[str]:
-        return {rule for line in self.content.splitlines() if (rule := self._clean_rule(line)) and not rule.startswith("#")}
 
     @staticmethod
     def _clean_rule(rule: str) -> str:
@@ -815,128 +813,6 @@ class AgentRunResult:
     value: JsonValue = None
 
 
-class RangeFingerprintStore:
-    MAX_ENTRIES: ClassVar[int] = 200
-
-    @dataclass
-    class Entry:
-        fingerprint: str
-        filepath: str
-        start: int
-        end: int
-        content: str
-
-    @dataclass
-    class Resolved:
-        start: int
-        end: int
-        fingerprint: str
-        relocated_from: tuple[int, int] | None = None
-
-    def __init__(self):
-        self._entries: list[RangeFingerprintStore.Entry] = []
-
-    def remember(self, *, filepath: str, start: int, end: int, content: str) -> str:
-        fingerprint = _range_fingerprint(content)
-        entry = self.Entry(fingerprint=fingerprint, filepath=os.path.realpath(filepath), start=start, end=end, content=content)
-        if entry not in self._entries:
-            self._entries.append(entry)
-            del self._entries[: max(0, len(self._entries) - self.MAX_ENTRIES)]
-        return fingerprint
-
-    def clear(self) -> None:
-        self._entries = []
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    def resolve(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> Resolved:
-        resolved_start = min(start, len(lines))
-        resolved_end = len(lines) if end == 0 else min(end, len(lines))
-        resolved_end = max(resolved_end, resolved_start)
-        current = "".join(lines[resolved_start:resolved_end])
-        current_fingerprint = _range_fingerprint(current)
-        if current_fingerprint == fingerprint:
-            return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
-
-        for content in self._candidate_contents(
-            filepath=filepath,
-            start=resolved_start,
-            end=resolved_end,
-            fingerprint=fingerprint,
-        ):
-            if _range_fingerprint(content) == current_fingerprint:
-                return self.Resolved(start=resolved_start, end=resolved_end, fingerprint=current_fingerprint)
-
-        matches = self._find_matches(lines, filepath=filepath, start=resolved_start, end=resolved_end, fingerprint=fingerprint)
-        message = (
-            f"fingerprint mismatch for range {start}:{end}: expected {fingerprint}, current {current_fingerprint}; "
-            f"call Read(filepath, {start}, {end}) and reuse that range fingerprint"
-        )
-        other_ranges = self._ranges_for_fingerprint(filepath=filepath, fingerprint=fingerprint)
-        if other_ranges:
-            message += "; this fingerprint was cached for range(s): " + ", ".join(f"{range_start}:{range_end}" for range_start, range_end in other_ranges)
-        if not matches:
-            raise ToolCallError(message)
-        if len(matches) > 1:
-            raise ToolCallError(message + "; cached range matched multiple locations")
-        relocated_start, relocated_end = matches[0]
-        return self.Resolved(
-            start=relocated_start,
-            end=relocated_end,
-            fingerprint=_range_fingerprint("".join(lines[relocated_start:relocated_end])),
-            relocated_from=(resolved_start, resolved_end),
-        )
-
-    def _find_matches(self, lines: list[str], *, filepath: str, start: int, end: int, fingerprint: str) -> list[tuple[int, int]]:
-        contents = [content for content in self._candidate_contents(filepath=filepath, start=start, end=end, fingerprint=fingerprint) if content]
-
-        matches = []
-        for content in contents:
-            expected = content.splitlines(keepends=True)
-            if not expected:
-                continue
-            last_start = len(lines) - len(expected)
-            for position in range(max(0, last_start + 1)):
-                if lines[position : position + len(expected)] == expected:
-                    matches.append((position, position + len(expected)))
-                    if len(matches) > 1:
-                        return matches
-        return matches
-
-    def _candidate_contents(self, *, filepath: str, start: int, end: int, fingerprint: str) -> list[str]:
-        filepath = os.path.realpath(filepath)
-        contents: list[str] = []
-        for entry in self._entries:
-            if entry.fingerprint != fingerprint or entry.filepath != filepath:
-                continue
-            if start == end:
-                entry_lines = entry.content.splitlines(keepends=True)
-                cached_end = entry.start + len(entry_lines)
-                if entry.start <= start <= cached_end:
-                    contents.append("")
-                continue
-            entry_lines = entry.content.splitlines(keepends=True)
-            cached_end = entry.start + len(entry_lines)
-            if start < entry.start or end > cached_end:
-                continue
-            candidate = "".join(entry_lines[start - entry.start : end - entry.start])
-            if candidate not in contents:
-                contents.append(candidate)
-        return contents
-
-    def _ranges_for_fingerprint(self, *, filepath: str, fingerprint: str) -> list[tuple[int, int]]:
-        filepath = os.path.realpath(filepath)
-        ranges = []
-        for entry in self._entries:
-            if entry.fingerprint != fingerprint or entry.filepath != filepath:
-                continue
-            item = (entry.start, entry.end)
-            if item not in ranges:
-                ranges.append(item)
-        return ranges
-
-
 @dataclass
 class RuntimeState:
     debug_prompt_count: int = 0
@@ -960,7 +836,6 @@ class RuntimeState:
     pending_user_feedback: str = ""
     conversation: list[ConversationItem] = field(default_factory=list)
     user_rules: UserRules = field(default_factory=UserRules)
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
     turn_tool_calls: int = 0
@@ -1716,7 +1591,7 @@ def _parse_line_range(start_arg: str, end_arg: str) -> tuple[int, int]:
     return start, end
 
 
-def _range_fingerprint(content: str) -> str:
+def _line_hash(content: str) -> str:
     return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
 
 
@@ -1726,7 +1601,7 @@ def _range_fingerprint(content: str) -> str:
 
 
 def _numbered_content(content: str, start: int) -> str:
-    return "".join(f"{start + index:>7} |{line}" for index, line in enumerate(content.splitlines(keepends=True)))
+    return "".join(f"{start + index}:{_line_hash(line)}|{line}" for index, line in enumerate(content.splitlines(keepends=True)))
 
 
 def _parse_line_range_token(value: str) -> tuple[int, int]:
@@ -1744,9 +1619,9 @@ class ReadTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
         "Each range returns at most 600 lines.",
-        'Content is line-numbered as "line |code"; edit text starts immediately after "|".',
+        'Content is hashline-numbered as "line:hash|code"; EditFile anchors use "line:hash" and code starts after "|".',
     )
-    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<fingerprint, line-numbered content>"
+    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<hashline-numbered content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["code.py", "0,80", "160,220"]',
         'Example args: ["code.py"]',
@@ -1757,7 +1632,6 @@ class ReadTool(Tool):
     end: int = 0
     ranges: list[tuple[int, int]] = field(default_factory=list)
     cwd: str = ""
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
@@ -1782,7 +1656,7 @@ class ReadTool(Tool):
         else:
             raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
         start, end = ranges[0]
-        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd, range_fingerprints=session.state.range_fingerprints)
+        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd)
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
@@ -1797,20 +1671,20 @@ class ReadTool(Tool):
         if len(self.ranges) > 1:
             lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
             for start, end in self.ranges:
-                content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(start, end)
+                content, returned_end, range_end, truncated, total_lines = self._read_range(start, end)
                 lines.append("  <ReadRange>")
-                lines.extend(self._format_range_result(start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="    "))
+                lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="    "))
                 lines.append("  </ReadRange>")
             lines.append("</ReadToolResult>")
             return "\n".join(lines)
 
-        content, returned_end, fingerprint_end, fingerprint, truncated, total_lines = self._read_range(self.start, self.end)
+        content, returned_end, range_end, truncated, total_lines = self._read_range(self.start, self.end)
         lines = ["<ReadToolResult>"]
-        lines.extend(self._format_range_result(self.start, returned_end, fingerprint_end, fingerprint, truncated, total_lines, content, indent="  "))
+        lines.extend(self._format_range_result(self.start, returned_end, range_end, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
-    def _read_range(self, start: int, end: int) -> tuple[str, int, int, str, bool, int]:
+    def _read_range(self, start: int, end: int) -> tuple[str, int, int, bool, int]:
         target_filepath = self.filepath
         total_lines = 0
         selected_lines = []
@@ -1833,21 +1707,14 @@ class ReadTool(Tool):
                     truncated = True
         content = "".join(selected_lines)
         returned_end = start + len(selected_lines)
-        fingerprint_end = returned_end if truncated else end
-        fingerprint = self.range_fingerprints.remember(
-            filepath=target_filepath,
-            start=start,
-            end=fingerprint_end,
-            content=content,
-        )
-        return content, returned_end, fingerprint_end, fingerprint, truncated, total_lines
+        range_end = returned_end if truncated else end
+        return content, returned_end, range_end, truncated, total_lines
 
     def _format_range_result(
         self,
         start: int,
         returned_end: int,
-        fingerprint_end: int,
-        fingerprint: str,
+        range_end: int,
         truncated: bool,
         total_lines: int,
         content: str,
@@ -1855,9 +1722,8 @@ class ReadTool(Tool):
         indent: str,
     ) -> list[str]:
         lines = [
-            indent + "<range>" + str(start) + ":" + str(fingerprint_end) + "</range>",
-            indent + "<fingerprint>" + fingerprint + "</fingerprint>",
-            indent + '<note>Line prefixes are display-only; code starts immediately after "|".</note>',
+            indent + "<range>" + str(start) + ":" + str(range_end) + "</range>",
+            indent + '<note>Line prefixes are display-only; EditFile anchors use "line:hash"; code starts immediately after "|".</note>',
         ]
         if truncated:
             note = (
@@ -1871,7 +1737,7 @@ class ReadTool(Tool):
                     indent + "<note>" + note + "</note>",
                 ]
             )
-        lines.extend([indent + "<content line-numbered>", _numbered_content(content, start), indent + "</content>"])
+        lines.extend([indent + "<content hashline-numbered>", _numbered_content(content, start), indent + "</content>"])
         return lines
 
 
@@ -2381,21 +2247,15 @@ def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, s
     except Exception as error:
         return "error", str(error)
     message = str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
-    pending = _code_index_pending_message(getattr(status, "pending_changes", None), getattr(status, "pending_files", ()))
-    if pending:
+    changes = getattr(status, "pending_changes", None)
+    files = getattr(status, "pending_files", ())
+    if changes:
+        pending = "pending " + str(changes)
+        if isinstance(files, (list, tuple)) and files:
+            sample = ", ".join(str(item) for item in files[:3])
+            pending += " (" + sample + ("..." if len(files) > 3 else "") + ")"
         message = (message + "; " if message else "") + pending
     return str(getattr(status, "status", "error")), message
-
-
-def _code_index_pending_message(changes: Any, files: Any) -> str:
-    if not changes:
-        return ""
-    message = "pending " + str(changes)
-    if isinstance(files, (list, tuple)) and files:
-        sample = ", ".join(str(item) for item in files[:3])
-        message += " (" + sample + ("..." if len(files) > 3 else "") + ")"
-    return message
-
 
 
 def _code_index_available(session: Session) -> bool:
@@ -2728,270 +2588,13 @@ class OutlineCodeFileTool(Tool):
 
 
 @dataclass
-class EditTool(Tool):
-    NAME: ClassVar[str] = "Edit"
-    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace/delete exact literal text in an existing file; default requires one unique match, optional 'all' replaces every match.",
-        "Returns changed path plus replacement count or created=true.",
-        "If the target is structural or line ranges are clearer, use ReplaceRange.",
-    )
-    SIGNATURE: ClassVar[str] = "Edit(filepath, find, replace[, all]) -> EditToolResult<path, replacements>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "old text", "new text"]', 'Example all args: ["code.py", "old", "new", "all"]')
-
-    filepath: str = ""
-    find: str = ""
-    replace: str = ""
-    replace_all: bool = False
-    cwd: str = ""
-
-    @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
-        return [cls.cli_token(args[0])] if args else []
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) not in (3, 4):
-            raise ToolCallArgError(
-                "Edit args error: got "
-                + str(len(args))
-                + ' args; expected ["filepath", "find", "replace", optional "all"]. Example: Edit("nanocode.py", "old text", "new text").'
-            )
-        if len(args) == 4 and str(args[3]) != "all":
-            raise ToolCallArgError('Edit fourth arg must be exactly "all"')
-        find = str(args[1])
-        return cls(filepath=session.resolve_path(args[0]), find=find, replace=str(args[2]), replace_all=len(args) == 4, cwd=session.cwd)
-
-    def preview(self) -> str:
-        label = f'Edit({self.filepath}, find="{self.find}")'
-        try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-        except FileNotFoundError:
-            if self.find == "":
-                return _make_unified_diff("", self.replace, self.filepath) or label
-            return label + "\n# preview unavailable: file does not exist; use empty find to create"
-        except OSError as error:
-            return label + "\n# preview unavailable: " + str(error)
-        if self.find == "":
-            return label + "\n# preview unavailable: empty find creates missing files only"
-        if self.find not in content:
-            return label
-        replacements = content.count(self.find)
-        if replacements != 1 and not self.replace_all:
-            return label + '\n# preview unavailable: target `find` text matched multiple times; pass "all" to replace all matches or use ReplaceRange'
-        return _make_unified_diff(content, content.replace(self.find, self.replace, -1 if self.replace_all else 1), self.filepath) or label
-
-    def call(self) -> str:
-        created = False
-        try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-        except FileNotFoundError:
-            if self.find != "":
-                raise ToolCallError("file does not exist; use empty find to create")
-            content = ""
-            created = True
-        if self.find == "" and not created:
-            raise ToolCallError("empty find creates missing files only")
-        if self.find not in content:
-            raise ToolCallError("target `find` text not found")
-        replacements = content.count(self.find)
-        if replacements != 1 and not self.replace_all:
-            raise ToolCallError('target `find` text matched multiple times; pass "all" to replace all matches or use ReplaceRange')
-
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(content.replace(self.find, self.replace, -1 if self.replace_all else 1))
-
-        lines = [
-            "<EditToolResult>",
-            f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-        ]
-        if created:
-            lines.append("* created: true")
-        else:
-            lines.append(f"* replacements: {replacements}")
-        lines.append("</EditToolResult>")
-        return "\n".join(lines)
-
-
-@dataclass
-class PatchFileHunk:
-    old: list[str]
-    new: list[str]
-    alt_old: list[str]
-    alt_new: list[str]
-
-
-@dataclass
-class PatchFileTool(Tool):
-    NAME: ClassVar[str] = "PatchFile"
-    EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
-    DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Apply a small single-file unified-diff-style patch for coordinated multi-location edits.",
-        "Returns changed path and applied hunk count.",
-        "Inside hunks, every line should start with space, -, or +; indented context copied without the extra marker is tolerated.",
-        "Context lines must be exact file text, without Read display prefixes.",
-        "Each hunk must include enough unchanged context to match exactly once; all hunks must apply or nothing is written.",
-    )
-    SIGNATURE: ClassVar[str] = "PatchFile(filepath, patch) -> PatchFileToolResult<path, hunks>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["code.py", "@@\\n old\\n-old_call()\\n+new_call()\\n next\\n"]',
-    )
-
-    filepath: str = ""
-    patch: str = ""
-    cwd: str = ""
-
-    @classmethod
-    def cli_args(cls, args: list[str]) -> list[str]:
-        if len(args) < 2:
-            return [cls.cli_token(arg) for arg in args]
-        return [cls.cli_token(args[0]), cls.cli_content_summary(args[1])]
-
-    @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        if len(args) != 2:
-            raise ToolCallArgError('requires exactly 2 args: filepath, patch. Example: PatchFile("code.py", "@@\\n old\\n-new\\n+new\\n")')
-        return cls(filepath=session.resolve_path(args[0]), patch=str(args[1]), cwd=session.cwd)
-
-    def preview(self) -> str:
-        label = f"PatchFile({self.filepath})"
-        try:
-            original, new_content, _ = self._preview()
-        except (OSError, ToolCallError) as error:
-            return label + "\n# preview unavailable: " + str(error)
-        return _make_unified_diff(original, new_content, self.filepath) or label
-
-    def preview_error(self) -> str:
-        try:
-            self._preview()
-        except (OSError, ToolCallError) as error:
-            return str(error)
-        return ""
-
-    def call(self) -> str:
-        original, new_content, replacements = self._preview()
-        if new_content == original:
-            raise ToolCallError("patch produced no changes")
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        return "\n".join(
-            [
-                "<PatchFileToolResult>",
-                f"* path: {os.path.relpath(self.filepath, self.cwd)}",
-                f"* hunks: {len(replacements)}",
-                "</PatchFileToolResult>",
-            ]
-        )
-
-    def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
-        with open(self.filepath, "r", encoding="utf-8") as f:
-            original = f.read()
-        lines = original.splitlines(keepends=True)
-        replacements = [
-            (start, start + len(old), new)
-            for index, hunk in enumerate(self._parse_patch(), start=1)
-            for old, new in [self._select_hunk_variant(lines, hunk, index)]
-            for start in [self._match_hunk(lines, old, index)]
-        ]
-        return original, "".join(self._patched_lines(lines, replacements)), replacements
-
-    def _parse_patch(self) -> list[PatchFileHunk]:
-        hunks: list[PatchFileHunk] = []
-        current: PatchFileHunk | None = None
-        for raw_line in self.patch.splitlines(keepends=True):
-            if raw_line.startswith("\\ No newline at end of file"):
-                continue
-            if raw_line.startswith("@@"):
-                if current is not None and not current.old and not current.new:
-                    continue
-                current = PatchFileHunk(old=[], new=[], alt_old=[], alt_new=[])
-                hunks.append(current)
-                continue
-            if current is None:
-                if raw_line.startswith(("---", "+++", "diff --git ", "index ", "new file mode ", "deleted file mode ", "similarity index ", "rename from ", "rename to ")):
-                    continue
-                if raw_line.strip():
-                    raise ToolCallError("patch content before first hunk")
-                continue
-            if not raw_line:
-                continue
-            prefix, text = raw_line[0], raw_line[1:]
-            if prefix == " ":
-                current.old.append(text)
-                current.new.append(text)
-                current.alt_old.append(raw_line)
-                current.alt_new.append(raw_line)
-            elif prefix == "-":
-                current.old.append(text)
-                current.alt_old.append(text)
-            elif prefix == "+":
-                current.new.append(text)
-                current.alt_new.append(" " + text)
-            else:
-                raise ToolCallError("invalid patch hunk line prefix: " + repr(prefix))
-        if not hunks:
-            raise ToolCallError("patch has no hunks")
-        for index, hunk in enumerate(hunks, start=1):
-            if not hunk.old:
-                raise ToolCallError(f"hunk {index} has no context or removed lines")
-        return hunks
-
-    def _select_hunk_variant(self, lines: list[str], hunk: PatchFileHunk, index: int) -> tuple[list[str], list[str]]:
-        if self._hunk_matches(lines, hunk.old):
-            return hunk.old, hunk.new
-        if (hunk.alt_old != hunk.old or hunk.alt_new != hunk.new) and self._hunk_matches(lines, hunk.alt_old):
-            return hunk.alt_old, hunk.alt_new
-        raise ToolCallError(f"hunk {index} context did not match; first old line: {self._line_preview(hunk.old[0])}")
-
-    @staticmethod
-    def _hunk_matches(lines: list[str], old: list[str]) -> bool:
-        limit = len(lines) - len(old)
-        return any(lines[start : start + len(old)] == old for start in range(max(0, limit + 1)))
-
-    @classmethod
-    def _match_hunk(cls, lines: list[str], old: list[str], index: int) -> int:
-        matches = []
-        limit = len(lines) - len(old)
-        for start in range(max(0, limit + 1)):
-            if lines[start : start + len(old)] == old:
-                matches.append(start)
-        if len(matches) > 1:
-            raise ToolCallError(f"hunk {index} context matched multiple locations")
-        return matches[0]
-
-    @staticmethod
-    def _line_preview(line: str) -> str:
-        return repr(line.rstrip("\n"))[:120]
-
-    @staticmethod
-    def _patched_lines(lines: list[str], replacements: list[tuple[int, int, list[str]]]) -> list[str]:
-        output: list[str] = []
-        cursor = 0
-        for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
-            if start < cursor:
-                overlap = cursor - start
-                if overlap > len(replacement) or output[-overlap:] != replacement[:overlap]:
-                    raise ToolCallError("patch hunks overlap")
-                output.extend(replacement[overlap:])
-                cursor = max(cursor, end)
-                continue
-            output.extend(lines[cursor:start])
-            output.extend(replacement)
-            cursor = end
-        output.extend(lines[cursor:])
-        return output
-
-
-@dataclass
 class CreateFileTool(Tool):
     NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Create a new UTF-8 file with short initial content; target file must not exist.",
         "Returns changed path and created=true.",
-        "For substantial new files, create only a small skeleton first, then grow it with focused ReplaceRange edits.",
+        "For substantial new files, create only a small skeleton first, then grow it with focused EditFile edits.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
@@ -3042,88 +2645,71 @@ class CreateFileTool(Tool):
 
 
 @dataclass
-class ReplaceRangeEdit:
-    start: int
-    end: int
-    fingerprint: str
-    before_context: str
-    after_context: str
+class EditFileEdit:
+    op: str
+    start: str
+    end: str
     content: str
 
 
 @dataclass
-class ReplaceRangeTool(Tool):
-    NAME: ClassVar[str] = "ReplaceRange"
-    PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "ranges")
+class EditFileTool(Tool):
+    NAME: ClassVar[str] = "EditFile"
+    PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Replace one or more small Read-backed [start,end) ranges in an existing file; best when exact line ranges are known or target text is not unique.",
-        "Returns changed path plus resolved ranges, fingerprints, and relocation info when applicable.",
-        "Pass ranges as [[start,end,fingerprint,before_context,after_context,content], ...].",
-        "Pass exact before_context and after_context when known; empty boundary context is allowed for non-empty replacements.",
-        "Content is only the replacement for that range; do not include boundary lines.",
+        'Edit an existing UTF-8 file using Read anchors of the form "line:hash".',
+        "Supports replace, delete, insert_before, and insert_after edits; all anchors are verified before writing.",
+        "All edits apply atomically or nothing is written.",
+        "Returns changed path plus applied edit count.",
     )
-    SIGNATURE: ClassVar[str] = (
-        "ReplaceRange(filepath, [[start,end,fingerprint,before_context,after_context,content], ...]) -> ReplaceRangeToolResult<path, range>"
-    )
+    SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}, ...]) -> EditFileToolResult<path, edits>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Single range: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"]]]',
-        'Two ranges: ["code.py", [["10", "12", "a1b2c3", "before\\n", "after\\n", "replacement\\n"], ["20", "20", "d4e5f6", "prev\\n", "next\\n", "inserted\\n"]]]',
+        'Replace: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"}]]',
+        'Insert: ["code.py", [{"op":"insert_after","start":"20:abc123","content":"new line\\n"}]]',
     )
 
     filepath: str = ""
-    start: int = 0
-    end: int = 0
-    fingerprint: str = ""
-    before_context: str = ""
-    after_context: str = ""
-    content: str = ""
-    edits: list[ReplaceRangeEdit] = field(default_factory=list)
+    edits: list[EditFileEdit] = field(default_factory=list)
     cwd: str = ""
-    range_fingerprints: RangeFingerprintStore = field(default_factory=RangeFingerprintStore)
 
     @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
         if len(args) == 2:
-            ranges = _json_list(args[1])
-            if ranges:
-                return [cls.cli_token(args[0]), str(len(ranges)) + " ranges"]
+            edits = _json_list(args[1])
+            if edits:
+                return [cls.cli_token(args[0]), str(len(edits)) + " edits"]
         return [cls.cli_token(arg) for arg in args]
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
         if len(args) != 2:
-            raise ToolCallArgError("requires args: filepath, ranges")
-        ranges = _json_list(args[1])
-        if not ranges:
-            raise ToolCallArgError("ranges cannot be empty")
-        return cls._from_edits(session, filepath=str(args[0]), edits=[cls._edit_from_args(_json_list(item)) for item in ranges])
+            raise ToolCallArgError("requires args: filepath, edits")
+        edits = _json_list(args[1])
+        if not edits:
+            raise ToolCallArgError("edits cannot be empty")
+        return cls(filepath=session.resolve_path(str(args[0])), edits=[cls._edit_from_json(item) for item in edits], cwd=session.cwd)
 
     @staticmethod
-    def _edit_from_args(args: list[JsonValue]) -> ReplaceRangeEdit:
-        if len(args) != 6:
-            raise ToolCallArgError("range requires exactly 6 args: start, end, fingerprint, before_context, after_context, content")
-        start, end = _parse_line_range(str(args[0]), str(args[1]))
-        fingerprint = str(args[2])
-        if not fingerprint and (start != 0 or end != 0):
-            raise ToolCallArgError("fingerprint cannot be empty")
-        return ReplaceRangeEdit(start=start, end=end, fingerprint=fingerprint, before_context=str(args[3]), after_context=str(args[4]), content=str(args[5]))
-
-    @classmethod
-    def _from_edits(cls, session: Session, *, filepath: str, edits: list[ReplaceRangeEdit]) -> Self:
-        first = edits[0]
-        return cls(
-            filepath=session.resolve_path(filepath),
-            start=first.start,
-            end=first.end,
-            fingerprint=first.fingerprint,
-            before_context=first.before_context,
-            after_context=first.after_context,
-            content=first.content,
-            edits=edits,
-            cwd=session.cwd,
-            range_fingerprints=session.state.range_fingerprints,
-        )
+    def _edit_from_json(value: JsonValue) -> EditFileEdit:
+        item = _json_dict(value)
+        if not item:
+            raise ToolCallArgError("each edit must be an object")
+        op = str(item.get("op") or "").strip()
+        if op not in {"replace", "delete", "insert_before", "insert_after"}:
+            raise ToolCallArgError("edit op must be replace, delete, insert_before, or insert_after")
+        start = str(item.get("start") or "").strip()
+        end = str(item.get("end") or "").strip()
+        content = str(item.get("content") or "")
+        if not start:
+            raise ToolCallArgError("edit start anchor is required")
+        if op in {"replace", "delete"} and not end:
+            raise ToolCallArgError("replace/delete edits require end anchor")
+        if op in {"insert_before", "insert_after"} and end:
+            raise ToolCallArgError("insert edits use start anchor only")
+        if op in {"replace", "insert_before", "insert_after"} and "content" not in item:
+            raise ToolCallArgError("edit content is required")
+        return EditFileEdit(op=op, start=start, end=end, content=content)
 
     def preview(self) -> str:
         label = self._label()
@@ -3131,18 +2717,7 @@ class ReplaceRangeTool(Tool):
             original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
             return label + "\n# preview unavailable: " + str(error)
-        warning = self._preview_warning()
-        diff = _make_unified_diff(original, new_content, self.filepath) or label
-        return (warning + "\n" if warning else "") + diff
-
-    def _preview_warning(self) -> str:
-        if len(self.edits) != 1:
-            return ""
-        if self.start == 0 and self.end == 0 and not os.path.exists(self.filepath):
-            return ""
-        if self.end == 0 or self.end - self.start > 20:
-            return "# warning: broad range replacement; prefer smaller semantic ranges"
-        return ""
+        return _make_unified_diff(original, new_content, self.filepath) or label
 
     def preview_error(self) -> str:
         try:
@@ -3152,102 +2727,72 @@ class ReplaceRangeTool(Tool):
         return ""
 
     def call(self) -> str:
-        created = not os.path.exists(self.filepath)
         original, new_content, replacements = self._preview()
         if new_content == original:
-            raise ToolCallError("range replacement produced no changes")
+            raise ToolCallError("edits produced no changes")
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write(new_content)
-
         relpath = os.path.relpath(self.filepath, self.cwd)
-        if len(replacements) == 1:
-            resolved, _ = replacements[0]
-            lines = [
-                "<ReplaceRangeToolResult>",
-                f"* path: {relpath}",
-                f"* range: {resolved.start}:{resolved.end}",
-                f"* fingerprint: {resolved.fingerprint}",
-            ]
-            if created:
-                lines.append("* created: true")
-            if resolved.relocated_from:
-                old_start, old_end = resolved.relocated_from
-                lines.append(f"* relocated_from: {old_start}:{old_end}")
-            lines.append("</ReplaceRangeToolResult>")
-            return "\n".join(lines)
-
         lines = [
-            "<ReplaceRangeToolResult>",
+            "<EditFileToolResult>",
             f"* path: {relpath}",
-            f"* replacements: {len(replacements)}",
+            f"* edits: {len(replacements)}",
         ]
-        for index, (resolved, _) in enumerate(replacements, start=1):
-            lines.append(f"* range[{index}]: {resolved.start}:{resolved.end}")
-            lines.append(f"* fingerprint[{index}]: {resolved.fingerprint}")
-            if resolved.relocated_from:
-                old_start, old_end = resolved.relocated_from
-                lines.append(f"* relocated_from[{index}]: {old_start}:{old_end}")
-        lines.append("</ReplaceRangeToolResult>")
+        lines.extend(f"* range[{index}]: {start}:{end}" for index, (start, end, _) in enumerate(replacements, start=1))
+        lines.append("</EditFileToolResult>")
         return "\n".join(lines)
 
-    def _preview(self) -> tuple[str, str, list[tuple[RangeFingerprintStore.Resolved, list[str]]]]:
-        file_missing = False
+    def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 original = f.read()
         except FileNotFoundError:
-            file_missing = True
-            original = ""
+            raise ToolCallError("file does not exist; use CreateFile for new files")
         lines = original.splitlines(keepends=True)
         replacements = []
         for edit in self.edits:
-            if file_missing:
-                if len(self.edits) != 1 or edit.start != 0 or edit.end != 0 or edit.fingerprint or edit.before_context or edit.after_context:
-                    raise ToolCallError('file does not exist; use ReplaceRange(filepath, [["0", "0", "", "", "", content]]) to create')
-                resolved = RangeFingerprintStore.Resolved(start=0, end=0, fingerprint=_range_fingerprint(""))
+            start = self._resolve_anchor(lines, edit.start)
+            if edit.op in {"replace", "delete"}:
+                end = self._resolve_anchor(lines, edit.end)
+                if end < start:
+                    raise ToolCallError("edit end anchor must be at or after start anchor")
+                slice_start, slice_end = start, end + 1
             else:
-                resolved = self.range_fingerprints.resolve(
-                    lines,
-                    filepath=self.filepath,
-                    start=edit.start,
-                    end=edit.end,
-                    fingerprint=edit.fingerprint,
-                )
-            replacement = self._replacement_lines(edit.content, has_following_line=resolved.end < len(lines))
-            self._validate_boundary_context(lines, resolved, edit, replacement)
-            replacements.append((resolved, replacement))
+                slice_start = start if edit.op == "insert_before" else start + 1
+                slice_end = slice_start
+            replacement = [] if edit.op == "delete" else self._replacement_lines(edit.content, has_following_line=slice_end < len(lines))
+            replacements.append((slice_start, slice_end, replacement))
         self._reject_overlapping_ranges(replacements)
         new_lines = list(lines)
-        for resolved, replacement in sorted(replacements, key=lambda item: item[0].start, reverse=True):
-            new_lines[resolved.start : resolved.end] = replacement
+        for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
+            new_lines[start:end] = replacement
         return original, "".join(new_lines), replacements
 
     def _label(self) -> str:
-        if len(self.edits) <= 1:
-            return f"ReplaceRange({self.filepath}, {self.start}, {self.end}, {self.fingerprint})"
-        return f"ReplaceRange({self.filepath}, {len(self.edits)} ranges)"
+        return f"EditFile({self.filepath}, {len(self.edits)} edits)"
 
     @staticmethod
-    def _reject_overlapping_ranges(replacements: list[tuple[RangeFingerprintStore.Resolved, list[str]]]) -> None:
-        previous: RangeFingerprintStore.Resolved | None = None
-        for resolved, _ in sorted(replacements, key=lambda item: item[0].start):
-            if previous is not None and resolved.start < previous.end:
-                raise ToolCallError(f"range replacements overlap: {previous.start}:{previous.end} and {resolved.start}:{resolved.end}")
-            previous = resolved
+    def _resolve_anchor(lines: list[str], anchor: str) -> int:
+        anchor = anchor.split("|", 1)[0].strip()
+        match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor)
+        if match is None:
+            raise ToolCallError('invalid anchor; use "line:hash" copied from Read output')
+        index = int(match.group(1))
+        if index >= len(lines):
+            raise ToolCallError("anchor line is out of range; Read the target range again")
+        expected = match.group(2).lower()
+        current = _line_hash(lines[index])
+        if current != expected:
+            raise ToolCallError(f"stale anchor {anchor}; current hash is {current}; Read the target range again")
+        return index
 
     @staticmethod
-    def _validate_boundary_context(lines: list[str], resolved: RangeFingerprintStore.Resolved, edit: ReplaceRangeEdit, replacement: list[str]) -> None:
-        before_context = "" if resolved.start == 0 else lines[resolved.start - 1]
-        after_context = "" if resolved.end >= len(lines) else lines[resolved.end]
-        inserting = resolved.start == resolved.end
-        if edit.before_context != before_context and (edit.before_context or inserting):
-            raise ToolCallError("before_context mismatch; Read the target range with one line before and retry")
-        if edit.after_context != after_context and (edit.after_context or inserting):
-            raise ToolCallError("after_context mismatch; Read the target range with one line after and retry")
-        if before_context and replacement and replacement[0] == before_context:
-            raise ToolCallError("content includes before_context; expand start or remove the boundary line from content")
-        if after_context and replacement and replacement[-1] == after_context:
-            raise ToolCallError("content includes after_context; expand end or remove the boundary line from content")
+    def _reject_overlapping_ranges(replacements: list[tuple[int, int, list[str]]]) -> None:
+        previous: tuple[int, int] | None = None
+        for start, end, _ in sorted(replacements, key=lambda item: item[0]):
+            if previous is not None and (start < previous[1] or (start == previous[0] and end == previous[1])):
+                raise ToolCallError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
+            previous = (start, end)
 
     @staticmethod
     def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
@@ -3281,13 +2826,8 @@ class BashTool(Tool):
     def cli_args(cls, args: list[str]) -> list[str]:
         if not args:
             return []
-        return [cls._cli_command_arg(args[0])]
-
-    @staticmethod
-    def _cli_command_arg(value: str) -> str:
-        if "\n" in value:
-            return Tool.cli_content_summary(value)
-        return _shorten(" ".join(value.split()), 120)
+        command = str(args[0])
+        return [Tool.cli_content_summary(command) if "\n" in command else _shorten(" ".join(command.split()), 120)]
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
@@ -3585,9 +3125,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     InspectCodeSymbolTool.NAME: InspectCodeSymbolTool,
     SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
-    EditTool.NAME: EditTool,
-    PatchFileTool.NAME: PatchFileTool,
-    ReplaceRangeTool.NAME: ReplaceRangeTool,
+    EditFileTool.NAME: EditFileTool,
     BashTool.NAME: BashTool,
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
@@ -3840,19 +3378,17 @@ DISCOVERY AND EDITING
 { __discovery_hint__ }
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
-Read line prefixes are display-only; edit text starts immediately after "|".
+Read line prefixes are display-only; EditFile anchors use "line:hash"; edit text starts immediately after "|".
 
 Stop discovery once the next edit/check is clear.
 
 Editing rules:
 - make one small coherent change per edit action
-- new file: create a minimal skeleton first, then grow with focused ReplaceRange chunks
+- new file: create a minimal skeleton first, then grow with focused EditFile chunks
 - existing file: inspect the exact target before editing
 - never rewrite a large file in one action
-- use Edit only for one tiny exact literal block that appears once
-- use ReplaceRange after Read for ranges, repeated text, insertions, and structural edits
-- use ReplaceRange(filepath, ranges) for several known independent ranges in one file
-- use PatchFile for coordinated multi-location edits in one file; copy context exactly and keep patches small
+- use EditFile after Read for replacements, deletions, insertions, repeated text, and coordinated multi-location edits
+- copy EditFile anchors exactly from Read output; if an anchor is stale, Read the target range again
 
 VERIFICATION
 Verification strength:
@@ -3884,7 +3420,7 @@ Prefer dedicated tools for precise file reads/searches and structured edits.
 Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.
 Prefer dedicated tools when they give cleaner structured repo access.
 Mechanical shell edits are allowed; verify afterward with Git diff, Read, tests, or another focused check.
-For complex code changes, prefer ReplaceRange or PatchFile over shell rewrites.
+For code changes, prefer CreateFile for new files and EditFile for existing files over shell rewrites.
 
 Git is for status, diff, history, and changed files.
 Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
@@ -5239,7 +4775,7 @@ class ToolCallRunner:
         name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
         raw_args = _json_list(item.get("args"))
-        args: list[JsonValue] = list(raw_args) if name == ReplaceRangeTool.NAME else [_json_str(arg) or "" for arg in raw_args]
+        args: list[JsonValue] = list(raw_args) if name == EditFileTool.NAME else [_json_str(arg) or "" for arg in raw_args]
         return ParsedToolCall(name=name, intention=intention, args=args)
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
@@ -5793,11 +5329,11 @@ class Agent:
     RECENT_EDITS: ClassVar[int] = 20
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
-    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures prefer ReplaceRange after Read."
+    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures Read the target range again and use fresh EditFile anchors."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
-    RULE_EDIT_SIGNATURE: ClassVar[str] = "use ReplaceRange for read ranges or repeated text, and use the exact tool signature."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from Read output, and use the exact tool signature."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
@@ -6737,7 +6273,7 @@ class Agent:
     def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if (
             not (self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
-            and self._latest_successful_bash_result()
+            and any(execution.call.name == BashTool.NAME and execution.outcome == "success" for execution in self.tool_runner.latest_executions)
             and ctx.tool_calls
             and not ctx.assistant_text
             and not ctx.has_goal_action
@@ -6771,9 +6307,6 @@ class Agent:
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
         return False
-
-    def _latest_successful_bash_result(self) -> bool:
-        return any(execution.call.name == BashTool.NAME and execution.outcome == "success" for execution in self.tool_runner.latest_executions)
 
     def _emit_state_and_text(self, ctx: ResponseContext, on_message: MessageCallback | None) -> None:
         if on_message is not None and self.state_updater.latest_report:
@@ -7046,8 +6579,6 @@ class Agent:
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self._prune_tool_result_store()
-        # Range fingerprints are tied to previously read file content; require a fresh read before later edits.
-        self.session.state.range_fingerprints.clear()
         self.mode = AgentMode.ACT
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
@@ -8938,28 +8469,6 @@ def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str
             tofile=filepath,
         )
     )
-
-
-TERMINAL_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-
-def _plain_command_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.update({"CI": "1", "NO_COLOR": "1", "TERM": "dumb"})
-    return env
-
-
-def _clean_terminal_output(text: str) -> str:
-    lines = []
-    for raw_line in TERMINAL_ESCAPE_RE.sub("", text.replace("\r", "\n")).splitlines():
-        line = raw_line.rstrip()
-        if re.search(r"\b\d{1,3}%$", line) and ("█" in line or "░" in line):
-            continue
-        if lines and line == lines[-1]:
-            continue
-        if line or (lines and lines[-1]):
-            lines.append(line)
-    return "\n".join(lines).strip("\n")
 
 
 def _format_process_result(tag: str, exit_code: int, stdout: str, stderr: str) -> str:

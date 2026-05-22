@@ -4,6 +4,10 @@ import nanocode
 from nanocode import ReadTool, Session, ToolCallError
 
 
+def _hashline(index: int, text: str) -> str:
+    return f"{index}:{nanocode._line_hash(text)}|{text}"
+
+
 def test_read_tool_reads_requested_line_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
@@ -15,10 +19,10 @@ def test_read_tool_reads_requested_line_range(tmp_path):
     assert tool.requires_confirmation(session) is False
     assert result.startswith("<ReadToolResult>")
     assert "<range>1:3</range>" in result
-    assert "<fingerprint>" in result
-    assert "<content line-numbered>" in result
-    assert "      1 |beta\n      2 |gamma\n" in result
-    assert "      0 |alpha" not in result
+    assert "<fingerprint>" not in result
+    assert "<content hashline-numbered>" in result
+    assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
+    assert "|alpha" not in result
 
 
 def test_read_tool_rejects_empty_args_with_actionable_error(tmp_path):
@@ -49,10 +53,10 @@ def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
     assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
-    assert "      1 |one\n" in result
-    assert "      3 |three\n      4 |four\n" in result
-    assert "      0 |zero" not in result
-    assert "      2 |two" not in result
+    assert _hashline(1, "one\n") in result
+    assert _hashline(3, "three\n") + _hashline(4, "four\n") in result
+    assert "|zero" not in result
+    assert "|two" not in result
 
 
 def test_read_tool_reads_colon_and_comma_range_tokens(tmp_path):
@@ -67,10 +71,10 @@ def test_read_tool_reads_colon_and_comma_range_tokens(tmp_path):
     assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
-    assert "      1 |one\n" in result
-    assert "      3 |three\n      4 |four\n" in result
-    assert "      0 |zero" not in result
-    assert "      2 |two" not in result
+    assert _hashline(1, "one\n") in result
+    assert _hashline(3, "three\n") + _hashline(4, "four\n") in result
+    assert "|zero" not in result
+    assert "|two" not in result
 
 
 def test_read_tool_reads_to_eof_when_end_is_zero(tmp_path):
@@ -80,8 +84,8 @@ def test_read_tool_reads_to_eof_when_end_is_zero(tmp_path):
 
     result = ReadTool.make(session, ["sample.txt", "1,0"]).call()
 
-    assert "      1 |beta\n      2 |gamma\n" in result
-    assert "      0 |alpha" not in result
+    assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
+    assert "|alpha" not in result
 
 
 def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
@@ -95,7 +99,7 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     assert tool.start == 0
     assert tool.end == 0
     assert "<range>0:0</range>" in result
-    assert "      0 |alpha\n      1 |beta\n" in result
+    assert _hashline(0, "alpha\n") + _hashline(1, "beta\n") in result
 
 
 def test_read_tool_reads_range_token_when_numeric_filenames_exist(tmp_path):
@@ -109,7 +113,7 @@ def test_read_tool_reads_range_token_when_numeric_filenames_exist(tmp_path):
 
     assert tool.ranges == [(1, 3)]
     assert "<range>1:3</range>" in result
-    assert "      1 |one\n      2 |two\n" in result
+    assert _hashline(1, "one\n") + _hashline(2, "two\n") in result
     assert "numeric filename" not in result
 
 
@@ -125,8 +129,8 @@ def test_read_tool_truncates_full_file_reads_after_600_lines(tmp_path):
     assert "<total_lines>605</total_lines>" in result
     assert "Read returned 600 lines from 0:600 of 605 total lines" in result
     assert "Use Search to locate relevant text or Read smaller ranges in batches." in result
-    assert "    599 |line-0599\n" in result
-    assert "    600 |line-0600\n" not in result
+    assert _hashline(599, "line-0599\n") in result
+    assert "|line-0600" not in result
 
 
 def test_read_tool_truncates_large_bounded_ranges_after_600_lines(tmp_path):
@@ -140,8 +144,8 @@ def test_read_tool_truncates_large_bounded_ranges_after_600_lines(tmp_path):
     assert "<truncated>true</truncated>" in result
     assert "<total_lines>700</total_lines>" in result
     assert "Read returned 600 lines from 10:610 of 700 total lines" in result
-    assert "    609 |line-0609\n" in result
-    assert "    610 |line-0610\n" not in result
+    assert _hashline(609, "line-0609\n") in result
+    assert "|line-0610" not in result
 
 
 def test_read_tool_bounded_read_stops_at_end(tmp_path, monkeypatch):
@@ -174,7 +178,7 @@ def test_read_tool_bounded_read_stops_at_end(tmp_path, monkeypatch):
 
     result = ReadTool.make(session, ["sample.txt", "1,3"]).call()
 
-    assert "      1 |one\n      2 |two\n" in result
+    assert _hashline(1, "one\n") + _hashline(2, "two\n") in result
     assert "three" not in result
     assert lines_read == ["zero\n", "one\n", "two\n"]
 
@@ -187,7 +191,7 @@ def test_read_tool_clamps_out_of_bounds_range(tmp_path):
     result = ReadTool.make(session, ["sample.txt", "10,20"]).call()
 
     assert "alpha" not in result
-    assert "  <content line-numbered>\n\n  </content>" in result
+    assert "  <content hashline-numbered>\n\n  </content>" in result
 
 
 def test_read_tool_rejects_non_integer_range(tmp_path):
