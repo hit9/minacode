@@ -55,7 +55,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 
 JsonValue: TypeAlias = Any
@@ -2377,10 +2377,25 @@ def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, s
     if module is None:
         return "unavailable", ""
     try:
-        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=check, format="object")
+        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=check, max_pending_files=20, format="object")
     except Exception as error:
         return "error", str(error)
-    return str(getattr(status, "status", "error")), str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
+    message = str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
+    pending = _code_index_pending_message(getattr(status, "pending_changes", None), getattr(status, "pending_files", ()))
+    if pending:
+        message = (message + "; " if message else "") + pending
+    return str(getattr(status, "status", "error")), message
+
+
+def _code_index_pending_message(changes: Any, files: Any) -> str:
+    if not changes:
+        return ""
+    message = "pending " + str(changes)
+    if isinstance(files, (list, tuple)) and files:
+        sample = ", ".join(str(item) for item in files[:3])
+        message += " (" + sample + ("..." if len(files) > 3 else "") + ")"
+    return message
+
 
 
 def _code_index_available(session: Session) -> bool:
@@ -2497,16 +2512,24 @@ class FindCodeSymbolTool(Tool):
     MAX_LIMIT: ClassVar[int] = 80
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Find indexed symbols by one name or prefix; results rank exact, prefix, then fuzzy matches.",
+        "Find indexed symbols by one name or prefix, including top-level constants, variables, and dictionary keys when indexed.",
         "Returns candidate name, kind, language, 0-based file/range, and signature.",
-        "Optional limit controls max returned symbols; default 20, max 80.",
+        "Optional options object: limit (default 20, max 80), kind, path, exact_only.",
+        "Query may use A|B|C as non-regex OR shorthand.",
         "Input must be one symbol-like token, not natural language or literal text patterns.",
     )
-    SIGNATURE: ClassVar[str] = "FindCodeSymbol(query[, limit]) -> FindCodeSymbolToolResult<symbols>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["Tool"]', 'Example args: ["tool_schema"]', 'Example args: ["Tool", 40]')
+    SIGNATURE: ClassVar[str] = "FindCodeSymbol(query[, options]) -> FindCodeSymbolToolResult<symbols>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["Tool"]',
+        'Example args: ["tool_schema", {"kind":"function","exact_only":true}]',
+        'Example args: ["Agent", {"path":"nanocode.py","limit":40}]',
+    )
 
     query: str = ""
     limit: int = DEFAULT_LIMIT
+    kind: str = ""
+    path: str = ""
+    exact_only: bool = False
     session: Session | None = None
 
     @classmethod
@@ -2516,37 +2539,55 @@ class FindCodeSymbolTool(Tool):
             "type": "array",
             "minItems": 1,
             "maxItems": 2,
-            "items": {"type": ["string", "number"], "description": "Symbol name/prefix, then optional max result count."},
+            "items": {"type": ["string", "object"], "description": "Symbol name/prefix, then optional {limit, kind, path, exact_only} filters."},
         }
         return schema
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
         if not 1 <= len(args) <= 2:
-            raise ToolCallArgError("requires args: query[, limit]")
+            raise ToolCallArgError("requires args: query[, options]")
         query = str(args[0]).strip()
         if not query:
             raise ToolCallArgError("query cannot be empty")
         if re.search(r"\s", query):
             raise ToolCallArgError("query must be one symbol name or prefix; do not pass natural language")
         limit = cls.DEFAULT_LIMIT
+        kind = ""
+        path = ""
+        exact_only = False
         if len(args) == 2:
+            options = _json_dict(args[1])
+            if not options:
+                raise ToolCallArgError("options must be an object: {limit, kind, path, exact_only}")
             try:
-                limit = min(cls.MAX_LIMIT, max(1, int(args[1])))
+                limit = min(cls.MAX_LIMIT, max(1, int(options.get("limit", cls.DEFAULT_LIMIT))))
             except (TypeError, ValueError):
                 raise ToolCallArgError("limit must be an integer")
+            kind = str(options.get("kind") or "").strip()
+            path = str(options.get("path") or "").strip()
+            exact_only = options.get("exact_only") is True
         if not _code_index_available(session):
             raise ToolCallError("code index is not available")
-        return cls(query=query, limit=limit, session=session)
+        return cls(query=query, limit=limit, kind=kind, path=path, exact_only=exact_only, session=session)
 
     def preview(self) -> str:
-        return "FindCodeSymbol(" + json.dumps(self.query, ensure_ascii=False) + ")"
+        options = {key: value for key, value in (("limit", self.limit), ("kind", self.kind), ("path", self.path), ("exact_only", self.exact_only)) if value}
+        args = [self.query] + ([options] if options != {"limit": self.DEFAULT_LIMIT} else [])
+        return "FindCodeSymbol(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args) + ")"
 
     def call(self) -> str:
         if self.session is None:
             raise ToolCallError("missing session")
-        text = _code_index_repository(self.session).search_text(self.query, limit=self.limit)
+        text = _code_index_repository(self.session).search_text(
+            self.query,
+            limit=self.limit,
+            kind=self.kind or None,
+            path=self.path or None,
+            exact_only=self.exact_only,
+        )
         return _format_code_index_result("FindCodeSymbolToolResult", text)
+
 
 @dataclass
 class InspectCodeSymbolTool(Tool):
@@ -2555,17 +2596,23 @@ class InspectCodeSymbolTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Inspect one indexed symbol, Class.member, or symbol prefix.",
         "Returns line-numbered source plus members, references, shallow impact/callers, and implementors when available.",
+        "Includes import summaries when indexed.",
+        "Optional options object: kind, path, exact_only.",
         "Use it to understand a class/function/API and nearby relationships from the index.",
         "Symbol matching is case-insensitive; returned line numbers are 0-based.",
         "Not for files, directories, module paths, natural language, or literal text patterns.",
     )
-    SIGNATURE: ClassVar[str] = "InspectCodeSymbol(symbol) -> InspectCodeSymbolToolResult<context>"
+    SIGNATURE: ClassVar[str] = "InspectCodeSymbol(symbol[, options]) -> InspectCodeSymbolToolResult<context>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["Tool"]',
         'Example args: ["Agent.run"]',
+        'Example args: ["Tool", {"path":"nanocode.py","exact_only":true}]',
     )
 
     symbol: str = ""
+    kind: str = ""
+    path: str = ""
+    exact_only: bool = False
     session: Session | None = None
 
     @classmethod
@@ -2574,15 +2621,15 @@ class InspectCodeSymbolTool(Tool):
         schema["function"]["parameters"]["properties"]["args"] = {
             "type": "array",
             "minItems": 1,
-            "maxItems": 1,
-            "items": {"type": "string", "description": "One symbol, Class.member, or symbol prefix."},
+            "maxItems": 2,
+            "items": {"type": ["string", "object"], "description": "Symbol/Class.member/prefix, then optional {kind, path, exact_only} filters."},
         }
         return schema
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) != 1:
-            raise ToolCallArgError("requires args: symbol")
+        if not 1 <= len(args) <= 2:
+            raise ToolCallArgError("requires args: symbol[, options]")
         symbol = str(args[0]).strip()
         if not symbol:
             raise ToolCallArgError("symbol cannot be empty")
@@ -2596,15 +2643,32 @@ class InspectCodeSymbolTool(Tool):
             raise ToolCallArgError("symbol must be one symbol, Class.member, or symbol prefix; do not pass natural language")
         if "." in symbol and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", symbol):
             raise ToolCallArgError("symbol looks like a module path; use List/Search/Read for modules/packages, or pass a specific symbol")
-        return cls(symbol=symbol, session=session)
+        options = _json_dict(args[1]) if len(args) == 2 else {}
+        if len(args) == 2 and not options:
+            raise ToolCallArgError("options must be an object: {kind, path, exact_only}")
+        return cls(
+            symbol=symbol,
+            kind=str(options.get("kind") or "").strip(),
+            path=str(options.get("path") or "").strip(),
+            exact_only=options.get("exact_only") is True,
+            session=session,
+        )
 
     def preview(self) -> str:
-        return "InspectCodeSymbol(" + json.dumps(self.symbol, ensure_ascii=False) + ")"
+        options = {key: value for key, value in (("kind", self.kind), ("path", self.path), ("exact_only", self.exact_only)) if value}
+        args = [self.symbol] + ([options] if options else [])
+        return "InspectCodeSymbol(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args) + ")"
 
     def call(self) -> str:
         if self.session is None:
             raise ToolCallError("missing session")
-        return _format_code_index_result("InspectCodeSymbolToolResult", _code_index_repository(self.session).inspect_text(self.symbol))
+        text = _code_index_repository(self.session).inspect_text(
+            self.symbol,
+            kind=self.kind or None,
+            path=self.path or None,
+            exact_only=self.exact_only,
+        )
+        return _format_code_index_result("InspectCodeSymbolToolResult", text)
 
 
 @dataclass
@@ -2613,13 +2677,15 @@ class OutlineCodeFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Outline indexed symbols in one file.",
-        "Pass a file path only; directories and symbols are not supported.",
+        "Pass a file path, and optionally a symbol name/prefix to narrow the outline.",
+        "Directories and bare symbols are not supported as the first argument.",
         "Returns classes, functions, methods, kinds, signatures, and 0-based locations.",
     )
-    SIGNATURE: ClassVar[str] = "OutlineCodeFile(filepath) -> OutlineCodeFileToolResult<outline>"
-    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["nanocode.py"]',)
+    SIGNATURE: ClassVar[str] = "OutlineCodeFile(filepath[, symbol]) -> OutlineCodeFileToolResult<outline>"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["nanocode.py"]', 'Example args: ["nanocode.py", "Tool"]')
 
     filepath: str = ""
+    symbol: str = ""
     session: Session | None = None
 
     @classmethod
@@ -2628,33 +2694,38 @@ class OutlineCodeFileTool(Tool):
         schema["function"]["parameters"]["properties"]["args"] = {
             "type": "array",
             "minItems": 1,
-            "maxItems": 1,
-            "items": {"type": "string", "description": "One file path."},
+            "maxItems": 2,
+            "items": {"type": "string", "description": "File path, then optional symbol name/prefix."},
         }
         return schema
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) != 1:
-            raise ToolCallArgError("requires args: filepath")
+        if not 1 <= len(args) <= 2:
+            raise ToolCallArgError("requires args: filepath[, symbol]")
         filepath = session.resolve_path(str(args[0]).strip())
         if not os.path.isfile(filepath):
             raise ToolCallArgError("filepath must be an existing file; directories and symbols are not supported")
+        symbol = str(args[1]).strip() if len(args) == 2 else ""
+        if re.search(r"\s", symbol):
+            raise ToolCallArgError("symbol must be one symbol name or prefix")
         if not _code_index_available(session):
             raise ToolCallError("code index is not available")
-        return cls(filepath=filepath, session=session)
+        return cls(filepath=filepath, symbol=symbol, session=session)
 
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.filepath)
 
     def preview(self) -> str:
         cwd = self.session.cwd if self.session is not None else os.getcwd()
-        return "OutlineCodeFile(" + json.dumps(os.path.relpath(self.filepath, cwd), ensure_ascii=False) + ")"
+        args = [os.path.relpath(self.filepath, cwd)] + ([self.symbol] if self.symbol else [])
+        return "OutlineCodeFile(" + ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args) + ")"
 
     def call(self) -> str:
         if self.session is None:
             raise ToolCallError("missing session")
-        return _format_code_index_result("OutlineCodeFileToolResult", _code_index_repository(self.session).outline_text(self.filepath))
+        return _format_code_index_result("OutlineCodeFileToolResult", _code_index_repository(self.session).outline_text(self.filepath, symbol=self.symbol or None))
+
 
 @dataclass
 class EditTool(Tool):
@@ -5792,7 +5863,7 @@ class Agent:
         ]
         if _code_index_available(self.session):
             lines.append(
-                "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (case-insensitive, optional limit default 20 max 80), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
+                "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (optional kind/path/exact_only/limit filters), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure or file-local symbol outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )
         return "\n".join(lines)
 
@@ -5840,9 +5911,9 @@ class Agent:
             return "Use Search/List/LineCount when path, symbol, range, or target is unknown."
         return (
             "For structural code discovery, prefer indexed code tools before Search/Read.\n"
-            "- Use FindCodeSymbol for symbol candidates by name or prefix.\n"
-            "- Use InspectCodeSymbol for line-numbered source, members, references, and implementors of one symbol.\n"
-            "- Use OutlineCodeFile for a file-level symbol outline.\n"
+            "- Use FindCodeSymbol for symbol candidates by name/prefix with optional kind/path/exact_only filters.\n"
+            "- Use InspectCodeSymbol for line-numbered source, imports, members, references, and implementors of one symbol.\n"
+            "- Use OutlineCodeFile for file-level or file-local symbol outlines.\n"
             "- Use Search for exact literal text, config, comments, logs, or when no useful path/symbol guess exists.\n"
             "- Use List/LineCount when path shape or file size is unknown."
         )
@@ -7431,7 +7502,7 @@ class CommandDispatcher:
             else "  (empty)"
         )
         verification_status = blackboard.verification.status
-        code_index_status, code_index_message = _code_index_status(session)
+        code_index_status, code_index_message = _code_index_status(session, check=True)
         if session.state.code_index_error:
             code_index_status = "error"
             code_index_message = session.state.code_index_error

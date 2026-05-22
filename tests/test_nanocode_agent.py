@@ -520,15 +520,14 @@ def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
     assert "OutlineCodeFile" in tool_names
     system_prompt = agent._system_prompt()
     assert "prefer indexed code tools before Search/Read" in system_prompt
-    assert "Use FindCodeSymbol for symbol candidates by name or prefix" in system_prompt
-    assert "Use InspectCodeSymbol for line-numbered source, members, references, and implementors" in system_prompt
+    assert "Use FindCodeSymbol for symbol candidates by name/prefix with optional kind/path/exact_only filters" in system_prompt
+    assert "Use InspectCodeSymbol for line-numbered source, imports, members, references, and implementors" in system_prompt
     prompt = agent.build_user_prompt()
     assert "Use FindCodeSymbol for symbol/prefix candidates" in prompt
     assert "InspectCodeSymbol for chosen symbols" in prompt
-    assert "OutlineCodeFile for known file structure" in prompt
+    assert "OutlineCodeFile for known file structure or file-local symbol outlines" in prompt
     assert "code-symbol-index" not in prompt
-    assert "case-insensitive" in prompt
-    assert "optional limit default 20 max 80" in prompt
+    assert "kind/path/exact_only/limit filters" in prompt
     assert "Do not pass natural language" in prompt
     assert "Use Search/Read for text, config, logs, commands, and exact ranges" in prompt
 

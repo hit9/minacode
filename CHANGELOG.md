@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.5 - 2026-05-21
+
+### Changed
+- Updated the built-in code index integration for `code-symbol-index` 0.1.7.
+- Added indexed symbol filters for kind, path, and exact matching.
+- Added file-local symbol outlines and bounded pending-index details in `/status`.
+
 ## 0.4.4 - 2026-05-20
 
 ### Added

@@ -34,16 +34,16 @@ class FakeRepository:
             progress("finish", done=1, total=1)
         return self
 
-    def search_text(self, query, *, limit):
-        self.events.append(("search_text", query, limit, self.root, self.db_path))
+    def search_text(self, query, *, kind=None, path=None, exact_only=False, limit=20):
+        self.events.append(("search_text", query, kind, path, exact_only, limit, self.root, self.db_path))
         return "query: " + query + "\ncount: 1\nsymbol Tool nanocode.py:10:20"
 
-    def inspect_text(self, symbol):
-        self.events.append(("inspect_text", symbol, self.root, self.db_path))
+    def inspect_text(self, symbol, *, kind=None, path=None, exact_only=False):
+        self.events.append(("inspect_text", symbol, kind, path, exact_only, self.root, self.db_path))
         return "symbol:\n  name: " + symbol + "\nsource:\n  status: full"
 
-    def outline_text(self, filepath):
-        self.events.append(("outline_text", filepath, self.root, self.db_path))
+    def outline_text(self, filepath, *, symbol=None):
+        self.events.append(("outline_text", filepath, symbol, self.root, self.db_path))
         return "file: " + filepath + "\noutline:\n  class Tool 0:2 class Tool:"
 
 
@@ -51,9 +51,9 @@ def fake_code_index_module(status="ready", *, refresh_status=None):
     FakeRepository.status = status
     FakeRepository.refresh_status = refresh_status
 
-    def status_fn(root, *, db_path=None, check=False, format="object"):
+    def status_fn(root, *, db_path=None, check=False, max_pending_files=50, format="object"):
         status = FakeRepository.status
-        FakeRepository.events.append(("status", root, db_path, check, format))
+        FakeRepository.events.append(("status", root, db_path, check, max_pending_files, format))
         return SimpleNamespace(status=status, reason="index not initialized" if status == "missing" else "", message="")
 
     def refresh_async(root, *, db_path=None, progress=None, **kwargs):
@@ -81,15 +81,10 @@ def test_inspect_code_requires_code_index(tmp_path, monkeypatch):
 
 
 def test_code_index_schema_accepts_expected_args():
-    for tool in (InspectCodeSymbolTool, OutlineCodeFileTool):
+    for tool in (FindCodeSymbolTool, InspectCodeSymbolTool, OutlineCodeFileTool):
         args_schema = tool.tool_schema()["function"]["parameters"]["properties"]["args"]
         assert args_schema["minItems"] == 1
-        assert args_schema["maxItems"] == 1
-        assert args_schema["items"]["type"] == "string"
-    args_schema = FindCodeSymbolTool.tool_schema()["function"]["parameters"]["properties"]["args"]
-    assert args_schema["minItems"] == 1
-    assert args_schema["maxItems"] == 2
-    assert args_schema["items"]["type"] == ["string", "number"]
+        assert args_schema["maxItems"] == 2
 
 
 def test_inspect_code_rejects_natural_language(tmp_path, monkeypatch):
@@ -109,6 +104,17 @@ def test_code_index_missing_is_not_initialized_implicitly(tmp_path, monkeypatch)
         FindCodeSymbolTool.make(session, ["Tool"])
 
     assert not [event for event in FakeRepository.events if event[0] in {"repo", "refresh"}]
+
+
+def test_code_index_status_formats_checked_pending_files(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
+
+    def status_fn(root, *, db_path=None, check=False, max_pending_files=50, format="object"):
+        return SimpleNamespace(status="stale", reason="", message="", pending_changes=5, pending_files=("a.py", "b.py", "c.py", "d.py"))
+
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: SimpleNamespace(status=status_fn))
+
+    assert nanocode._code_index_status(session, check=True) == ("stale", "pending 5 (a.py, b.py, c.py...)")
 
 
 def test_code_index_sync_initializes_missing_index_in_project_data(tmp_path, monkeypatch):
@@ -163,19 +169,19 @@ def test_find_code_symbol_uses_search_text(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = FindCodeSymbolTool.make(session, ["Tool", 12]).call()
+    result = FindCodeSymbolTool.make(session, ["Tool", {"limit": 12, "kind": "class", "path": "nanocode.py", "exact_only": True}]).call()
 
     db_path = str(tmp_path / "data" / "projects" / session.project_key() / "code-symbol-index" / "index.sqlite")
-    assert ("search_text", "Tool", 12, str(tmp_path), db_path) in FakeRepository.events
+    assert ("search_text", "Tool", "class", "nanocode.py", True, 12, str(tmp_path), db_path) in FakeRepository.events
     assert result == "<FindCodeSymbolToolResult>\nquery: Tool\ncount: 1\nsymbol Tool nanocode.py:10:20\n</FindCodeSymbolToolResult>"
 
 
 def test_find_code_symbol_clamps_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
-    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", 999]).limit == 80
-    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", 0]).limit == 1
+    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": 999}]).limit == 80
+    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": 0}]).limit == 1
     with pytest.raises(ToolCallArgError, match="limit must be an integer"):
-        FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", "many"])
+        FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": "many"}])
 
 
 def test_inspect_code_symbol_rejects_files_directories_and_dotted_module_paths(tmp_path, monkeypatch):
@@ -196,9 +202,9 @@ def test_inspect_code_symbol_uses_inspect_text(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = InspectCodeSymbolTool.make(session, ["Tool"]).call()
+    result = InspectCodeSymbolTool.make(session, ["Tool", {"path": "nanocode.py", "exact_only": True}]).call()
 
-    assert ("inspect_text", "Tool", str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
+    assert ("inspect_text", "Tool", None, "nanocode.py", True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
     assert result == "<InspectCodeSymbolToolResult>\nsymbol:\n  name: Tool\nsource:\n  status: full\n</InspectCodeSymbolToolResult>"
 
 
@@ -208,9 +214,9 @@ def test_outline_code_file_uses_outline_text(tmp_path, monkeypatch):
     filepath.write_text("class Tool:\n    pass\n", encoding="utf-8")
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = OutlineCodeFileTool.make(session, ["code.py"]).call()
+    result = OutlineCodeFileTool.make(session, ["code.py", "Tool"]).call()
 
-    assert ("outline_text", str(filepath), str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
+    assert ("outline_text", str(filepath), "Tool", str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
     assert result == "<OutlineCodeFileToolResult>\nfile: " + str(filepath) + "\noutline:\n  class Tool 0:2 class Tool:\n</OutlineCodeFileToolResult>"
 
 

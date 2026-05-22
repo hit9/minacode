@@ -87,7 +87,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
 
 def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("unavailable", ""))
+    monkeypatch.setattr(nanocode, "_code_index_status", lambda session, *, check=False: ("unavailable", ""))
     session = make_session(tmp_path, model="model")
     session.state.last_total_tokens = 1200
     session.state.session_total_tokens = 2_345_678
