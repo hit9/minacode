@@ -80,12 +80,12 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Tools
 
 - File: `Read`, `LineCount`, `List`, `Search`.
-- Code navigation: `FindCodeSymbol`, `InspectCodeSymbol`, and `OutlineCodeFile` after `/index` builds the project index.
+- Code navigation: `InspectCode` after `/index` builds the project index.
 - Edit: `CreateFile`, `EditFile`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 
-`Search`, `Read`, and `InspectCodeSymbol` return 0-based `line:hash|code` anchors for `EditFile`. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
+`Search`, `Read`, and `InspectCode` mode=inspect return 0-based `line:hash|code` anchors for `EditFile`. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
 
 ## Commands
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import nanocode
 import pytest
 
-from nanocode import Agent, FindCodeSymbolTool, InspectCodeSymbolTool, OutlineCodeFileTool, Session, ToolCallArgError, ToolCallError
+from nanocode import Agent, InspectCodeTool, Session, ToolCallArgError, ToolCallError
 
 
 class FakeRepository:
@@ -77,23 +77,31 @@ def test_inspect_code_requires_code_index(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: None)
 
     with pytest.raises(ToolCallError, match="code index is not available"):
-        InspectCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool"])
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["inspect", "Tool"])
 
 
 def test_code_index_schema_accepts_expected_args():
-    for tool in (FindCodeSymbolTool, InspectCodeSymbolTool, OutlineCodeFileTool):
-        args_schema = tool.tool_schema()["function"]["parameters"]["properties"]["args"]
-        assert args_schema["minItems"] == 1
-        assert args_schema["maxItems"] == 2
+    args_schema = InspectCodeTool.tool_schema()["function"]["parameters"]["properties"]["args"]
+    assert args_schema["minItems"] == 2
+    assert args_schema["maxItems"] == 3
 
 
 def test_inspect_code_rejects_natural_language(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
     with pytest.raises(ToolCallArgError, match="do not pass natural language"):
-        InspectCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool class callers"])
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["inspect", "Tool class callers"])
     with pytest.raises(ToolCallArgError, match="do not pass natural language"):
-        FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool class"])
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["find", "Tool class"])
+
+
+def test_inspect_code_rejects_invalid_mode_and_options(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
+
+    with pytest.raises(ToolCallArgError, match="mode must be find, inspect, or outline"):
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["search", "Tool"])
+    with pytest.raises(ToolCallArgError, match="options must be an object"):
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["find", "Tool", "limit=10"])
 
 
 def test_code_index_missing_is_not_initialized_implicitly(tmp_path, monkeypatch):
@@ -101,7 +109,7 @@ def test_code_index_missing_is_not_initialized_implicitly(tmp_path, monkeypatch)
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("missing"))
 
     with pytest.raises(ToolCallError, match="code index is not available"):
-        FindCodeSymbolTool.make(session, ["Tool"])
+        InspectCodeTool.make(session, ["find", "Tool"])
 
     assert not [event for event in FakeRepository.events if event[0] in {"repo", "refresh"}]
 
@@ -165,23 +173,23 @@ def test_code_index_refresh_existing_async_starts_for_ready_index(tmp_path, monk
     assert session.state.code_index_reload_needed is False
 
 
-def test_find_code_symbol_uses_search_text(tmp_path, monkeypatch):
+def test_inspect_code_find_uses_search_text(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = FindCodeSymbolTool.make(session, ["Tool", {"limit": 12, "kind": "class", "path": "nanocode.py", "exact_only": True}]).call()
+    result = InspectCodeTool.make(session, ["find", "Tool", {"limit": 12, "kind": "class", "path": "nanocode.py", "exact_only": True}]).call()
 
     db_path = str(tmp_path / "data" / "projects" / session.project_key() / "code-symbol-index" / "index.sqlite")
     assert ("search_text", "Tool", "class", "nanocode.py", True, 12, str(tmp_path), db_path) in FakeRepository.events
-    assert result == "<FindCodeSymbolToolResult>\nquery: Tool\ncount: 1\nsymbol Tool nanocode.py:10:20\n</FindCodeSymbolToolResult>"
+    assert result == "<InspectCodeToolResult>\nmode: find\nquery: Tool\ncount: 1\nsymbol Tool nanocode.py:10:20\n</InspectCodeToolResult>"
 
 
-def test_find_code_symbol_clamps_limit(tmp_path, monkeypatch):
+def test_inspect_code_find_clamps_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
-    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": 999}]).limit == 80
-    assert FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": 0}]).limit == 1
+    assert InspectCodeTool.make(Session(cwd=str(tmp_path)), ["find", "Tool", {"limit": 999}]).limit == 80
+    assert InspectCodeTool.make(Session(cwd=str(tmp_path)), ["find", "Tool", {"limit": 0}]).limit == 1
     with pytest.raises(ToolCallArgError, match="limit must be an integer"):
-        FindCodeSymbolTool.make(Session(cwd=str(tmp_path)), ["Tool", {"limit": "many"}])
+        InspectCodeTool.make(Session(cwd=str(tmp_path)), ["find", "Tool", {"limit": "many"}])
 
 
 def test_inspect_code_symbol_rejects_files_directories_and_dotted_module_paths(tmp_path, monkeypatch):
@@ -191,21 +199,21 @@ def test_inspect_code_symbol_rejects_files_directories_and_dotted_module_paths(t
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallArgError, match="file or directory"):
-        InspectCodeSymbolTool.make(session, ["code.py"])
+        InspectCodeTool.make(session, ["inspect", "code.py"])
     with pytest.raises(ToolCallArgError, match="file or directory"):
-        InspectCodeSymbolTool.make(session, ["orion.biz.handlers.syftpp"])
+        InspectCodeTool.make(session, ["inspect", "orion.biz.handlers.syftpp"])
     with pytest.raises(ToolCallArgError, match="module path"):
-        InspectCodeSymbolTool.make(session, ["pkg.module.symbol"])
+        InspectCodeTool.make(session, ["inspect", "pkg.module.symbol"])
 
 
-def test_inspect_code_symbol_uses_inspect_text(tmp_path, monkeypatch):
+def test_inspect_code_inspect_uses_inspect_text(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = InspectCodeSymbolTool.make(session, ["Tool", {"path": "nanocode.py", "exact_only": True}]).call()
+    result = InspectCodeTool.make(session, ["inspect", "Tool", {"path": "nanocode.py", "exact_only": True}]).call()
 
     assert ("inspect_text", "Tool", None, "nanocode.py", True, True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
-    assert result == "<InspectCodeSymbolToolResult>\nsymbol:\n  name: Tool\nsource:\n  status: full\n</InspectCodeSymbolToolResult>"
+    assert result == "<InspectCodeToolResult>\nmode: inspect\nsymbol:\n  name: Tool\nsource:\n  status: full\n</InspectCodeToolResult>"
 
 
 def test_agent_tool_call_preserves_code_index_options_object(tmp_path, monkeypatch):
@@ -215,9 +223,9 @@ def test_agent_tool_call_preserves_code_index_options_object(tmp_path, monkeypat
     Agent(session).execute_tool_calls(
         [
             {
-                "name": "InspectCodeSymbol",
+                "name": "InspectCode",
                 "intention": "inspect exact symbol",
-                "args": ["Tool", {"path": "nanocode.py", "exact_only": True}],
+                "args": ["inspect", "Tool", {"path": "nanocode.py", "exact_only": True}],
             }
         ]
     )
@@ -225,16 +233,16 @@ def test_agent_tool_call_preserves_code_index_options_object(tmp_path, monkeypat
     assert ("inspect_text", "Tool", None, "nanocode.py", True, True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
 
 
-def test_outline_code_file_uses_outline_text(tmp_path, monkeypatch):
+def test_inspect_code_outline_uses_outline_text(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     filepath = tmp_path / "code.py"
     filepath.write_text("class Tool:\n    pass\n", encoding="utf-8")
     monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
 
-    result = OutlineCodeFileTool.make(session, ["code.py", "Tool"]).call()
+    result = InspectCodeTool.make(session, ["outline", "code.py", {"symbol": "Tool"}]).call()
 
     assert ("outline_text", str(filepath), "Tool", str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
-    assert result == "<OutlineCodeFileToolResult>\nfile: " + str(filepath) + "\noutline:\n  class Tool 0:2 class Tool:\n</OutlineCodeFileToolResult>"
+    assert result == "<InspectCodeToolResult>\nmode: outline\nfile: " + str(filepath) + "\noutline:\n  class Tool 0:2 class Tool:\n</InspectCodeToolResult>"
 
 
 def test_outline_code_file_rejects_directories_and_symbols(tmp_path, monkeypatch):
@@ -243,6 +251,6 @@ def test_outline_code_file_rejects_directories_and_symbols(tmp_path, monkeypatch
     session = Session(cwd=str(tmp_path))
 
     with pytest.raises(ToolCallArgError, match="existing file"):
-        OutlineCodeFileTool.make(session, ["pkg"])
+        InspectCodeTool.make(session, ["outline", "pkg"])
     with pytest.raises(ToolCallArgError, match="existing file"):
-        OutlineCodeFileTool.make(session, ["Tool"])
+        InspectCodeTool.make(session, ["outline", "Tool"])

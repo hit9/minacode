@@ -88,12 +88,11 @@ OBSERVE receives a smaller cleanup context:
 
 OBSERVE reduces tool-result noise before ACT continues.
 
-Code navigation tools are environment-gated. `FindCodeSymbol`,
-`InspectCodeSymbol`, and `OutlineCodeFile` are shown only when the built-in code
-index is available. They accept symbol queries or file paths, not
-natural-language questions. The index is created explicitly with `/index`,
-rebuilt with `/index force`, and lightly updated at startup when it already
-exists.
+The code navigation tool is environment-gated. `InspectCode` is shown only when
+the built-in code index is available. It supports `find`, `inspect`, and
+`outline` modes for symbol queries or file paths, not natural-language
+questions. The index is created explicitly with `/index`, rebuilt with
+`/index force`, and lightly updated at startup when it already exists.
 
 Context layout:
 

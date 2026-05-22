@@ -495,9 +495,7 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch)
     assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
     assert "for root-cause work, set work_mode=investigate and use hypotheses" in prompt
     assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
-    assert "InspectCodeSymbol" not in prompt
-    assert "OutlineCodeFile" not in prompt
-    assert "FindCodeSymbol" not in prompt
+    assert "InspectCode" not in prompt
     assert "Use Search/List/LineCount when path, symbol, range, or target is unknown" in prompt
     assert "__discovery_hint__" not in prompt
 
@@ -508,9 +506,7 @@ def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "FindCodeSymbol" not in tool_names
-    assert "InspectCodeSymbol" not in tool_names
-    assert "OutlineCodeFile" not in tool_names
+    assert "InspectCode" not in tool_names
     prompt = agent.build_user_prompt()
     assert "- inspect_code:" not in prompt
     assert "inspect_code_hint" not in prompt
@@ -522,19 +518,18 @@ def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
-    assert "FindCodeSymbol" in tool_names
-    assert "InspectCodeSymbol" in tool_names
-    assert "OutlineCodeFile" in tool_names
+    assert "InspectCode" in tool_names
     system_prompt = agent._system_prompt()
-    assert "prefer indexed code tools before Search/Read" in system_prompt
-    assert "Use FindCodeSymbol for symbol candidates by name/prefix with optional kind/path/exact_only filters" in system_prompt
-    assert "Use InspectCodeSymbol for anchored source, imports, members, references, and implementors" in system_prompt
+    assert "prefer InspectCode before Search/Read" in system_prompt
+    assert "InspectCode mode=find" in system_prompt
+    assert "InspectCode mode=inspect" in system_prompt
+    assert "InspectCode mode=outline" in system_prompt
     prompt = agent.build_user_prompt()
-    assert "Use FindCodeSymbol for symbol/prefix candidates" in prompt
-    assert "InspectCodeSymbol for chosen symbols and edit anchors" in prompt
-    assert "OutlineCodeFile for known file structure or file-local symbol outlines" in prompt
+    assert "Use InspectCode for structural code navigation" in prompt
+    assert "mode=find for symbol candidates" in prompt
+    assert "mode=inspect for anchored symbol source" in prompt
+    assert "mode=outline for file outlines" in prompt
     assert "code-symbol-index" not in prompt
-    assert "kind/path/exact_only/limit filters" in prompt
     assert "Do not pass natural language" in prompt
     assert "Use Search/Read for text, config, logs, commands, and exact ranges" in prompt
 
