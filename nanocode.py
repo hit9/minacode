@@ -1161,6 +1161,7 @@ class Tool:
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ()
     EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = None
+    OUTPUT_CHARS: ClassVar[int] = MAX_TOOL_OUTPUT_CHARS
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
@@ -1872,6 +1873,7 @@ class ListTool(Tool):
 class SearchTool(Tool):
     NAME: ClassVar[str] = "Search"
     MAX_MATCHES: ClassVar[int] = 100
+    OUTPUT_CHARS: ClassVar[int] = 24_000
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
     CONTEXT_LINES: ClassVar[int] = 4
@@ -4697,7 +4699,8 @@ class ToolCallRunner:
         if call.intention:
             description += " - " + call.intention
         log_path = self._write_tool_result_log(key, output)
-        bounded = _bound_tool_output(output, log_path=log_path)
+        tool_class = TOOL_REGISTRY.get(call.name)
+        bounded = _bound_tool_output(output, log_path=log_path, max_chars=tool_class.OUTPUT_CHARS if tool_class is not None else MAX_TOOL_OUTPUT_CHARS)
         self.session.state.tool_result_store[key] = ToolResultItem(
             description=description,
             value=bounded.value,

@@ -289,6 +289,19 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
+def test_search_tool_result_uses_larger_output_budget(tmp_path):
+    sample = tmp_path / "sample.txt"
+    sample.write_text("".join(f"needle {'x' * 180} {index}\n" for index in range(200)), encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.execute_tool_calls([{"name": "Search", "intention": "search large result", "args": ["needle", "sample.txt", "context=0"]}])
+
+    item = session.state.tool_result_store["tr.1"]
+    assert item.excerpted is True
+    assert nanocode.MAX_TOOL_OUTPUT_CHARS < len(item.value) <= nanocode.SearchTool.OUTPUT_CHARS
+
+
 def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path, monkeypatch):
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
         (tmp_path / name).write_text(name + "\n", encoding="utf-8")
