@@ -3388,8 +3388,8 @@ TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
 Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.
 Prefer dedicated tools when they give cleaner structured repo access.
-Mechanical literal rename/replacement across known files may use shell text pipelines when faster and clearer; verify afterward with Git diff, Search/Read, tests, or another focused check.
-For code changes, prefer CreateFile for new files and EditFile for existing files over shell rewrites.
+Mechanical literal rename/replacement across known files should use shell text pipelines when that is faster and clearer than collecting edit anchors; verify afterward with Git diff, Search/Read, tests, or another focused check.
+For code changes, prefer CreateFile for new files and EditFile for structured existing-file edits over shell rewrites.
 
 Git is for status, diff, history, and changed files.
 Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
