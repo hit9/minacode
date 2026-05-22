@@ -1335,12 +1335,13 @@ class ToolResultContext:
         while self.kept_results and len("\n\n".join(self.kept_results)) > max_chars:
             del self.kept_results[0]
 
-    def append_latest(self, executions: list[ToolCallExecution], *, max_index_items: int, checkpoint: int) -> None:
+    def append_latest(self, executions: list[ToolCallExecution], *, max_index_items: int, checkpoint: int, append: bool = False) -> None:
         if not executions:
             return
-        if self.latest:
+        if self.latest and not append:
             self.recent.extend(self.latest)
-        self.latest = [self.format_execution(execution) for execution in executions]
+        blocks = [self.format_execution(execution) for execution in executions]
+        self.latest = [*self.latest, *blocks] if append else blocks
         self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
 
     def prune_recent(self, *, max_index_items: int, checkpoint: int) -> None:
@@ -5757,15 +5758,17 @@ class Agent:
 
         committed = False
         latest_result = AgentRunResult()
+        streamed_tool_batch_started = False
 
         def on_stream_action(action: Json) -> bool:
-            nonlocal committed, latest_result
+            nonlocal committed, latest_result, streamed_tool_batch_started
             committed = True
             self.stream_stop_requested = False
             assistant_text = _json_str(action.pop("_assistant_text", None)) or ""
             response = {"actions": [action]}
             if assistant_text:
                 response["_assistant_text"] = assistant_text
+            is_tool = _json_str(action.get("type")) == "tool"
             invalid_response = self._validate_action_response(response)
             latest_result = (
                 self.handle_response(
@@ -5773,6 +5776,7 @@ class Agent:
                     confirm=confirm,
                     on_auto_approve=on_auto_approve,
                     on_message=on_message,
+                    append_to_latest=is_tool and streamed_tool_batch_started,
                 )
                 if invalid_response is None
                 else self._reject_result(
@@ -5783,9 +5787,11 @@ class Agent:
                     "Format_Gate: invalid streamed action.",
                 )
             )
+            if is_tool:
+                streamed_tool_batch_started = True
             if latest_result.done or self.stream_stop_requested:
                 return True
-            if _json_str(action.get("type")) == "tool" and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions):
+            if is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions):
                 return True
             return self.mode == AgentMode.OBSERVE
 
@@ -5864,12 +5870,14 @@ class Agent:
         *,
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
+        append_to_latest: bool = False,
     ) -> str:
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
         self.tool_context.append_latest(
             self.tool_runner.latest_executions,
             max_index_items=self.context_budget().index_items,
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
+            append=append_to_latest,
         )
         self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
@@ -6389,6 +6397,7 @@ class Agent:
         confirm: ConfirmCallback | None,
         on_auto_approve: ToolDisplayCallback | None,
         on_message: MessageCallback | None,
+        append_to_latest: bool = False,
     ) -> bool:
         if not ctx.tool_calls:
             return False
@@ -6396,6 +6405,7 @@ class Agent:
             ctx.tool_calls,
             confirm=confirm,
             on_auto_approve=on_auto_approve,
+            append_to_latest=append_to_latest,
         )
         if on_message is not None:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
@@ -6639,6 +6649,7 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         on_message: MessageCallback | None = None,
+        append_to_latest: bool = False,
     ) -> AgentRunResult:
         try:
             ctx = self._build_response_context(response)
@@ -6684,6 +6695,7 @@ class Agent:
                 confirm=confirm,
                 on_auto_approve=on_auto_approve,
                 on_message=on_message,
+                append_to_latest=append_to_latest,
             ):
                 self._drop_old_feedback_after_successful_tools(feedback_checkpoint)
                 DebugTrace.handle_event(self, "handle-tools", ctx, response)

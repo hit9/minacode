@@ -194,6 +194,22 @@ def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
     assert "first read" not in latest
 
 
+def test_agent_can_append_streamed_tool_calls_to_latest_batch(tmp_path):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}], append_to_latest=True)
+
+    latest = _blocks_text(agent.tool_context.latest)
+    assert "one" in latest
+    assert "two" in latest
+    assert 'tool=Read args=["one.txt","0,1"]' in latest
+    assert 'tool=Read args=["two.txt","0,1"]' in latest
+    assert agent.tool_context.recent == []
+
+
 def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -1583,6 +1599,33 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
         "_assistant_text": "Reading.",
     }
     assert session.state.last_total_tokens == 5
+
+
+def test_agent_stream_step_preserves_same_response_tool_batch_in_latest(tmp_path, monkeypatch):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+
+    class FakeModelClient:
+        def request(self, *_args, on_stream_action=None, **_kwargs):
+            assert on_stream_action is not None
+            on_stream_action({"type": "tool", "name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]})
+            on_stream_action({"type": "tool", "name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]})
+            return {"actions": []}
+
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.model_client = FakeModelClient()
+    monkeypatch.setattr(agent, "_can_stream_tools", lambda: True)
+
+    result, _response, committed = agent.stream_step()
+
+    latest = _blocks_text(agent.tool_context.latest)
+    assert result.done is False
+    assert committed is True
+    assert "one" in latest
+    assert "two" in latest
+    assert 'tool=Read args=["one.txt","0,1"]' in latest
+    assert 'tool=Read args=["two.txt","0,1"]' in latest
+    assert agent.tool_context.recent == []
 
 
 def test_agent_request_responses_stream_parses_function_tool_event(tmp_path, monkeypatch):
