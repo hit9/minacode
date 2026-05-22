@@ -1637,7 +1637,7 @@ class ReadTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
         "Each range returns at most 600 lines.",
-        'Content is hashline-numbered as "line:hash|code"; EditFile anchors use "line:hash" and code starts after "|".',
+        'Content is numbered as "line:hash|code"; use "line:hash" as an EditFile anchor when editing visible lines.',
     )
     SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<hashline-numbered content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
@@ -1687,7 +1687,11 @@ class ReadTool(Tool):
 
     def call(self) -> str:
         if len(self.ranges) > 1:
-            lines = ["<ReadToolResult>", "  <range_count>" + str(len(self.ranges)) + "</range_count>"]
+            lines = [
+                "<ReadToolResult>",
+                '  <note>Content lines are "line:hash|code"; EditFile anchors are the "line:hash" part.</note>',
+                "  <range_count>" + str(len(self.ranges)) + "</range_count>",
+            ]
             for start, end in self.ranges:
                 content, returned_end, range_end, truncated, total_lines = self._read_range(start, end)
                 lines.append("  <ReadRange>")
@@ -1697,7 +1701,7 @@ class ReadTool(Tool):
             return "\n".join(lines)
 
         content, returned_end, range_end, truncated, total_lines = self._read_range(self.start, self.end)
-        lines = ["<ReadToolResult>"]
+        lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; EditFile anchors are the "line:hash" part.</note>']
         lines.extend(self._format_range_result(self.start, returned_end, range_end, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
@@ -1739,10 +1743,7 @@ class ReadTool(Tool):
         *,
         indent: str,
     ) -> list[str]:
-        lines = [
-            indent + "<range>" + str(start) + ":" + str(range_end) + "</range>",
-            indent + '<note>Line prefixes are display-only; EditFile anchors use "line:hash"; code starts immediately after "|".</note>',
-        ]
+        lines = [indent + "<range>" + str(start) + ":" + str(range_end) + "</range>"]
         if truncated:
             note = (
                 f"Read returned {returned_end - start} lines from {start}:{returned_end} of {total_lines} total lines. "
@@ -3339,7 +3340,7 @@ DISCOVERY AND EDITING
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 { __edit_anchor_intro__ }
-EditFile anchors use the "line:hash" part; edit text starts immediately after "|".
+Visible "line:hash|code" lines already contain EditFile anchors; use the "line:hash" part.
 
 Stop discovery once the next edit/check is clear.
 Do not repeat Search/Read/Recall for confidence when visible results already identify target ranges.
@@ -3352,7 +3353,7 @@ Editing rules:
 { __edit_anchor_rule__ }
 - use medium EditFile batches: usually one file or one logical block with several related edits
 - split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
-- copy EditFile anchors exactly from visible tool output; if an anchor is stale, inspect the target again
+- copy EditFile anchors exactly from visible tool output; reread only after EditFile reports a stale/missing anchor
 
 VERIFICATION
 Verification strength:
