@@ -2599,14 +2599,15 @@ class EditFileTool(Tool):
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        'Edit an existing UTF-8 file using anchors of the form "line:hash".',
-        "Supports replace, delete, insert_before, and insert_after edits; all anchors are verified before writing.",
-        "All edits apply atomically or nothing is written.",
+        "Edit an existing UTF-8 file once target lines are visible.",
+        'Use "line:hash" anchors already shown by Read, Search, or InspectCode.',
+        "Supports atomic multi-edit batches: replace, delete, insert_before, and insert_after.",
+        "Reread only if EditFile reports stale or missing anchors.",
         "Returns changed path plus applied edit count.",
     )
     SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}, ...]) -> EditFileToolResult<path, edits>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Replace: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"}]]',
+        'Batch: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"},{"op":"delete","start":"20:abc123","end":"20:abc123"}]]',
         'Insert: ["code.py", [{"op":"insert_after","start":"20:abc123","content":"new line\\n"}]]',
     )
 
