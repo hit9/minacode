@@ -38,8 +38,8 @@ class FakeRepository:
         self.events.append(("search_text", query, kind, path, exact_only, limit, self.root, self.db_path))
         return "query: " + query + "\ncount: 1\nsymbol Tool nanocode.py:10:20"
 
-    def inspect_text(self, symbol, *, kind=None, path=None, exact_only=False):
-        self.events.append(("inspect_text", symbol, kind, path, exact_only, self.root, self.db_path))
+    def inspect_text(self, symbol, *, kind=None, path=None, exact_only=False, anchors=False):
+        self.events.append(("inspect_text", symbol, kind, path, exact_only, anchors, self.root, self.db_path))
         return "symbol:\n  name: " + symbol + "\nsource:\n  status: full"
 
     def outline_text(self, filepath, *, symbol=None):
@@ -204,7 +204,7 @@ def test_inspect_code_symbol_uses_inspect_text(tmp_path, monkeypatch):
 
     result = InspectCodeSymbolTool.make(session, ["Tool", {"path": "nanocode.py", "exact_only": True}]).call()
 
-    assert ("inspect_text", "Tool", None, "nanocode.py", True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
+    assert ("inspect_text", "Tool", None, "nanocode.py", True, True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
     assert result == "<InspectCodeSymbolToolResult>\nsymbol:\n  name: Tool\nsource:\n  status: full\n</InspectCodeSymbolToolResult>"
 
 

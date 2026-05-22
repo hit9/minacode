@@ -528,10 +528,10 @@ def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
     system_prompt = agent._system_prompt()
     assert "prefer indexed code tools before Search/Read" in system_prompt
     assert "Use FindCodeSymbol for symbol candidates by name/prefix with optional kind/path/exact_only filters" in system_prompt
-    assert "Use InspectCodeSymbol for line-numbered source, imports, members, references, and implementors" in system_prompt
+    assert "Use InspectCodeSymbol for anchored source, imports, members, references, and implementors" in system_prompt
     prompt = agent.build_user_prompt()
     assert "Use FindCodeSymbol for symbol/prefix candidates" in prompt
-    assert "InspectCodeSymbol for chosen symbols" in prompt
+    assert "InspectCodeSymbol for chosen symbols and edit anchors" in prompt
     assert "OutlineCodeFile for known file structure or file-local symbol outlines" in prompt
     assert "code-symbol-index" not in prompt
     assert "kind/path/exact_only/limit filters" in prompt
@@ -2655,7 +2655,7 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
     assert "ToolCallError: requires args: filepath, edits" in latest
     assert "got 3 args, expected 2, extra: 1" in agent.agent_feedback_errors[0]
-    assert "use EditFile with anchors copied from Search/Read output" in agent.agent_feedback_errors[0]
+    assert "use EditFile with anchors copied from visible tool output" in agent.agent_feedback_errors[0]
 
 
 def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):

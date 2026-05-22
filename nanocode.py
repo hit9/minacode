@@ -2465,11 +2465,11 @@ class InspectCodeSymbolTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Inspect one indexed symbol, Class.member, or symbol prefix.",
-        "Returns line-numbered source plus members, references, shallow impact/callers, and implementors when available.",
+        'Returns source as 0-based "line:hash|code" anchors plus members, references, shallow impact/callers, and implementors when available.',
         "Includes import summaries when indexed.",
         "Optional options object: kind, path, exact_only.",
         "Use it to understand a class/function/API and nearby relationships from the index.",
-        "Symbol matching is case-insensitive; returned line numbers are 0-based.",
+        "Symbol matching is case-insensitive; source anchors can be used directly with EditFile.",
         "Not for files, directories, module paths, natural language, or literal text patterns.",
     )
     SIGNATURE: ClassVar[str] = "InspectCodeSymbol(symbol[, options]) -> InspectCodeSymbolToolResult<context>"
@@ -2537,6 +2537,7 @@ class InspectCodeSymbolTool(Tool):
             kind=self.kind or None,
             path=self.path or None,
             exact_only=self.exact_only,
+            anchors=True,
         )
         return _format_code_index_result("InspectCodeSymbolToolResult", text)
 
@@ -2668,7 +2669,7 @@ class EditFileTool(Tool):
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        'Edit an existing UTF-8 file using Search or Read anchors of the form "line:hash".',
+        'Edit an existing UTF-8 file using anchors of the form "line:hash".',
         "Supports replace, delete, insert_before, and insert_after edits; all anchors are verified before writing.",
         "All edits apply atomically or nothing is written.",
         "Returns changed path plus applied edit count.",
@@ -2786,7 +2787,7 @@ class EditFileTool(Tool):
         anchor = anchor.split("|", 1)[0].strip()
         match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor)
         if match is None:
-            raise ToolCallError('invalid anchor; use "line:hash" copied from Read output')
+            raise ToolCallError('invalid anchor; use "line:hash" copied from Search, Read, or InspectCodeSymbol output')
         index = int(match.group(1))
         if index >= len(lines):
             raise ToolCallError("anchor line is out of range; Read the target range again")
@@ -3390,7 +3391,7 @@ DISCOVERY AND EDITING
 { __discovery_hint__ }
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
-Search and Read context lines are hashline-numbered as "line:hash|code".
+{ __edit_anchor_intro__ }
 EditFile anchors use the "line:hash" part; edit text starts immediately after "|".
 
 Stop discovery once the next edit/check is clear.
@@ -3400,10 +3401,10 @@ Editing rules:
 - new file: create a minimal skeleton first, then grow with focused EditFile chunks
 - existing file: inspect the exact target before editing
 - never rewrite a large file in one action
-- Search can provide EditFile anchors for small localized edits; use Read when you need fuller context
+{ __edit_anchor_rule__ }
 - use medium EditFile batches: usually one file or one logical block with several related edits
 - split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
-- copy EditFile anchors exactly from Search/Read output; if an anchor is stale, Search/Read the target again
+- copy EditFile anchors exactly from visible tool output; if an anchor is stale, inspect the target again
 
 VERIFICATION
 Verification strength:
@@ -5344,11 +5345,11 @@ class Agent:
     RECENT_EDITS: ClassVar[int] = 20
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
-    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after EditFile failures use a smaller batch and fresh Search/Read anchors."
+    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after EditFile failures use a smaller batch and fresh anchors."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
-    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from Search/Read output; split oversized batches."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from visible tool output; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
@@ -5422,7 +5423,7 @@ class Agent:
         ]
         if _code_index_available(self.session):
             lines.append(
-                "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (optional kind/path/exact_only/limit filters), InspectCodeSymbol for chosen symbols, and OutlineCodeFile for known file structure or file-local symbol outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
+                "- inspect_code_hint: Use FindCodeSymbol for symbol/prefix candidates (optional kind/path/exact_only/limit filters), InspectCodeSymbol for chosen symbols and edit anchors, and OutlineCodeFile for known file structure or file-local symbol outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )
         return "\n".join(lines)
 
@@ -5455,6 +5456,8 @@ class Agent:
             (template or AGENT_SYSTEM_PROMPT)
             .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
             .replace("{ __discovery_hint__ }", self._discovery_prompt_hint(tool_classes))
+            .replace("{ __edit_anchor_intro__ }", self._edit_anchor_intro(tool_classes))
+            .replace("{ __edit_anchor_rule__ }", self._edit_anchor_rule(tool_classes))
             .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
             .strip()
         )
@@ -5471,11 +5474,21 @@ class Agent:
         return (
             "For structural code discovery, prefer indexed code tools before Search/Read.\n"
             "- Use FindCodeSymbol for symbol candidates by name/prefix with optional kind/path/exact_only filters.\n"
-            "- Use InspectCodeSymbol for line-numbered source, imports, members, references, and implementors of one symbol.\n"
+            "- Use InspectCodeSymbol for anchored source, imports, members, references, and implementors of one symbol.\n"
             "- Use OutlineCodeFile for file-level or file-local symbol outlines.\n"
             "- Use Search for exact literal text, config, comments, logs, or when no useful path/symbol guess exists.\n"
             "- Use List/LineCount when path shape or file size is unknown."
         )
+
+    def _edit_anchor_intro(self, tool_classes: Iterable[ToolClass]) -> str:
+        if InspectCodeSymbolTool in tool_classes:
+            return 'Search, Read, and InspectCodeSymbol source lines are hashline-numbered as "line:hash|code".'
+        return 'Search and Read context lines are hashline-numbered as "line:hash|code".'
+
+    def _edit_anchor_rule(self, tool_classes: Iterable[ToolClass]) -> str:
+        if InspectCodeSymbolTool in tool_classes:
+            return "- Search can provide anchors for localized edits; InspectCodeSymbol can provide anchors for known symbols; use Read when you need fuller context"
+        return "- Search can provide anchors for localized edits; use Read when you need fuller context"
 
     def _format_user_request(self) -> str:
         user_request = self.blackboard.user_input or "(empty)"
@@ -5965,7 +5978,7 @@ class Agent:
             self._remember_agent_error(
                 self._error(
                     "edit failed: " + _format_tool_call_summary(execution.call) + " -> " + _shorten(" ".join(execution.output.split()), 120) + ".",
-                    "use fresh Search/Read anchors; if the edit is large, retry a smaller coherent batch.",
+                    "use fresh anchors; if the edit is large, retry a smaller coherent batch.",
                 )
             )
         if execution.requires_verification:
