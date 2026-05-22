@@ -3297,6 +3297,7 @@ If there is a Goal and Plan:
 - execute the next useful frontier
 - batch independent searches, reads, recalls, and checks
 - serialize only when later arguments depend on earlier results
+- if the next edit/check is clear, do it now instead of rereading for confidence
 - when in verifying phase after edits, prefer the smallest relevant check over more broad reading
 
 Prefer useful tool calls over state-only turns.
@@ -3341,11 +3342,12 @@ Read small ranges around likely matches.
 EditFile anchors use the "line:hash" part; edit text starts immediately after "|".
 
 Stop discovery once the next edit/check is clear.
+Do not repeat Search/Read/Recall for confidence when visible results already identify target ranges.
 
 Editing rules:
 - make one coherent change per edit action
 - new file: create a minimal skeleton first, then grow with focused EditFile chunks
-- existing file: inspect the exact target before editing
+- existing file: use visible anchors when available; inspect only when anchors are missing, stale, or too compressed
 - never rewrite a large file in one action
 { __edit_anchor_rule__ }
 - use medium EditFile batches: usually one file or one logical block with several related edits
