@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import nanocode
 import pytest
 
-from nanocode import FindCodeSymbolTool, InspectCodeSymbolTool, OutlineCodeFileTool, Session, ToolCallArgError, ToolCallError
+from nanocode import Agent, FindCodeSymbolTool, InspectCodeSymbolTool, OutlineCodeFileTool, Session, ToolCallArgError, ToolCallError
 
 
 class FakeRepository:
@@ -206,6 +206,23 @@ def test_inspect_code_symbol_uses_inspect_text(tmp_path, monkeypatch):
 
     assert ("inspect_text", "Tool", None, "nanocode.py", True, True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
     assert result == "<InspectCodeSymbolToolResult>\nsymbol:\n  name: Tool\nsource:\n  status: full\n</InspectCodeSymbolToolResult>"
+
+
+def test_agent_tool_call_preserves_code_index_options_object(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module())
+
+    Agent(session).execute_tool_calls(
+        [
+            {
+                "name": "InspectCodeSymbol",
+                "intention": "inspect exact symbol",
+                "args": ["Tool", {"path": "nanocode.py", "exact_only": True}],
+            }
+        ]
+    )
+
+    assert ("inspect_text", "Tool", None, "nanocode.py", True, True, str(tmp_path), nanocode._code_index_db_path(session)) in FakeRepository.events
 
 
 def test_outline_code_file_uses_outline_text(tmp_path, monkeypatch):

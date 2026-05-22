@@ -2660,7 +2660,10 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
 def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.agent_feedback_errors = ["Error blocked: tool call args invalid: old bad call."]
+    agent.agent_feedback_errors = [
+        "Error blocked: tool call args invalid: old bad call.",
+        "Warning blocked: state update-only turn; include frontier tool.",
+    ]
 
     agent.handle_response({"actions": [{"type": "tool", "name": "List", "intention": "inspect root", "args": ["."]}]})
 

@@ -1247,7 +1247,16 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
     if original_chars <= max_chars:
         return BoundedToolOutput(output, False, original_lines, original_chars)
 
-    header = "[tool result excerpt]\nexcerpted: true\noriginal_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + "\n"
+    header = (
+        "[tool result excerpt]\n"
+        "excerpted: true\n"
+        "note: only an excerpt is visible; use Recall with a line range or Read smaller targeted ranges instead of repeating the same large read.\n"
+        "original_lines: "
+        + str(original_lines)
+        + "\noriginal_chars: "
+        + str(original_chars)
+        + "\n"
+    )
     labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
     body_budget = max_chars - len(header) - sum(len(label) for label in labels)
     if body_budget <= 0:
@@ -1649,16 +1658,16 @@ class ReadTool(Tool):
         return tokens + [str(arg) for arg in args[1:]]
 
     @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
         if len(args) == 0:
             raise ToolCallArgError(
                 'Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().'
             )
-        filepath = session.resolve_path(args[0])
+        filepath = session.resolve_path(str(args[0]))
         if len(args) == 1:
             ranges = [(0, 0)]
-        elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg) for arg in args[1:]):
-            ranges = [_parse_line_range_token(arg) for arg in args[1:]]
+        elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", str(arg)) for arg in args[1:]):
+            ranges = [_parse_line_range_token(str(arg)) for arg in args[1:]]
         elif len(args) == 2:
             raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
         else:
@@ -1736,7 +1745,7 @@ class ReadTool(Tool):
         if truncated:
             note = (
                 f"Read returned {returned_end - start} lines from {start}:{returned_end} of {total_lines} total lines. "
-                "Use Search to locate relevant text or Read smaller ranges in batches."
+                "Use Search to locate relevant text, Recall with a line range, or Read smaller targeted ranges; do not repeat the same large read."
             )
             lines.extend(
                 [
@@ -4790,9 +4799,7 @@ class ToolCallRunner:
             raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
         name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
-        raw_args = _json_list(item.get("args"))
-        args: list[JsonValue] = list(raw_args) if name == EditFileTool.NAME else [_json_str(arg) or "" for arg in raw_args]
-        return ParsedToolCall(name=name, intention=intention, args=args)
+        return ParsedToolCall(name=name, intention=intention, args=list(_json_list(item.get("args"))))
 
     def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
@@ -5360,6 +5367,7 @@ class Agent:
         "edit failed:",
         "repeated same failed tool call",
         "tool call was cancelled",
+        "state update-only turn",
     )
 
     def __init__(self, session: Session):

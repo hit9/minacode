@@ -128,7 +128,7 @@ def test_read_tool_truncates_full_file_reads_after_600_lines(tmp_path):
     assert "<truncated>true</truncated>" in result
     assert "<total_lines>605</total_lines>" in result
     assert "Read returned 600 lines from 0:600 of 605 total lines" in result
-    assert "Use Search to locate relevant text or Read smaller ranges in batches." in result
+    assert "Recall with a line range, or Read smaller targeted ranges" in result
     assert _hashline(599, "line-0599\n") in result
     assert "|line-0600" not in result
 
@@ -144,6 +144,7 @@ def test_read_tool_truncates_large_bounded_ranges_after_600_lines(tmp_path):
     assert "<truncated>true</truncated>" in result
     assert "<total_lines>700</total_lines>" in result
     assert "Read returned 600 lines from 10:610 of 700 total lines" in result
+    assert "Recall with a line range, or Read smaller targeted ranges" in result
     assert _hashline(609, "line-0609\n") in result
     assert "|line-0610" not in result
 
