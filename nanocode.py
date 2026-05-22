@@ -5302,6 +5302,7 @@ class Agent:
     RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
     STALE_TOOL_FEEDBACK_MARKERS: ClassVar[tuple[str, ...]] = (
         "invalid function/tool response",
+        "invalid function-tool response",
         "tool call args invalid",
         "edit failed:",
         "repeated same failed tool call",
@@ -5637,8 +5638,9 @@ class Agent:
         if checkpoint <= 0 or not self.tool_runner.latest_executions:
             return
         if all(execution.outcome == "success" for execution in self.tool_runner.latest_executions):
+            markers = tuple(marker.lower() for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
             self.agent_feedback_errors[:checkpoint] = [
-                error for error in self.agent_feedback_errors[:checkpoint] if not any(marker in error for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
+                error for error in self.agent_feedback_errors[:checkpoint] if not any(marker in error.lower() for marker in markers)
             ]
 
     def _error(self, text: str, rule: str = "") -> str:
