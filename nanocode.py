@@ -2613,6 +2613,27 @@ class EditFileTool(Tool):
     cwd: str = ""
 
     @classmethod
+    def tool_schema(cls) -> Json:
+        schema = super().tool_schema()
+        edit_schema: Json = _tool_object_schema(
+            {
+                "op": {"type": "string", "enum": ["replace", "delete", "insert_before", "insert_after"]},
+                "start": {"type": "string", "description": 'Anchor copied from tool output, e.g. "10:a1b2c3".'},
+                "end": {"type": "string", "description": "Required for replace/delete; omit for inserts."},
+                "content": {"type": "string", "description": "Replacement or inserted text; use empty string for delete."},
+            },
+            ["op", "start"],
+        )
+        schema["function"]["parameters"]["properties"]["args"] = {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": edit_schema}]},
+            "description": 'Exactly two arguments: filepath string, then edits array. Do not pass edits as a JSON string.',
+        }
+        return schema
+
+    @classmethod
     def cli_args(cls, args: list[str]) -> list[str]:
         if len(args) == 2:
             edits = _json_list(args[1])

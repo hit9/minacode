@@ -130,6 +130,16 @@ def test_edit_file_rejects_wrong_arg_shape(tmp_path):
         EditFileTool.make(session, ["sample.txt", [{"op": "move", "start": "0:abcdef"}]])
 
 
+def test_edit_file_schema_describes_two_structured_args():
+    args_schema = EditFileTool.tool_schema()["function"]["parameters"]["properties"]["args"]
+
+    assert args_schema["minItems"] == 2
+    assert args_schema["maxItems"] == 2
+    assert "Do not pass edits as a JSON string" in args_schema["description"]
+    edit_schema = args_schema["items"]["anyOf"][1]["items"]
+    assert edit_schema["properties"]["op"]["enum"] == ["replace", "delete", "insert_before", "insert_after"]
+
+
 def test_agent_executes_edit_file_with_structured_args(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
