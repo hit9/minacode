@@ -656,7 +656,7 @@ def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
     for name in ("find", "sed", "awk", "perl", "xargs", "grep"):
         assert name in prompt
     assert "structured repo access" in prompt
-    assert "Mechanical shell edits are allowed" in prompt
+    assert "Mechanical literal rename/replacement" in prompt
     assert "verify afterward" in prompt
 
 
@@ -2655,7 +2655,16 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
     assert "ToolCallError: requires args: filepath, edits" in latest
     assert "got 3 args, expected 2, extra: 1" in agent.agent_feedback_errors[0]
-    assert "use EditFile with anchors copied from Read output" in agent.agent_feedback_errors[0]
+    assert "use EditFile with anchors copied from Search/Read output" in agent.agent_feedback_errors[0]
+
+
+def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.agent_feedback_errors = ["Error blocked: tool call args invalid: old bad call."]
+
+    agent.handle_response({"actions": [{"type": "tool", "name": "List", "intention": "inspect root", "args": ["."]}]})
+
+    assert agent.agent_feedback_errors == []
 
 
 def test_tool_arg_error_does_not_force_observe(tmp_path):

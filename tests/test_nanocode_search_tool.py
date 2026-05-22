@@ -1,7 +1,9 @@
+import re
+
 import nanocode
 import pytest
 
-from nanocode import SearchTool, Session, ToolCallError
+from nanocode import EditFileTool, SearchTool, Session, ToolCallError
 
 
 def test_search_tool_python_backend_finds_or_patterns_and_applies_glob(tmp_path, monkeypatch):
@@ -175,7 +177,21 @@ def test_search_tool_uses_python_when_rg_is_missing(tmp_path, monkeypatch):
 
     assert "* engine: python" in result
     assert "* sample.txt:1: needle" in result
-    assert "  > 1: needle" in result
+    assert "  > 0:" in result and "|needle" in result
+
+
+def test_search_tool_context_anchor_can_drive_edit_file(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    result = SearchTool.make(session, ["beta", "sample.txt", "context=0"]).call()
+    anchor = re.search(r">\s+(\d+:[0-9a-f]{6})\|beta", result).group(1)
+
+    EditFileTool.make(session, ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "BETA\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
 def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkeypatch):
@@ -187,15 +203,15 @@ def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkey
     result = SearchTool.make(session, ["needle", "sample.txt"]).call()
 
     assert "* sample.txt:4: needle" in result
-    assert "    1: one" in result
-    assert "    2: two" in result
-    assert "    3: three" in result
-    assert "  > 4: needle" in result
-    assert "    5: five" in result
-    assert "    6: six" in result
-    assert "    7: seven" in result
-    assert "    8: eight" in result
-    assert "    9: nine" not in result
+    assert "    0:" in result and "|one" in result
+    assert "    1:" in result and "|two" in result
+    assert "    2:" in result and "|three" in result
+    assert "  > 3:" in result and "|needle" in result
+    assert "    4:" in result and "|five" in result
+    assert "    5:" in result and "|six" in result
+    assert "    6:" in result and "|seven" in result
+    assert "    7:" in result and "|eight" in result
+    assert "|nine" not in result
 
 
 def test_search_tool_python_backend_supports_regex(tmp_path, monkeypatch):
@@ -222,13 +238,13 @@ def test_search_tool_supports_context_option_without_glob(tmp_path, monkeypatch)
 
     result = SearchTool.make(session, ["needle", "sample.txt", "context=3"]).call()
 
-    assert "    1: one" in result
-    assert "    2: two" in result
-    assert "    3: three" in result
-    assert "  > 4: needle" in result
-    assert "    5: five" in result
-    assert "    6: six" in result
-    assert "    7: seven" in result
+    assert "    0:" in result and "|one" in result
+    assert "    1:" in result and "|two" in result
+    assert "    2:" in result and "|three" in result
+    assert "  > 3:" in result and "|needle" in result
+    assert "    4:" in result and "|five" in result
+    assert "    5:" in result and "|six" in result
+    assert "    6:" in result and "|seven" in result
 
 
 def test_search_tool_accepts_context_30(tmp_path):
@@ -248,11 +264,11 @@ def test_search_tool_supports_numeric_context_option_with_glob(tmp_path, monkeyp
     result = SearchTool.make(session, ["needle", ".", "*.txt", "2"]).call()
 
     assert "* keep.txt:3: needle" in result
-    assert "    1: zero" in result
-    assert "    2: one" in result
-    assert "  > 3: needle" in result
-    assert "    4: three" in result
-    assert "    5: four" in result
+    assert "    0:" in result and "|zero" in result
+    assert "    1:" in result and "|one" in result
+    assert "  > 2:" in result and "|needle" in result
+    assert "    3:" in result and "|three" in result
+    assert "    4:" in result and "|four" in result
     assert "skip.py" not in result
 
 
@@ -265,7 +281,7 @@ def test_search_tool_supports_glob_and_context_option(tmp_path, monkeypatch):
     result = SearchTool.make(session, ["needle", ".", "*.txt", "context=1"]).call()
 
     assert "* keep.txt:2: needle" in result
-    assert "  > 2: needle" in result
+    assert "  > 1:" in result and "|needle" in result
     assert "skip.py" not in result
 
 
@@ -363,8 +379,8 @@ def test_search_tool_supports_multiline_regex(tmp_path, monkeypatch):
     assert tool.pattern == "@dataclass.*\nclass.*State"
     assert "* engine: python-multiline" in result
     assert "* sample.py:1: @dataclass class State" in result
-    assert "  > 1: @dataclass" in result
-    assert "    2: class State:" in result
+    assert "  > 0:" in result and "|@dataclass" in result
+    assert "    1:" in result and "|class State:" in result
 
 
 def test_search_tool_rejects_invalid_context(tmp_path):

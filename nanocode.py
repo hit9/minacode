@@ -1601,7 +1601,15 @@ def _line_hash(content: str) -> str:
 
 
 def _numbered_content(content: str, start: int) -> str:
-    return "".join(f"{start + index}:{_line_hash(line)}|{line}" for index, line in enumerate(content.splitlines(keepends=True)))
+    return "".join(_numbered_line(start + index, line) for index, line in enumerate(content.splitlines(keepends=True)))
+
+
+def _numbered_line(index: int, line: str) -> str:
+    return f"{index}:{_line_hash(line)}|{line}"
+
+
+def _numbered_line_preview(index: int, line: str, max_chars: int = 300) -> str:
+    return f"{index}:{_line_hash(line)}|{line.removesuffix(chr(10))[:max_chars]}"
 
 
 def _parse_line_range_token(value: str) -> tuple[int, int]:
@@ -1860,7 +1868,7 @@ class SearchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
-        "Returns matching file paths, 0-based line numbers, matched lines, and requested context lines.",
+        'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code" anchors usable by EditFile.',
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
@@ -2068,7 +2076,7 @@ class SearchTool(Tool):
                     if lineno > end:
                         break
                     if lineno >= start:
-                        context.append((lineno, line.rstrip("\n")[:300]))
+                        context.append((lineno - 1, line))
         except OSError:
             return []
         return context
@@ -2077,11 +2085,13 @@ class SearchTool(Tool):
         lines = ["<SearchToolResult>"]
         lines.append(f"* engine: {engine}")
         if matches:
+            lines.append('<note>Context lines are 0-based "line:hash|code"; use "line:hash" as EditFile anchors.</note>')
+        if matches:
             for match in matches:
                 lines.append(f"* {self._relpath(match.path)}:{match.line_number}: {match.text}")
-                for lineno, text in match.context:
-                    marker = ">" if lineno == match.line_number else " "
-                    lines.append(f"  {marker} {lineno}: {text}")
+                for index, line in match.context:
+                    marker = ">" if index == match.line_number - 1 else " "
+                    lines.append(f"  {marker} {_numbered_line_preview(index, line)}")
         else:
             lines.append("No matches.")
         if truncated:
@@ -2658,7 +2668,7 @@ class EditFileTool(Tool):
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        'Edit an existing UTF-8 file using Read anchors of the form "line:hash".',
+        'Edit an existing UTF-8 file using Search or Read anchors of the form "line:hash".',
         "Supports replace, delete, insert_before, and insert_after edits; all anchors are verified before writing.",
         "All edits apply atomically or nothing is written.",
         "Returns changed path plus applied edit count.",
@@ -3315,6 +3325,7 @@ Tool Results:
 - inspect visible results before deciding the next action
 - OBSERVE owns keep/forget cleanup
 - preserve useful conclusions in goal, plan, known, hypothesis, or verify; forget noise when it no longer helps
+- do not let old gate feedback dominate once fresh tool results answer the next step
 
 WORKFLOW
 Classify the latest request as Chat, One-shot, or Tracked task before deciding state tools.
@@ -3339,6 +3350,7 @@ If there is a Goal and Plan:
 - execute the next useful frontier
 - batch independent searches, reads, recalls, and checks
 - serialize only when later arguments depend on earlier results
+- when in verifying phase after edits, prefer the smallest relevant check over more broad reading
 
 Prefer useful tool calls over state-only turns.
 Pair state updates with the next frontier tool call when tool arguments are already known.
@@ -3378,17 +3390,20 @@ DISCOVERY AND EDITING
 { __discovery_hint__ }
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
-Read line prefixes are display-only; EditFile anchors use "line:hash"; edit text starts immediately after "|".
+Search and Read context lines are hashline-numbered as "line:hash|code".
+EditFile anchors use the "line:hash" part; edit text starts immediately after "|".
 
 Stop discovery once the next edit/check is clear.
 
 Editing rules:
-- make one small coherent change per edit action
+- make one coherent change per edit action
 - new file: create a minimal skeleton first, then grow with focused EditFile chunks
 - existing file: inspect the exact target before editing
 - never rewrite a large file in one action
-- use EditFile after Read for replacements, deletions, insertions, repeated text, and coordinated multi-location edits
-- copy EditFile anchors exactly from Read output; if an anchor is stale, Read the target range again
+- Search can provide EditFile anchors for small localized edits; use Read when you need fuller context
+- use medium EditFile batches: usually one file or one logical block with several related edits
+- split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
+- copy EditFile anchors exactly from Search/Read output; if an anchor is stale, Search/Read the target again
 
 VERIFICATION
 Verification strength:
@@ -3419,7 +3434,7 @@ TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
 Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.
 Prefer dedicated tools when they give cleaner structured repo access.
-Mechanical shell edits are allowed; verify afterward with Git diff, Read, tests, or another focused check.
+Mechanical literal rename/replacement across known files may use shell text pipelines when faster and clearer; verify afterward with Git diff, Search/Read, tests, or another focused check.
 For code changes, prefer CreateFile for new files and EditFile for existing files over shell rewrites.
 
 Git is for status, diff, history, and changed files.
@@ -5329,14 +5344,22 @@ class Agent:
     RECENT_EDITS: ClassVar[int] = 20
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
-    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures Read the target range again and use fresh EditFile anchors."
+    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after EditFile failures use a smaller batch and fresh Search/Read anchors."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
-    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from Read output, and use the exact tool signature."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from Search/Read output; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
+    RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
+    STALE_TOOL_FEEDBACK_MARKERS: ClassVar[tuple[str, ...]] = (
+        "invalid function/tool response",
+        "tool call args invalid",
+        "edit failed:",
+        "repeated same failed tool call",
+        "tool call was cancelled",
+    )
 
     def __init__(self, session: Session):
         self.session = session
@@ -5579,7 +5602,8 @@ class Agent:
 
     def _remember_format_gate(self, format_error: str) -> None:
         remember_error = self._remember_observe_error if self.mode == AgentMode.OBSERVE else self._remember_agent_error
-        remember_error(self._format_gate_user_message("Error: invalid function/tool response", format_error) + " Next: " + self.RULE_FUNCTION_TOOLS)
+        rule = self.RULE_VALID_TOOL_JSON if "invalid tool arguments" in format_error else self.RULE_FUNCTION_TOOLS
+        remember_error(self._format_gate_user_message("Error: invalid function/tool response", format_error) + " Next: " + rule)
 
     def _handle_format_gate(self, response: Json, format_error: str, consecutive_errors: int, on_message: MessageCallback | None) -> None:
         self._set_status_notice("err:format")
@@ -5648,6 +5672,14 @@ class Agent:
 
     def _remember_observe_error(self, text: str) -> None:
         self._remember_feedback_error(self.observe_feedback_errors, text)
+
+    def _drop_old_feedback_after_successful_tools(self, checkpoint: int) -> None:
+        if checkpoint <= 0 or not self.tool_runner.latest_executions:
+            return
+        if all(execution.outcome == "success" for execution in self.tool_runner.latest_executions):
+            self.agent_feedback_errors[:checkpoint] = [
+                error for error in self.agent_feedback_errors[:checkpoint] if not any(marker in error for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
+            ]
 
     def _error(self, text: str, rule: str = "") -> str:
         return "Error blocked: " + text + ((" Next: " + rule) if rule else "")
@@ -5921,6 +5953,19 @@ class Agent:
                 self._error(
                     "tool call args invalid: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".",
                     rule,
+                )
+            )
+        if (
+            execution.error_type is not None
+            and issubclass(execution.error_type, ToolCallError)
+            and not issubclass(execution.error_type, ToolCallArgError)
+            and (tool_class := TOOL_REGISTRY.get(execution.call.name)) is not None
+            and tool_class.EFFECT == ToolEffect.EDIT
+        ):
+            self._remember_agent_error(
+                self._error(
+                    "edit failed: " + _format_tool_call_summary(execution.call) + " -> " + _shorten(" ".join(execution.output.split()), 120) + ".",
+                    "use fresh Search/Read anchors; if the edit is large, retry a smaller coherent batch.",
                 )
             )
         if execution.requires_verification:
@@ -6640,6 +6685,7 @@ class Agent:
     ) -> AgentRunResult:
         try:
             ctx = self._build_response_context(response)
+            feedback_checkpoint = len(self.agent_feedback_errors)
             DebugTrace.handle_event(self, "handle-start", ctx, response)
             if self.mode == AgentMode.OBSERVE:
                 return self._handle_observe_response(
@@ -6682,6 +6728,7 @@ class Agent:
                 on_auto_approve=on_auto_approve,
                 on_message=on_message,
             ):
+                self._drop_old_feedback_after_successful_tools(feedback_checkpoint)
                 DebugTrace.handle_event(self, "handle-tools", ctx, response)
                 return AgentRunResult()
             result = self._finish_or_continue(ctx, on_message)
