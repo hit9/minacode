@@ -2599,10 +2599,10 @@ class EditFileTool(Tool):
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Edit an existing UTF-8 file once target lines are visible.",
+        "Edit an existing UTF-8 file as soon as target lines and replacement text are known.",
         'Use "line:hash" anchors already shown by Read, Search, or InspectCode.',
         "Supports atomic multi-edit batches: replace, delete, insert_before, and insert_after.",
-        "Reread only if EditFile reports stale or missing anchors.",
+        "Do not reread visible target lines for confidence; reread only if EditFile reports stale or missing anchors.",
         "Returns changed path plus applied edit count.",
     )
     SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}, ...]) -> EditFileToolResult<path, edits>"
@@ -3304,6 +3304,7 @@ If there is a Goal and Plan:
 
 Prefer useful tool calls over state-only turns.
 Pair state updates with the next frontier tool call when tool arguments are already known.
+Assistant text is not progress by itself: if you say you will edit/check now, include that tool call in the same response.
 
 FORWARD PROGRESS
 - Advance as far as safely possible in each turn.
