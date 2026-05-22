@@ -85,7 +85,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 
-`Search`, `Read`, and `InspectCode` mode=inspect return 0-based `line:hash|code` anchors for `EditFile`. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
+`Search`, `Read`, and `InspectCode` mode=inspect return 0-based `line:hash|code` lines that can be used as edit anchors. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
 
 ## Commands
 

@@ -1637,7 +1637,7 @@ class ReadTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
         "Each range returns at most 600 lines.",
-        'Content is numbered as "line:hash|code"; use "line:hash" as an EditFile anchor when editing visible lines.',
+        'Content is numbered as "line:hash|code"; the "line:hash" part is the line anchor.',
     )
     SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<hashline-numbered content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
@@ -1689,7 +1689,7 @@ class ReadTool(Tool):
         if len(self.ranges) > 1:
             lines = [
                 "<ReadToolResult>",
-                '  <note>Content lines are "line:hash|code"; EditFile anchors are the "line:hash" part.</note>',
+                '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
                 "  <range_count>" + str(len(self.ranges)) + "</range_count>",
             ]
             for start, end in self.ranges:
@@ -1701,7 +1701,7 @@ class ReadTool(Tool):
             return "\n".join(lines)
 
         content, returned_end, range_end, truncated, total_lines = self._read_range(self.start, self.end)
-        lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; EditFile anchors are the "line:hash" part.</note>']
+        lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>']
         lines.extend(self._format_range_result(self.start, returned_end, range_end, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
@@ -1879,7 +1879,7 @@ class SearchTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
-        'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code" anchors usable by EditFile.',
+        'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code".',
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
@@ -2096,7 +2096,7 @@ class SearchTool(Tool):
         lines = ["<SearchToolResult>"]
         lines.append(f"* engine: {engine}")
         if matches:
-            lines.append('<note>Context lines are 0-based "line:hash|code"; use "line:hash" as EditFile anchors.</note>')
+            lines.append('<note>Context lines are 0-based "line:hash|code"; the "line:hash" part is the line anchor.</note>')
         if matches:
             for match in matches:
                 lines.append(f"* {self._relpath(match.path)}:{match.line_number}: {match.text}")
@@ -3341,7 +3341,7 @@ DISCOVERY AND EDITING
 Use Read only for known paths/ranges or search-narrowed targets.
 Read small ranges around likely matches.
 { __edit_anchor_intro__ }
-Visible "line:hash|code" lines already contain EditFile anchors; use the "line:hash" part.
+Visible "line:hash|code" lines already contain line anchors; use the "line:hash" part.
 
 Stop discovery once the next edit/check is clear.
 Do not repeat Search/Read/Recall for confidence when visible results already identify target ranges.
@@ -3354,7 +3354,7 @@ Editing rules:
 { __edit_anchor_rule__ }
 - use medium EditFile batches: usually one file or one logical block with several related edits
 - split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
-- copy EditFile anchors exactly from visible tool output; reread only after EditFile reports a stale/missing anchor
+- copy line anchors exactly from visible tool output; refresh anchors only after EditFile reports a stale/missing anchor
 
 VERIFICATION
 Verification strength:
@@ -5293,11 +5293,11 @@ class Agent:
     RECENT_EDITS: ClassVar[int] = 20
     RULE_VISIBLE_RESULTS: ClassVar[str] = "use visible tool result keys only."
     RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
-    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after EditFile failures use a smaller batch and fresh anchors."
+    RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures use a smaller batch and reread only stale ranges."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
-    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile with anchors copied from visible tool output; split oversized batches."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile(filepath, edits) with visible line anchors; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
@@ -5936,7 +5936,7 @@ class Agent:
             self._remember_agent_error(
                 self._error(
                     "edit failed: " + _format_tool_call_summary(execution.call) + " -> " + _shorten(" ".join(execution.output.split()), 120) + ".",
-                    "use fresh anchors; if the edit is large, retry a smaller coherent batch.",
+                    "reread only stale ranges; if the edit is large, retry a smaller coherent batch.",
                 )
             )
         if execution.requires_verification:

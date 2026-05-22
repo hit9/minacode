@@ -2693,7 +2693,7 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
 
     assert "ToolCallError: requires args: filepath, edits" in latest
     assert "got 3 args, expected 2, extra: 1" in agent.agent_feedback_errors[0]
-    assert "use EditFile with anchors copied from visible tool output" in agent.agent_feedback_errors[0]
+    assert "use EditFile(filepath, edits) with visible line anchors" in agent.agent_feedback_errors[0]
 
 
 def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):
