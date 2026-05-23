@@ -17,6 +17,18 @@ The agent has a work path and a cleanup path:
 
 Conversation compaction is a background maintenance path. It summarizes old conversation history when the conversation list grows too large.
 
+## Model Output Protocol
+
+Model decisions use function tools:
+
+- state tools update goal, plan, hypotheses, known facts, verification, and result retention
+- repository tools read, search, edit, run commands, and recall stored results
+- compaction uses a dedicated `compact` function tool
+
+Assistant text is optional user-facing text. It must not replace the next useful
+function tool. Completing work still requires a `goal` function tool call with
+`complete=true`.
+
 ## Task State
 
 The main task state lives in the blackboard:
@@ -27,20 +39,19 @@ The main task state lives in the blackboard:
 - plan
 - hypotheses
 - known facts: settled facts for the current task
-- stable knowledge: rare reusable codebase facts
 - verification state
 - recent edits
 
 New user input keeps the previous task state available for follow-ups like "continue".
 
-Old task state is cleared only when the model explicitly starts a different goal. When that happens, transient investigation state such as hypotheses and selected tool-result context is reset, while durable knowledge is kept.
+Old task state is cleared only when the model explicitly sets a different goal. When that happens, transient investigation state such as hypotheses and selected tool-result context is reset, while durable knowledge is kept.
 
 ## New Goal Handling
 
 New user input does not immediately clear the previous task. This keeps short
 follow-ups such as "continue" usable.
 
-When the model outputs `start` with a different goal:
+When the model outputs `goal` with a different current-task goal:
 
 - goal and plan are replaced
 - hypotheses are cleared
@@ -48,20 +59,21 @@ When the model outputs `start` with a different goal:
 - kept tool results are cleared
 - visible raw tool results are compacted into summaries
 - full tool logs remain available through `Recall tr.N`
-- known and stable knowledge remain available
+- known facts remain available
 
 ## Context Construction
 
 ACT mode receives a working context:
 
 - goal, plan, hypotheses, verification
+- environment, including whether local symbol inspection is available
 - Tool Result Index
 - Kept Tool Results
 - Unreduced Tool Results
 - Latest Tool Results
 - errors
 - recent edits
-- known and stable knowledge
+- known facts
 - conversation history
 - latest user request
 
@@ -69,12 +81,18 @@ OBSERVE receives a smaller cleanup context:
 
 - latest user request
 - goal, plan, hypotheses
-- known and stable knowledge
+- known facts
 - kept tool results
 - observe errors
 - unreduced raw tool results selected from recent/latest storage
 
 OBSERVE reduces tool-result noise before ACT continues.
+
+The code navigation tool is environment-gated. `InspectCode` is shown only when
+the built-in code index is available. It supports `find`, `inspect`, and
+`outline` modes for symbol queries or file paths, not natural-language
+questions. The index is created explicitly with `/index`, rebuilt with
+`/index force`, and lightly updated at startup when it already exists.
 
 Context layout:
 
@@ -93,7 +111,6 @@ ACT user prompt, top -> bottom
 +--------------------------------------------------+------------------------------+
 | Background                                       | compact_at                   |
 |   - Environment                                  |                              |
-|   - Stable Knowledge                             |                              |
 |   - User Rules                                   |                              |
 |   - Conversation History                         |                              |
 +--------------------------------------------------+------------------------------+
@@ -113,7 +130,7 @@ ACT user prompt, top -> bottom
 | Current Decision                                 | section-local limits         |
 |   - Recent Edits                                 |                              |
 |   - Known                                        |                              |
-|   - Task Code / Work Mode                        |                              |
+|   - Current Phase / Work Mode                    |                              |
 |   - Goal / Plan / Hypotheses / Verify            |                              |
 |   - Errors                                       |                              |
 |   - Latest User Request                          |                              |

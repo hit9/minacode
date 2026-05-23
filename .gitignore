@@ -4,8 +4,11 @@ __pycache__/
 *.pyc
 .env*
 .nanocode
+.codegraph/
 .venv/
 .mypy_cache/
 .ruff_cache/
 uv.lock
 .python-version
+.code-symbol-index/
+.code-workflow-probe.json

@@ -2,7 +2,7 @@
 
 A lightweight terminal-based AI coding assistant.
 
-nanocode is used to help building itself, including features such as `@file` path completion.
+nanocode is used to help building itself.
 
 Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, configuration, and behavior may change incompatibly before a 1.0 release.
 
@@ -14,9 +14,9 @@ Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, confi
 
 ## Features
 
-- **Constrained Output**: Force model replies into auditable action frames.
+- **Function Tools**: Route model decisions through auditable tools.
 - **Verified Edits**: Reject stale range edits before they touch files.
-- **Autonomous Loop**: Chain reading, editing, running, and verification.
+- **Autonomous Loop**: Chain reading, editing, running, and checks.
 - **Live Telemetry**: Stream tool intent, token use, and status.
 
 ## Install
@@ -61,7 +61,6 @@ Ask a source-aware question about nanocode itself:
 CLI arguments:
 
 - `--yolo`: Skip tool execution confirmations.
-- `--plan`: Plan changes without editing files or running commands.
 - `--debug`: Write request prompts to the current session directory under `~/.nanocode/sessions/`.
 - `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
 - `--init-config`: Create a default config file.
@@ -75,34 +74,42 @@ If you do not fully trust the model, tools, prompts, or workspace, run nanocode 
 
 USE AT YOUR OWN RISK.
 
+nanocode currently targets macOS and Linux. Windows is not supported.
+
 ## Tools
 
-- File: `Read`, `LineCount`, `ListDir`, `Search`.
-- Edit: `Edit`, `ReplaceRange`.
+- File: `Read`, `LineCount`, `List`, `Search`.
+- Code navigation: `InspectCode` after `/index` builds the project index.
+- Edit: `CreateFile`, `EditFile`.
 - Shell: `Bash`, `Git`.
 - Memory: `Recall` reads stored tool results by key.
 
+`Search`, `Read`, and `InspectCode` mode=inspect return 0-based `line:hash|code` lines that can be used as edit anchors. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
+
 ## Commands
 
-- Info: `/help [question]`, `/status`, `/rules`, `/knowledge`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/model [model_name]`, `/reason`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
-- Maintenance: `/clean`.
+- Info: `/help [question]`, `/status`, `/rules`, `/compact`.
+- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/yolo`.
+- Maintenance: `/index [force]`, `/clean`.
 - Exit: `/exit`, `/quit`.
 
-Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/model` lists configured models before discovered ones, then prompts for reasoning; `/model <name>` and `/reason` are direct shortcuts.
+Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason` sets `provider.reasoning` to `off` or an effort value; `/reason-payload` controls the Chat-only reasoning payload shape. `/model` lists configured models before discovered ones, then prompts for reasoning.
+During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
 
 ## Configuration
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `reasoning_payload` controls whether effort is sent as `reasoning`, `reasoning_effort`, or not sent.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, or `auto`; auto uses exact-host profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
+- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, selected OpenCode models, and DashScope models use their matching Chat reasoning payload shapes.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
+- `/context [low|medium|high]` shows or switches tool-result context budgets; lower budgets reduce token usage and observe overhead.
 - Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
-- Tool-result logs from inactive sessions are auto-cleaned after `runtime.auto_clean_recent` (default `3d`; use `off` to disable). `/clean` removes inactive session logs immediately.
-- Project data: user rules are stored under `~/.nanocode/projects/<project_key>/`.
+- Old inactive session directories are auto-cleaned after `runtime.auto_clean_recent` (default `1d`; use `off` to disable). `/clean` removes inactive sessions immediately.
+- Project data: user rules and code indexes are stored under `~/.nanocode/projects/<project_key>/`.
 
 ## Status
 
-- Status bar: active model, reasoning, active yolo/plan modes, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.
+- Status bar: active model, reasoning, active yolo mode, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, goal, and checks.

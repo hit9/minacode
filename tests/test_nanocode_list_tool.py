@@ -1,6 +1,6 @@
 import pytest
 
-from nanocode import ListDirTool, Session, ToolCallError
+from nanocode import ListTool, Session, ToolCallError
 
 
 def test_list_dir_tool_lists_filtered_entries_relative_to_cwd(tmp_path):
@@ -10,14 +10,14 @@ def test_list_dir_tool_lists_filtered_entries_relative_to_cwd(tmp_path):
     (src / "notes.md").write_text("notes\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ListDirTool.make(session, ["src", "*.py"])
+    tool = ListTool.make(session, ["src", "*.py"])
 
     assert tool.requires_confirmation(session) is False
     assert tool.call() == "\n".join(
         [
-            "<ListDirToolResult>",
+            "<ListToolResult>",
             "* (file): src/app.py",
-            "</ListDirToolResult>",
+            "</ListToolResult>",
         ]
     )
 
@@ -29,16 +29,16 @@ def test_list_dir_tool_sorts_dirs_before_files_then_by_name(tmp_path):
     (tmp_path / "a_dir").mkdir()
     session = Session(cwd=str(tmp_path))
 
-    result = ListDirTool.make(session, ["."]).call()
+    result = ListTool.make(session, ["."]).call()
 
     assert result == "\n".join(
         [
-            "<ListDirToolResult>",
+            "<ListToolResult>",
             "* (dir): a_dir",
             "* (dir): z_dir",
             "* (file): a.txt",
             "* (file): b.txt",
-            "</ListDirToolResult>",
+            "</ListToolResult>",
         ]
     )
 
@@ -47,13 +47,13 @@ def test_list_dir_tool_defaults_to_cwd(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    result = ListDirTool.make(session, []).call()
+    result = ListTool.make(session, []).call()
 
     assert result == "\n".join(
         [
-            "<ListDirToolResult>",
+            "<ListToolResult>",
             "* (file): sample.txt",
-            "</ListDirToolResult>",
+            "</ListToolResult>",
         ]
     )
 
@@ -63,7 +63,7 @@ def test_list_dir_tool_rejects_non_directory(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ListDirTool.make(session, ["sample.txt"])
+    tool = ListTool.make(session, ["sample.txt"])
 
     with pytest.raises(ToolCallError, match="not a directory"):
         tool.call()

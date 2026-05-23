@@ -1,15 +1,74 @@
 # Changelog
 
+## 0.4.8 - 2026-05-23
+
+### Changed
+- Renamed the `EditFile` tool to `Edit` across the codebase and tests.
+
+## 0.4.5 - 2026-05-21
+
+### Changed
+- Updated the built-in code index integration for `code-symbol-index` 0.1.7.
+- Added indexed symbol filters for kind, path, and exact matching.
+- Added file-local symbol outlines and bounded pending-index details in `/status`.
+
+## 0.4.4 - 2026-05-20
+
+### Added
+- Added built-in indexed code navigation backed by project data and `/index` for manual init/sync.
+
+### Changed
+- Replaced the external code-navigation CLI integration with the bundled code index API.
+- Hid code navigation tools until an index exists, while lightly updating existing indexes at startup.
+- Updated status/docs to describe code index availability without exposing dependency-install wording.
+
+## 0.4.3 - 2026-05-20
+
+### Changed
+- Removed stable knowledge state while keeping current-task known facts.
+- Extracted shared numbered-content and line-range helpers for tool output/range handling.
+- Trimmed thin helper wrappers in List and indexed code-inspection tools.
+
+## 0.4.2 - 2026-05-19
+
+### Added
+- Added indexed code inspection tools for symbol lookup, symbol investigation, and file outlines when the local index is available.
+- Added queued user feedback during long-running turns.
+- Added `PatchFile` for multi-location file edits.
+
+### Changed
+- Moved model calls to the OpenAI SDK and function-tool protocol.
+- Reworked task-shape prompts for chat, one-shot tasks, and tracked tasks.
+- Prioritized indexed code inspection for structural lookup while keeping Search/Read for exact literals and edit ranges.
+- Improved terminal UX with persistent status, queued-input handling, Bash live preview, and terminal-friendly assistant output rules.
+- Renamed `ListDir` to `List`.
+- Improved `Read`, `Edit`, `ReplaceRange`, `PatchFile`, `Bash`, and `Git` tool guidance.
+- Simplified gate behavior so only deterministic, correctable model errors are refused.
+
+### Fixed
+- Fixed duplicate final replies for goal-only text answers.
+- Fixed repeated recall loops and several format/tool-name compatibility issues.
+- Fixed PatchFile diagnostics and empty-hunk handling.
+- Fixed queued feedback delivery, Ctrl-C/Ctrl-D handling, and Bash interrupt reporting.
+
 ## 0.3.35 - 2026-05-16
+
+### Added
+- Added batched `ReplaceRange` edits for multiple independent ranges in the same file.
+- Added a design document covering agent state, context construction, tool-result storage, observe policy, and verification.
 
 ### Changed
 - Aligned tool-result context layout with the design document.
+- Refined tool-result context reduction around unreduced raw results, retained results, and checkpoint-based pruning.
 - Compressed ACT and OBSERVE system prompts.
 - Reduced routine OBSERVE triggers by raising the pending-result threshold and keeping ordinary tool failures in ACT for repair.
+- Simplified agent gate and feedback handling, including single active plan item normalization.
 - Added soft feedback for state-update-only ACT turns so models continue with frontier tools, verification, or completion.
+- Highlighted recognized slash commands and reported unknown slash commands directly.
 
 ### Fixed
 - Accepted harmless model output variants including trailing progress text, action type casing, and `message` action aliases.
+- Ignored pending verification requests instead of treating them as blocking model output.
 
 ## 0.3.34 - 2026-05-16
 
@@ -115,7 +174,7 @@
 
 ### Changed
 - Tightened completion gates, verification blockers, and compact state update grouping.
-- Simplified Search argument parsing and removed legacy `/knowledge update` behavior.
+- Simplified Search argument parsing and removed legacy knowledge-update behavior.
 - Made provider reasoning payload shape configurable.
 
 ## 0.3.20 - 2026-05-15

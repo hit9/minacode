@@ -37,6 +37,28 @@ def test_create_file_tool_rejects_existing_file(tmp_path):
     assert path.read_text(encoding="utf-8") == "existing\n"
 
 
+def test_create_file_tool_creates_missing_parent_inside_cwd(tmp_path):
+    path = tmp_path / "nested" / "created.txt"
+    session = Session(cwd=str(tmp_path))
+
+    tool = CreateFileTool.make(session, ["nested/created.txt", "alpha\n"])
+    result = tool.call()
+
+    assert path.read_text(encoding="utf-8") == "alpha\n"
+    assert "* path: nested/created.txt" in result
+
+
+def test_create_file_tool_rejects_missing_parent_outside_cwd(tmp_path):
+    outside = tmp_path.parent / (tmp_path.name + "-outside") / "created.txt"
+    session = Session(cwd=str(tmp_path))
+
+    tool = CreateFileTool.make(session, [str(outside), "alpha\n"])
+
+    with pytest.raises(ToolCallError, match="No such file or directory"):
+        tool.call()
+    assert not outside.exists()
+
+
 def test_main_agent_can_execute_create_file_tool(tmp_path):
     path = tmp_path / "created.txt"
     session = Session(cwd=str(tmp_path))
@@ -49,4 +71,4 @@ def test_main_agent_can_execute_create_file_tool(tmp_path):
 
     assert path.read_text(encoding="utf-8") == "alpha\n"
     assert "<CreateFileToolResult>" in latest
-    assert agent.blackboard.verification_required is True
+    assert agent.blackboard.checks_required is True

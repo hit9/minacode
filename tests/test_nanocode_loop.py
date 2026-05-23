@@ -1,18 +1,22 @@
-from prompt_toolkit.completion import CompleteEvent, WordCompleter
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 import time
 
 import nanocode
-from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
+from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
-def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
+def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
     data = {
         "provider": {"active": "default", "default": {"model": model}},
         "paths": {"data_dir": str(tmp_path / ".nanocode")},
         "runtime": {"compact_at": compact_at},
     }
-    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode))
+    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
+
+
+def _status_text(bar: StatusBar) -> str:
+    return "".join(text for _, text in bar._fragments(0.0, now=time.monotonic(), show_sweep=False, show_elapsed=False))
 
 
 def test_session_reports_missing_required_config(tmp_path):
@@ -45,13 +49,13 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
-def test_runtime_settings_loads_modes_from_config():
-    data = {"runtime": {"yolo": True, "plan_mode": True}}
+def test_runtime_settings_loads_yolo_from_config():
+    data = {"runtime": {"yolo": True}}
 
     settings = RuntimeSettings.from_dict(data)
 
     assert settings.yolo is True
-    assert settings.plan_mode is True
+    assert not hasattr(settings, "plan_mode")
 
 
 def test_runtime_settings_loads_auto_clean_recent():
@@ -79,15 +83,17 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["url"] == ""
     assert "available_models" not in config["provider"]["default"]
     assert "temperature" not in config["provider"]["default"]
-    assert "reasoning_payload" not in config["provider"]["default"]
+    assert config["provider"]["default"]["reasoning"] == "medium"
+    assert "chat_reasoning" not in config["provider"]["default"]
     assert config["provider"]["default"]["timeout"] == 180
     assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
-    assert config["runtime"]["plan_timeout"] == 360
-    assert config["runtime"]["plan_first_token_timeout"] == 180
-    assert config["runtime"]["auto_clean_recent"] == "3d"
+    assert config["runtime"]["context_budget"] == "medium"
+    assert config["runtime"]["auto_clean_recent"] == "1d"
     assert config["runtime"]["yolo"] is False
-    assert config["runtime"]["plan_mode"] is False
+    assert "plan_timeout" not in config["runtime"]
+    assert "plan_first_token_timeout" not in config["runtime"]
+    assert "plan_mode" not in config["runtime"]
 
 
 def test_main_init_config_uses_config_argument(tmp_path, capsys):
@@ -99,6 +105,18 @@ def test_main_init_config_uses_config_argument(tmp_path, capsys):
     assert result == 0
     assert config_path.exists()
     assert "Created config: " + str(config_path) in output.out
+
+
+def test_main_rejects_plan_argument(capsys):
+    try:
+        nanocode.main(["--plan"])
+    except SystemExit as error:
+        assert error.code == 2
+    else:
+        raise AssertionError("--plan should be rejected by argparse")
+
+    output = capsys.readouterr()
+    assert "unrecognized arguments: --plan" in output.err
 
 
 def test_main_loads_config_argument(tmp_path, monkeypatch):
@@ -127,7 +145,7 @@ data_dir = ".custom-nanocode"
 
     monkeypatch.setattr(nanocode.AgentLoop, "run", fake_run)
 
-    result = nanocode.main(["--config", str(config_path), "--plan"])
+    result = nanocode.main(["--config", str(config_path)])
 
     assert result == 0
     assert sessions[0].config.provider.url == "https://example.test/v1"
@@ -135,7 +153,7 @@ data_dir = ".custom-nanocode"
     assert sessions[0].config.provider.model == "custom-model"
     assert sessions[0].config.provider.available_models == ("custom-model", "other-model")
     assert sessions[0].config.data_dir == ".custom-nanocode"
-    assert sessions[0].settings.plan_mode is True
+    assert not hasattr(sessions[0].settings, "plan_mode")
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
@@ -156,7 +174,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "turn:1.2s" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
-    snapshot = bar.snapshot()
+    snapshot = _status_text(bar)
     assert snapshot == "model (medium) | ctx:0/9 | tool:3 | tok:last:42 sess:1k"
     assert ">" not in snapshot
 
@@ -189,10 +207,10 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
 
 
 def test_status_bar_shows_active_modes(tmp_path):
-    session = make_session(tmp_path, model="provider/model", yolo=True, plan_mode=True)
+    session = make_session(tmp_path, model="provider/model", yolo=True)
     bar = StatusBar(session)
 
-    assert bar.snapshot() == "model (medium) | yolo | plan | ctx:0/50 | tool:0 | tok:last:- sess:-"
+    assert _status_text(bar) == "model (medium) | yolo | ctx:0/50 | tool:0 | tok:last:- sess:-"
 
 
 def test_status_bar_shows_recent_status_notice(tmp_path):
@@ -201,11 +219,11 @@ def test_status_bar_shows_recent_status_notice(tmp_path):
     session.state.status_notice_until = time.monotonic() + 5
     bar = StatusBar(session)
 
-    assert bar.snapshot().endswith(" | err:format")
+    assert "model (medium) | err:format | ctx:" in _status_text(bar)
 
     session.state.status_notice_until = 0
 
-    assert "err:format" not in bar.snapshot()
+    assert "err:format" not in _status_text(bar)
 
 
 def test_agent_loop_highlights_only_diff_previews(tmp_path):
@@ -269,18 +287,6 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
-def test_agent_loop_live_preview_interrupt_hint_latches(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
-    loop._live_preview_started_at = time.monotonic() - loop.LIVE_PREVIEW_INTERRUPT_HINT_AFTER - 0.1
-
-    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
-    assert loop._live_preview_interrupt_hint(time.monotonic()) is True
-
-
 def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -314,11 +320,11 @@ def test_agent_loop_styles_compact_state_section_labels(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._compact_state_segments("Hypotheses + Known Updated\nHypotheses\n  1. h1\nKnown\n  1. fact")
+    segments = loop._compact_state_segments("Leads + Facts Updated\nLeads\n  1. h1\nFacts\n  1. fact")
 
-    assert ("bold ansicyan", "Hypotheses + Known Updated\n") in segments
-    assert ("ansicyan", "Hypotheses\n") in segments
-    assert ("ansicyan", "Known\n") in segments
+    assert ("bold ansicyan", "Leads + Facts Updated\n") in segments
+    assert ("ansicyan", "Leads\n") in segments
+    assert ("ansicyan", "Facts\n") in segments
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
@@ -353,20 +359,19 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
             self.session = make_session(tmp_path, model="model", yolo=True)
 
     class FakeTool:
+        EFFECT = nanocode.ToolEffect.EDIT
+
         def preview(self):
             return "preview"
 
-        def effect(self):
-            return nanocode.ToolEffect.EDIT
-
     outputs = []
     loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
-    call = ParsedToolCall(name="Edit", intention="edit sample", args=["sample.txt", "old", "new"])
+    call = ParsedToolCall(name="Edit", intention="edit sample", args=["sample.txt", [{"op": "replace", "start": "0:abcdef", "end": "0:abcdef", "content": "new\n"}]])
 
     loop._show_auto_tool_call(call, FakeTool())
 
     assert any("Auto Tool Call | auto approved" in output for output in outputs)
-    assert any('Run     Edit("sample.txt", "old", "new")' in output for output in outputs)
+    assert any('Run     Edit("sample.txt", ' in output for output in outputs)
     assert any("Why     edit sample" in output for output in outputs)
     assert any("Preview\npreview" in output for output in outputs)
 
@@ -377,31 +382,33 @@ def test_agent_loop_command_completer_matches_slash_commands():
     slash_completions = list(completer.get_completions(Document("/"), CompleteEvent(completion_requested=True)))
     config_completions = list(completer.get_completions(Document("/con"), CompleteEvent(completion_requested=True)))
     set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
-    set_bool_completions = list(completer.get_completions(Document("/set provider.reasoning "), CompleteEvent(completion_requested=True)))
-    set_effort_completions = list(completer.get_completions(Document("/set provider.effort h"), CompleteEvent(completion_requested=True)))
-    set_plan_timeout_completions = list(completer.get_completions(Document("/set runtime.plan_"), CompleteEvent(completion_requested=True)))
+    set_reasoning_completions = list(completer.get_completions(Document("/set provider.reasoning h"), CompleteEvent(completion_requested=True)))
+    set_chat_reasoning_completions = list(completer.get_completions(Document("/set provider.chat_reasoning rea"), CompleteEvent(completion_requested=True)))
     model_completions = list(nanocode.CommandCompleter(models=["qwen3", "deepseek"]).get_completions(Document("/model q"), CompleteEvent(completion_requested=True)))
-    plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
+    api_completions = list(completer.get_completions(Document("/api r"), CompleteEvent(completion_requested=True)))
+    reason_payload_completions = list(completer.get_completions(Document("/reason-payload rea"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
-    assert "/plan" in [completion.text for completion in slash_completions]
+    assert "/api" in [completion.text for completion in slash_completions]
+    assert "/reason-payload" in [completion.text for completion in slash_completions]
+    assert "/plan" not in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
-    assert [completion.text for completion in set_bool_completions] == ["on", "off"]
-    assert [completion.text for completion in set_effort_completions] == ["high"]
-    assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
+    assert [completion.text for completion in set_reasoning_completions] == ["high"]
+    assert [completion.text for completion in set_chat_reasoning_completions] == ["reasoning", "reasoning_effort"]
     assert [completion.text for completion in model_completions] == ["qwen3"]
-    assert [completion.text for completion in plan_completions] == ["on", "off"]
+    assert [completion.text for completion in api_completions] == ["responses"]
+    assert [completion.text for completion in reason_payload_completions] == ["reasoning", "reasoning_effort"]
 
 
 def test_command_lexer_highlights_known_command_prefix_only():
     lexer = CommandLexer()
 
-    known = lexer.lex_document(Document("/plan how?"))(0)
+    removed = lexer.lex_document(Document("/plan how?"))(0)
     unknown = lexer.lex_document(Document("/somecommand"))(0)
     spaced = lexer.lex_document(Document(" /plan how?"))(0)
 
-    assert known == [("class:command-input", "/plan"), ("", " how?")]
+    assert removed == [("", "/plan how?")]
     assert unknown == [("", "/somecommand")]
     assert spaced == [("", " /plan how?")]
 
@@ -417,25 +424,6 @@ def test_agent_loop_command_completer_completes_provider_names():
     assert [c.text for c in q_completions] == ["qwen"]
     assert [c.text for c in o_completions] == ["openai"]
     assert {c.text for c in all_completions} == {"qwen", "openai"}
-
-
-def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(tmp_path):
-    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
-
-    completer = ReferenceFileCompleter(str(tmp_path), WordCompleter(["/help"], WORD=True))
-    event = CompleteEvent(completion_requested=True)
-
-    file_completions = list(completer.get_completions(Document("see @READ"), event))
-    dir_completions = list(completer.get_completions(Document("see @sr"), event))
-    nested_completions = list(completer.get_completions(Document("see @src/ma"), event))
-    command_completions = list(completer.get_completions(Document("/he"), event))
-
-    assert "README.md" in [completion.text for completion in file_completions]
-    assert "src/" in [completion.text for completion in dir_completions]
-    assert "src/main.py" in [completion.text for completion in nested_completions]
-    assert "/help" in [completion.text for completion in command_completions]
 
 
 def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):
@@ -487,6 +475,26 @@ def test_agent_loop_confirmation_discards_pending_tty_input(tmp_path, monkeypatc
     assert outputs == ["Answer: yes"]
 
 
+def test_model_retry_shortcut_signal_only_retries_active_model_request(tmp_path):
+    session = make_session(tmp_path, model="model")
+    shortcut = nanocode.ModelRetryShortcut(session)
+
+    shortcut._handle_signal(0, None)
+
+    assert session.state.manual_model_retry_requested is False
+
+    session.state.current_model_call_started_at = 1.0
+    try:
+        shortcut._handle_signal(0, None)
+    except KeyboardInterrupt:
+        interrupted = True
+    else:
+        interrupted = False
+
+    assert interrupted is True
+    assert session.state.manual_model_retry_requested is True
+
+
 def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
     class FakeAgent:
         def __init__(self):
@@ -494,11 +502,11 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
             self.blackboard = Blackboard()
             self.runs = []
 
-        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None):
+        def run(self, user_input, *, confirm=None, on_auto_approve=None, on_message=None, poll_user_input=None):
             self.runs.append(user_input)
             if on_message is not None:
                 on_message("assistant response")
-            return {"actions": [{"type": "chat", "text": "assistant response"}]}
+            return {"actions": [], "_assistant_text": "assistant response"}
 
     inputs = iter(["/status", "hello", "/exit"])
     outputs = []
@@ -508,9 +516,264 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
 
     assert result == 0
     assert any("nanocode - AI coding assistant" in output for output in outputs)
-    assert any("model: model reasoning=medium stream=on" in output for output in outputs)
+    assert any("model: model api=chat(auto) reasoning=medium(off) stream=on" in output for output in outputs)
     assert "assistant response" in outputs
     assert loop.agent.runs == ["hello"]
+
+
+def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("missing", ""))
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    outputs = []
+    AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=outputs.append)._print_welcome()
+
+    assert any("tip: /index initializes indexed code tools" in output for output in outputs)
+
+
+def test_agent_loop_starts_existing_index_refresh_async(tmp_path, monkeypatch):
+    refreshed = []
+
+    def refresh_existing(session, *, progress=None):
+        refreshed.append(progress is not None)
+        if progress is not None:
+            progress("file", done=1, total=2)
+        return True
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+
+    monkeypatch.setattr(nanocode, "_code_index_refresh_existing_async", refresh_existing)
+    outputs = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "/exit", output_fn=outputs.append)
+
+    assert loop.run() == 0
+    assert refreshed == [True]
+    assert loop.agent.session.state.status_notice == "index:parse 1/2"
+
+
+def test_agent_loop_consumes_queued_input_before_prompt(tmp_path):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+            self.runs = []
+
+        def run(self, user_input, **kwargs):
+            self.runs.append(user_input)
+
+    inputs = iter(["/exit"])
+    output = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=output.append)
+
+    loop._append_queued_input(" queued message ")
+
+    assert loop.run() == 0
+    assert loop.agent.runs == ["queued message"]
+    assert "sent: queued message" in output
+
+
+def test_agent_loop_run_agent_uses_runtime_ui_without_status_thread(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+            self.runs = []
+            self.poll_user_input = None
+
+        def run(self, user_input, **kwargs):
+            self.runs.append(user_input)
+            self.poll_user_input = kwargs["poll_user_input"]
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    calls = []
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: calls.append("start-ui") or True)
+    monkeypatch.setattr(loop, "_stop_runtime_ui", lambda: calls.append("stop-ui") or True)
+    monkeypatch.setattr(loop.status_bar, "reset_timer", lambda: calls.append("reset"))
+    monkeypatch.setattr(loop.status_bar, "resume", lambda: calls.append("resume"))
+    monkeypatch.setattr(loop.status_bar, "pause", lambda: calls.append("pause"))
+    monkeypatch.setattr(nanocode, "_code_index_update_pending", lambda session: calls.append("index"))
+
+    loop._run_agent("hello")
+
+    assert loop.agent.runs == ["hello"]
+    assert loop.agent.poll_user_input.__self__ is loop
+    assert loop.agent.poll_user_input.__func__ is AgentLoop._pop_queued_input
+    assert calls == ["reset", "start-ui", "stop-ui", "index", "pause"]
+
+
+def test_agent_loop_clears_queued_input_on_cancel(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+            self.blackboard = Blackboard()
+
+        def run(self, user_input, **kwargs):
+            raise KeyboardInterrupt
+
+        def cancel_current_goal(self):
+            pass
+
+    output = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=output.append)
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: False)
+    loop._append_queued_input("queued message")
+
+    loop._run_agent("hello")
+
+    assert loop._pop_queued_input() is None
+    assert "queued cleared: 1" in output
+
+
+def test_agent_loop_runtime_ui_empty_enter_only_refreshes(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakePromptApp:
+        def __init__(self):
+            self.invalidated = 0
+            self.background_tasks = []
+
+        def invalidate(self):
+            self.invalidated += 1
+
+        def create_background_task(self, task):
+            self.background_tasks.append(task)
+
+    class FakeEvent:
+        def __init__(self, app):
+            self.app = app
+
+    def handler(bindings, key):
+        return next(binding.handler for binding in bindings.bindings if binding.keys == (key,))
+
+    prompt_app = FakePromptApp()
+
+    class FakeApplication:
+        def __init__(self, **kwargs):
+            self.bindings = kwargs["key_bindings"]
+
+        def run(self, handle_sigint=False):
+            handler(self.bindings, nanocode.Keys.ControlM)(FakeEvent(prompt_app))
+
+    terminal_calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
+    monkeypatch.setattr(nanocode, "run_in_terminal", lambda *args, **kwargs: terminal_calls.append((args, kwargs)))
+
+    loop._run_runtime_ui()
+
+    assert loop._pop_queued_input() is None
+    assert prompt_app.invalidated == 1
+    assert prompt_app.background_tasks == []
+    assert terminal_calls == []
+
+
+def test_agent_loop_runtime_ui_pause_restarts_for_confirm(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    calls = []
+    monkeypatch.setattr(loop, "_stop_runtime_ui", lambda: calls.append("stop-ui") or True)
+    monkeypatch.setattr(loop, "_start_runtime_ui", lambda: calls.append("start-ui") or True)
+    monkeypatch.setattr(loop, "_with_status_paused", lambda action: action())
+    monkeypatch.setattr(loop, "_print_tool_call_display", lambda *args, **kwargs: calls.append("display"))
+    monkeypatch.setattr(loop, "_wait_confirm", lambda *args, **kwargs: True)
+
+    result = loop._confirm_tool_call(ParsedToolCall("Edit", "edit", ["a", "b", "c"]), object())
+
+    assert result is True
+    assert calls == ["stop-ui", "display", "start-ui"]
+
+
+def test_agent_loop_bash_live_preview_keeps_latest_lines(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidated = 0
+
+        def invalidate(self):
+            self.invalidated += 1
+
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "")
+    app = FakeApp()
+    loop._runtime_ui_app = app
+    printed = []
+    monkeypatch.setattr(nanocode, "print_formatted_text", lambda formatted, **kwargs: printed.append(list(formatted)))
+
+    loop._show_tool_live_output("stdout", "\n".join("line" + str(index) for index in range(8)))
+
+    assert app.invalidated == 1
+    assert loop._has_tool_live_preview() is True
+    assert loop._tool_live_preview_fragments() == [("class:bash-preview", "line2\nline3\nline4\nline5\nline6\nline7")]
+
+    loop._show_tool_live_output("", "")
+
+    assert app.invalidated == 2
+    assert loop._has_tool_live_preview() is False
+    assert printed == [[("ansibrightblack", "line2\nline3\nline4\nline5\nline6\nline7\n")]]
+
+
+def test_agent_loop_runtime_interrupt_requests_sigint(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.exited = False
+
+        def exit(self):
+            self.exited = True
+
+    app = FakeApp()
+    calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    loop._runtime_ui_app = app
+    monkeypatch.setattr(nanocode.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    loop._interrupt_current_turn(exit_after=True)
+
+    assert loop._exit_after_current_turn is True
+    assert app.exited is True
+    assert calls == [(nanocode.os.getpid(), nanocode.signal.SIGINT)]
+
+
+def test_agent_loop_runtime_retry_requests_model_retry(tmp_path, monkeypatch):
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="model")
+
+    class FakeApp:
+        def __init__(self):
+            self.exited = False
+
+        def exit(self):
+            self.exited = True
+
+    app = FakeApp()
+    calls = []
+    loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "", output_fn=lambda message: None)
+    loop._runtime_ui_app = app
+    loop.agent.session.state.current_model_call_started_at = 1.0
+    monkeypatch.setattr(nanocode.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    loop._retry_current_model_call()
+
+    assert loop.agent.session.state.manual_model_retry_requested is True
+    assert app.exited is False
+    assert calls == [(nanocode.os.getpid(), nanocode.signal.SIGINT)]
 
 
 def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):
@@ -523,8 +786,7 @@ def test_agent_loop_model_command_prompts_for_reasoning_effort(tmp_path):
 
     assert loop.run() == 0
     assert loop.agent.session.config.provider.model == "new-model"
-    assert loop.agent.session.config.provider.reasoning is True
-    assert loop.agent.session.config.provider.reasoning_effort == "high"
+    assert loop.agent.session.config.provider.reasoning == "high"
 
 
 def test_agent_loop_model_command_prompts_for_model_when_available(tmp_path):
@@ -563,16 +825,14 @@ def test_agent_loop_model_command_can_keep_reasoning_effort(tmp_path):
     class FakeAgent:
         def __init__(self):
             self.session = make_session(tmp_path, model="old")
-            self.session.config.provider.reasoning = False
-            self.session.config.provider.reasoning_effort = "xhigh"
+            self.session.config.provider.reasoning = "xhigh"
 
     inputs = iter(["/model new-model", "", "/exit"])
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: next(inputs), output_fn=lambda message: None)
 
     assert loop.run() == 0
     assert loop.agent.session.config.provider.model == "new-model"
-    assert loop.agent.session.config.provider.reasoning is False
-    assert loop.agent.session.config.provider.reasoning_effort == "xhigh"
+    assert loop.agent.session.config.provider.reasoning == "xhigh"
 
 
 def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tmp_path, monkeypatch):
@@ -606,13 +866,6 @@ def test_agent_loop_choice_prompt_styles_selected_effort_and_erases_when_done(tm
     assert attrs.bold is True
     assert captured["erase_when_done"] is True
     assert captured["layout"] is not None
-    assert loop._choice_initial_index(("off", "minimal", "low", "medium"), "medium") == 3
-
-    loop._select_model(("old", "new"), "new")
-    assert loop._choice_initial_index(("old", "new"), "new") == 1
-
-    loop._select_provider(("one", "two"), "two")
-    assert loop._choice_initial_index(("one", "two"), "two") == 1
 
 
 def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):
@@ -641,6 +894,59 @@ def test_agent_loop_choice_prompt_filters_with_slash_search(tmp_path):
     assert "Model /remote:" in outputs[-1]
     assert "remote-a" in outputs[-1]
     assert "old" not in outputs[-1]
+
+
+def test_agent_loop_choice_prompt_enter_confirms_search_before_select(tmp_path, monkeypatch):
+    class FakeStdin:
+        @staticmethod
+        def isatty():
+            return True
+
+    class FakeAgent:
+        def __init__(self):
+            self.session = make_session(tmp_path, model="old")
+
+    class FakePromptApp:
+        result = None
+
+        def invalidate(self):
+            pass
+
+        def exit(self, result=None, exception=None):
+            if exception is not None:
+                raise exception
+            self.result = result
+
+    def handler(bindings, key):
+        return next(binding.handler for binding in bindings.bindings if binding.keys == (key,))
+
+    class FakeEvent:
+        def __init__(self, app, data=""):
+            self.app = app
+            self.data = data
+
+    class FakeApplication:
+        def __init__(self, **kwargs):
+            self.bindings = kwargs["key_bindings"]
+
+        def run(self):
+            app = FakePromptApp()
+            handler(self.bindings, "/")(FakeEvent(app, "/"))
+            any_key = handler(self.bindings, nanocode.Keys.Any)
+            for char in "remote":
+                any_key(FakeEvent(app, char))
+            enter = handler(self.bindings, nanocode.Keys.ControlM)
+            enter(FakeEvent(app, "\r"))
+            assert app.result is None
+            enter(FakeEvent(app, "\r"))
+            return app.result
+
+    monkeypatch.setattr(nanocode.sys, "stdin", FakeStdin())
+    monkeypatch.setattr(nanocode, "Application", FakeApplication)
+
+    loop = AgentLoop(FakeAgent(), prompt_session=object())
+
+    assert loop._select_choice("Model", ("old", "remote-a", "remote-b"), current="old") == "remote-a"
 
 
 def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
