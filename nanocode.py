@@ -405,6 +405,26 @@ class Blackboard:
         keys.update(key for item in self.hypotheses for key in item.source if key.startswith("tr."))
         return keys
 
+    def referenced_result_keys(self) -> set[str]:
+        keys = set(self.source_result_keys())
+        texts = [
+            self.goal,
+            *[KnownItem.text_of(item) for item in self.known],
+            *[item.text for item in self.hypotheses],
+            *[item.context for item in self.hypotheses],
+            *[item.text for item in self.plan],
+            *[item.context for item in self.plan],
+            self.verification.goal,
+            self.verification.kind,
+            self.verification.method,
+            *self.verification.criteria,
+            self.verification.context,
+            self.verification.blocker,
+        ]
+        for text in texts:
+            keys.update(TOOL_RESULT_KEY_REF_PATTERN.findall(str(text)))
+        return {key for key in keys if key.startswith("tr.")}
+
     def protected_result_sources(self) -> dict[str, str]:
         return {key: "active lead" for item in self.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
 
@@ -1366,25 +1386,38 @@ class ToolResultContext:
             blocks.append(self.compact_block(block))
         return blocks
 
-    def latest_raw_blocks(self) -> list[str]:
-        return [block for block in self.latest if self.is_full_block(block)]
+    def latest_raw_blocks(self, *, exclude_keys: set[str] | None = None) -> list[str]:
+        excluded = exclude_keys or set()
+        return [block for block in self.latest if self.is_full_block(block) and self.result_key(block) not in excluded]
 
-    def unreduced_recent_blocks(self, checkpoint: int) -> list[str]:
+    def unreduced_recent_blocks(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> list[str]:
+        excluded = exclude_keys or set()
         latest_keys = set(self.blocks_by_key(self.latest))
-        return [block for block in self.recent if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)]
+        return [
+            block
+            for block in self.recent
+            for key in [self.result_key(block)]
+            if key not in latest_keys and key not in excluded and self._needs_reduction(block, checkpoint)
+        ]
 
-    def unreduced_blocks(self, checkpoint: int) -> list[str]:
+    def unreduced_blocks(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> list[str]:
+        excluded = exclude_keys or set()
         seen: set[str] = set()
         blocks = []
         for block in self.recent + self.latest:
             key = self.result_key(block)
-            if key and key not in seen and self._needs_reduction(block, checkpoint):
+            if key and key not in seen and key not in excluded and self._needs_reduction(block, checkpoint):
                 blocks.append(block)
                 seen.add(key)
         return blocks
 
-    def raw_context_chars(self, checkpoint: int) -> int:
-        return len("\n\n".join(self.unreduced_recent_blocks(checkpoint) + self.latest_raw_blocks()))
+    def raw_context_chars(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> int:
+        return len(
+            "\n\n".join(
+                self.unreduced_recent_blocks(checkpoint, exclude_keys=exclude_keys)
+                + self.latest_raw_blocks(exclude_keys=exclude_keys)
+            )
+        )
 
     @classmethod
     def _needs_reduction(cls, block: str, checkpoint: int) -> bool:
@@ -3332,8 +3365,9 @@ User Rules:
 Tool Results:
 - visible tool results are temporary support context
 - inspect visible results before deciding the next action
-- OBSERVE owns keep/forget cleanup
-- preserve useful conclusions in Goal, Plan, Facts, Leads, or Checks; forget noise when it no longer helps
+- ACT should opportunistically forget raw results after preserving useful conclusions in Goal, Plan, Facts, Leads, or Checks
+- forget raw results when they no longer affect target selection, edit anchors, error repair, verification, or completion
+- OBSERVE is a fallback reducer for unreferenced raw results, not the only cleanup path
 - do not let old gate feedback dominate once fresh tool results answer the next step
 
 WORKFLOW
@@ -3361,6 +3395,7 @@ FORWARD PROGRESS
 - Advance as far as safely possible in each turn.
 - Batch independent tool calls whenever their arguments are known.
 - Do not stop after Goal, Plan, Facts, or Leads updates if a useful repository tool call is clear.
+- Pair source-backed Facts/Leads/Checks with forget when the cited raw result no longer matters.
 - Serialize only when later arguments depend on earlier results.
 - Ask the user only when the blocker cannot be resolved by available tools.
 
@@ -5284,7 +5319,7 @@ class Agent:
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard
-        unreduced = "\n\n".join(self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter))
+        unreduced = "\n\n".join(self._unreferenced_unreduced_blocks())
         return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
@@ -5513,7 +5548,7 @@ class Agent:
             self.session.state.tool_result_store.pop(key)
 
     def _protected_tool_result_keys(self) -> set[str]:
-        keys = self.blackboard.source_result_keys()
+        keys = self.blackboard.referenced_result_keys()
         keys.update(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
         return keys
 
@@ -5727,8 +5762,6 @@ class Agent:
             self.blackboard.hypotheses = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
-        if self.mode != AgentMode.OBSERVE and self._has_memory_update_action(actions):
-            self._mark_memory_checkpoint()
         return forgotten
 
     def _goal_changes_task(self, actions: list[Json]) -> bool:
@@ -5745,17 +5778,6 @@ class Agent:
     def _mark_memory_checkpoint(self, counter: int = 0) -> None:
         checkpoint = counter or self.tool_context.max_counter(self.tool_context.recent + self.tool_context.latest) or self.session.state.tool_result_counter
         self.blackboard.memory_checkpoint_tool_result_counter = max(self.blackboard.memory_checkpoint_tool_result_counter, checkpoint)
-
-    def _has_memory_update_action(self, actions: list[Json]) -> bool:
-        for action in actions:
-            action_type = _json_str(action.get("type"))
-            if action_type == "keep" and _source_from_json(action):
-                return True
-            if action_type == "hypothesis" and _json_list(action.get("items")):
-                return True
-            if action_type == "known" and any(_memory_fact_from_json(raw) for raw in _json_list(action.get("items"))):
-                return True
-        return False
 
     def execute_tool_calls(
         self,
@@ -5781,7 +5803,7 @@ class Agent:
         return "\n\n".join(self.tool_context.latest)
 
     def _should_observe_after_tools(self) -> bool:
-        pending = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
+        pending = self._unreferenced_unreduced_blocks()
         if not pending:
             return False
         budget = self.context_budget()
@@ -5789,7 +5811,19 @@ class Agent:
         # Very large failures still trigger observe through raw-context pressure.
         return (
             len(pending) >= budget.observe_after_results
-            or self.tool_context.raw_context_chars(self.blackboard.memory_checkpoint_tool_result_counter) >= budget.raw_chars
+            or self._unreferenced_raw_context_chars() >= budget.raw_chars
+        )
+
+    def _unreferenced_unreduced_blocks(self) -> list[str]:
+        return self.tool_context.unreduced_blocks(
+            self.blackboard.memory_checkpoint_tool_result_counter,
+            exclude_keys=self.blackboard.referenced_result_keys(),
+        )
+
+    def _unreferenced_raw_context_chars(self) -> int:
+        return self.tool_context.raw_context_chars(
+            self.blackboard.memory_checkpoint_tool_result_counter,
+            exclude_keys=self.blackboard.referenced_result_keys(),
         )
 
     def _after_tool_execution(self, execution: ToolCallExecution) -> None:
@@ -6311,7 +6345,7 @@ class Agent:
         forget_gate = self._gate_forget_actions(ctx.actions, on_message, self._remember_observe_error)
         if forget_gate is not None:
             return forget_gate
-        observed_blocks = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
+        observed_blocks = self._unreferenced_unreduced_blocks()
         observed_counter = ToolResultContext.max_counter(observed_blocks)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_text(ctx, on_message)

@@ -368,6 +368,46 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path, monk
     assert "recall=tr.2" in _blocks_text(agent.tool_context.latest)
 
 
+def test_referenced_unreduced_results_do_not_count_toward_observe_threshold(tmp_path, monkeypatch):
+    for name in ["one.txt", "two.txt", "three.txt"]:
+        (tmp_path / name).write_text(name + "\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.apply_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "one.txt was inspected."}]}]})
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
+    assert len(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter)) == 2
+    assert [nanocode.ToolResultContext.result_key(block) for block in agent._unreferenced_unreduced_blocks()] == ["tr.2"]
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read three", "args": ["three.txt", "0,1"]}])
+
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    observe_prompt = agent.build_observe_prompt()
+    observe_raw = observe_prompt.split("Unreduced Raw Tool Results:\n", 1)[1].split("\n--- Output ---", 1)[0]
+    assert "one.txt" not in observe_raw
+    assert "two.txt" in observe_raw
+    assert "three.txt" in observe_raw
+
+
+def test_unsourced_known_does_not_cover_unreduced_result(tmp_path, monkeypatch):
+    (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.apply_response({"actions": [{"type": "known", "items": ["one.txt was inspected."]}]})
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
+    assert [nanocode.ToolResultContext.result_key(block) for block in agent._unreferenced_unreduced_blocks()] == ["tr.1", "tr.2"]
+
+
 def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monkeypatch):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
@@ -1116,6 +1156,23 @@ def test_agent_tool_result_raw_budget_triggers_observe(tmp_path, monkeypatch):
     observe_context = _observe_tool_result_context(agent)
     assert "sample.txt" in observe_context
     assert "x" * 50 in observe_context
+
+
+def test_referenced_raw_context_does_not_force_observe(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=99)
+    path = tmp_path / "sample.txt"
+    path.write_text("x" * 400 + "\n", encoding="utf-8")
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.apply_response(
+        {"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "sample.txt content was inspected."}]}]}
+    )
+    _set_context_budget(monkeypatch, agent, raw_chars=180, observe_after_results=99)
+
+    assert agent._unreferenced_raw_context_chars() == 0
+    assert agent._should_observe_after_tools() is False
 
 
 def test_agent_tool_result_index_has_count_limit(tmp_path, monkeypatch):
