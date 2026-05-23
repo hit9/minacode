@@ -2294,6 +2294,34 @@ def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, s
     return str(getattr(status, "status", "error")), message
 
 
+def _code_index_language_breakdown(session: Session) -> str:
+    module = _code_index_module()
+    if module is None:
+        return ""
+    try:
+        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=False, max_pending_files=0, format="object")
+    except Exception:
+        return ""
+    if str(getattr(status, "status", "error")) not in {"ready", "stale"}:
+        return ""
+    rows = []
+    for item in getattr(status, "language_breakdown", ()) or ():
+        language = item.get("language") if isinstance(item, dict) else getattr(item, "language", None)
+        files = item.get("files") if isinstance(item, dict) else getattr(item, "files", None)
+        percent = item.get("percent") if isinstance(item, dict) else getattr(item, "percent", None)
+        if language and files is not None and percent is not None:
+            try:
+                rows.append(f"{language} {files} files ({float(percent):.1f}%)")
+            except (TypeError, ValueError):
+                rows.append(f"{language} {files} files")
+    if rows:
+        return ", ".join(rows)
+    languages = getattr(status, "languages", ()) or ()
+    if isinstance(languages, str):
+        languages = (languages,)
+    return ", ".join(str(language) for language in languages if language)
+
+
 def _code_index_available(session: Session) -> bool:
     status, message = _code_index_status(session)
     session.state.code_index_error = message if status == "error" else ""
@@ -5016,6 +5044,9 @@ class Agent:
         if shell_tools:
             lines.append("- detected-available-shell-commands: " + ", ".join(shell_tools))
         if _code_index_available(self.session):
+            language_breakdown = _code_index_language_breakdown(self.session)
+            if language_breakdown:
+                lines.append("- indexed-language-breakdown: " + language_breakdown)
             lines.append(
                 "- inspect_code_hint: Use InspectCode for structural code navigation: mode=find for symbol candidates, mode=inspect for anchored symbol source, mode=outline for file outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."
             )

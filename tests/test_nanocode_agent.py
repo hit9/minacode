@@ -1,6 +1,7 @@
 import os
 import re
 from dataclasses import replace
+from types import SimpleNamespace
 
 import nanocode
 from nanocode import Agent, LLMError, ParsedToolCall, Session, CheckStatus
@@ -656,6 +657,27 @@ def test_act_prompt_lists_available_shell_tools_in_environment(tmp_path, monkeyp
     assert "- detected-available-shell-commands: rg, python3, jq" in prompt
     assert "- detected-available-shell-commands: find" not in prompt
     assert "- shell_tools:" not in prompt
+
+
+def test_act_prompt_lists_indexed_language_breakdown_in_environment(tmp_path, monkeypatch):
+    def status_fn(root, *, db_path=None, check=False, max_pending_files=50, format="object"):
+        return SimpleNamespace(
+            status="ready",
+            reason="",
+            message="",
+            languages=("python", "typescript"),
+            language_breakdown=(
+                {"language": "python", "files": 80, "percent": 62.5},
+                {"language": "typescript", "files": 48, "percent": 37.5},
+            ),
+        )
+
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: SimpleNamespace(status=status_fn))
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    prompt = agent.build_user_prompt()
+
+    assert "- indexed-language-breakdown: python 80 files (62.5%), typescript 48 files (37.5%)" in prompt
 
 
 def test_act_prompt_includes_kept_tool_results(tmp_path):
