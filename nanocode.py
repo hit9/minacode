@@ -143,6 +143,17 @@ class PlanStatus(StrEnum):
 ALL_PLAN_STATUSES = frozenset(PlanStatus)
 
 
+class PlanFollowupStatus(StrEnum):
+    UNKNOWN = "unknown"
+    NONE = "none"
+    NEEDED = "needed"
+    DONE = "done"
+    BLOCKED = "blocked"
+
+
+ALL_PLAN_FOLLOWUP_STATUSES = frozenset(PlanFollowupStatus)
+
+
 class TaskCode(StrEnum):
     NEW = "new"
     WORKING = "working"
@@ -166,6 +177,8 @@ class PlanItem:
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
     context: str = ""
+    followup_action: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN
+    followup_check: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN
 
     def format(self, indent: str = "") -> str:
         text = "- [" + str(self.status) + "] " + self.text
@@ -174,6 +187,10 @@ class PlanItem:
         lines = [text]
         if self.context:
             lines.append("  context: " + self.context)
+        if self.followup_action != PlanFollowupStatus.UNKNOWN:
+            lines.append("  followup_action: " + str(self.followup_action))
+        if self.followup_check != PlanFollowupStatus.UNKNOWN:
+            lines.append("  followup_check: " + str(self.followup_check))
         return _format_lines(lines, indent)
 
 
@@ -3113,6 +3130,10 @@ TOOL_STRING_SCHEMA: Json = {"type": "string"}
 TOOL_NULLABLE_STRING_SCHEMA: Json = {"type": ["string", "null"]}
 TOOL_ITEMS_SCHEMA: Json = {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA}
 TOOL_STRING_LIST_SCHEMA: Json = {"type": "array", "items": {"type": "string"}}
+TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA: Json = {
+    "type": ["string", "null"],
+    "enum": [*ALL_PLAN_FOLLOWUP_STATUSES],
+}
 TOOL_PLAN_ITEMS_SCHEMA: Json = {
     "type": "array",
     "items": _tool_object_schema(
@@ -3122,6 +3143,8 @@ TOOL_PLAN_ITEMS_SCHEMA: Json = {
             "text": TOOL_NULLABLE_STRING_SCHEMA,
             "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
+            "followup_action": {**TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA, "description": "Required non-check work caused by this step: unknown, none, needed, done, or blocked."},
+            "followup_check": {**TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA, "description": "Required checking caused by this step: unknown, none, needed, done, or blocked."},
         },
         [],
     ),
@@ -3223,12 +3246,7 @@ Never repeat an old completion. Do not rewrite Goal unless the user changed the 
 Workflow:
 - Chat: answer directly; do not create task state.
 - One-shot: use only needed tools, then answer and stop; do not create task state just to report.
-- Tracked task:
-  - set Goal.
-  - keep the shortest correct Plan.
-  - act on the current step.
-  - record Checks after edits or requested checks.
-  - finish with goal.complete=true.
+- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep the shortest necessary correct Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
 
 Current step:
 - Choose the smallest useful action from latest request, feedback, visible results, and Plan.
@@ -3236,16 +3254,7 @@ Current step:
 - Do not stop at state-only updates when a useful tool call is clear.
 
 State:
-- Goal/Plan track work.
-- Plan is serious.
-- Plan is the shortest correct path to Goal.
-- Plan includes required consistency steps caused by edits:
-  - sync lock/env state.
-  - regenerate derived files.
-  - update generated code.
-  - validate affected behavior.
-- Skip a caused step only when not needed. Put why in Plan context.
-- Update Plan only when Facts change the path.
+- Goal/Plan track work. Plan is the minimal correct path to Goal, not a loose TODO list; update it when Facts change the path.
 - Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
 - Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
@@ -4467,6 +4476,8 @@ class AgentStateUpdater:
             def render_plan_row(index: int, item: PlanItem) -> list[str]:
                 rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
                 rows += ["       context: " + self._compact(item.context)] if item.context else []
+                rows += ["       followup_action: " + str(item.followup_action)] if item.followup_action != PlanFollowupStatus.UNKNOWN else []
+                rows += ["       followup_check: " + str(item.followup_check)] if item.followup_check != PlanFollowupStatus.UNKNOWN else []
                 return rows
 
             self._append_state_section(lines, "  Plan", self._format_rows(current.plan, render_plan_row))
@@ -4605,9 +4616,11 @@ class AgentStateUpdater:
                 text = _json_str(patch.get("text")) if "text" in patch else None
                 status = _json_str(patch.get("status")) if "status" in patch else None
                 context = _json_str(patch.get("context")) if "context" in patch else existing.context
-                updated = (text or existing.text, PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status, context or "")
-                changed = changed or (existing.text, existing.status, existing.context) != updated
-                existing.text, existing.status, existing.context = updated
+                followup_action = self._plan_followup_status(patch.get("followup_action"), existing.followup_action) if "followup_action" in patch else existing.followup_action
+                followup_check = self._plan_followup_status(patch.get("followup_check"), existing.followup_check) if "followup_check" in patch else existing.followup_check
+                updated = (text or existing.text, PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status, context or "", followup_action, followup_check)
+                changed = changed or (existing.text, existing.status, existing.context, existing.followup_action, existing.followup_check) != updated
+                existing.text, existing.status, existing.context, existing.followup_action, existing.followup_check = updated
                 continue
             plan_item = self._plan_item_from_json(patch)
             if plan_item is None:
@@ -4632,7 +4645,14 @@ class AgentStateUpdater:
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
             context=_json_str(item.get("context")) or "",
+            followup_action=self._plan_followup_status(item.get("followup_action")),
+            followup_check=self._plan_followup_status(item.get("followup_check")),
         )
+
+    @staticmethod
+    def _plan_followup_status(value: JsonValue, default: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN) -> PlanFollowupStatus:
+        status = _json_str(value)
+        return PlanFollowupStatus(status) if status in ALL_PLAN_FOLLOWUP_STATUSES else default
 
     @staticmethod
     def _normalize_doing_items(plan: list[PlanItem]) -> None:
@@ -4862,6 +4882,7 @@ class Agent:
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
     RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile(filepath, edits) with visible line anchors; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
+    RULE_PLAN_FOLLOWUP: ClassVar[str] = "set followup_action and followup_check to none, done, or blocked before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked Checks only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
     RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
@@ -5127,6 +5148,7 @@ class Agent:
         self.blackboard.task_code = TaskCode.DONE
         self.blackboard.goal_reached = False
         self.blackboard.checks_required = False
+        self.recent_edits = []
 
     def _format_act_tool_result_context(self) -> tuple[str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
@@ -5578,6 +5600,18 @@ class Agent:
             return "plan items missing context: " + self._format_plan_gate_items(missing_context)
         return ""
 
+    def _completion_plan_followup_error(self) -> str:
+        if not self.blackboard.goal_reached or not self.recent_edits:
+            return ""
+        completed = [item for item in self.blackboard.plan if item.status in self.COMPLETED_PLAN_STATUSES]
+        missing = [item for item in completed if item.followup_action == PlanFollowupStatus.UNKNOWN or item.followup_check == PlanFollowupStatus.UNKNOWN]
+        if missing:
+            return "plan follow-up status missing: " + self._format_plan_gate_items(missing)
+        needed = [item for item in completed if item.followup_action == PlanFollowupStatus.NEEDED or item.followup_check == PlanFollowupStatus.NEEDED]
+        if needed:
+            return "plan follow-up still needed: " + self._format_plan_gate_items(needed)
+        return ""
+
     def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
         rendered = []
         for item in items[:3]:
@@ -6004,6 +6038,16 @@ class Agent:
                 self._error("completion before Plan was complete: " + completion_plan_error + ".", self.RULE_COMPLETE_PLAN),
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
+            )
+        completion_followup_error = self._completion_plan_followup_error()
+        if completion_followup_error:
+            self.blackboard.goal_reached = False
+            return self._reject_result(
+                self._remember_agent_error,
+                on_message,
+                self._error("completion before Plan follow-up was resolved: " + completion_followup_error + ".", self.RULE_PLAN_FOLLOWUP),
+                "Retrying: resolve Plan follow-up before completing.",
+                "Completion_Gate: " + completion_followup_error + ".",
             )
         if self.blackboard.goal_reached and self.blackboard.checks.status == CheckStatus.BLOCKED and self.blackboard.checks.blocker != CheckBlocker.USER:
             self._warn_agent("blocked Checks completion invalid: verify blocked requires blocker=user before completion.", self.RULE_BLOCKED_BY_USER)

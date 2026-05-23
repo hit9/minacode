@@ -2321,6 +2321,106 @@ def test_agent_applies_partial_plan_patch(tmp_path):
     ]
 
 
+def test_agent_plan_items_track_followup_statuses(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.apply_response(
+        {
+            "actions": [
+                {
+                    "type": "plan",
+                    "items": [
+                        {
+                            "id": "p1",
+                            "text": "Update dependency declaration",
+                            "status": "done",
+                            "context": "pyproject updated",
+                            "followup_action": "needed",
+                            "followup_check": "done",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert agent.blackboard.plan == [
+        nanocode.PlanItem(
+            id="p1",
+            text="Update dependency declaration",
+            status=nanocode.PlanStatus.DONE,
+            context="pyproject updated",
+            followup_action=nanocode.PlanFollowupStatus.NEEDED,
+            followup_check=nanocode.PlanFollowupStatus.DONE,
+        )
+    ]
+    assert "followup_action: needed" in agent.build_user_prompt()
+    assert "followup_check: done" in agent.build_user_prompt()
+    assert "followup_action: needed" in agent.state_updater.latest_report
+    assert "followup_check: done" in agent.state_updater.latest_report
+
+
+def test_agent_completion_after_edit_requires_plan_followup_status(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.blackboard.goal = "change sample"
+    agent.blackboard.goal_reached = True
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="edit sample", status=nanocode.PlanStatus.DONE, context="edited")]
+    agent.recent_edits = ["- sample.txt: edit sample"]
+    ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
+
+    result = agent._finish_or_continue(ctx, None)
+
+    assert result.done is False
+    assert any("plan follow-up status missing" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_completion_after_edit_blocks_needed_plan_followup(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.blackboard.goal = "change sample"
+    agent.blackboard.goal_reached = True
+    agent.blackboard.plan = [
+        nanocode.PlanItem(
+            id="p1",
+            text="edit sample",
+            status=nanocode.PlanStatus.DONE,
+            context="edited",
+            followup_action=nanocode.PlanFollowupStatus.NEEDED,
+            followup_check=nanocode.PlanFollowupStatus.DONE,
+        )
+    ]
+    agent.recent_edits = ["- sample.txt: edit sample"]
+    ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
+
+    result = agent._finish_or_continue(ctx, None)
+
+    assert result.done is False
+    assert any("plan follow-up still needed" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_completion_after_edit_allows_resolved_plan_followup(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.blackboard.goal = "change sample"
+    agent.blackboard.goal_reached = True
+    agent.blackboard.plan = [
+        nanocode.PlanItem(
+            id="p1",
+            text="edit sample",
+            status=nanocode.PlanStatus.DONE,
+            context="edited",
+            followup_action=nanocode.PlanFollowupStatus.NONE,
+            followup_check=nanocode.PlanFollowupStatus.DONE,
+        )
+    ]
+    agent.recent_edits = ["- sample.txt: edit sample"]
+    ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
+    messages = []
+
+    result = agent._finish_or_continue(ctx, messages.append)
+
+    assert result.done is True
+    assert messages == ["done"]
+
+
 def test_agent_applies_goal_and_plan_actions(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
@@ -2999,6 +3099,23 @@ def test_agent_run_executes_edit_tool_and_requires_checks(tmp_path):
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]},
+                {
+                    "actions": [
+                        {
+                            "type": "plan",
+                            "items": [
+                                {
+                                    "text": "test plan",
+                                    "status": "done",
+                                    "context": "seeded",
+                                    "followup_action": "none",
+                                    "followup_check": "done",
+                                }
+                            ],
+                        },
+                        {"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"},
+                    ]
+                },
             ]
 
         def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
