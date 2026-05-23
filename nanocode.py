@@ -3278,7 +3278,10 @@ Workflow:
 
 Current step:
 - Choose the smallest useful action from latest request, feedback, visible results, and Plan.
-- Batch independent actions; serialize dependent actions; ask only when blocked.
+- Batch clear tool calls in one response.
+- Tool calls run in order. If one fails, later tool calls are skipped.
+- Use ordered tools for edit-then-check when the check is clear.
+- Ask only when blocked.
 - Do not stop at state-only updates when a useful tool call is clear.
 
 State:
@@ -5009,9 +5012,9 @@ class Agent:
             "- arch: " + self.session.arch,
             "- cwd: " + self.session.cwd,
         ]
-        shell_tools = [name for name in ("find", "rg", "perl", "sed", "awk", "xargs", "grep", "jq") if shutil.which(name)]
+        shell_tools = [name for name in ("find", "rg", "python3", "perl", "sed", "awk", "xargs", "grep", "jq") if shutil.which(name)]
         if shell_tools:
-            lines.append("- shell_tools: " + ", ".join(shell_tools))
+            lines.append("- detected-available-shell-commands: " + ", ".join(shell_tools))
         if _code_index_available(self.session):
             lines.append(
                 "- inspect_code_hint: Use InspectCode for structural code navigation: mode=find for symbol candidates, mode=inspect for anchored symbol source, mode=outline for file outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."

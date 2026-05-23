@@ -648,13 +648,14 @@ def test_edit_tool_without_goal_or_plan_warns(tmp_path):
 
 
 def test_act_prompt_lists_available_shell_tools_in_environment(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/bin/" + name if name in {"rg", "jq"} else None)
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/bin/" + name if name in {"rg", "python3", "jq"} else None)
     agent = Agent(Session(cwd=str(tmp_path)))
 
     prompt = agent.build_user_prompt()
 
-    assert "- shell_tools: rg, jq" in prompt
-    assert "- shell_tools: find" not in prompt
+    assert "- detected-available-shell-commands: rg, python3, jq" in prompt
+    assert "- detected-available-shell-commands: find" not in prompt
+    assert "- shell_tools:" not in prompt
 
 
 def test_act_prompt_includes_kept_tool_results(tmp_path):
