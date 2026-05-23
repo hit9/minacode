@@ -203,4 +203,4 @@ def test_agent_executes_edit_file_with_structured_args(tmp_path):
 
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\n"
     assert "<EditFileToolResult>" in latest
-    assert agent.blackboard.verification_required is True
+    assert agent.blackboard.checks_required is True

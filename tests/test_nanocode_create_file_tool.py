@@ -71,4 +71,4 @@ def test_main_agent_can_execute_create_file_tool(tmp_path):
 
     assert path.read_text(encoding="utf-8") == "alpha\n"
     assert "<CreateFileToolResult>" in latest
-    assert agent.blackboard.verification_required is True
+    assert agent.blackboard.checks_required is True

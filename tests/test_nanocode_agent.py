@@ -3,7 +3,7 @@ import re
 from dataclasses import replace
 
 import nanocode
-from nanocode import Agent, LLMError, ParsedToolCall, Session, VerificationStatus
+from nanocode import Agent, LLMError, ParsedToolCall, Session, CheckStatus
 
 
 def _verify_passed_action():
@@ -2488,55 +2488,44 @@ def test_agent_state_report_does_not_repeat_goal_for_restarted_task_when_text_ma
     assert "  Plan\n" in agent.state_updater.latest_report
 
 
-def test_agent_resets_verification_when_goal_changes(tmp_path):
+def test_agent_resets_checks_when_goal_changes(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.goal = "old goal"
-    agent.blackboard.verification.goal = "old goal"
-    agent.blackboard.verification.status = VerificationStatus.DONE
-    agent.blackboard.verification.kind = "test"
-    agent.blackboard.verification.method = "old check"
-    agent.blackboard.verification.criteria = ["old criterion"]
-    agent.blackboard.verification.context = "old context"
+    agent.blackboard.checks.status = CheckStatus.PASSED
+    agent.blackboard.checks.method = "old check"
+    agent.blackboard.checks.context = "old context"
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": False}]})
 
     assert agent.blackboard.goal_reached is False
-    assert agent.blackboard.verification.goal == ""
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
-    assert agent.blackboard.verification.kind == ""
-    assert agent.blackboard.verification.method == ""
-    assert agent.blackboard.verification.criteria == []
-    assert agent.blackboard.verification.context == ""
+    assert agent.blackboard.checks.status == CheckStatus.IDLE
+    assert agent.blackboard.checks.method == ""
+    assert agent.blackboard.checks.context == ""
 
-    agent.apply_response(
-        {"actions": [{"type": "verify", "kind": "test", "method": "run tests", "criteria": ["tests pass"], "status": "passed", "context": "tests pass"}]}
-    )
+    agent.apply_response({"actions": [{"type": "verify", "method": "run tests", "status": "passed", "context": "tests pass"}]})
 
-    assert agent.blackboard.verification.goal == "new goal"
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
-    assert agent.blackboard.verification.kind == "test"
-    assert agent.blackboard.verification.method == "run tests"
-    assert agent.blackboard.verification.criteria == ["tests pass"]
-    assert agent.blackboard.verification.context == "tests pass"
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
+    assert agent.blackboard.checks.method == "run tests"
+    assert agent.blackboard.checks.context == "tests pass"
 
     agent.apply_response({"actions": [{"type": "goal", "text": "new goal", "complete": True}]})
 
     assert agent.blackboard.goal_reached is True
 
 
-def test_agent_task_code_returns_to_working_after_verification_result(tmp_path):
+def test_agent_task_code_returns_to_working_after_checks_result(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.blackboard.task_code = nanocode.TaskCode.VERIFYING
+    agent.blackboard.task_code = nanocode.TaskCode.CHECKING
 
     agent.apply_response({"actions": [{"type": "verify", "status": "passed", "context": "checked"}]})
 
     assert agent.blackboard.task_code == nanocode.TaskCode.WORKING
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
 
 
-def test_agent_accepts_combined_verification_kind_and_ignores_pending(tmp_path):
+def test_agent_accepts_checks_result_and_ignores_pending(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.apply_response(
@@ -2544,27 +2533,23 @@ def test_agent_accepts_combined_verification_kind_and_ignores_pending(tmp_path):
             "actions": [
                 {
                     "type": "verify",
-                    "kind": "syntax_check+test",
                     "method": "check edit",
-                    "criteria": ["syntax passes", "tests pass"],
                     "status": "passed",
                 }
             ]
         }
     )
 
-    assert agent.blackboard.verification.kind == "syntax_check+test"
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
+    assert agent.blackboard.checks.method == "check edit"
 
-    agent.blackboard.verification.reset()
+    agent.blackboard.checks.reset()
     result = agent.handle_response(
         {
             "actions": [
                 {
                     "type": "verify",
-                    "kind": "syntax_check+test",
                     "method": "check edit",
-                    "criteria": ["syntax passes", "tests pass"],
                     "status": "pending",
                 }
             ]
@@ -2572,8 +2557,7 @@ def test_agent_accepts_combined_verification_kind_and_ignores_pending(tmp_path):
     )
 
     assert result.done is False
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
-    assert agent.blackboard.verification.kind == ""
+    assert agent.blackboard.checks.status == CheckStatus.IDLE
     assert any('ignored verify status="pending"' in error for error in agent.agent_feedback_errors)
 
 
@@ -2771,13 +2755,13 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
     assert any("repeated failed tool call" in error for error in agent.agent_feedback_errors)
 
 
-def test_agent_execute_bash_does_not_require_verification(tmp_path):
+def test_agent_execute_bash_does_not_require_checks(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     agent.execute_tool_calls([{"name": "Bash", "intention": "run command", "args": ["true"]}], confirm=lambda call, tool: True)
 
-    assert agent.blackboard.verification_required is False
+    assert agent.blackboard.checks_required is False
 
 
 def test_agent_marks_nonzero_bash_exit_as_failed_tool_call(tmp_path):
@@ -2834,8 +2818,8 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     assert "+new" in auto_approvals[0][1]
     assert latest.startswith("- ok")
     assert path.read_text(encoding="utf-8") == "new\n"
-    assert agent.blackboard.verification_required is True
-    assert agent.blackboard.task_code == nanocode.TaskCode.VERIFYING
+    assert agent.blackboard.checks_required is True
+    assert agent.blackboard.task_code == nanocode.TaskCode.CHECKING
     assert agent.recent_edits == ["- sample.txt: edit sample"]
 
 
@@ -2893,9 +2877,9 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert agent.blackboard.user_input == "read sample"
     assert agent.blackboard.goal == "read sample"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="test plan", status=nanocode.PlanStatus.DONE, context="seeded")]
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
     assert agent.blackboard.goal_reached is False
-    assert agent.blackboard.verification_required is False
+    assert agent.blackboard.checks_required is False
 
 
 def test_agent_run_ingests_queued_user_input_before_next_model_call(tmp_path):
@@ -2986,7 +2970,7 @@ def test_agent_normalizes_lowercase_repo_tool_names(tmp_path):
     assert not any("Protocol_Gate" in message for message in messages)
 
 
-def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
+def test_agent_run_allows_readonly_answer_without_checks(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:
@@ -3012,11 +2996,11 @@ def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
     response = agent.run("answer sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "sample contains alpha"
-    assert "Retrying: verification must pass before completion." not in messages
+    assert "Retrying: checks must pass before completion." not in messages
     assert messages[-1] == "sample contains alpha"
 
 
-def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
+def test_agent_run_executes_edit_tool_and_requires_checks(tmp_path):
     (tmp_path / "sample.txt").write_text("old\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     anchor = _read_anchors(session, "sample.txt")[0]
@@ -3059,12 +3043,12 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     assert messages[-1] == "done"
 
 
-def test_agent_warns_but_allows_completion_when_verification_required(tmp_path):
+def test_agent_warns_but_allows_completion_when_checks_required(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "change sample")
     agent.blackboard.goal_reached = True
-    agent.blackboard.verification_required = True
-    agent.blackboard.verification.status = VerificationStatus.REQUIRED
+    agent.blackboard.checks_required = True
+    agent.blackboard.checks.status = CheckStatus.REQUIRED
     ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
     messages = []
 
@@ -3077,10 +3061,10 @@ def test_agent_warns_but_allows_completion_when_verification_required(tmp_path):
     ]
 
 
-def test_agent_plain_text_can_finish_without_active_task_when_verification_required(tmp_path):
+def test_agent_plain_text_can_finish_without_active_task_when_checks_required(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.blackboard.verification_required = True
-    agent.blackboard.verification.status = VerificationStatus.REQUIRED
+    agent.blackboard.checks_required = True
+    agent.blackboard.checks.status = CheckStatus.REQUIRED
     agent.blackboard.task_code = nanocode.TaskCode.NEW
     ctx = agent._build_response_context({"actions": [], "_assistant_text": "Done."})
     messages = []
@@ -3172,7 +3156,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal == "read samples"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer", status=nanocode.PlanStatus.DONE, context="seeded")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.checks.status == CheckStatus.IDLE
     assert agent.blackboard.goal_reached is False
 
 
@@ -3556,7 +3540,7 @@ def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
     assert "Continuing: assistant must set current task's goal." not in messages
 
 
-def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path):
+def test_agent_run_retries_when_checks_done_without_goal_complete(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -3585,11 +3569,11 @@ def test_agent_run_retries_when_verification_done_without_goal_complete(tmp_path
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert "Retrying: verification is done but goal is not complete." not in messages
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert "Retrying: checks is done but goal is not complete." not in messages
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
 
 
-def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
+def test_agent_run_retries_when_plan_complete_without_checks(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -3606,9 +3590,7 @@ def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
                     "actions": [
                         {
                             "type": "verify",
-                            "kind": "test",
                             "method": "pytest",
-                            "criteria": ["tests pass"],
                             "status": "passed",
                             "context": "tests passed",
                         }
@@ -3632,15 +3614,15 @@ def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
     assert any("Plan is complete but Checks are not recorded" in error for error in agent.agent_feedback_errors)
-    assert agent.blackboard.verification.status == VerificationStatus.DONE
+    assert agent.blackboard.checks.status == CheckStatus.PASSED
 
 
-def test_agent_allows_tool_after_completed_plan_and_verification(tmp_path):
+def test_agent_allows_tool_after_completed_plan_and_checks(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "inspect")
-    agent.blackboard.verification.status = VerificationStatus.DONE
-    agent.blackboard.verification.context = "syntax check passed"
+    agent.blackboard.checks.status = CheckStatus.PASSED
+    agent.blackboard.checks.context = "syntax check passed"
     messages = []
 
     result = agent.handle_response(
@@ -3663,8 +3645,8 @@ def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path)
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "inspect")
-    agent.blackboard.verification.status = VerificationStatus.DONE
-    agent.blackboard.verification.context = "syntax check passed"
+    agent.blackboard.checks.status = CheckStatus.PASSED
+    agent.blackboard.checks.context = "syntax check passed"
 
     result = agent.handle_response(
         {
@@ -3701,8 +3683,8 @@ def test_agent_allows_tool_after_reopening_completed_plan_without_context(tmp_pa
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "inspect")
-    agent.blackboard.verification.status = VerificationStatus.DONE
-    agent.blackboard.verification.context = "syntax check passed"
+    agent.blackboard.checks.status = CheckStatus.PASSED
+    agent.blackboard.checks.context = "syntax check passed"
     messages = []
 
     result = agent.handle_response(
@@ -3767,7 +3749,7 @@ def test_agent_allows_verify_blocked_completion_with_user_blocker(tmp_path):
     )
 
     assert result.done is True
-    assert agent.blackboard.verification.blocker == nanocode.VerificationBlocker.USER
+    assert agent.blackboard.checks.blocker == nanocode.CheckBlocker.USER
     assert messages[-1] == "done"
 
 
@@ -4109,7 +4091,7 @@ def test_agent_feedback_survives_goal_complete_until_next_run(tmp_path):
     agent.run("next task")
 
     assert agent.agent_feedback_errors == []
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.checks.status == CheckStatus.IDLE
 
 
 def test_agent_allows_progress_message_before_goal_complete(tmp_path):
@@ -4121,9 +4103,7 @@ def test_agent_allows_progress_message_before_goal_complete(tmp_path):
                     "actions": [
                         {
                             "type": "verify",
-                            "kind": "light",
                             "method": "check",
-                            "criteria": ["progress can be emitted before completion"],
                             "status": "passed",
                             "blocker": None,
                             "context": "progress context",
@@ -4205,7 +4185,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     agent.blackboard.goal = "answer"
     agent.blackboard.plan = [nanocode.PlanItem(text="try answer")]
     agent.blackboard.known = ["keep this fact"]
-    agent.blackboard.verification.status = VerificationStatus.REQUIRED
+    agent.blackboard.checks.status = CheckStatus.REQUIRED
     agent.tool_context.latest = ["old tool call"]
     agent.model_client = FakeModelClient()
 
@@ -4222,7 +4202,7 @@ def test_agent_feedback_survives_keyboard_interrupt_until_next_run(tmp_path):
     assert agent.blackboard.goal == "answer"
     assert agent.blackboard.plan == [nanocode.PlanItem(text="try answer")]
     assert agent.blackboard.known == ["keep this fact"]
-    assert agent.blackboard.verification.status == VerificationStatus.IDLE
+    assert agent.blackboard.checks.status == CheckStatus.IDLE
     assert agent.blackboard.goal_reached is False
 
     class ChatModelClient:

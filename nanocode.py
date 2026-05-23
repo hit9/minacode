@@ -152,7 +152,7 @@ ALL_PLAN_STATUSES = frozenset(PlanStatus)
 class TaskCode(StrEnum):
     NEW = "new"
     WORKING = "working"
-    VERIFYING = "verifying"
+    CHECKING = "checking"
     DONE = "done"
 
 
@@ -267,15 +267,15 @@ class Hypothesis:
         )
 
 
-class VerificationStatus(StrEnum):
+class CheckStatus(StrEnum):
     IDLE = "idle"
     REQUIRED = "required"
-    DONE = "done"
+    PASSED = "passed"
     FAILED = "failed"
     BLOCKED = "blocked"
 
 
-class VerificationBlocker(StrEnum):
+class CheckBlocker(StrEnum):
     NONE = ""
     USER = "user"
     ENVIRONMENT = "environment"
@@ -283,30 +283,20 @@ class VerificationBlocker(StrEnum):
     UNKNOWN = "unknown"
 
 
-ALL_VERIFICATION_BLOCKERS = frozenset(VerificationBlocker)
+ALL_CHECK_BLOCKERS = frozenset(CheckBlocker)
 
 
 @dataclass
-class Verification:
-    goal: str = ""
-    status: VerificationStatus = VerificationStatus.IDLE
-    kind: str = ""
+class Checks:
+    status: CheckStatus = CheckStatus.IDLE
     method: str = ""
-    criteria: list[str] = field(default_factory=list)
     context: str = ""
-    blocker: VerificationBlocker = VerificationBlocker.NONE
+    blocker: CheckBlocker = CheckBlocker.NONE
 
     def format(self, indent: str = "") -> str:
         lines = ["status: " + self.status]
-        if self.goal:
-            lines.append("goal: " + self.goal)
-        if self.kind:
-            lines.append("kind: " + self.kind)
         if self.method:
             lines.append("method: " + self.method)
-        if self.criteria:
-            lines.append("criteria:")
-            lines.extend("- " + item for item in self.criteria)
         if self.context:
             lines.append("context: " + self.context)
         if self.blocker:
@@ -314,16 +304,13 @@ class Verification:
         return _format_lines(lines, indent)
 
     def reset(self) -> None:
-        self.goal = ""
-        self.status = VerificationStatus.IDLE
-        self.kind = ""
+        self.status = CheckStatus.IDLE
         self.method = ""
-        self.criteria = []
         self.context = ""
-        self.blocker = VerificationBlocker.NONE
+        self.blocker = CheckBlocker.NONE
 
     def has_context(self) -> bool:
-        return bool(self.goal or self.kind or self.method or self.criteria or self.context or self.blocker or self.status != VerificationStatus.IDLE)
+        return bool(self.method or self.context or self.blocker or self.status != CheckStatus.IDLE)
 
 
 @dataclass
@@ -396,8 +383,8 @@ class Blackboard:
     hypotheses: list[Hypothesis] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
     memory_checkpoint_tool_result_counter: int = 0
-    verification_required: bool = False
-    verification: Verification = field(default_factory=Verification)
+    checks_required: bool = False
+    checks: Checks = field(default_factory=Checks)
 
     def source_result_keys(self) -> set[str]:
         keys = {key for item in self.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
@@ -413,12 +400,9 @@ class Blackboard:
             *[item.context for item in self.hypotheses],
             *[item.text for item in self.plan],
             *[item.context for item in self.plan],
-            self.verification.goal,
-            self.verification.kind,
-            self.verification.method,
-            *self.verification.criteria,
-            self.verification.context,
-            self.verification.blocker,
+            self.checks.method,
+            self.checks.context,
+            self.checks.blocker,
         ]
         for text in texts:
             keys.update(TOOL_RESULT_KEY_REF_PATTERN.findall(str(text)))
@@ -1236,7 +1220,7 @@ class ToolCallExecution:
     error_type: Type[Exception] | None = None
     result_key: str = ""
     result_excerpted: bool = False
-    requires_verification: bool = False
+    requires_checks: bool = False
 
 
 @dataclass
@@ -3255,14 +3239,12 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
     "verify": (
         "Record concrete check status.",
         {
-            "kind": TOOL_STRING_SCHEMA,
             "method": TOOL_NULLABLE_STRING_SCHEMA,
-            "criteria": TOOL_STRING_LIST_SCHEMA,
             "status": {"type": "string", "enum": ["passed", "failed", "blocked"]},
             "blocker": {"type": ["string", "null"], "enum": ["user", "environment", "tool", "unknown"]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
         },
-        ["kind", "method", "criteria", "status", "blocker", "context"],
+        ["status", "context"],
     ),
     "keep": (
         "Keep visible raw tool result keys in context during observe.",
@@ -3314,7 +3296,7 @@ Current step:
 - Do not stop at state-only updates when a useful tool call is clear.
 
 State:
-- Goal/Plan track work. Facts are confirmed. Leads are for investigations. Checks are verification. User Rules are future-behavior requests.
+- Goal/Plan track work. Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
 - Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
 Default Response Format: Text (Not markdown)
@@ -4329,13 +4311,13 @@ class ToolCallRunner:
             output = ""
             error_type: Type[Exception] | None = None
             requires_confirmation = False
-            requires_verification = False
+            requires_checks = False
             try:
                 call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
                 tool = self._make_tool(call)
                 if isinstance(tool, BashTool):
                     tool.live_output = self.live_output
-                requires_verification = tool.EFFECT == ToolEffect.EDIT
+                requires_checks = tool.EFFECT == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
                 if callable(preview_error):
                     preview_error_text = str(preview_error())
@@ -4384,7 +4366,7 @@ class ToolCallRunner:
                 error_type=error_type,
                 result_key=result_key,
                 result_excerpted=result_excerpted,
-                requires_verification=outcome == "success" and requires_verification,
+                requires_checks=outcome == "success" and requires_checks,
             )
             executions.append(execution)
             if outcome == "failure" and error_type is not Cancellation:
@@ -4499,10 +4481,10 @@ class AgentStateUpdater:
     DISPLAY_LIMIT: ClassVar[int] = 5
     COMPACT_DISPLAY_LIMIT: ClassVar[int] = 3
     MAX_KNOWN_ITEMS: ClassVar[int] = 500
-    VERIFY_STATUS_ACTIONS: ClassVar[dict[str, VerificationStatus]] = {
-        "passed": VerificationStatus.DONE,
-        "failed": VerificationStatus.FAILED,
-        "blocked": VerificationStatus.BLOCKED,
+    CHECK_STATUS_ACTIONS: ClassVar[dict[str, CheckStatus]] = {
+        "passed": CheckStatus.PASSED,
+        "failed": CheckStatus.FAILED,
+        "blocked": CheckStatus.BLOCKED,
     }
 
     def __init__(
@@ -4612,7 +4594,7 @@ class AgentStateUpdater:
                     "  Facts" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
-                ("Checks", "  Checks" in self.latest_report, ["  " + self._format_verification()]),
+                ("Checks", "  Checks" in self.latest_report, ["  " + self._format_checks()]),
                 ("User Rules", "  User_Rules" in self.latest_report, ["  updated"]),
             )
             if changed
@@ -4815,19 +4797,18 @@ class AgentStateUpdater:
         return re.sub(r"\s+", " ", KnownItem.text_of(fact)).strip(" \t\r\n。.;；").lower()
 
     def _before_extra_state(self) -> str:
-        return self.blackboard.verification.format()
+        return self.blackboard.checks.format()
 
     def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
         if goal_changed:
-            self.blackboard.verification_required = False
-        self._reset_stale_verification(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        self._apply_verification(actions)
-        self._bind_verification_goal()
+            self.blackboard.checks_required = False
+        self._reset_stale_checks(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_checks(actions)
 
     def _apply_task_code(self, actions: list[Json]) -> None:
         action_types = {_json_str(action.get("type")) for action in actions}
-        if self.blackboard.verification_required or self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            self.blackboard.task_code = TaskCode.VERIFYING
+        if self.blackboard.checks_required or self.blackboard.checks.status == CheckStatus.REQUIRED:
+            self.blackboard.task_code = TaskCode.CHECKING
             return
         if "verify" in action_types:
             self.blackboard.task_code = TaskCode.WORKING
@@ -4843,11 +4824,11 @@ class AgentStateUpdater:
         lines.extend(rows or [])
 
     def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
-        before_verification = before_extra_state
-        verification = self.blackboard.verification.format()
-        if verification == before_verification:
+        before_checks = before_extra_state
+        checks = self.blackboard.checks.format()
+        if checks == before_checks:
             return
-        self._append_state_section(lines, "  Checks  " + self._format_verification())
+        self._append_state_section(lines, "  Checks  " + self._format_checks())
 
     @staticmethod
     def _actions_of_type(actions: list[Json], action_type: str) -> Iterator[Json]:
@@ -4856,70 +4837,51 @@ class AgentStateUpdater:
     def _action_items(self, actions: list[Json], action_type: str) -> Iterator[JsonValue]:
         return (raw for action in self._actions_of_type(actions, action_type) for raw in _json_list(action.get("items")))
 
-    def _format_verification(self) -> str:
-        verification = self.blackboard.verification
-        parts = [verification.status]
+    def _format_checks(self) -> str:
+        checks = self.blackboard.checks
+        parts = [checks.status]
         parts.extend(
             part
             for part in (
-                verification.kind,
-                self._compact(verification.method) if verification.method else "",
-                "criteria: " + self._compact("; ".join(verification.criteria)) if verification.criteria else "",
-                "context: " + self._compact(verification.context) if verification.context else "",
-                "blocker: " + verification.blocker if verification.blocker else "",
+                self._compact(checks.method) if checks.method else "",
+                "context: " + self._compact(checks.context) if checks.context else "",
+                "blocker: " + checks.blocker if checks.blocker else "",
             )
             if part
         )
         return " | ".join(parts)
 
-    def _apply_verification(self, actions: list[Json]) -> None:
+    def _apply_checks(self, actions: list[Json]) -> None:
         for data in self._actions_of_type(actions, "verify"):
-            kind = _json_str(data.get("kind"))
-            if kind is not None:
-                self.blackboard.verification.kind = kind if kind and all(part in VALID_VERIFICATION_KINDS for part in kind.split("+")) else ""
-            criteria = [item for item in ((_json_str(raw) or "").strip() for raw in _json_list(data.get("criteria"))) if item]
-            if "criteria" in data:
-                self.blackboard.verification.criteria = criteria
             method = _json_str(data.get("method"))
             if method is not None:
-                if method != self.blackboard.verification.method:
-                    self.blackboard.verification.context = ""
-                self.blackboard.verification.method = method
-            status = self.VERIFY_STATUS_ACTIONS.get(_json_str(data.get("status")) or "")
+                if method != self.blackboard.checks.method:
+                    self.blackboard.checks.context = ""
+                self.blackboard.checks.method = method
+            status = self.CHECK_STATUS_ACTIONS.get(_json_str(data.get("status")) or "")
             if status is not None:
-                self.blackboard.verification.status = status
-                self.blackboard.verification_required = False
-                if status != VerificationStatus.BLOCKED:
-                    self.blackboard.verification.blocker = VerificationBlocker.NONE
+                self.blackboard.checks.status = status
+                self.blackboard.checks_required = False
+                if status != CheckStatus.BLOCKED:
+                    self.blackboard.checks.blocker = CheckBlocker.NONE
             blocker = _json_str(data.get("blocker"))
             if blocker is not None:
-                self.blackboard.verification.blocker = VerificationBlocker(blocker) if blocker in ALL_VERIFICATION_BLOCKERS else VerificationBlocker.NONE
+                self.blackboard.checks.blocker = CheckBlocker(blocker) if blocker in ALL_CHECK_BLOCKERS else CheckBlocker.NONE
             context = _json_str(data.get("context"))
             if context is not None:
-                self.blackboard.verification.context = context
+                self.blackboard.checks.context = context
 
-    def _reset_stale_verification(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
-        verification = self.blackboard.verification
+    def _reset_stale_checks(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
+        checks = self.blackboard.checks
         if goal_changed:
-            verification.reset()
-            return
-        if verification.goal and verification.goal != self.blackboard.goal:
-            verification.reset()
+            checks.reset()
             return
         if (
             plan_replaced
             and not any(_json_str(action.get("type")) == "verify" for action in actions)
-            and verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.FAILED, VerificationStatus.BLOCKED}
+            and checks.status in {CheckStatus.REQUIRED, CheckStatus.PASSED, CheckStatus.FAILED, CheckStatus.BLOCKED}
         ):
-            verification.reset()
-
-    def _bind_verification_goal(self) -> None:
-        verification = self.blackboard.verification
-        if not verification.has_context():
-            verification.goal = ""
-            return
-        if self.blackboard.goal:
-            verification.goal = self.blackboard.goal
+            checks.reset()
 
 
 ############################
@@ -4977,14 +4939,6 @@ class ConversationCompactor:
 
 
 ############################
-# Verification
-############################
-
-
-VALID_VERIFICATION_KINDS: set[str] = {"syntax_check", "change_syntax_check", "lint", "test", "build", "change_check", "other"}
-
-
-############################
 # Agent
 ############################
 
@@ -4997,10 +4951,10 @@ class ResponseContext:
     goal_was_empty: bool
     plan_was_empty: bool
     plan_was_complete: bool
-    verification_was_settled: bool
+    checks_settled: bool
     goal_will_change: bool
     tool_calls: list[JsonValue]
-    pending_verify_requested: bool
+    pending_check_requested: bool
     user_rule_message: str | None
     completion_message: str
     has_goal_action: bool
@@ -5110,8 +5064,8 @@ class Agent:
         if current.plan:
             add("Plan", "\n".join(item.format() for item in current.plan))
             add("Current Focus", self._format_current_focus())
-        if current.verification.has_context() or current.verification_required:
-            add("Checks", current.verification.format() if current.verification.has_context() else "status: required")
+        if current.checks.has_context() or current.checks_required:
+            add("Checks", current.checks.format() if current.checks.has_context() else "status: required")
         return "\n\n".join(sections) if sections else "(empty)"
 
     def _format_environment(self) -> str:
@@ -5309,7 +5263,7 @@ class Agent:
     def _finish_current_goal(self) -> None:
         self.blackboard.task_code = TaskCode.DONE
         self.blackboard.goal_reached = False
-        self.blackboard.verification_required = False
+        self.blackboard.checks_required = False
 
     def _format_act_tool_result_context(self) -> tuple[str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
@@ -5541,8 +5495,8 @@ class Agent:
 
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
-        if any(self._is_pending_verify_action(action) for action in actions):
-            response = {**response, "actions": [action for action in actions if not self._is_pending_verify_action(action)]}
+        if any(self._is_pending_check_action(action) for action in actions):
+            response = {**response, "actions": [action for action in actions if not self._is_pending_check_action(action)]}
             actions = self._response_actions(response)
         if self._goal_changes_task(actions):
             self.tool_context.kept_results = []
@@ -5646,9 +5600,9 @@ class Agent:
                     "reread only stale ranges; if the edit is large, retry a smaller coherent batch.",
                 )
             )
-        if execution.requires_verification:
-            self.blackboard.verification_required = True
-            self.blackboard.task_code = TaskCode.VERIFYING
+        if execution.requires_checks:
+            self.blackboard.checks_required = True
+            self.blackboard.task_code = TaskCode.CHECKING
             self._remember_recent_edit(execution)
             if execution.call.args:
                 _code_index_update(self.session, self.session.resolve_path(str(execution.call.args[0])))
@@ -5766,8 +5720,8 @@ class Agent:
     def _plan_is_complete(self) -> bool:
         return bool(self.blackboard.plan) and all(item.status in self.COMPLETED_PLAN_STATUSES and item.context.strip() for item in self.blackboard.plan)
 
-    def _verification_is_settled(self) -> bool:
-        return self.blackboard.verification.status in {VerificationStatus.DONE, VerificationStatus.BLOCKED}
+    def _checks_are_settled(self) -> bool:
+        return self.blackboard.checks.status in {CheckStatus.PASSED, CheckStatus.BLOCKED}
 
     def _completion_plan_error(self, ctx: ResponseContext) -> str:
         if not self.blackboard.goal_reached:
@@ -5782,10 +5736,10 @@ class Agent:
             return "plan items missing context: " + self._format_plan_gate_items(missing_context)
         return ""
 
-    def _blocked_verification_completion_error(self) -> str:
-        if not self.blackboard.goal_reached or self.blackboard.verification.status != VerificationStatus.BLOCKED:
+    def _blocked_checks_completion_error(self) -> str:
+        if not self.blackboard.goal_reached or self.blackboard.checks.status != CheckStatus.BLOCKED:
             return ""
-        if self.blackboard.verification.blocker == VerificationBlocker.USER:
+        if self.blackboard.checks.blocker == CheckBlocker.USER:
             return ""
         return "verify blocked requires blocker=user before completion"
 
@@ -5805,7 +5759,7 @@ class Agent:
         return None
 
     @staticmethod
-    def _is_pending_verify_action(action: Json) -> bool:
+    def _is_pending_check_action(action: Json) -> bool:
         return _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"
 
     def _investigate_completion_error(self) -> str:
@@ -5851,8 +5805,8 @@ class Agent:
     def _build_response_context(self, response: Json) -> ResponseContext:
         raw_actions = self._response_actions(response)
         assistant_text = _json_str(response.get("_assistant_text")) or ""
-        pending_verify_requested = any(self._is_pending_verify_action(action) for action in raw_actions)
-        actions = [action for action in raw_actions if not self._is_pending_verify_action(action)]
+        pending_check_requested = any(self._is_pending_check_action(action) for action in raw_actions)
+        actions = [action for action in raw_actions if not self._is_pending_check_action(action)]
         tool_calls = [action for action in actions if _json_str(action.get("type")) == "tool"]
         action_types = {_json_str(action.get("type")) for action in actions}
         has_edit_tool_call = False
@@ -5896,10 +5850,10 @@ class Agent:
             goal_was_empty=not self.blackboard.goal,
             plan_was_empty=not self.blackboard.plan,
             plan_was_complete=self._plan_is_complete(),
-            verification_was_settled=self._verification_is_settled(),
+            checks_settled=self._checks_are_settled(),
             goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
             tool_calls=tool_calls,
-            pending_verify_requested=pending_verify_requested,
+            pending_check_requested=pending_check_requested,
             user_rule_message=self._user_rule_message_from_actions(actions),
             completion_message=completion_message,
             has_goal_action="goal" in action_types,
@@ -5910,7 +5864,7 @@ class Agent:
             has_state_update_action=bool(action_types & {"goal", "plan", "known", "lead"}),
             state_or_work_requested=bool(
                 tool_calls
-                or pending_verify_requested
+                or pending_check_requested
                 or (assistant_text and actions and not completion_message)
                 or action_types & {"goal", "plan", "forget", "lead", "known"}
             ),
@@ -5923,7 +5877,7 @@ class Agent:
         if on_message is not None:
             on_message(ctx.assistant_text)
         active_task = bool(self.blackboard.plan or self.blackboard.hypotheses)
-        if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.VERIFYING} or self.incomplete_task_context_at_turn_start):
+        if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.CHECKING} or self.incomplete_task_context_at_turn_start):
             return AgentRunResult()
         self.blackboard.task_code = TaskCode.DONE
         return AgentRunResult(done=True, value=ctx.response)
@@ -5990,7 +5944,7 @@ class Agent:
         if (
             self.blackboard.task_code == TaskCode.NEW
             and self.task_alignment_required
-            and (ctx.tool_calls or ctx.pending_verify_requested)
+            and (ctx.tool_calls or ctx.pending_check_requested)
             and not ctx.has_goal_action
             and not ctx.has_plan_action
             and not ctx.has_user_rule_action
@@ -6001,7 +5955,7 @@ class Agent:
             )
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
             self._warn_agent("rewrote Goal after the task was active.", "replace Plan when the task scope changes.")
-        if ctx.pending_verify_requested:
+        if ctx.pending_check_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
         if self.session.state.pending_user_feedback and ctx.goal_will_change:
             self._warn_agent(
@@ -6009,9 +5963,9 @@ class Agent:
                 "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.",
             )
             self._drop_goal_rewrite_actions(ctx)
-        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
+        if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_check_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
-        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
+        if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_check_requested or ctx.has_edit_tool_call):
             self._warn_agent("changed Goal without replacing Plan.", "replace Plan when the task scope changes.")
         return False
 
@@ -6024,7 +5978,7 @@ class Agent:
             on_message(ctx.assistant_text)
 
     def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
+        if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_check_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if (
             ctx.plan_was_empty
@@ -6034,14 +5988,14 @@ class Agent:
         ):
             self._warn_agent("Plan is empty after discovery.", "set a short Plan before more broad exploration.")
 
-        if ctx.tool_calls and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions) and self._verification_is_settled():
+        if ctx.tool_calls and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions) and self._checks_are_settled():
             if self._plan_is_complete():
                 self._warn_agent("Plan and Checks are complete; continuing tools without reopening Plan.")
-            elif ctx.plan_was_complete and ctx.verification_was_settled:
+            elif ctx.plan_was_complete and ctx.checks_settled:
                 self._warn_agent("Continuing tools after completed Plan; update Plan if the new work changes scope.")
 
         if not ctx.tool_calls and not ctx.plan_was_complete and self._plan_is_complete() and not self.blackboard.goal_reached:
-            if not self._verification_is_settled():
+            if not self._checks_are_settled():
                 self._warn_agent(
                     "Plan is complete but Checks are not recorded.",
                     "run checks when files changed or checks were requested.",
@@ -6053,26 +6007,23 @@ class Agent:
             and self.state_updater.changed
             and not ctx.goal_was_empty
             and not ctx.tool_calls
-            and not ctx.pending_verify_requested
+            and not ctx.pending_check_requested
             and not ctx.completion_message
             and ctx.user_rule_message is None
         ):
             self._warn_agent("state update-only turn; include frontier tool, verify, or goal when arguments are known.")
         return None
 
-    def _promote_required_verification(self, ctx: ResponseContext) -> None:
-        verification = self.blackboard.verification
-        if not self.blackboard.verification_required or not self.blackboard.goal_reached:
+    def _promote_required_checks(self, ctx: ResponseContext) -> None:
+        checks = self.blackboard.checks
+        if not self.blackboard.checks_required or not self.blackboard.goal_reached:
             return
-        if verification.status in {VerificationStatus.REQUIRED, VerificationStatus.DONE, VerificationStatus.BLOCKED}:
+        if checks.status in {CheckStatus.REQUIRED, CheckStatus.PASSED, CheckStatus.BLOCKED}:
             return
-        self.blackboard.task_code = TaskCode.VERIFYING
-        verification.status = VerificationStatus.REQUIRED
-        verification.kind = verification.kind or "change_syntax_check"
-        verification.method = verification.method or self.blackboard.goal or self.blackboard.user_input
-        if not verification.criteria:
-            verification.criteria = ["changed files pass the smallest relevant syntax or compile check"]
-        verification.context = verification.context or ctx.completion_message or self.blackboard.goal
+        self.blackboard.task_code = TaskCode.CHECKING
+        checks.status = CheckStatus.REQUIRED
+        checks.method = checks.method or self.blackboard.goal or self.blackboard.user_input
+        checks.context = checks.context or ctx.completion_message or self.blackboard.goal
 
     def _run_tool_actions(
         self,
@@ -6107,7 +6058,7 @@ class Agent:
         *,
         on_message: MessageCallback | None,
     ) -> AgentRunResult:
-        if ctx.pending_verify_requested:
+        if ctx.pending_check_requested:
             self._remember_observe_error(self._warning('ignored verify status="pending".', "observe must keep or forget latest results first."))
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
@@ -6147,7 +6098,7 @@ class Agent:
         self.observe_feedback_errors = []
         self._warn_weak_observe_memory(ctx.actions)
         self._emit_tool_context_update(kept_keys, forgotten_keys, on_message)
-        self._promote_required_verification(ctx)
+        self._promote_required_checks(ctx)
         return AgentRunResult()
 
     def _warn_weak_observe_memory(self, actions: list[Json]) -> None:
@@ -6231,12 +6182,12 @@ class Agent:
         return AgentRunResult()
 
     def _gate_completion(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
-        if self.blackboard.verification.status == VerificationStatus.REQUIRED:
-            if self.blackboard.verification_required:
+        if self.blackboard.checks.status == CheckStatus.REQUIRED:
+            if self.blackboard.checks_required:
                 self._warn_agent("edited files need Checks before completion.", self.RULE_VERIFY_DIRECTLY)
             else:
                 self._warn_agent("Checks are required before completion.", self.RULE_VERIFY_DIRECTLY)
-        if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
+        if self.blackboard.checks.status == CheckStatus.FAILED and self.blackboard.goal_reached:
             self._warn_agent("Checks failed; fix the reported issue first.")
         completion_plan_error = self._completion_plan_error(ctx)
         if completion_plan_error:
@@ -6246,7 +6197,7 @@ class Agent:
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
             )
-        blocked_completion_error = self._blocked_verification_completion_error()
+        blocked_completion_error = self._blocked_checks_completion_error()
         if blocked_completion_error:
             self._warn_agent("blocked Checks completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
         investigate_completion_error = self._investigate_completion_error()
@@ -6287,9 +6238,9 @@ class Agent:
         self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
-        self.blackboard.verification_required = False
+        self.blackboard.checks_required = False
         self.observe_feedback_errors = []
-        self.blackboard.verification.reset()
+        self.blackboard.checks.reset()
         self.compactor.maybe_compact()
         self.session.append_conversation(UserMessage(content=user_input))
 
@@ -6355,7 +6306,7 @@ class Agent:
             DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
             self._emit_state_and_text(ctx, on_message)
             self._emit_tool_context_update([], forgotten_keys, on_message)
-            if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_verify_requested:
+            if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_check_requested:
                 message = ctx.user_rule_message or "Rule saved."
                 self.session.append_conversation(AssistantMessage(content=message))
                 if on_message is not None:
@@ -6369,7 +6320,7 @@ class Agent:
                 DebugTrace.handle_event(self, "handle-gated-after-apply", ctx, response, result=gate_result)
                 return gate_result
 
-            self._promote_required_verification(ctx)
+            self._promote_required_checks(ctx)
             if self._run_tool_actions(
                 ctx,
                 confirm=confirm,
@@ -6703,7 +6654,7 @@ class CommandDispatcher:
             if session.state.model_usage
             else "  (empty)"
         )
-        verification_status = blackboard.verification.status
+        checks_status = blackboard.checks.status
         code_index_status, code_index_message = _code_index_status(session, check=True)
         if session.state.code_index_error:
             code_index_status = "error"
@@ -6739,7 +6690,7 @@ class CommandDispatcher:
                 "models:",
                 model_usage,
                 "goal: " + (blackboard.goal or "(empty)"),
-                "checks: " + verification_status,
+                "checks: " + checks_status,
             ]
         )
 
