@@ -5256,7 +5256,6 @@ class Agent:
 
     def build_user_prompt(self) -> str:
         tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
-        current = self.blackboard
         conversation = self.session.state.conversation
         return AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
@@ -6466,7 +6465,6 @@ class Agent:
         investigate_completion_error = self._investigate_completion_error()
         if investigate_completion_error:
             self._warn_agent(investigate_completion_error + ".", "mark a lead confirmed when claiming a root cause.")
-        completion_message = (ctx.completion_message or ctx.assistant_text or "Done.") if self.blackboard.goal_reached else ""
         return None
 
     def run(
