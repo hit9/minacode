@@ -48,14 +48,22 @@
 
 ## 0.3.35 - 2026-05-16
 
+### Added
+- Added batched `ReplaceRange` edits for multiple independent ranges in the same file.
+- Added a design document covering agent state, context construction, tool-result storage, observe policy, and verification.
+
 ### Changed
 - Aligned tool-result context layout with the design document.
+- Refined tool-result context reduction around unreduced raw results, retained results, and checkpoint-based pruning.
 - Compressed ACT and OBSERVE system prompts.
 - Reduced routine OBSERVE triggers by raising the pending-result threshold and keeping ordinary tool failures in ACT for repair.
+- Simplified agent gate and feedback handling, including single active plan item normalization.
 - Added soft feedback for state-update-only ACT turns so models continue with frontier tools, verification, or completion.
+- Highlighted recognized slash commands and reported unknown slash commands directly.
 
 ### Fixed
 - Accepted harmless model output variants including trailing progress text, action type casing, and `message` action aliases.
+- Ignored pending verification requests instead of treating them as blocking model output.
 
 ## 0.3.34 - 2026-05-16
 
