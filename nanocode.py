@@ -55,7 +55,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 
 JsonValue: TypeAlias = Any
@@ -3179,6 +3179,13 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         ["source", "reason"],
     ),
 }
+PROTOCOL_ACTION_TYPES = frozenset((*STATE_TOOL_PARAMS, "tool"))
+
+
+def _canonical_protocol_action_type(name: str | None) -> str:
+    if not name:
+        return ""
+    return next((action_type for action_type in PROTOCOL_ACTION_TYPES if action_type.lower() == name.lower()), name)
 
 
 def _state_tool_schema(name: str) -> Json:
@@ -5311,6 +5318,7 @@ class Agent:
 
     def apply_response(self, response: Json) -> list[str]:
         actions = self._response_actions(response)
+        response = {**response, "actions": actions}
         if any(self._is_pending_check_action(action) for action in actions):
             response = {**response, "actions": [action for action in actions if not self._is_pending_check_action(action)]}
             actions = self._response_actions(response)
@@ -5504,6 +5512,13 @@ class Agent:
     @staticmethod
     def _normalize_action(action: Json) -> Json:
         action_type = _json_str(action.get("type"))
+        canonical_action_type = _canonical_protocol_action_type(action_type)
+        if canonical_action_type in PROTOCOL_ACTION_TYPES:
+            if canonical_action_type == action_type:
+                return action
+            normalized = dict(action)
+            normalized["type"] = canonical_action_type
+            return normalized
         tool_name = _canonical_tool_name(action_type)
         if tool_name not in TOOL_REGISTRY:
             return action

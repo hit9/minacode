@@ -2832,6 +2832,39 @@ def test_agent_rejects_invalid_action_instead_of_completing(tmp_path):
     assert messages == ["Protocol_Gate: invalid action type(s): invalid."]
 
 
+def test_agent_normalizes_protocol_action_type_case(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    ctx = agent._build_response_context(
+        {
+            "actions": [
+                {"type": "Goal", "text": "change map", "complete": False},
+                {"type": "PLAN", "items": ["inspect files"]},
+                {"type": "Known", "items": ["fact"]},
+                {"type": "LEAD", "items": ["branch"]},
+                {"type": "Verify", "status": "passed", "context": "checked"},
+                {"type": "USER_RULE", "text": "prefer concise", "message": "saved"},
+                {"type": "FORGET", "source": ["tr.1"], "reason": "old"},
+                {"type": "KEEP", "source": ["tr.2"], "reason": "useful"},
+                {"type": "Tool", "name": "search", "intention": "find", "args": ["needle"]},
+            ]
+        }
+    )
+
+    assert [action["type"] for action in ctx.actions] == ["goal", "plan", "known", "lead", "verify", "user_rule", "forget", "keep", "tool"]
+
+
+def test_agent_accepts_capitalized_goal_action_type(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    messages = []
+
+    result = agent.handle_response({"actions": [{"type": "Goal", "text": "change map", "complete": False}]}, on_message=messages.append)
+
+    assert result.done is False
+    assert agent.blackboard.goal == "change map"
+    assert not any("Protocol_Gate" in message for message in messages)
+
+
 def test_agent_normalizes_direct_repo_tool_action_type(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")
