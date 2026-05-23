@@ -366,12 +366,12 @@ def test_agent_loop_prints_auto_approved_tool_calls(tmp_path):
 
     outputs = []
     loop = AgentLoop(FakeAgent(), output_fn=outputs.append)
-    call = ParsedToolCall(name="EditFile", intention="edit sample", args=["sample.txt", [{"op": "replace", "start": "0:abcdef", "end": "0:abcdef", "content": "new\n"}]])
+    call = ParsedToolCall(name="Edit", intention="edit sample", args=["sample.txt", [{"op": "replace", "start": "0:abcdef", "end": "0:abcdef", "content": "new\n"}]])
 
     loop._show_auto_tool_call(call, FakeTool())
 
     assert any("Auto Tool Call | auto approved" in output for output in outputs)
-    assert any('Run     EditFile("sample.txt", ' in output for output in outputs)
+    assert any('Run     Edit("sample.txt", ' in output for output in outputs)
     assert any("Why     edit sample" in output for output in outputs)
     assert any("Preview\npreview" in output for output in outputs)
 

@@ -2598,7 +2598,7 @@ class CreateFileTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Create a new UTF-8 file; target file must not exist.",
-        "Use EditFile for existing files.",
+        "Use Edit for existing files.",
         "Returns changed path and created=true.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
@@ -2650,7 +2650,7 @@ class CreateFileTool(Tool):
 
 
 @dataclass
-class EditFileEdit:
+class EditEdit:
     op: str
     start: str
     end: str
@@ -2660,8 +2660,8 @@ class EditFileEdit:
 
 
 @dataclass
-class EditFileTool(Tool):
-    NAME: ClassVar[str] = "EditFile"
+class EditTool(Tool):
+    NAME: ClassVar[str] = "Edit"
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
@@ -2671,10 +2671,10 @@ class EditFileTool(Tool):
         "Returns changed path, edit count, and applied ranges.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
-        "EditFile(filepath, [{op:'replace', start, end, content}, ...]) -> replace anchored ranges",
-        "EditFile(filepath, [{op:'delete', start, end}, ...]) -> delete anchored ranges",
-        "EditFile(filepath, [{op:'insert_before'|'insert_after', start, content}, ...]) -> insert at anchors",
-        "EditFile(filepath, [{op:'replace_all', old, new}]) -> literal file-wide replacement",
+        "Edit(filepath, [{op:'replace', start, end, content}, ...]) -> replace anchored ranges",
+        "Edit(filepath, [{op:'delete', start, end}, ...]) -> delete anchored ranges",
+        "Edit(filepath, [{op:'insert_before'|'insert_after', start, content}, ...]) -> insert at anchors",
+        "Edit(filepath, [{op:'replace_all', old, new}]) -> literal file-wide replacement",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"}]]',
@@ -2683,7 +2683,7 @@ class EditFileTool(Tool):
     )
 
     filepath: str = ""
-    edits: list[EditFileEdit] = field(default_factory=list)
+    edits: list[EditEdit] = field(default_factory=list)
     cwd: str = ""
 
     @classmethod
@@ -2733,7 +2733,7 @@ class EditFileTool(Tool):
         return cls(filepath=session.resolve_path(str(args[0])), edits=[cls._edit_from_json(item) for item in edits], cwd=session.cwd)
 
     @staticmethod
-    def _edit_from_json(value: JsonValue) -> EditFileEdit:
+    def _edit_from_json(value: JsonValue) -> EditEdit:
         item = _json_dict(value)
         if not item:
             raise ToolCallArgError("each edit must be an object")
@@ -2752,7 +2752,7 @@ class EditFileTool(Tool):
                 raise ToolCallArgError("replace_all old cannot be empty")
             if start or end:
                 raise ToolCallArgError("replace_all does not use anchors")
-            return EditFileEdit(op=op, start="", end="", content="", old=old, new=new)
+            return EditEdit(op=op, start="", end="", content="", old=old, new=new)
         if not start:
             raise ToolCallArgError("edit start anchor is required")
         if op in {"replace", "delete"} and not end:
@@ -2761,10 +2761,10 @@ class EditFileTool(Tool):
             raise ToolCallArgError("insert edits use start anchor only")
         if op in {"replace", "insert_before", "insert_after"} and "content" not in item:
             raise ToolCallArgError("edit content is required")
-        return EditFileEdit(op=op, start=start, end=end, content=content)
+        return EditEdit(op=op, start=start, end=end, content=content)
 
     def preview(self) -> str:
-        label = f"EditFile({self.filepath}, {len(self.edits)} edits)"
+        label = f"Edit({self.filepath}, {len(self.edits)} edits)"
         try:
             original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
@@ -2786,7 +2786,7 @@ class EditFileTool(Tool):
             f.write(new_content)
         relpath = os.path.relpath(self.filepath, self.cwd)
         lines = [
-            "<EditFileToolResult>",
+            "<EditToolResult>",
             f"* path: {relpath}",
             f"* edits: {len(replacements)}",
         ]
@@ -2795,7 +2795,7 @@ class EditFileTool(Tool):
                 lines.append(f"* replace_all[{index}]: {end} replacements")
             else:
                 lines.append(f"* range[{index}]: {start}:{end}")
-        lines.append("</EditFileToolResult>")
+        lines.append("</EditToolResult>")
         return "\n".join(lines)
 
     def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
@@ -3175,7 +3175,7 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     InspectCodeTool.NAME: InspectCodeTool,
     SearchTool.NAME: SearchTool,
     CreateFileTool.NAME: CreateFileTool,
-    EditFileTool.NAME: EditFileTool,
+    EditTool.NAME: EditTool,
     BashTool.NAME: BashTool,
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
@@ -5029,12 +5029,12 @@ class Agent:
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
     RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run checks, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
-    RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile(filepath, edits) with visible line anchors; split oversized batches."
+    RULE_EDIT_SIGNATURE: ClassVar[str] = "use Edit(filepath, edits) with visible line anchors; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
     RULE_PLAN_FOLLOWUP: ClassVar[str] = "set followup_action and followup_check as {status, reason}; resolve needed before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked Checks only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
-    RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
+    RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for Edit, use one file/logical block and split oversized batches."
     STALE_TOOL_FEEDBACK_MARKERS: ClassVar[tuple[str, ...]] = (
         "invalid function/tool response",
         "invalid function-tool response",

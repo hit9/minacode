@@ -258,8 +258,8 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
 
     agent.execute_tool_calls(
         [
-            {"name": "EditFile", "intention": "first edit", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
-            {"name": "EditFile", "intention": "second edit", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
+            {"name": "Edit", "intention": "first edit", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
+            {"name": "Edit", "intention": "second edit", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
         ],
         confirm=lambda call, tool: True,
     )
@@ -639,7 +639,7 @@ def test_edit_tool_without_goal_or_plan_warns(tmp_path):
     result = agent.handle_response(
         {
             "actions": [
-                {"type": "tool", "name": "EditFile", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}
+                {"type": "tool", "name": "Edit", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}
             ]
         },
         confirm=lambda call, tool: True,
@@ -2708,12 +2708,12 @@ def test_agent_execute_tool_calls_requests_confirmation_for_edit_tools(tmp_path)
     anchor = _read_anchors(session, "sample.txt")[0]
 
     latest = agent.execute_tool_calls(
-        [{"name": "EditFile", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
+        [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
         confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or False,
     )
 
     assert confirmations
-    assert confirmations[0][0].startswith('EditFile("sample.txt", ')
+    assert confirmations[0][0].startswith('Edit("sample.txt", ')
     assert "-old" in confirmations[0][1]
     assert "+new" in confirmations[0][1]
     assert "Cancelled: user refused" in latest
@@ -2728,7 +2728,7 @@ def test_agent_execute_tool_calls_records_refusal_reason(tmp_path):
     anchor = _read_anchors(session, "sample.txt")[0]
 
     latest = agent.execute_tool_calls(
-        [{"name": "EditFile", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
+        [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
         confirm=lambda call, tool: "please inspect tests first",
     )
 
@@ -2749,7 +2749,7 @@ def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
 
     latest = agent.execute_tool_calls(
         [
-            {"name": "EditFile", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
+            {"name": "Edit", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]},
             {"name": "Bash", "intention": "should not run", "args": ["touch should-not-exist"]},
         ],
         confirm=lambda call, tool: "use English question",
@@ -2757,7 +2757,7 @@ def test_agent_execute_tool_calls_stops_batch_after_refusal(tmp_path):
 
     assert "Cancelled: user refused: use English question" in latest
     assert "Bash" not in latest
-    assert [execution.call.name for execution in agent.tool_runner.latest_executions] == ["EditFile"]
+    assert [execution.call.name for execution in agent.tool_runner.latest_executions] == ["Edit"]
     assert path.read_text(encoding="utf-8") == "old\n"
     assert not (tmp_path / "should-not-exist").exists()
 
@@ -2795,7 +2795,7 @@ def test_agent_execute_tool_calls_rejects_failed_preview_before_confirmation(tmp
     confirmations = []
 
     latest = agent.execute_tool_calls(
-        [{"name": "EditFile", "intention": "edit stale range", "args": ["sample.txt", [{"op": "replace", "start": "0:abcdef", "end": "0:abcdef", "content": "new\n"}]]}],
+        [{"name": "Edit", "intention": "edit stale range", "args": ["sample.txt", [{"op": "replace", "start": "0:abcdef", "end": "0:abcdef", "content": "new\n"}]]}],
         confirm=lambda call, tool: confirmations.append((call.executed, tool.preview())) or True,
     )
 
@@ -2834,11 +2834,11 @@ def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "EditFile", "intention": "bad edit", "args": ["sample.txt", "0", "1"]}])
+    latest = agent.execute_tool_calls([{"name": "Edit", "intention": "bad edit", "args": ["sample.txt", "0", "1"]}])
 
     assert "ToolCallError: requires args: filepath, edits" in latest
     assert "got 3 args, expected 2, extra: 1" in agent.agent_feedback_errors[0]
-    assert "use EditFile(filepath, edits) with visible line anchors" in agent.agent_feedback_errors[0]
+    assert "use Edit(filepath, edits) with visible line anchors" in agent.agent_feedback_errors[0]
 
 
 def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):
@@ -2944,14 +2944,14 @@ def test_agent_execute_tool_calls_shows_auto_approval_in_yolo_mode(tmp_path):
     anchor = _read_anchors(session, "sample.txt")[0]
 
     latest = agent.execute_tool_calls(
-        [{"name": "EditFile", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
+        [{"name": "Edit", "intention": "edit sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}],
         confirm=lambda call, tool: confirmations.append(call.executed) or False,
         on_auto_approve=lambda call, tool: auto_approvals.append((call.executed, tool.preview())),
     )
 
     assert confirmations == []
     assert auto_approvals
-    assert auto_approvals[0][0].startswith('EditFile("sample.txt", ')
+    assert auto_approvals[0][0].startswith('Edit("sample.txt", ')
     assert "-old" in auto_approvals[0][1]
     assert "+new" in auto_approvals[0][1]
     assert latest.startswith("- ok")
@@ -3108,7 +3108,7 @@ def test_agent_normalizes_direct_repo_tool_action_type(tmp_path):
         {
             "actions": [
                 {
-                    "type": "EditFile",
+                    "type": "Edit",
                     "intention": "change sample",
                     "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]],
                 }
@@ -3120,7 +3120,7 @@ def test_agent_normalizes_direct_repo_tool_action_type(tmp_path):
 
     assert result.done is False
     assert path.read_text(encoding="utf-8") == "new\n"
-    assert agent.tool_runner.latest_executions[0].call.name == "EditFile"
+    assert agent.tool_runner.latest_executions[0].call.name == "Edit"
     assert not any("Protocol_Gate" in message for message in messages)
 
 
@@ -3185,7 +3185,7 @@ def test_agent_run_executes_edit_tool_and_requires_checks(tmp_path):
                         {"type": "goal", "text": "change sample", "complete": False},
                         {
                             "type": "tool",
-                            "name": "EditFile",
+                            "name": "Edit",
                             "intention": "change sample text",
                             "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]],
                         },
@@ -3224,7 +3224,7 @@ def test_agent_run_executes_edit_tool_and_requires_checks(tmp_path):
     response = agent.run("change sample", confirm=lambda call, tool: True, on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert any(message.startswith("[success] EditFile sample.txt 1 edits") for message in messages)
+    assert any(message.startswith("[success] Edit sample.txt 1 edits") for message in messages)
     assert not any(message.startswith("State Updated") for message in messages)
     assert any("edited files need Checks before completion" in error for error in agent.agent_feedback_errors)
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
