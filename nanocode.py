@@ -3222,7 +3222,7 @@ Never repeat an old completion. Do not rewrite Goal unless the user changed the 
 Workflow:
 - Chat: answer directly; do not create task state.
 - One-shot: use only needed tools, then answer and stop; do not create task state just to report.
-- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep a short Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
+- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep the shortest necessary correct Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
 
 Current step:
 - Choose the smallest useful action from latest request, feedback, visible results, and Plan.
@@ -3230,7 +3230,8 @@ Current step:
 - Do not stop at state-only updates when a useful tool call is clear.
 
 State:
-- Goal/Plan track work. Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
+- Goal/Plan track work. Plan is the minimal correct path to Goal, not a loose TODO list; update it when Facts change the path.
+- Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
 - Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
 Default Response Format: Text (Not markdown)
