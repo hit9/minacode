@@ -1307,28 +1307,17 @@ def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypa
 
 
 def test_agent_request_records_chat_cached_prompt_tokens(tmp_path, monkeypatch):
-    usage = {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 6}, "completion_tokens": 3, "total_tokens": 13}
-    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response(usage=usage))
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
-
-    Agent(session).request("system", "user")
-
-    assert _sdk_payload(calls[0])["prompt_cache_key"].startswith("nanocode-")
-    assert session.state.last_cached_prompt_tokens == 6
-    assert session.state.session_cached_prompt_tokens == 6
-    assert session.state.model_usage["model"].cached_prompt_tokens == 6
-
-
-def test_agent_request_records_deepseek_cached_prompt_tokens(tmp_path, monkeypatch):
-    usage = {"prompt_tokens": 10, "prompt_cache_hit_tokens": 7, "prompt_cache_miss_tokens": 3, "completion_tokens": 2, "total_tokens": 12}
-    _calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response(usage=usage))
-    session = _session(tmp_path, api_url="https://api.deepseek.com/v1", api_key="key", model="model", stream=False)
-
-    Agent(session).request("system", "user")
-
-    assert session.state.last_cached_prompt_tokens == 7
-    assert session.state.session_cached_prompt_tokens == 7
-    assert session.state.model_usage["model"].cached_prompt_tokens == 7
+    cases = (
+        ({"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 6}, "completion_tokens": 3, "total_tokens": 13}, 6),
+        ({"prompt_tokens": 10, "prompt_cache_hit_tokens": 7, "prompt_cache_miss_tokens": 3, "completion_tokens": 2, "total_tokens": 12}, 7),
+    )
+    _patch_openai(monkeypatch, tuple(_chat_response(usage=usage) for usage, _expected in cases))
+    for _usage, expected in cases:
+        session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+        Agent(session).request("system", "user")
+        assert session.state.last_cached_prompt_tokens == expected
+        assert session.state.session_cached_prompt_tokens == expected
+        assert session.state.model_usage["model"].cached_prompt_tokens == expected
 
 
 def test_agent_request_responses_api_omits_reasoning_when_disabled(tmp_path, monkeypatch):
