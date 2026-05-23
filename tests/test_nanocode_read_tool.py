@@ -59,6 +59,24 @@ def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
     assert "|two" not in result
 
 
+def test_read_tool_reads_multiple_files(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, ["pyproject.toml", "uv.lock"])
+    result = tool.call()
+
+    assert tool.filepaths == [str(tmp_path / "pyproject.toml"), str(tmp_path / "uv.lock")]
+    assert tool.requires_confirmation(session) is False
+    assert "pyproject.toml, " in tool.preview()
+    assert "<file_count>2</file_count>" in result
+    assert "<path>pyproject.toml</path>" in result
+    assert "<path>uv.lock</path>" in result
+    assert _hashline(0, "[project]\n") in result
+    assert _hashline(0, "version = 1\n") in result
+
+
 def test_read_tool_reads_colon_and_comma_range_tokens(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")

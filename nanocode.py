@@ -1626,21 +1626,28 @@ def _parse_line_range_token(value: str) -> tuple[int, int]:
     return _parse_line_range(match.group(1), match.group(2))
 
 
+def _looks_like_read_range_error(value: JsonValue) -> bool:
+    text = str(value).strip()
+    return bool(re.fullmatch(r"\d+(?:\s*[-:,]\s*)?", text) or re.search(r"[:,]", text))
+
+
 @dataclass
 class ReadTool(Tool):
     NAME: ClassVar[str] = "Read"
     MAX_LINES: ClassVar[int] = 600
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Read a single known UTF-8 file; pass multiple 0-based start,end ranges for it.",
+        "Read known UTF-8 files, or pass multiple 0-based start,end ranges for one file.",
         "Each range returns at most 600 lines.",
         'Content is numbered as "line:hash|code"; the "line:hash" part is the line anchor.',
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "Read(filepath) -> first 600 lines with line:hash anchors",
+        "Read(filepath[, filepath...]) -> first 600 lines from each file",
         "Read(filepath, 'start,end'[, 'start,end'...]) -> selected 0-based ranges with line:hash anchors",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
+        'Example args: ["pyproject.toml", "uv.lock"]',
         'Example args: ["code.py", "0,80", "160,220"]',
         'Example args: ["code.py"]',
     )
@@ -1649,6 +1656,7 @@ class ReadTool(Tool):
     start: int = 0
     end: int = 0
     ranges: list[tuple[int, int]] = field(default_factory=list)
+    filepaths: list[str] = field(default_factory=list)
     cwd: str = ""
 
     @classmethod
@@ -1669,23 +1677,44 @@ class ReadTool(Tool):
             ranges = [(0, 0)]
         elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", str(arg)) for arg in args[1:]):
             ranges = [_parse_line_range_token(str(arg)) for arg in args[1:]]
+        elif not any(_looks_like_read_range_error(arg) for arg in args[1:]):
+            filepaths = [session.resolve_path(str(arg)) for arg in args]
+            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd)
         elif len(args) == 2:
-            raise ToolCallArgError('Read args error: invalid range token; expected ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095").')
+            raise ToolCallArgError(
+                'Read args error: invalid range token; expected ["filepath", "start,end"] or ["file1", "file2"]. Example: Read("nanocode.py", "2065,2095").'
+            )
         else:
             raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
         start, end = ranges[0]
-        return cls(filepath=filepath, start=start, end=end, ranges=ranges, cwd=session.cwd)
+        return cls(filepath=filepath, start=start, end=end, ranges=ranges, filepaths=[filepath], cwd=session.cwd)
 
     def requires_confirmation(self, session: Session) -> bool:
-        return not session.is_path_in_cwd(self.filepath)
+        return any(not session.is_path_in_cwd(filepath) for filepath in (self.filepaths or [self.filepath]))
 
     def preview(self) -> str:
+        if len(self.filepaths) > 1:
+            return "Read(" + ", ".join(self.filepaths) + ")"
         if len(self.ranges) > 1:
             ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
             return f"Read({self.filepath}, {ranges})"
         return f"Read({self.filepath}, {self.start}, {self.end})"
 
     def call(self) -> str:
+        if len(self.filepaths) > 1:
+            lines = [
+                "<ReadToolResult>",
+                '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
+                "  <file_count>" + str(len(self.filepaths)) + "</file_count>",
+            ]
+            for filepath in self.filepaths:
+                content, returned_end, range_end, truncated, total_lines = self._read_range(0, 0, filepath=filepath)
+                lines.extend(["  <ReadFile>", "    <path>" + os.path.relpath(filepath, self.cwd) + "</path>"])
+                lines.extend(self._format_range_result(0, returned_end, range_end, truncated, total_lines, content, indent="    "))
+                lines.append("  </ReadFile>")
+            lines.append("</ReadToolResult>")
+            return "\n".join(lines)
+
         if len(self.ranges) > 1:
             lines = [
                 "<ReadToolResult>",
@@ -1706,8 +1735,8 @@ class ReadTool(Tool):
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
-    def _read_range(self, start: int, end: int) -> tuple[str, int, int, bool, int]:
-        target_filepath = self.filepath
+    def _read_range(self, start: int, end: int, *, filepath: str | None = None) -> tuple[str, int, int, bool, int]:
+        target_filepath = filepath or self.filepath
         total_lines = 0
         selected_lines = []
         truncated = False
