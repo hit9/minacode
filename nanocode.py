@@ -1637,14 +1637,14 @@ class ReadTool(Tool):
     MAX_LINES: ClassVar[int] = 600
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Read known UTF-8 files, or pass multiple 0-based start,end ranges for one file.",
-        "Each range returns at most 600 lines.",
-        'Content is numbered as "line:hash|code"; the "line:hash" part is the line anchor.',
+        "Read one or more UTF-8 files with line:hash anchors.",
+        "Multiple files: pass filepaths only; each file returns first 600 lines.",
+        "Ranges: pass one filepath then 0-based start,end tokens; each range returns at most 600 lines.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "Read(filepath) -> first 600 lines with line:hash anchors",
-        "Read(filepath[, filepath...]) -> first 600 lines from each file",
-        "Read(filepath, 'start,end'[, 'start,end'...]) -> selected 0-based ranges with line:hash anchors",
+        "Read(filepath, filepath...) -> first 600 lines from each file",
+        "Read(filepath, range[, range...]) -> selected ranges from one file",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["pyproject.toml", "uv.lock"]',
@@ -1791,10 +1791,11 @@ class LineCountTool(Tool):
     NAME: ClassVar[str] = "LineCount"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Count lines for one or more files. Useful before reading large files or deciding Read ranges.",
-        "Returns total line count across all requested files.",
+        "Count total lines in one or more files.",
+        "Use before large Read calls when choosing ranges.",
+        "Returns one total line count.",
     )
-    SIGNATURE: ClassVar[str] = "LineCount(*filepaths) -> LineCountToolResult<total_lines>"
+    SIGNATURE: ClassVar[str] = "LineCount(filepath[, filepath...]) -> LineCountToolResult<total_lines>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["code.py", "other.py"]',)
 
     filepaths: list[str] = field(default_factory=list)
@@ -1835,13 +1836,13 @@ class ListTool(Tool):
     NAME: ClassVar[str] = "List"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "List one directory non-recursively; optional glob filters immediate entry names.",
-        "Returns each immediate entry with type and relative path.",
-        "Batch multiple List actions in one turn when checking several known directories.",
+        "List immediate entries in one directory; non-recursive.",
+        "Optional glob filters immediate entry names.",
+        "Returns type and relative path for each entry.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "List() -> current directory entries",
-        "List(dirpath) -> one directory entries",
+        "List(dirpath) -> entries in one directory",
         "List(dirpath, glob) -> immediate entries matching glob",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []")
@@ -1903,27 +1904,18 @@ class SearchTool(Tool):
     MAX_CONTEXT_LINES: ClassVar[int] = 30
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
-        'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code".',
-        "Compared with rg/grep in Bash, returns structured bounded results, anchors, and tool-result context keys.",
-        "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
-        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py; omitted context defaults to 0.",
-        "Use context=N only when nearby lines are needed; prefer context=0 for broad searches and renames.",
-        "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
-        "Use at most one glob= per Search. For multiple extensions, run multiple Search actions or search path=. without glob.",
-        "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
-        "Only options are path=, glob=, context=; escape regex symbols for literal text.",
+        "Case-insensitive regex search across files; use before Read when location is unknown.",
+        "Returns file:line matches and optional line:hash context anchors.",
+        "Options: path=FILE_OR_DIR, glob=GLOB, context=N. Use at most one glob per call.",
+        "Use InspectCode for symbol structure; use Bash rg/grep for custom shell pipelines.",
+        "Escape regex metacharacters for literal text; use A|B for alternatives and \\n for multiline.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
-        "Search(pattern) -> recursive match lines under current directory",
-        "Search(pattern, path=FILE_OR_DIR) -> recursive match lines under path",
-        "Search(pattern, path=FILE_OR_DIR, glob=GLOB) -> recursive match lines filtered by glob",
-        "Search(pattern, path=FILE_OR_DIR, context=N) -> match lines plus N surrounding lines",
+        "Search(pattern[, path=FILE_OR_DIR][, glob=GLOB][, context=N]) -> matching lines",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
+        'Example args: ["class .*Tool", "path=nanocode.py"]',
         'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
-        'Multiple globs: use separate actions like ["pytest", "path=.", "glob=*.toml"] and ["pytest", "path=.", "glob=*.ini"].',
         'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
     )
 
@@ -2457,10 +2449,10 @@ class InspectCodeTool(Tool):
     MAX_LIMIT: ClassVar[int] = 80
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Use the built-in code index for structural code navigation.",
-        "Modes: find symbol candidates, inspect one symbol with anchored source, or outline one file.",
-        "find options: limit, kind, path, exact_only; inspect options: kind, path, exact_only; outline options: symbol.",
-        "find/inspect targets are symbol names or prefixes, not natural language or literal text; outline target is a file path.",
+        "Use the current code index for symbols and file outlines.",
+        "find: symbol prefix -> candidates. inspect: one symbol -> anchored source and references. outline: file path -> symbol outline.",
+        "Targets are symbol names/prefixes, not natural language. Use Search/Read for literal text, config, or logs.",
+        "Options: limit, kind, path, exact_only, symbol.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "InspectCode('find', symbol_prefix[, {limit, kind, path, exact_only}]) -> symbol candidates with file/range",
@@ -2602,9 +2594,9 @@ class CreateFileTool(Tool):
     NAME: ClassVar[str] = "CreateFile"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Create a new UTF-8 file with short initial content; target file must not exist.",
+        "Create a new UTF-8 file; target file must not exist.",
+        "Use EditFile for existing files.",
         "Returns changed path and created=true.",
-        "For substantial new files, create only a small skeleton first, then grow it with focused EditFile edits.",
     )
     SIGNATURE: ClassVar[str] = "CreateFile(filepath, content) -> CreateFileToolResult<path>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["new.py", "minimal content\\n"]',)
@@ -2670,12 +2662,10 @@ class EditFileTool(Tool):
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ("filepath", "edits")
     EFFECT: ClassVar[ToolEffect] = ToolEffect.EDIT
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Edit an existing UTF-8 file as soon as target lines and replacement text are known.",
-        'Use "line:hash" anchors already shown by Read, Search, or InspectCode.',
-        "Supports atomic multi-edit batches: replace, delete, insert_before, insert_after, and replace_all.",
-        "Use replace_all for literal file-wide text replacement when anchors are unnecessary.",
-        "Do not reread visible target lines for confidence; reread only if EditFile reports stale or missing anchors.",
-        "Returns changed path plus applied edit count.",
+        "Edit an existing UTF-8 file atomically.",
+        "Use line:hash anchors from Read, Search, or InspectCode for replace/delete/insert.",
+        "Use replace_all only for exact literal file-wide replacement.",
+        "Returns changed path, edit count, and applied ranges.",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "EditFile(filepath, [{op:'replace', start, end, content}, ...]) -> replace anchored ranges",
@@ -2684,9 +2674,9 @@ class EditFileTool(Tool):
         "EditFile(filepath, [{op:'replace_all', old, new}]) -> literal file-wide replacement",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Batch: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"},{"op":"delete","start":"20:abc123","end":"20:abc123"}]]',
-        'Literal replace all: ["code.py", [{"op":"replace_all","old":"OldName","new":"NewName"}]]',
-        'Insert: ["code.py", [{"op":"insert_after","start":"20:abc123","content":"new line\\n"}]]',
+        'Example args: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"}]]',
+        'Example args: ["code.py", [{"op":"insert_after","start":"20:abc123","content":"new line\\n"}]]',
+        'Example args: ["code.py", [{"op":"replace_all","old":"OldName","new":"NewName"}]]',
     )
 
     filepath: str = ""
@@ -2873,12 +2863,10 @@ class EditFileTool(Tool):
 class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Run one explicit shell command via bash -lc in cwd.",
-        "Args must be exactly one command string; do not pass timeout or extra args.",
-        "Returns exit_code plus stdout/stderr; long output is stored and bounded in context.",
-        "Use Bash when shell semantics, tests/builds, or custom Unix text-tool pipelines are the clearest path.",
-        "rg/grep/sed/awk/perl pipelines in Bash are useful for broad scans, custom filters, and mechanical transforms.",
-        "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
+        "Run one shell command via bash -lc in cwd.",
+        "Use for tests, builds, scripts, or custom shell pipelines.",
+        "Prefer Search for anchored search results; use Bash rg/grep for custom filters.",
+        "Pass exactly one command string. Returns exit_code, stdout, and stderr.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["python3 -m py_compile nanocode.py"]', 'Example args: ["make test"]')
@@ -3045,10 +3033,10 @@ GIT_READONLY_COMMANDS = frozenset({"status", "diff", "log", "show", "rev-parse",
 class GitTool(Tool):
     NAME: ClassVar[str] = "Git"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Run git without a shell for repository state, history, status, diff, and changed files.",
-        "Returns exit_code plus stdout/stderr.",
+        "Run git directly without a shell.",
+        "Use for status, diff, log, show, blame, staging, and commits.",
         "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
-        "By default, stage/commit only files changed for the current task; include unrelated dirty files only when the user explicitly asks.",
+        "Returns exit_code, stdout, and stderr. Mutating git commands require confirmation.",
     )
     SIGNATURE: ClassVar[str] = "Git([cwd=path,] git_arg...) -> GitToolResult<exit_code, stdout, stderr>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
@@ -3111,14 +3099,16 @@ class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Recall stored tool results by tr.* key; pass optional 0-based line ranges to read exact slices from the stored full log.",
-        "Returns recalled result metadata plus bounded content or requested full-log slices.",
+        "Retrieve stored tool results by tr.N key.",
+        "Use when output was truncated, forgotten, or no longer visible.",
+        "Optional 0-based ranges read exact slices from the stored full log.",
+        "Returns result metadata plus content.",
     )
-    SIGNATURE: ClassVar[str] = "Recall(key...[, range_token...]) -> RecallToolResult<content>"
+    SIGNATURE: ClassVar[str] = "Recall(key[, key...][, range...]) -> RecallToolResult<content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["tr.1"]',
-        'Batch keys: ["tr.1", "tr.2"]',
-        'Full-log slice: ["tr.1", "0,120"]',
+        'Example args: ["tr.1", "tr.2"]',
+        'Example args: ["tr.1", "0,120"]',
     )
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
 
@@ -3251,7 +3241,7 @@ TOOL_LEAD_ITEMS_SCHEMA: Json = {
 
 STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
     "goal": (
-        "Set, update, or complete the current goal. Use message_for_complete for the final user message.",
+        "Set or complete the active task goal. Use message_for_complete for the final user message.",
         {
             "text": TOOL_STRING_SCHEMA,
             "complete": {"type": "boolean"},
@@ -3259,21 +3249,21 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         },
         ["text", "complete", "message_for_complete"],
     ),
-    "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
-    "lead": ("Update investigation leads.", {"items": TOOL_LEAD_ITEMS_SCHEMA}, ["items"]),
-    "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "plan": ("Set or patch the shortest necessary plan for tracked work.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
+    "lead": ("Record investigation leads and their status.", {"items": TOOL_LEAD_ITEMS_SCHEMA}, ["items"]),
+    "known": ("Record confirmed Facts that affect the current task.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
-        "Remember an explicit future behavior rule from the user.",
+        "Save an explicit future behavior rule from the user.",
         {"text": TOOL_STRING_SCHEMA, "message": TOOL_STRING_SCHEMA},
         ["text", "message"],
     ),
     "forget": (
-        "Remove visible tool result keys from active context while keeping them recallable.",
+        "Remove visible tool result keys from active context; keys remain recallable.",
         {"source": TOOL_STRING_LIST_SCHEMA, "reason": TOOL_STRING_SCHEMA},
         ["source", "reason"],
     ),
     "verify": (
-        "Record concrete check status.",
+        "Record a concrete check result or blocker.",
         {
             "method": TOOL_NULLABLE_STRING_SCHEMA,
             "status": {"type": "string", "enum": ["passed", "failed", "blocked"]},
