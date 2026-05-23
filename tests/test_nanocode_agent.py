@@ -476,7 +476,7 @@ def test_observe_prompt_uses_narrow_context(tmp_path):
     agent.blackboard.user_input = "fix bug"
     agent.blackboard.goal = "fix bug goal"
     agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="inspect failing path", status=nanocode.PlanStatus.DOING)]
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="cache branch", status=nanocode.HypothesisStatus.ACTIVE, source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="cache branch", status=nanocode.LeadStatus.ACTIVE, source=("tr.1",))]
     agent.blackboard.known = ["known fact"]
     agent.tool_context.kept_results = ['- ok tool=Read args=["old.py"] key=tr.1\n  output:\nselected result']
     agent.recent_edits = ["- sample.py: old edit"]
@@ -764,10 +764,10 @@ def test_lead_action_updates_blackboard_and_report(tmp_path):
     )
 
     assert result.done is False
-    assert agent.blackboard.hypotheses == [
-        nanocode.Hypothesis(
+    assert agent.blackboard.leads == [
+        nanocode.Lead(
             text="admin filtering drops history events",
-            status=nanocode.HypothesisStatus.ACTIVE,
+            status=nanocode.LeadStatus.ACTIVE,
             id="h1",
             source=("tr.1",),
             context="feed search",
@@ -776,11 +776,11 @@ def test_lead_action_updates_blackboard_and_report(tmp_path):
     assert messages == ["Leads Updated\n  1. [active] h1: admin filtering drops history events [tr.1] context: feed search"]
 
 
-def test_forget_rejects_active_hypothesis_source(tmp_path):
+def test_forget_rejects_active_lead_source(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "debug branch")
     agent.tool_context.kept_results = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(text="branch still possible", source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(text="branch still possible", source=("tr.1",))]
     messages = []
 
     result = agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "branch ruled out"}]}, on_message=messages.append)
@@ -795,7 +795,7 @@ def test_forget_allows_source_when_lead_is_closed_same_response(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "debug branch")
     agent.tool_context.kept_results = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="branch still possible", source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="branch still possible", source=("tr.1",))]
     messages = []
 
     result = agent.handle_response(
@@ -812,7 +812,7 @@ def test_forget_allows_source_when_lead_is_closed_same_response(tmp_path):
     )
 
     assert result.done is False
-    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.RULED_OUT
+    assert agent.blackboard.leads[0].status == nanocode.LeadStatus.RULED_OUT
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
         "Leads Updated\n  1. [ruled_out] h1: branch ruled out [tr.1]",
@@ -824,7 +824,7 @@ def test_forget_allows_source_when_lead_is_dropped_same_response(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "debug branch")
     agent.tool_context.kept_results = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="branch lost priority", source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="branch lost priority", source=("tr.1",))]
     messages = []
 
     result = agent.handle_response(
@@ -838,7 +838,7 @@ def test_forget_allows_source_when_lead_is_dropped_same_response(tmp_path):
     )
 
     assert result.done is False
-    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.DROPPED
+    assert agent.blackboard.leads[0].status == nanocode.LeadStatus.DROPPED
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
         "Leads Updated\n  1. [dropped] h1: branch no longer matters [tr.1]",
@@ -1096,7 +1096,7 @@ def test_referenced_raw_context_does_not_force_observe(tmp_path, monkeypatch):
     )
     _set_context_budget(monkeypatch, agent, raw_chars=180, observe_after_results=99)
 
-    assert agent._unreferenced_raw_context_chars() == 0
+    assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter, exclude_keys=agent.blackboard.referenced_result_keys()) == 0
     assert agent._should_observe_after_tools() is False
 
 
@@ -1133,7 +1133,7 @@ def test_tool_result_store_keeps_latest_256_items(tmp_path):
 def test_tool_result_store_trim_keeps_lead_source_keys(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="kept branch", source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="kept branch", source=("tr.1",))]
 
     for index in range(257):
         agent.tool_runner._store_tool_result(ParsedToolCall(name="Read", intention="", args=[str(index)]), "success", "output " + str(index))
@@ -1152,7 +1152,7 @@ def test_agent_prunes_tool_result_store_but_keeps_referenced_result_keys(tmp_pat
         key = "tr." + str(index + 1)
         session.state.tool_result_store[key] = nanocode.ToolResultItem(description=key, value="value")
     agent.tool_context.kept_results = ['- ok tool=Read args=["sample.txt"] key=tr.1\n  output:\nvalue']
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="kept branch", source=("tr.2",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="kept branch", source=("tr.2",))]
 
     agent._prune_tool_result_store()
 
@@ -1518,8 +1518,8 @@ def test_agent_accepts_string_lead_items_from_function_call(tmp_path):
 
     agent.apply_response({"actions": [{"type": "lead", "items": ["Admin filter excludes history"]}]})
 
-    assert agent.blackboard.hypotheses == [
-        nanocode.Hypothesis(text="Admin filter excludes history"),
+    assert agent.blackboard.leads == [
+        nanocode.Lead(text="Admin filter excludes history"),
     ]
 
 
@@ -1849,109 +1849,16 @@ def test_agent_request_uses_configured_thinking_disabled_payload(tmp_path, monke
 def test_agent_request_auto_detects_chat_reasoning_from_provider_url(tmp_path, monkeypatch):
     calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, tuple(_chat_response() for _ in range(10)))
 
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://api.deepseek.com",
-            api_key="key",
-            model="model",
-            reasoning="xhigh",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://openrouter.ai/api/v1",
-            api_key="key",
-            model="model",
-            api="chat",
-            reasoning="high",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key="key",
-            model="qwen3.6-plus",
-            api="chat",
-            reasoning="high",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key="key",
-            model="deepseek-v4-flash",
-            api="chat",
-            reasoning="xhigh",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key="key",
-            model="glm-5.1",
-            api="chat",
-            reasoning="high",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://api.openai.com/v1",
-            api_key="key",
-            model="gpt-5",
-            api="chat",
-            reasoning="medium",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://opencode.ai/zen/go/v1",
-            api_key="key",
-            model="deepseek-v4-flash",
-            reasoning="high",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://opencode.ai/zen/go/v1",
-            api_key="key",
-            model="kimi-k2.6",
-            reasoning="high",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://not-openrouter.ai/api/v1",
-            api_key="key",
-            model="model",
-            stream=False,
-        )
-    ).request("system", "user")
-    Agent(
-        _session(
-            tmp_path,
-            api_url="https://example.test/v1",
-            api_key="key",
-            model="model",
-            stream=False,
-        )
-    ).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://api.deepseek.com", api_key="key", model="model", reasoning="xhigh", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://openrouter.ai/api/v1", api_key="key", model="model", api="chat", reasoning="high", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://dashscope.aliyuncs.com/compatible-mode/v1", api_key="key", model="qwen3.6-plus", api="chat", reasoning="high", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://dashscope.aliyuncs.com/compatible-mode/v1", api_key="key", model="deepseek-v4-flash", api="chat", reasoning="xhigh", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://dashscope.aliyuncs.com/compatible-mode/v1", api_key="key", model="glm-5.1", api="chat", reasoning="high", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://api.openai.com/v1", api_key="key", model="gpt-5", api="chat", reasoning="medium", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://opencode.ai/zen/go/v1", api_key="key", model="deepseek-v4-flash", reasoning="high", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://opencode.ai/zen/go/v1", api_key="key", model="kimi-k2.6", reasoning="high", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://not-openrouter.ai/api/v1", api_key="key", model="model", stream=False)).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)).request("system", "user")
 
     payloads = [_sdk_payload(call) for call in calls]
     assert payloads[0]["thinking"] == {"type": "enabled"}
@@ -2410,7 +2317,7 @@ def test_agent_accepts_goal_without_plan_for_new_task(tmp_path):
     agent.blackboard.task_code = nanocode.TaskCode.NEW
     messages = []
 
-    result = agent.handle_response({"actions": [{"type": "goal", "text": "change map", "work_mode": "normal", "complete": False}]}, on_message=messages.append)
+    result = agent.handle_response({"actions": [{"type": "goal", "text": "change map", "complete": False}]}, on_message=messages.append)
 
     assert result.done is False
     assert agent.blackboard.goal == "change map"
@@ -3896,7 +3803,7 @@ def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
 def test_investigate_completion_without_confirmed_lead_warns(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "find bug")
-    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="bad admin filter", status=nanocode.HypothesisStatus.ACTIVE, source=("tr.1",))]
+    agent.blackboard.leads = [nanocode.Lead(id="h1", text="bad admin filter", status=nanocode.LeadStatus.ACTIVE, source=("tr.1",))]
     messages = []
 
     result = agent.handle_response(
@@ -3929,11 +3836,11 @@ def test_investigate_completion_without_confirmed_lead_warns(tmp_path):
     )
 
     assert result.done is True
-    assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.CONFIRMED
+    assert agent.blackboard.leads[0].status == nanocode.LeadStatus.CONFIRMED
     assert messages[-1] == "done"
 
 
-def test_goal_declares_investigate_work_mode(tmp_path):
+def test_investigation_state_keeps_empty_leads_out_of_initial_prompt(tmp_path):
     class FakeModelClient:
         def __init__(self):
             self.user_prompts = []
@@ -3942,12 +3849,7 @@ def test_goal_declares_investigate_work_mode(tmp_path):
             self.user_prompts.append(user_prompt)
             return {
                 "actions": [
-                    {
-                        "type": "goal",
-                        "text": "find bug",
-                        "work_mode": "investigate",
-                        "complete": False,
-                    },
+                    {"type": "goal", "text": "find bug", "complete": False},
                     {
                         "type": "plan",
                         "items": [{"id": "p1", "text": "identify root cause", "status": "done", "context": "reasoned"}],
@@ -3964,7 +3866,6 @@ def test_goal_declares_investigate_work_mode(tmp_path):
     result = agent.run("为什么 admin history 不出现")
 
     assert result["actions"][-1]["message_for_complete"] == "done"
-    assert "Work Mode:" not in agent.model_client.user_prompts[0]
     assert "Leads:" not in agent.model_client.user_prompts[0]
 
 

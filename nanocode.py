@@ -103,31 +103,25 @@ class Role(StrEnum):
 @dataclass
 class ConversationItem:
     role: Role
+    content: str = ""
     time: datetime = field(default_factory=datetime.now)
 
-    def format_transcript(self, title: str, content: str, indent: str = "") -> str:
-        quoted = ["> " + line if line else ">" for line in content.splitlines()]
+    def format(self, indent: str = "") -> str:
+        quoted = ["> " + line if line else ">" for line in self.content.splitlines()]
         if not quoted:
             quoted = [">"]
+        title = self.role.value.title()
         return _format_lines([f"#### {title} {self.time.strftime('%Y-%m-%d %H:%M:%S')}", *quoted], indent)
 
 
 @dataclass
 class UserMessage(ConversationItem):
     role: Role = Role.USER
-    content: str = ""
-
-    def format(self, indent: str = "") -> str:
-        return self.format_transcript("User", self.content, indent)
 
 
 @dataclass
 class AssistantMessage(ConversationItem):
     role: Role = Role.ASSISTANT
-    content: str = ""
-
-    def format(self, indent: str = "") -> str:
-        return self.format_transcript("Assistant", self.content, indent)
 
 
 ############################
@@ -156,22 +150,14 @@ class TaskCode(StrEnum):
     DONE = "done"
 
 
-class WorkMode(StrEnum):
-    NORMAL = "normal"
-    INVESTIGATE = "investigate"
-
-
-ALL_WORK_MODES = frozenset(WorkMode)
-
-
-class HypothesisStatus(StrEnum):
+class LeadStatus(StrEnum):
     ACTIVE = "active"
     RULED_OUT = "ruled_out"
     DROPPED = "dropped"
     CONFIRMED = "confirmed"
 
 
-ALL_HYPOTHESIS_STATUSES = frozenset(HypothesisStatus)
+ALL_LEAD_STATUSES = frozenset(LeadStatus)
 
 
 @dataclass
@@ -221,17 +207,24 @@ class KnownItem:
 
     @classmethod
     def from_json(cls, value: JsonValue) -> "KnownItem | None":
-        fact = _memory_fact_from_json(value)
-        if fact is None:
-            return None
         item = _json_dict(value)
+        if item:
+            fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
+        else:
+            fact = (_json_str(value) or "").strip()
+        if not fact:
+            return None
+        if fact.startswith("<") and fact.endswith(">"):
+            inner = fact[1:-1].strip().lower()
+            if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "result", "context", "message", "goal")):
+                return None
         return cls(text=fact, source=_source_from_json(item) if item else ())
 
 
 @dataclass
-class Hypothesis:
+class Lead:
     text: str
-    status: HypothesisStatus = HypothesisStatus.ACTIVE
+    status: LeadStatus = LeadStatus.ACTIVE
     id: str = ""
     source: tuple[str, ...] = ()
     context: str = ""
@@ -247,7 +240,7 @@ class Hypothesis:
         return _format_lines(lines, indent)
 
     @classmethod
-    def from_json(cls, value: JsonValue) -> "Hypothesis | None":
+    def from_json(cls, value: JsonValue) -> "Lead | None":
         if isinstance(value, str):
             text = value.strip()
             return cls(text=text) if text else None
@@ -255,12 +248,12 @@ class Hypothesis:
         text = _json_str(item.get("text")) or ""
         if not text:
             return None
-        status = _json_str(item.get("status")) or HypothesisStatus.ACTIVE
-        if status not in ALL_HYPOTHESIS_STATUSES:
-            status = HypothesisStatus.ACTIVE
+        status = _json_str(item.get("status")) or LeadStatus.ACTIVE
+        if status not in ALL_LEAD_STATUSES:
+            status = LeadStatus.ACTIVE
         return cls(
             text=text,
-            status=HypothesisStatus(status),
+            status=LeadStatus(status),
             id=_json_str(item.get("id")) or "",
             source=_source_from_json(item),
             context=_json_str(item.get("context")) or "",
@@ -376,28 +369,23 @@ class UserRules:
 class Blackboard:
     user_input: str = ""
     task_code: TaskCode = TaskCode.DONE
-    work_mode: WorkMode = WorkMode.NORMAL
     goal: str = ""
     goal_reached: bool = False
     plan: list[PlanItem] = field(default_factory=list)
-    hypotheses: list[Hypothesis] = field(default_factory=list)
+    leads: list[Lead] = field(default_factory=list)
     known: list[KnownItem] = field(default_factory=list)
     memory_checkpoint_tool_result_counter: int = 0
     checks_required: bool = False
     checks: Checks = field(default_factory=Checks)
 
-    def source_result_keys(self) -> set[str]:
-        keys = {key for item in self.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
-        keys.update(key for item in self.hypotheses for key in item.source if key.startswith("tr."))
-        return keys
-
     def referenced_result_keys(self) -> set[str]:
-        keys = set(self.source_result_keys())
+        keys = {key for item in self.known for key in KnownItem.source_of(item) if key.startswith("tr.")}
+        keys.update(key for item in self.leads for key in item.source if key.startswith("tr."))
         texts = [
             self.goal,
             *[KnownItem.text_of(item) for item in self.known],
-            *[item.text for item in self.hypotheses],
-            *[item.context for item in self.hypotheses],
+            *[item.text for item in self.leads],
+            *[item.context for item in self.leads],
             *[item.text for item in self.plan],
             *[item.context for item in self.plan],
             self.checks.method,
@@ -409,7 +397,7 @@ class Blackboard:
         return {key for key in keys if key.startswith("tr.")}
 
     def protected_result_sources(self) -> dict[str, str]:
-        return {key: "active lead" for item in self.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
+        return {key: "active lead" for item in self.leads if item.status == LeadStatus.ACTIVE for key in item.source if key.startswith("tr.")}
 
 
 @dataclass(frozen=True)
@@ -843,7 +831,7 @@ class Session:
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     state: RuntimeState = field(default_factory=RuntimeState)
-    session_id: str = field(default_factory=lambda: Session._new_session_id())
+    session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + str(os.getpid()) + "-" + uuid.uuid4().hex[:8])
     code_index_repository: Any | None = None
 
     @classmethod
@@ -884,10 +872,6 @@ class Session:
         basename = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(cwd.rstrip(os.sep)) or "root").strip(".-") or "project"
         digest = hashlib.sha1(cwd.encode("utf-8")).hexdigest()[:10]
         return basename + "-" + digest
-
-    @staticmethod
-    def _new_session_id() -> str:
-        return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + str(os.getpid()) + "-" + uuid.uuid4().hex[:8]
 
     def project_dir(self) -> str:
         return self.data_path("projects", self.project_key())
@@ -1119,12 +1103,7 @@ def _json_value_schema(depth: int = 3) -> Json:
     values: list[Json] = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]
     if depth > 0:
         child = _json_value_schema(depth - 1)
-        values.extend(
-            [
-                {"type": "array", "items": child},
-                {"type": "object", "additionalProperties": child},
-            ]
-        )
+        values.extend([{"type": "array", "items": child}, {"type": "object", "additionalProperties": child}])
     return {"anyOf": values}
 
 
@@ -1611,18 +1590,6 @@ def _line_hash(content: str) -> str:
 ############################
 
 
-def _numbered_content(content: str, start: int) -> str:
-    return "".join(_numbered_line(start + index, line) for index, line in enumerate(content.splitlines(keepends=True)))
-
-
-def _numbered_line(index: int, line: str) -> str:
-    return f"{index}:{_line_hash(line)}|{line}"
-
-
-def _numbered_line_preview(index: int, line: str, max_chars: int = 300) -> str:
-    return f"{index}:{_line_hash(line)}|{line.removesuffix(chr(10))[:max_chars]}"
-
-
 def _parse_line_range_token(value: str) -> tuple[int, int]:
     match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
     if match is None:
@@ -1754,13 +1721,10 @@ class ReadTool(Tool):
                 "Use Search to locate relevant text, Recall with a line range, or Read smaller targeted ranges; do not repeat the same large read."
             )
             lines.extend(
-                [
-                    indent + "<truncated>true</truncated>",
-                    indent + "<total_lines>" + str(total_lines) + "</total_lines>",
-                    indent + "<note>" + note + "</note>",
-                ]
+                [indent + "<truncated>true</truncated>", indent + "<total_lines>" + str(total_lines) + "</total_lines>", indent + "<note>" + note + "</note>"]
             )
-        lines.extend([indent + "<content hashline-numbered>", _numbered_content(content, start), indent + "</content>"])
+        numbered_content = "".join(f"{start + index}:{_line_hash(line)}|{line}" for index, line in enumerate(content.splitlines(keepends=True)))
+        lines.extend([indent + "<content hashline-numbered>", numbered_content, indent + "</content>"])
         return lines
 
 
@@ -1861,13 +1825,7 @@ class ListTool(Tool):
                     entry_type = "file"
                 else:
                     entry_type = "other"
-                entries.append(
-                    {
-                        "name": entry.name,
-                        "path": entry.path,
-                        "type": entry_type,
-                    }
-                )
+                entries.append({"name": entry.name, "path": entry.path, "type": entry_type})
         entries.sort(key=lambda item: (sort_order.get(str(item["type"]), 4), str(item["name"])))
         lines = ["<ListToolResult>"]
         for e in entries:
@@ -1927,7 +1885,10 @@ class SearchTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[str]) -> Self:
-        args = cls._join_pattern_args_with_explicit_path(args)
+        args = [str(arg) for arg in args]
+        path_index = next((index for index, value in enumerate(args[1:], start=1) if value.startswith("path=")), None)
+        if path_index is not None and path_index > 1:
+            args = ["|".join(args[:path_index]), *args[path_index:]]
         if len(args) < 1 or len(args) > 4:
             raise ToolCallArgError("requires 1 to 4 args: pattern[, path=path][, glob=pattern][, context=N]")
         if any(str(arg).startswith("ignore_case") or str(arg).startswith("case_sensitive") for arg in args[1:]):
@@ -1953,7 +1914,10 @@ class SearchTool(Tool):
                 continue
             if option.startswith("context=") or option.isdigit():
                 try:
-                    context_lines = cls._parse_context_arg(option)
+                    raw_context = option[len("context=") :] if option.startswith("context=") else option
+                    context_lines = int(raw_context)
+                    if context_lines < 0 or context_lines > cls.MAX_CONTEXT_LINES:
+                        raise ValueError
                 except ValueError:
                     raise ToolCallArgError(f"context must be an integer between 0 and {cls.MAX_CONTEXT_LINES}")
                 continue
@@ -1991,22 +1955,6 @@ class SearchTool(Tool):
             gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
         )
 
-    @classmethod
-    def _join_pattern_args_with_explicit_path(cls, args: list[str]) -> list[str]:
-        values = [str(arg) for arg in args]
-        path_index = next((index for index, value in enumerate(values[1:], start=1) if value.startswith("path=")), None)
-        if path_index is None or path_index <= 1:
-            return values
-        return ["|".join(values[:path_index]), *values[path_index:]]
-
-    @classmethod
-    def _parse_context_arg(cls, value: str) -> int:
-        raw_context = value[len("context=") :] if value.startswith("context=") else value
-        context = int(raw_context)
-        if context < 0 or context > cls.MAX_CONTEXT_LINES:
-            raise ValueError
-        return context
-
     def requires_confirmation(self, session: Session) -> bool:
         return not session.is_path_in_cwd(self.target_path)
 
@@ -2041,9 +1989,6 @@ class SearchTool(Tool):
             pass
         return patterns
 
-    def _is_hidden_path(self, path: str) -> bool:
-        return any(part.startswith(".") for part in self._relpath(path).split(os.sep) if part and part != ".")
-
     def _is_gitignored(self, path: str, is_dir: bool = False) -> bool:
         relpath = self._relpath(path).replace(os.sep, "/")
         name = os.path.basename(path)
@@ -2069,7 +2014,8 @@ class SearchTool(Tool):
         return False
 
     def _is_skipped_path(self, path: str, is_dir: bool = False) -> bool:
-        return self._is_hidden_path(path) or self._is_gitignored(path, is_dir)
+        hidden = any(part.startswith(".") for part in self._relpath(path).split(os.sep) if part and part != ".")
+        return hidden or self._is_gitignored(path, is_dir)
 
     def _iter_files(self) -> Iterator[str]:
         if os.path.isfile(self.target_path):
@@ -2121,7 +2067,7 @@ class SearchTool(Tool):
                 if include_context:
                     for index, line in match.context:
                         marker = ">" if index == match.line_number - 1 else " "
-                        lines.append(f"  {marker} {_numbered_line_preview(index, line)}")
+                        lines.append(f"  {marker} {index}:{_line_hash(line)}|{line.removesuffix(chr(10))[:300]}")
         else:
             lines.append("No matches.")
         if truncated:
@@ -2172,7 +2118,8 @@ class SearchTool(Tool):
             proc = subprocess.run(self._rg_command(rg), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         except subprocess.TimeoutExpired:
             raise ToolCallError("rg timed out")
-        if proc.returncode not in (0, 1) and self._should_retry_rg_with_pcre2(proc.stderr):
+        stderr = proc.stderr.lower()
+        if proc.returncode not in (0, 1) and "pcre2" in stderr and ("look-around" in stderr or "look-ahead" in stderr or "look-behind" in stderr):
             pcre2 = True
             try:
                 proc = subprocess.run(self._rg_command(rg, pcre2=True), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
@@ -2205,10 +2152,6 @@ class SearchTool(Tool):
             if len(matches) >= self.MAX_MATCHES:
                 return self._format_result(engine, matches, True)
         return self._format_result(engine, matches, False)
-
-    def _should_retry_rg_with_pcre2(self, stderr: str) -> bool:
-        text = stderr.lower()
-        return "pcre2" in text and ("look-around" in text or "look-ahead" in text or "look-behind" in text)
 
     def _is_multiline(self) -> bool:
         return "\n" in self.pattern or "\r" in self.pattern
@@ -2421,14 +2364,6 @@ def _code_index_update(session: Session, filepath: str) -> None:
         session.state.code_index_error = str(error)
 
 
-def _format_code_index_result(tag: str, text: str) -> str:
-    lines = ["<" + tag + ">"]
-    if text.strip():
-        lines.append(text.rstrip("\n"))
-    lines.append("</" + tag + ">")
-    return "\n".join(lines)
-
-
 @dataclass
 class InspectCodeTool(Tool):
     NAME: ClassVar[str] = "InspectCode"
@@ -2482,7 +2417,12 @@ class InspectCodeTool(Tool):
         target = str(args[1]).strip()
         if not target:
             raise ToolCallArgError("target cannot be empty")
-        options = cls._options(args)
+        if len(args) == 2:
+            options = {}
+        else:
+            options = _json_dict(args[2])
+            if not options:
+                raise ToolCallArgError("options must be an object")
         limit = cls.DEFAULT_LIMIT
         if mode == "find":
             cls._validate_symbolish(target, "query")
@@ -2519,15 +2459,6 @@ class InspectCodeTool(Tool):
             symbol=str(options.get("symbol") or "").strip(),
             session=session,
         )
-
-    @staticmethod
-    def _options(args: list[JsonValue]) -> dict[str, JsonValue]:
-        if len(args) == 2:
-            return {}
-        options = _json_dict(args[2])
-        if not options:
-            raise ToolCallArgError("options must be an object")
-        return options
 
     @staticmethod
     def _validate_symbolish(value: str, label: str) -> None:
@@ -2572,7 +2503,12 @@ class InspectCodeTool(Tool):
             )
         else:
             text = repo.outline_text(self.target, symbol=self.symbol or None)
-        return _format_code_index_result("InspectCodeToolResult", "mode: " + self.mode + "\n" + text)
+        lines = ["<InspectCodeToolResult>"]
+        result = "mode: " + self.mode + "\n" + text
+        if result.strip():
+            lines.append(result.rstrip("\n"))
+        lines.append("</InspectCodeToolResult>")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -2749,7 +2685,7 @@ class EditFileTool(Tool):
         return EditFileEdit(op=op, start=start, end=end, content=content)
 
     def preview(self) -> str:
-        label = self._label()
+        label = f"EditFile({self.filepath}, {len(self.edits)} edits)"
         try:
             original, new_content, _ = self._preview()
         except (OSError, ToolCallError) as error:
@@ -2814,16 +2750,22 @@ class EditFileTool(Tool):
             else:
                 slice_start = start if edit.op == "insert_before" else start + 1
                 slice_end = slice_start
-            replacement = [] if edit.op == "delete" else self._replacement_lines(edit.content, has_following_line=slice_end < len(lines))
+            if edit.op == "delete":
+                replacement = []
+            else:
+                replacement = edit.content.splitlines(keepends=True)
+                if edit.content and slice_end < len(lines) and not edit.content.endswith("\n"):
+                    replacement[-1] += "\n"
             replacements.append((slice_start, slice_end, replacement))
-        self._reject_overlapping_ranges(replacements)
+        previous: tuple[int, int] | None = None
+        for start, end, _ in sorted(replacements, key=lambda item: item[0]):
+            if previous is not None and (start < previous[1] or (start == previous[0] and end == previous[1])):
+                raise ToolCallError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
+            previous = (start, end)
         new_lines = list(lines)
         for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
             new_lines[start:end] = replacement
         return original, "".join(new_lines), replacements
-
-    def _label(self) -> str:
-        return f"EditFile({self.filepath}, {len(self.edits)} edits)"
 
     @staticmethod
     def _resolve_anchor(lines: list[str], anchor: str) -> int:
@@ -2839,21 +2781,6 @@ class EditFileTool(Tool):
         if current != expected:
             raise ToolCallError(f"stale anchor {anchor}; current hash is {current}; Read the target range again")
         return index
-
-    @staticmethod
-    def _reject_overlapping_ranges(replacements: list[tuple[int, int, list[str]]]) -> None:
-        previous: tuple[int, int] | None = None
-        for start, end, _ in sorted(replacements, key=lambda item: item[0]):
-            if previous is not None and (start < previous[1] or (start == previous[0] and end == previous[1])):
-                raise ToolCallError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
-            previous = (start, end)
-
-    @staticmethod
-    def _replacement_lines(content: str, *, has_following_line: bool) -> list[str]:
-        lines = content.splitlines(keepends=True)
-        if content and has_following_line and not content.endswith("\n"):
-            lines[-1] += "\n"
-        return lines
 
 
 @dataclass
@@ -3198,13 +3125,13 @@ TOOL_PLAN_ITEMS_SCHEMA: Json = {
         [],
     ),
 }
-TOOL_HYPOTHESIS_ITEMS_SCHEMA: Json = {
+TOOL_LEAD_ITEMS_SCHEMA: Json = {
     "type": "array",
     "items": _tool_object_schema(
         {
             "id": TOOL_NULLABLE_STRING_SCHEMA,
             "text": TOOL_NULLABLE_STRING_SCHEMA,
-            "status": {"type": ["string", "null"], "enum": [*ALL_HYPOTHESIS_STATUSES]},
+            "status": {"type": ["string", "null"], "enum": [*ALL_LEAD_STATUSES]},
             "source": TOOL_STRING_LIST_SCHEMA,
             "context": TOOL_NULLABLE_STRING_SCHEMA,
         },
@@ -3224,7 +3151,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         ["text", "complete", "message_for_complete"],
     ),
     "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
-    "lead": ("Update investigation leads.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
+    "lead": ("Update investigation leads.", {"items": TOOL_LEAD_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
         "Remember an explicit future behavior rule from the user.",
@@ -3494,7 +3421,8 @@ class ModelClient:
             {"role": "user", "content": user_prompt},
         ]
         stream = config.stream is not False
-        timeout, first_token_timeout = self._request_timeouts(config, activity=activity)
+        timeout = config.timeout if config.timeout is not None else 180
+        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
         api = config.resolved_api()
         params = (
             self._responses_params(
@@ -3511,7 +3439,7 @@ class ModelClient:
         )
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api=api, model=model, stream=stream, params=params, tool_schemas=tool_schemas)
-        client = self._client(config, timeout=timeout)
+        client = OpenAI(api_key=config.key, base_url=config.base_url(), timeout=timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
         request_elapsed = 0.0
         try:
             with ModelRetryShortcut(self.session):
@@ -3627,15 +3555,6 @@ class ModelClient:
         DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
         return parsed
 
-    def _client(self, config: ProviderConfig, *, timeout: int) -> OpenAI:
-        return OpenAI(
-            api_key=config.key,
-            base_url=config.base_url(),
-            timeout=timeout,
-            max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
-        )
-
     @staticmethod
     def _reasoning_effort(config: ProviderConfig) -> str:
         return config.reasoning if config.reasoning in REASONING_LEVELS else "medium"
@@ -3719,10 +3638,7 @@ class ModelClient:
                 output_chars = self._stream_output_chars(delta)
                 if output_chars > 0:
                     first_output_seen = self._mark_stream_output(
-                        output_chars,
-                        first_output_seen,
-                        request_deadline=request_deadline,
-                        first_token_timeout=first_token_timeout,
+                        output_chars, first_output_seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout
                     )
                 if isinstance(content, str) and content:
                     text_parts.append(content)
@@ -3759,12 +3675,7 @@ class ModelClient:
             action["_assistant_text"] = "".join(text_parts).strip()
             text_parts.clear()
         actions.append(action)
-        return self._call_stream_action(
-            on_stream_action,
-            action,
-            request_deadline=request_deadline,
-            first_token_timeout=first_token_timeout,
-        )
+        return self._call_stream_action(on_stream_action, action, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
 
     def _accumulate_chat_tool_calls(self, tool_calls: dict[int, Json], delta: Json) -> None:
         for raw in _json_list(delta.get("tool_calls")):
@@ -3860,10 +3771,7 @@ class ModelClient:
             call = self._responses_function_call_for_event(function_calls, data)
             name = str(getattr(event, "name", "") or _json_str(data.get("name")) or _json_str(call.get("name")) or "")
             arguments = str(getattr(event, "arguments", "") or _json_str(data.get("arguments")) or _json_str(call.get("arguments")) or "{}")
-            action = self._action_from_function_call(
-                name,
-                arguments,
-            )
+            action = self._action_from_function_call(name, arguments)
             stopped, request_deadline = self._consume_stream_action(
                 actions,
                 text_parts,
@@ -3979,11 +3887,6 @@ class ModelClient:
             params["reasoning"] = {"effort": "high" if effort in ("max", "xhigh") else effort}
         return params
 
-    def _request_timeouts(self, config: ProviderConfig, *, activity: str) -> tuple[int, int | None]:
-        timeout = config.timeout if config.timeout is not None else 180
-        first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
-        return timeout, first_token_timeout
-
     def _mark_stream_output(self, chars: int, seen: bool, *, request_deadline: float, first_token_timeout: int | None) -> bool:
         if chars <= 0:
             return seen
@@ -4084,10 +3987,7 @@ class ModelClient:
             if not output:
                 continue
             first_output_seen = self._mark_stream_output(
-                len(output[1]),
-                first_output_seen,
-                request_deadline=request_deadline,
-                first_token_timeout=first_token_timeout,
+                len(output[1]), first_output_seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout
             )
             if output[0] == "content":
                 parts.append(output[1])
@@ -4314,7 +4214,10 @@ class ToolCallRunner:
             requires_checks = False
             try:
                 call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
-                tool = self._make_tool(call)
+                tool_class = TOOL_REGISTRY.get(call.name)
+                if tool_class is None:
+                    raise ToolCallArgError("tool not found: " + call.name)
+                tool = tool_class.make(self.session, call.args)
                 if isinstance(tool, BashTool):
                     tool.live_output = self.live_output
                 requires_checks = tool.EFFECT == ToolEffect.EDIT
@@ -4350,7 +4253,11 @@ class ToolCallRunner:
                 output = "ToolCallError: " + str(error)
                 error_type = type(error)
             if call is None:
-                call = self._invalid_tool_call(item)
+                raw = _json_dict(item)
+                summary = "invalid tool action"
+                if _json_str(raw.get("type")) == "tool" and not _json_str(raw.get("name")):
+                    summary += ": missing required field name"
+                call = ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
             result_key = ""
             result_excerpted = False
             if call.name != ToolResultTool.NAME:
@@ -4421,7 +4328,13 @@ class ToolCallRunner:
             original_chars=bounded.original_chars,
             excerpted=bounded.excerpted,
         )
-        self._trim_tool_result_store()
+        keep = self.protected_result_keys()
+        for old_key in list(self.session.state.tool_result_store):
+            if len(self.session.state.tool_result_store) <= self.MAX_TOOL_RESULT_STORE_ITEMS:
+                break
+            if old_key in keep:
+                continue
+            self.session.state.tool_result_store.pop(old_key)
         return key
 
     def _write_tool_result_log(self, key: str, output: str) -> str:
@@ -4440,15 +4353,6 @@ class ToolCallRunner:
                 continue
         return ""
 
-    def _trim_tool_result_store(self) -> None:
-        keep = self.protected_result_keys()
-        for old_key in list(self.session.state.tool_result_store):
-            if len(self.session.state.tool_result_store) <= self.MAX_TOOL_RESULT_STORE_ITEMS:
-                return
-            if old_key in keep:
-                continue
-            self.session.state.tool_result_store.pop(old_key)
-
     def parse_tool_call(self, value: JsonValue) -> ParsedToolCall:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
@@ -4457,19 +4361,6 @@ class ToolCallRunner:
         name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
         return ParsedToolCall(name=name, intention=intention, args=list(_json_list(item.get("args"))))
-
-    def _invalid_tool_call(self, value: JsonValue) -> ParsedToolCall:
-        item = _json_dict(value)
-        summary = "invalid tool action"
-        if _json_str(item.get("type")) == "tool" and not _json_str(item.get("name")):
-            summary += ": missing required field name"
-        return ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
-
-    def _make_tool(self, call: ParsedToolCall) -> Tool:
-        tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None:
-            raise ToolCallArgError("tool not found: " + call.name)
-        return tool_class.make(self.session, call.args)
 
 
 ############################
@@ -4502,37 +4393,44 @@ class AgentStateUpdater:
         actions = [action for action in (_json_dict(item) for item in _json_list(response.get("actions"))) if action]
         before_goal = self.blackboard.goal
         before_plan = [item.format() for item in self.blackboard.plan]
-        before_hypotheses = [item.format() for item in self.blackboard.hypotheses]
+        before_leads = [item.format() for item in self.blackboard.leads]
         before_known = [KnownItem.format_item(item) for item in self.blackboard.known]
         before_user_rules = self.session.state.user_rules.format()
-        before_extra_state = self._before_extra_state()
+        before_checks = self.blackboard.checks.format()
         goal_changed = self._apply_goal(actions)
         plan_replaced = self._apply_plan(actions)
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
-        self._apply_known(actions)
-        self._apply_hypotheses(actions)
-        self._apply_user_rules(actions)
-        self._apply_extra_state(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        for raw in self._action_items(actions, "known"):
+            item = KnownItem.from_json(raw)
+            if item is not None:
+                self._add_known_item(item.text, item.source)
+        for raw in self._action_items(actions, "lead"):
+            item = Lead.from_json(raw)
+            if item is not None:
+                self._add_lead(item)
+        user_rules_changed = False
+        for action in self._actions_of_type(actions, "user_rule"):
+            rule = (_json_str(action.get("text")) or "").strip()
+            user_rules_changed = self.session.state.user_rules.add(rule) or user_rules_changed
+        if user_rules_changed:
+            self.session.save_user_rules()
+        if goal_changed:
+            self.blackboard.checks_required = False
+        self._reset_stale_checks(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
+        self._apply_checks(actions)
         self._apply_task_code(actions)
-        self.latest_report = self._format_state_report(
-            before_goal,
-            before_plan,
-            before_hypotheses,
-            before_known,
-            before_user_rules,
-            before_extra_state,
-        )
+        self.latest_report = self._format_state_report(before_goal, before_plan, before_leads, before_known, before_user_rules, before_checks)
         self.changed = bool(self.latest_report)
 
     def _format_state_report(
         self,
         before_goal: str,
         before_plan: list[str],
-        before_hypotheses: list[str],
+        before_leads: list[str],
         before_known: list[str],
         before_user_rules: str,
-        before_extra_state: str,
+        before_checks: str,
     ) -> str:
         current = self.blackboard
         lines = []
@@ -4542,12 +4440,16 @@ class AgentStateUpdater:
         self.latest_compact_plan_rows = []
         if plan != before_plan:
             self.latest_compact_plan_rows = self._compact_changed_plan_rows(before_plan, plan)
-            self._append_state_section(lines, "  Plan", self._format_plan_rows())
-        hypotheses = [item.format() for item in current.hypotheses]
-        if hypotheses != before_hypotheses:
-            self._append_state_section(
-                lines, "  Leads", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}")
-            )
+
+            def render_plan_row(index: int, item: PlanItem) -> list[str]:
+                rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
+                rows += ["       context: " + self._compact(item.context)] if item.context else []
+                return rows
+
+            self._append_state_section(lines, "  Plan", self._format_rows(current.plan, render_plan_row))
+        leads = [item.format() for item in current.leads]
+        if leads != before_leads:
+            self._append_state_section(lines, "  Leads", self._format_rows(current.leads, lambda index, item: f"    {index}. {self._compact(item.format())}"))
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
             self._append_state_section(
@@ -4556,17 +4458,10 @@ class AgentStateUpdater:
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
             self._append_state_section(lines, "  User_Rules    updated")
-        self._append_extra_state_report(lines, before_extra_state)
+        checks = self.blackboard.checks.format()
+        if checks != before_checks:
+            self._append_state_section(lines, "  Checks  " + self._format_checks())
         return "\n".join(lines)
-
-    def _format_plan_rows(self) -> list[str]:
-        def render(index: int, item: PlanItem) -> list[str]:
-            rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
-            if item.context:
-                rows.append("       context: " + self._compact(item.context))
-            return rows
-
-        return self._format_rows(self.blackboard.plan, render)
 
     def _format_rows(self, items: list[Any], render: Callable[[int, Any], str | list[str]]) -> list[str]:
         if not items:
@@ -4586,8 +4481,8 @@ class AgentStateUpdater:
                 ("Plan", "  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
                 (
                     "Leads",
-                    "  Leads" in self.latest_report and self.blackboard.hypotheses,
-                    self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
+                    "  Leads" in self.latest_report and self.blackboard.leads,
+                    self._compact_rows(self.blackboard.leads, lambda item: self._compact(item.format(), 100)),
                 ),
                 (
                     "Facts",
@@ -4624,11 +4519,10 @@ class AgentStateUpdater:
             return self._compact_plan_rows()
         offset = max(0, len(indexes) - self.COMPACT_DISPLAY_LIMIT)
         rows = ["  ... " + str(offset) + " changed older"] if offset else []
-        rows.extend(self._compact_plan_row(index + 1, self.blackboard.plan[index]) for index in indexes[offset:])
+        for index in indexes[offset:]:
+            item = self.blackboard.plan[index]
+            rows.append("  " + str(index + 1) + ". [" + str(item.status) + "] " + self._compact(item.text, 90))
         return rows
-
-    def _compact_plan_row(self, index: int, item: PlanItem) -> str:
-        return "  " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text, 90)
 
     def _compact_rows(self, items: list[Any], render: Callable[[Any], str]) -> list[str]:
         offset = max(0, len(items) - self.COMPACT_DISPLAY_LIMIT)
@@ -4651,9 +4545,6 @@ class AgentStateUpdater:
                 self.blackboard.goal = update
             if isinstance(complete, bool):
                 self.blackboard.goal_reached = complete
-            if "work_mode" in action:
-                mode = _json_str(action.get("work_mode")) or WorkMode.NORMAL
-                self.blackboard.work_mode = WorkMode(mode) if mode in ALL_WORK_MODES else WorkMode.NORMAL
         return changed
 
     def _apply_plan(self, actions: list[Json]) -> bool:
@@ -4732,26 +4623,14 @@ class AgentStateUpdater:
             else:
                 seen = True
 
-    def _apply_known(self, actions: list[Json]) -> None:
-        for raw in self._action_items(actions, "known"):
-            item = KnownItem.from_json(raw)
-            if item is not None:
-                self._add_known_item(item.text, item.source)
-
-    def _apply_hypotheses(self, actions: list[Json]) -> None:
-        for raw in self._action_items(actions, "lead"):
-            item = Hypothesis.from_json(raw)
-            if item is not None:
-                self._add_hypothesis(item)
-
-    def _add_hypothesis(self, item: Hypothesis) -> None:
-        for index, existing in enumerate(self.blackboard.hypotheses):
+    def _add_lead(self, item: Lead) -> None:
+        for index, existing in enumerate(self.blackboard.leads):
             same_id = item.id and item.id == existing.id
-            same_text = self._hypothesis_key(item.text) == self._hypothesis_key(existing.text)
+            same_text = self._lead_key(item.text) == self._lead_key(existing.text)
             if not same_id and not same_text:
                 continue
             source = tuple(dict.fromkeys((*existing.source, *item.source)))
-            self.blackboard.hypotheses[index] = Hypothesis(
+            self.blackboard.leads[index] = Lead(
                 text=item.text or existing.text,
                 status=item.status,
                 id=item.id or existing.id,
@@ -4759,51 +4638,30 @@ class AgentStateUpdater:
                 context=item.context or existing.context,
             )
             return
-        self.blackboard.hypotheses.append(item)
+        self.blackboard.leads.append(item)
 
-    def _hypothesis_key(self, text: str) -> str:
+    def _lead_key(self, text: str) -> str:
         return re.sub(r"\s+", " ", text).strip(" \t\r\n。.;；").lower()
-
-    def _apply_user_rules(self, actions: list[Json]) -> None:
-        changed = False
-        for action in self._actions_of_type(actions, "user_rule"):
-            rule = (_json_str(action.get("text")) or "").strip()
-            changed = self.session.state.user_rules.add(rule) or changed
-        if changed:
-            self.session.save_user_rules()
 
     def _add_known_item(self, fact: str, source: tuple[str, ...] = ()) -> None:
         fact = _shorten(" ".join(fact.split()))
+        fact_key = self._known_fact_key(fact)
         for index, existing in enumerate(self.blackboard.known):
-            if self._known_facts_overlap(existing, fact):
-                text = KnownItem.text_of(existing)
-                merged_source = tuple(dict.fromkeys((*KnownItem.source_of(existing), *source)))
-                if len(fact) > len(text):
-                    self.blackboard.known[index] = KnownItem(text=fact, source=merged_source)
-                elif merged_source != KnownItem.source_of(existing):
-                    self.blackboard.known[index] = KnownItem(text=text, source=merged_source)
-                return
+            existing_key = self._known_fact_key(existing)
+            if existing_key != fact_key and not (min(len(existing_key), len(fact_key)) >= 32 and (existing_key in fact_key or fact_key in existing_key)):
+                continue
+            text = KnownItem.text_of(existing)
+            merged_source = tuple(dict.fromkeys((*KnownItem.source_of(existing), *source)))
+            if len(fact) > len(text):
+                self.blackboard.known[index] = KnownItem(text=fact, source=merged_source)
+            elif merged_source != KnownItem.source_of(existing):
+                self.blackboard.known[index] = KnownItem(text=text, source=merged_source)
+            return
         self.blackboard.known.append(KnownItem(text=fact, source=source))
         del self.blackboard.known[: max(0, len(self.blackboard.known) - self.MAX_KNOWN_ITEMS)]
 
-    def _known_facts_overlap(self, left: KnownItem | str, right: KnownItem | str) -> bool:
-        left_key = self._known_fact_key(left)
-        right_key = self._known_fact_key(right)
-        if left_key == right_key:
-            return True
-        return min(len(left_key), len(right_key)) >= 32 and (left_key in right_key or right_key in left_key)
-
     def _known_fact_key(self, fact: KnownItem | str) -> str:
         return re.sub(r"\s+", " ", KnownItem.text_of(fact)).strip(" \t\r\n。.;；").lower()
-
-    def _before_extra_state(self) -> str:
-        return self.blackboard.checks.format()
-
-    def _apply_extra_state(self, actions: list[Json], *, goal_changed: bool, plan_replaced: bool) -> None:
-        if goal_changed:
-            self.blackboard.checks_required = False
-        self._reset_stale_checks(actions, goal_changed=goal_changed, plan_replaced=plan_replaced)
-        self._apply_checks(actions)
 
     def _apply_task_code(self, actions: list[Json]) -> None:
         action_types = {_json_str(action.get("type")) for action in actions}
@@ -4813,7 +4671,7 @@ class AgentStateUpdater:
         if "verify" in action_types:
             self.blackboard.task_code = TaskCode.WORKING
             return
-        tracked_state = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+        tracked_state = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.leads)
         if (
             "goal" in action_types or "plan" in action_types or "lead" in action_types or (tracked_state and "tool" in action_types)
         ) and not self.blackboard.goal_reached:
@@ -4822,13 +4680,6 @@ class AgentStateUpdater:
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
         lines.append(title)
         lines.extend(rows or [])
-
-    def _append_extra_state_report(self, lines: list[str], before_extra_state: str) -> None:
-        before_checks = before_extra_state
-        checks = self.blackboard.checks.format()
-        if checks == before_checks:
-            return
-        self._append_state_section(lines, "  Checks  " + self._format_checks())
 
     @staticmethod
     def _actions_of_type(actions: list[Json], action_type: str) -> Iterator[Json]:
@@ -5059,11 +4910,15 @@ class Agent:
         add("Goal", current.goal)
         if current.known:
             add("Facts", "\n".join(KnownItem.format_item(item) for item in current.known))
-        if current.hypotheses:
-            add("Leads", "\n".join(item.format() for item in current.hypotheses))
+        if current.leads:
+            add("Leads", "\n".join(item.format() for item in current.leads))
         if current.plan:
             add("Plan", "\n".join(item.format() for item in current.plan))
-            add("Current Focus", self._format_current_focus())
+            focus = next((item for item in current.plan if item.status == PlanStatus.DOING), None) or next(
+                (item for item in current.plan if item.status == PlanStatus.TODO),
+                None,
+            )
+            add("Current Focus", focus.format() if focus else "(empty)")
         if current.checks.has_context() or current.checks_required:
             add("Checks", current.checks.format() if current.checks.has_context() else "status: required")
         return "\n\n".join(sections) if sections else "(empty)"
@@ -5083,14 +4938,6 @@ class Agent:
             )
         return "\n".join(lines)
 
-    def _format_current_focus(self) -> str:
-        plan = self.blackboard.plan
-        item = next((item for item in plan if item.status == PlanStatus.DOING), None) or next(
-            (item for item in plan if item.status == PlanStatus.TODO),
-            None,
-        )
-        return item.format() if item else "(empty)"
-
     def build_observe_prompt(self) -> str:
         current = self.blackboard
         unreduced = "\n\n".join(self._unreferenced_unreduced_blocks())
@@ -5098,7 +4945,7 @@ class Agent:
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            leads="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
+            leads="\n".join(item.format() for item in current.leads) if current.leads else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
@@ -5108,12 +4955,6 @@ class Agent:
 
     def _system_prompt(self, template: str | None = None) -> str:
         return (template or AGENT_SYSTEM_PROMPT).strip()
-
-    def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
-        tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
-        if _code_index_available(self.session):
-            return tool_classes
-        return tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
 
     def _format_user_request(self) -> str:
         user_request = self.blackboard.user_input or "(empty)"
@@ -5311,15 +5152,6 @@ class Agent:
     def _remember_observe_error(self, text: str) -> None:
         self._remember_feedback_error(self.observe_feedback_errors, text)
 
-    def _drop_old_feedback_after_successful_tools(self, checkpoint: int) -> None:
-        if checkpoint <= 0 or not self.tool_runner.latest_executions:
-            return
-        if all(execution.outcome == "success" for execution in self.tool_runner.latest_executions):
-            markers = tuple(marker.lower() for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
-            self.agent_feedback_errors[:checkpoint] = [
-                error for error in self.agent_feedback_errors[:checkpoint] if not any(marker in error.lower() for marker in markers)
-            ]
-
     def _error(self, text: str, rule: str = "") -> str:
         return "Error blocked: " + text + ((" Next: " + rule) if rule else "")
 
@@ -5328,12 +5160,6 @@ class Agent:
 
     def _warn_agent(self, text: str, rule: str = "") -> None:
         self._remember_agent_error(self._warning(text, rule))
-
-    def _reject_agent(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> bool:
-        self.stream_stop_requested = True
-        self._remember_agent_error(feedback)
-        self._report_gate(on_message, retry, debug)
-        return True
 
     def _reject_result(
         self,
@@ -5347,10 +5173,6 @@ class Agent:
         remember_error(feedback)
         self._report_gate(on_message, retry, debug)
         return AgentRunResult()
-
-    def _reject_completion(self, on_message: MessageCallback | None, feedback: str, retry: str, debug: str) -> AgentRunResult:
-        self.blackboard.goal_reached = False
-        return self._reject_result(self._remember_agent_error, on_message, feedback, retry, debug)
 
     def _report_gate(self, on_message: MessageCallback | None, message: str, debug_message: str) -> None:
         is_retry = message.startswith(("Retrying:", "Continuing:"))
@@ -5398,7 +5220,9 @@ class Agent:
             tool_classes: Iterable[ToolClass] = ()
         else:
             action_names = self.ACT_ACTION_TYPES - {"tool"}
-            tool_classes = self._available_tool_classes()
+            tool_classes = tuple(TOOL_REGISTRY.values())
+            if not _code_index_available(self.session):
+                tool_classes = tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
         actions = [_state_tool_schema(name) for name in STATE_TOOL_PARAMS if name in action_names]
         return actions + [tool.tool_schema() for tool in tool_classes]
 
@@ -5423,11 +5247,7 @@ class Agent:
             response = self.step(on_message=on_message)
             if _json_str(response.get("_format_error")):
                 return AgentRunResult(), response, False
-            return (
-                self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message),
-                response,
-                False,
-            )
+            return self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message), response, False
 
         committed = False
         latest_result = AgentRunResult()
@@ -5484,11 +5304,7 @@ class Agent:
         invalid_response = self._validate_action_response(response)
         if invalid_response is not None:
             return AgentRunResult(), invalid_response, False
-        return (
-            self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message),
-            response,
-            False,
-        )
+        return self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message), response, False
 
     def _can_stream_tools(self) -> bool:
         return self.mode == AgentMode.ACT and isinstance(self.model_client, ModelClient) and self.session.config.provider.stream is not False
@@ -5502,7 +5318,7 @@ class Agent:
             self.tool_context.kept_results = []
             self.tool_context.compact_observed(self.tool_context.recent + self.tool_context.latest)
             self._mark_memory_checkpoint()
-            self.blackboard.hypotheses = []
+            self.blackboard.leads = []
         self.state_updater.apply(response)
         forgotten = self.tool_context.forget_results(ToolResultContext.forget_result_keys_from_actions(actions))
         return forgotten
@@ -5552,16 +5368,17 @@ class Agent:
         budget = self.context_budget()
         # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
         # Very large failures still trigger observe through raw-context pressure.
-        return len(pending) >= budget.observe_after_results or self._unreferenced_raw_context_chars() >= budget.raw_chars
+        return (
+            len(pending) >= budget.observe_after_results
+            or self.tool_context.raw_context_chars(
+                self.blackboard.memory_checkpoint_tool_result_counter,
+                exclude_keys=self.blackboard.referenced_result_keys(),
+            )
+            >= budget.raw_chars
+        )
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
         return self.tool_context.unreduced_blocks(
-            self.blackboard.memory_checkpoint_tool_result_counter,
-            exclude_keys=self.blackboard.referenced_result_keys(),
-        )
-
-    def _unreferenced_raw_context_chars(self) -> int:
-        return self.tool_context.raw_context_chars(
             self.blackboard.memory_checkpoint_tool_result_counter,
             exclude_keys=self.blackboard.referenced_result_keys(),
         )
@@ -5581,12 +5398,7 @@ class Agent:
             detail = self._format_tool_arg_error(execution)
             tool_class = TOOL_REGISTRY.get(execution.call.name)
             rule = self.RULE_EDIT_SIGNATURE if tool_class is not None and tool_class.EFFECT == ToolEffect.EDIT else self.RULE_TOOL_SIGNATURE
-            self._remember_agent_error(
-                self._error(
-                    "tool call args invalid: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".",
-                    rule,
-                )
-            )
+            self._remember_agent_error(self._error("tool call args invalid: " + _format_tool_call_summary(execution.call) + " -> " + detail + ".", rule))
         if (
             execution.error_type is not None
             and issubclass(execution.error_type, ToolCallError)
@@ -5736,13 +5548,6 @@ class Agent:
             return "plan items missing context: " + self._format_plan_gate_items(missing_context)
         return ""
 
-    def _blocked_checks_completion_error(self) -> str:
-        if not self.blackboard.goal_reached or self.blackboard.checks.status != CheckStatus.BLOCKED:
-            return ""
-        if self.blackboard.checks.blocker == CheckBlocker.USER:
-            return ""
-        return "verify blocked requires blocker=user before completion"
-
     def _format_plan_gate_items(self, items: list[PlanItem]) -> str:
         rendered = []
         for item in items[:3]:
@@ -5752,43 +5557,9 @@ class Agent:
             rendered.append("+" + str(len(items) - 3) + " more")
         return "; ".join(rendered)
 
-    def _user_rule_message_from_actions(self, actions: list[Json]) -> str | None:
-        for action in actions:
-            if _json_str(action.get("type")) == "user_rule":
-                return _json_str(action.get("message")) or "Rule saved."
-        return None
-
     @staticmethod
     def _is_pending_check_action(action: Json) -> bool:
         return _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"
-
-    def _investigate_completion_error(self) -> str:
-        if not self.blackboard.goal_reached or not self.blackboard.hypotheses:
-            return ""
-        return (
-            ""
-            if any(item.status == HypothesisStatus.CONFIRMED for item in self.blackboard.hypotheses)
-            else "investigation completion requires a confirmed lead"
-        )
-
-    @staticmethod
-    def _released_result_sources_from_actions(actions: list[Json]) -> set[str]:
-        released = set()
-        for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "lead" else []
-            for raw in values:
-                item = Hypothesis.from_json(raw)
-                if item is not None and item.status != HypothesisStatus.ACTIVE:
-                    released.update(key for key in item.source if key.startswith("tr."))
-        return released
-
-    def _forget_protected_result_error(self, actions: list[Json]) -> str:
-        forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
-        if not forgotten:
-            return ""
-        protected = self.blackboard.protected_result_sources()
-        conflict = sorted((forgotten & set(protected)) - self._released_result_sources_from_actions(actions))
-        return "protected source: " + ", ".join(key + " (" + protected[key] + ")" for key in conflict) if conflict else ""
 
     def _repeated_tool_retry_error(self, tool_calls: list[JsonValue]) -> str:
         if self.failed_tool_call_key is None or self.failed_tool_call_count < 2:
@@ -5843,6 +5614,9 @@ class Agent:
             ),
             "",
         )
+        user_rule_message = next(
+            (_json_str(action.get("message")) or "Rule saved." for action in actions if _json_str(action.get("type")) == "user_rule"), None
+        )
         return ResponseContext(
             response=response,
             actions=actions,
@@ -5854,7 +5628,7 @@ class Agent:
             goal_will_change=bool(self.blackboard.goal and goal_update and goal_update != self.blackboard.goal),
             tool_calls=tool_calls,
             pending_check_requested=pending_check_requested,
-            user_rule_message=self._user_rule_message_from_actions(actions),
+            user_rule_message=user_rule_message,
             completion_message=completion_message,
             has_goal_action="goal" in action_types,
             has_plan_action="plan" in action_types,
@@ -5876,7 +5650,7 @@ class Agent:
         self.session.append_conversation(AssistantMessage(content=ctx.assistant_text))
         if on_message is not None:
             on_message(ctx.assistant_text)
-        active_task = bool(self.blackboard.plan or self.blackboard.hypotheses)
+        active_task = bool(self.blackboard.plan or self.blackboard.leads)
         if active_task and (self.blackboard.task_code in {TaskCode.WORKING, TaskCode.CHECKING} or self.incomplete_task_context_at_turn_start):
             return AgentRunResult()
         self.blackboard.task_code = TaskCode.DONE
@@ -5892,9 +5666,6 @@ class Agent:
             self.session.append_conversation(UserMessage(content=user_input))
             if on_message is not None:
                 on_message("sent: " + user_input)
-
-    def _gate_before_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        return self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx, on_message)
 
     def _gate_protocol_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         return (
@@ -5913,24 +5684,19 @@ class Agent:
             return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
-            return self._reject_agent(
+            self.stream_stop_requested = True
+            self._remember_agent_error(self._error("repeated failed tool call: " + repeated_tool_retry_error + ".", self.RULE_CHANGE_FAILED_TOOL))
+            self._report_gate(
                 on_message,
-                self._error("repeated failed tool call: " + repeated_tool_retry_error + ".", self.RULE_CHANGE_FAILED_TOOL),
                 "Retrying: change the failed tool call instead of repeating it.",
                 "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
             )
+            return True
         return False
-
-    def _drop_goal_rewrite_actions(self, ctx: ResponseContext) -> None:
-        def keep(action: Json) -> bool:
-            return not (_json_str(action.get("type")) == "goal" and action.get("complete") is not True)
-
-        ctx.actions[:] = [action for action in ctx.actions if keep(action)]
-        ctx.response["actions"] = [action for action in _json_list(ctx.response.get("actions")) if not isinstance(action, dict) or keep(action)]
 
     def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
         if (
-            not (self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+            not (self.blackboard.goal or self.blackboard.plan or self.blackboard.leads)
             and any(execution.call.name == BashTool.NAME and execution.outcome == "success" for execution in self.tool_runner.latest_executions)
             and ctx.tool_calls
             and not ctx.assistant_text
@@ -5938,8 +5704,7 @@ class Agent:
             and not ctx.has_plan_action
         ):
             self._warn_agent(
-                "last command result is visible with no active task.",
-                "answer the user when results are sufficient; create Goal/Plan for extended work.",
+                "last command result is visible with no active task.", "answer the user when results are sufficient; create Goal/Plan for extended work."
             )
         if (
             self.blackboard.task_code == TaskCode.NEW
@@ -5949,10 +5714,7 @@ class Agent:
             and not ctx.has_plan_action
             and not ctx.has_user_rule_action
         ):
-            self._warn_agent(
-                "previous task context is still present.",
-                "emit goal for a new task; otherwise update or confirm the current plan.",
-            )
+            self._warn_agent("previous task context is still present.", "emit goal for a new task; otherwise update or confirm the current plan.")
         if self.blackboard.task_code != TaskCode.NEW and ctx.goal_will_change and not ctx.has_fresh_plan_action:
             self._warn_agent("rewrote Goal after the task was active.", "replace Plan when the task scope changes.")
         if ctx.pending_check_requested:
@@ -5962,7 +5724,12 @@ class Agent:
                 "Pending User Feedback is not a new task by default.",
                 "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.",
             )
-            self._drop_goal_rewrite_actions(ctx)
+            ctx.actions[:] = [action for action in ctx.actions if _json_str(action.get("type")) != "goal" or action.get("complete") is True]
+            ctx.response["actions"] = [
+                action
+                for action in _json_list(ctx.response.get("actions"))
+                if not isinstance(action, dict) or _json_str(action.get("type")) != "goal" or action.get("complete") is True
+            ]
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_check_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if ctx.goal_will_change and not ctx.has_fresh_plan_action and (ctx.pending_check_requested or ctx.has_edit_tool_call):
@@ -6114,8 +5881,7 @@ class Agent:
                     return
         self._remember_observe_error(
             self._warning(
-                "weak observe memory: known facts need source tr.N or keep/forget coverage.",
-                "use source-backed Facts/Leads or keep important raw results.",
+                "weak observe memory: known facts need source tr.N or keep/forget coverage.", "use source-backed Facts/Leads or keep important raw results."
             )
         )
 
@@ -6144,7 +5910,17 @@ class Agent:
                 "Retrying: forget only visible tool result keys.",
                 "ToolResult_Gate: " + forget_error + ".",
             )
-        forget_protected_error = self._forget_protected_result_error(actions)
+        forgotten = set(ToolResultContext.forget_result_keys_from_actions(actions))
+        released = set()
+        for action in actions:
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "lead" else []
+            for raw in values:
+                item = Lead.from_json(raw)
+                if item is not None and item.status != LeadStatus.ACTIVE:
+                    released.update(key for key in item.source if key.startswith("tr."))
+        protected = self.blackboard.protected_result_sources()
+        conflict = sorted((forgotten & set(protected)) - released)
+        forget_protected_error = "protected source: " + ", ".join(key + " (" + protected[key] + ")" for key in conflict) if conflict else ""
         if forget_protected_error:
             return self._reject_result(
                 remember_error,
@@ -6191,18 +5967,18 @@ class Agent:
             self._warn_agent("Checks failed; fix the reported issue first.")
         completion_plan_error = self._completion_plan_error(ctx)
         if completion_plan_error:
-            return self._reject_completion(
+            self.blackboard.goal_reached = False
+            return self._reject_result(
+                self._remember_agent_error,
                 on_message,
                 self._error("completion before Plan was complete.", self.RULE_COMPLETE_PLAN),
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
             )
-        blocked_completion_error = self._blocked_checks_completion_error()
-        if blocked_completion_error:
-            self._warn_agent("blocked Checks completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
-        investigate_completion_error = self._investigate_completion_error()
-        if investigate_completion_error:
-            self._warn_agent(investigate_completion_error + ".", "mark a lead confirmed when claiming a root cause.")
+        if self.blackboard.goal_reached and self.blackboard.checks.status == CheckStatus.BLOCKED and self.blackboard.checks.blocker != CheckBlocker.USER:
+            self._warn_agent("blocked Checks completion invalid: verify blocked requires blocker=user before completion.", self.RULE_BLOCKED_BY_USER)
+        if self.blackboard.goal_reached and self.blackboard.leads and not any(item.status == LeadStatus.CONFIRMED for item in self.blackboard.leads):
+            self._warn_agent("investigation completion requires a confirmed lead.", "mark a lead confirmed when claiming a root cause.")
         return None
 
     def run(
@@ -6226,12 +6002,10 @@ class Agent:
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         old_goal = self.blackboard.goal
-        old_task_context = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
+        old_task_context = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.leads)
         self.blackboard.user_input = user_input
         previous_task_done = self.blackboard.task_code == TaskCode.DONE
         self.incomplete_task_context_at_turn_start = old_task_context and not previous_task_done
-        if previous_task_done:
-            self.blackboard.work_mode = WorkMode.NORMAL
         # Keep previous task state at a new user turn so short follow-ups like
         # "continue" can resume. The first response must align with it before work
         # when the new request does not match the previous goal.
@@ -6260,12 +6034,7 @@ class Agent:
         return self.run_loop(
             max_steps=self.session.settings.max_agent_steps,
             on_message=on_message,
-            on_step=lambda response: self.handle_response(
-                response,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_message=on_message,
-            ),
+            on_step=lambda response: self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message),
             on_step_limit=lambda: (_ for _ in ()).throw(LLMError("agent step limit reached")),
             on_before_step=before_step,
         )
@@ -6287,13 +6056,9 @@ class Agent:
             feedback_checkpoint = len(self.agent_feedback_errors)
             DebugTrace.handle_event(self, "handle-start", ctx, response)
             if self.mode == AgentMode.OBSERVE:
-                return self._handle_observe_response(
-                    ctx,
-                    response,
-                    on_message=on_message,
-                )
+                return self._handle_observe_response(ctx, response, on_message=on_message)
 
-            if self._gate_before_apply(ctx, on_message):
+            if self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx, on_message):
                 DebugTrace.handle_event(self, "handle-gated-before-apply", ctx, response)
                 return AgentRunResult()
 
@@ -6321,14 +6086,16 @@ class Agent:
                 return gate_result
 
             self._promote_required_checks(ctx)
-            if self._run_tool_actions(
-                ctx,
-                confirm=confirm,
-                on_auto_approve=on_auto_approve,
-                on_message=on_message,
-                append_to_latest=append_to_latest,
-            ):
-                self._drop_old_feedback_after_successful_tools(feedback_checkpoint)
+            if self._run_tool_actions(ctx, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message, append_to_latest=append_to_latest):
+                if (
+                    feedback_checkpoint > 0
+                    and self.tool_runner.latest_executions
+                    and all(execution.outcome == "success" for execution in self.tool_runner.latest_executions)
+                ):
+                    markers = tuple(marker.lower() for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
+                    self.agent_feedback_errors[:feedback_checkpoint] = [
+                        error for error in self.agent_feedback_errors[:feedback_checkpoint] if not any(marker in error.lower() for marker in markers)
+                    ]
                 DebugTrace.handle_event(self, "handle-tools", ctx, response)
                 return AgentRunResult()
             result = self._finish_or_continue(ctx, on_message)
@@ -6642,7 +6409,12 @@ class CommandDispatcher:
         session = self.agent.session
         blackboard = self.agent.blackboard
         provider = session.config.provider
-        reasoning = self._format_provider_reasoning(provider)
+        if provider.reasoning == "off":
+            reasoning = "off"
+        elif provider.resolved_api() != "chat":
+            reasoning = provider.reasoning
+        else:
+            reasoning = provider.reasoning + "(" + provider.resolved_chat_reasoning() + ")"
         api = provider.resolved_api() + ("(" + provider.api + ")" if provider.api == "auto" else "")
         model_usage = (
             "\n".join(
@@ -6695,7 +6467,19 @@ class CommandDispatcher:
     def _compact(self, args: str) -> str:
         if args:
             return "Usage: /compact"
-        return self._with_status(self._compact_history)
+
+        def compact_history() -> str:
+            before = len(self.agent.session.state.conversation)
+            count = self.agent.compact_history()
+            if count:
+                return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
+            return (
+                "Conversation history is empty"
+                if before == 0
+                else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
+            )
+
+        return self._with_status(compact_history)
 
     def _index(self, args: str) -> str:
         value = args.strip()
@@ -6724,17 +6508,6 @@ class CommandDispatcher:
                 "index_items: " + str(budget.index_items),
                 "observe_after_results: " + str(budget.observe_after_results),
             ]
-        )
-
-    def _compact_history(self) -> str:
-        before = len(self.agent.session.state.conversation)
-        count = self.agent.compact_history()
-        if count:
-            return "Compacted conversation history: " + str(count) + " item(s) -> " + str(len(self.agent.session.state.conversation)) + " item(s)"
-        return (
-            "Conversation history is empty"
-            if before == 0
-            else "Nothing to compact: " + str(before) + " item(s), keeping recent " + str(ConversationCompactor.KEEP_RECENT) + "."
         )
 
     def _config(self, args: str) -> str:
@@ -6773,7 +6546,9 @@ class CommandDispatcher:
         )
 
     def _set(self, args: str) -> str:
-        key, value = self._parse_set_args(args)
+        key, separator, raw_value = args.partition(" ")
+        key = key.strip()
+        value = (raw_value.strip() or None) if separator else None
         if not key:
             return CONFIG_SET_USAGE
         if key not in CONFIG_SET_KEYS:
@@ -6788,10 +6563,6 @@ class CommandDispatcher:
             compacted = self._with_status(lambda: "yes" if self.agent.compactor.maybe_compact() else "") == "yes"
             suffix = " and compacted history" if compacted else ""
         return "Set " + key + " = " + self._config_value(key) + suffix
-
-    def _parse_set_args(self, args: str) -> tuple[str, str | None]:
-        key, separator, value = args.partition(" ")
-        return key.strip(), (value.strip() or None) if separator else None
 
     def _config_value(self, key: str) -> str:
         target, attr = self._config_target(key)
@@ -6864,13 +6635,6 @@ class CommandDispatcher:
 
     def _format_bool(self, value: bool | None) -> str:
         return "(fallback)" if value is None else ("on" if value else "off")
-
-    def _format_provider_reasoning(self, provider: ProviderConfig) -> str:
-        if provider.reasoning == "off":
-            return "off"
-        if provider.resolved_api() != "chat":
-            return provider.reasoning
-        return provider.reasoning + "(" + provider.resolved_chat_reasoning() + ")"
 
     def _format_optional(self, value: object) -> str:
         return str(value) if value is not None else "(fallback)"
@@ -7899,8 +7663,10 @@ class AgentLoop:
             plain = "  skipped: " + message.removeprefix("Tool Calls Skipped:").strip()
             self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
-        if self._is_tool_report(message):
-            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), self._tool_plain(message, indent="  "), end="")
+        lines = message.splitlines()
+        if lines and (lines[0].startswith("  ...") or self._is_tool_call_line(lines[0])):
+            plain = "\n".join("  " + line.replace("[success] ", "").replace("[failure] ", "") for line in lines)
+            self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), plain, end="")
             return
         if message.startswith("Retrying:"):
             self._emit_segments([("ansibrightblack", message + "\n")], message)
@@ -7920,16 +7686,6 @@ class AgentLoop:
             return
         self._emit_segments([("ansicyan", message + "\n")], message)
 
-    def _tool_plain(self, message: str, *, indent: str) -> str:
-        return "\n".join(indent + line.replace("[success] ", "").replace("[failure] ", "") for line in message.splitlines())
-
-    def _is_tool_report(self, message: str) -> bool:
-        lines = message.splitlines()
-        if not lines:
-            return False
-        first = lines[0]
-        return first.startswith("  ...") or self._is_tool_call_line(first)
-
     def _is_tool_call_line(self, line: str) -> bool:
         return line.startswith("[success] ") or line.startswith("[failure] ")
 
@@ -7942,22 +7698,20 @@ class AgentLoop:
     def _preview_segments(self, preview: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = [("ansibrightblack", "  Preview\n")]
         content_indent = "  "
-        diff_start = self._unified_diff_start(preview)
+        preview_lines = preview.splitlines()
+        diff_start = -1
+        for index, line in enumerate(preview_lines):
+            body = "\n".join(preview_lines[index:])
+            if line.startswith("--- ") and "\n+++ " in body and "\n@@ " in body:
+                diff_start = index
+                break
         if diff_start >= 0:
-            prefix = "\n".join(preview.splitlines()[:diff_start])
-            diff = "\n".join(preview.splitlines()[diff_start:])
+            prefix = "\n".join(preview_lines[:diff_start])
+            diff = "\n".join(preview_lines[diff_start:])
             if prefix:
                 segments += self._indented_text_segments(prefix, indent=content_indent, style="ansiyellow")
             return segments + self._indent_segments(self._diff_segments(diff), content_indent)
         return segments + self._indented_text_segments(preview, indent=content_indent, style="ansicyan")
-
-    def _unified_diff_start(self, text: str) -> int:
-        lines = text.splitlines()
-        for index, line in enumerate(lines):
-            body = "\n".join(lines[index:])
-            if line.startswith("--- ") and "\n+++ " in body and "\n@@ " in body:
-                return index
-        return -1
 
     def _diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
@@ -8113,21 +7867,6 @@ def _json_str(value: JsonValue) -> str | None:
     if value is None:
         return None
     return str(value)
-
-
-def _memory_fact_from_json(value: JsonValue) -> str | None:
-    item = _json_dict(value)
-    if item:
-        fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
-    else:
-        fact = (_json_str(value) or "").strip()
-    if not fact:
-        return None
-    if fact.startswith("<") and fact.endswith(">"):
-        inner = fact[1:-1].strip().lower()
-        if inner and any(word in inner for word in ("fact", "target", "arg", "path", "criterion", "result", "context", "message", "goal")):
-            return None
-    return fact
 
 
 def _source_from_json(item: Json) -> tuple[str, ...]:
