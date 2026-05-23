@@ -60,6 +60,7 @@ __version__ = "0.4.5"
 
 JsonValue: TypeAlias = Any
 Json: TypeAlias = dict[str, JsonValue]
+
 ############################
 # Errors
 ############################
@@ -104,14 +105,11 @@ class ConversationItem:
     role: Role
     time: datetime = field(default_factory=datetime.now)
 
-    def format_ts(self) -> str:
-        return self.time.strftime("%Y-%m-%d %H:%M:%S")
-
     def format_transcript(self, title: str, content: str, indent: str = "") -> str:
         quoted = ["> " + line if line else ">" for line in content.splitlines()]
         if not quoted:
             quoted = [">"]
-        return _format_lines([f"#### {title} {self.format_ts()}", *quoted], indent)
+        return _format_lines([f"#### {title} {self.time.strftime('%Y-%m-%d %H:%M:%S')}", *quoted], indent)
 
 
 @dataclass
@@ -408,13 +406,7 @@ class Blackboard:
         return keys
 
     def protected_result_sources(self) -> dict[str, str]:
-        return {
-            key: "active hypothesis"
-            for item in self.hypotheses
-            if item.status == HypothesisStatus.ACTIVE
-            for key in item.source
-            if key.startswith("tr.")
-        }
+        return {key: "active hypothesis" for item in self.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
 
 
 @dataclass(frozen=True)
@@ -1203,6 +1195,7 @@ class Tool:
     def requires_confirmation(self, session: Session) -> bool:
         return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.EFFECT == ToolEffect.EDIT
 
+
 ToolClass: TypeAlias = Type[Tool]
 
 
@@ -1252,11 +1245,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
         "[tool result excerpt]\n"
         "excerpted: true\n"
         "note: only an excerpt is visible; use Recall with a line range or Read smaller targeted ranges instead of repeating the same large read.\n"
-        "original_lines: "
-        + str(original_lines)
-        + "\noriginal_chars: "
-        + str(original_chars)
-        + "\n"
+        "original_lines: " + str(original_lines) + "\noriginal_chars: " + str(original_chars) + "\n"
     )
     labels = ("\n--- head ---\n", "\n--- middle ---\n", "\n--- tail ---\n")
     body_budget = max_chars - len(header) - sum(len(label) for label in labels)
@@ -1471,6 +1460,7 @@ class ToolResultContext:
             if _json_str(action.get("type")) == "forget":
                 keys.extend(key for key in _source_from_json(action) if key.startswith("tr."))
         return list(dict.fromkeys(keys))
+
 
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
@@ -2646,7 +2636,7 @@ class EditFileTool(Tool):
             "minItems": 2,
             "maxItems": 2,
             "items": {"anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": {"anyOf": [anchored_edit_schema, replace_all_schema]}}]},
-            "description": 'Exactly two arguments: filepath string, then edits array. Do not pass edits as a JSON string.',
+            "description": "Exactly two arguments: filepath string, then edits array. Do not pass edits as a JSON string.",
         }
         return schema
 
@@ -4881,10 +4871,14 @@ class AgentStateUpdater:
             self._append_state_section(lines, "  Plan", self._format_plan_rows())
         hypotheses = [item.format() for item in current.hypotheses]
         if hypotheses != before_hypotheses:
-            self._append_state_section(lines, "  Hypotheses", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}"))
+            self._append_state_section(
+                lines, "  Hypotheses", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}")
+            )
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
-            self._append_state_section(lines, "  Known", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}"))
+            self._append_state_section(
+                lines, "  Known", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}")
+            )
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
             self._append_state_section(lines, "  User_Rules    updated")
@@ -5148,9 +5142,8 @@ class AgentStateUpdater:
             return
         tracked_state = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         if (
-            ("goal" in action_types or "plan" in action_types or "hypothesis" in action_types or (tracked_state and "tool" in action_types))
-            and not self.blackboard.goal_reached
-        ):
+            "goal" in action_types or "plan" in action_types or "hypothesis" in action_types or (tracked_state and "tool" in action_types)
+        ) and not self.blackboard.goal_reached:
             self.blackboard.task_code = TaskCode.WORKING
 
     def _append_state_section(self, lines: list[str], title: str, rows: list[str] | None = None) -> None:
@@ -5810,9 +5803,7 @@ class Agent:
             if _json_str(response.get("_format_error")):
                 return AgentRunResult(), response, False
             return (
-                self.handle_response(
-                    response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message
-                ),
+                self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message),
                 response,
                 False,
             )
@@ -5873,9 +5864,7 @@ class Agent:
         if invalid_response is not None:
             return AgentRunResult(), invalid_response, False
         return (
-            self.handle_response(
-                response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message
-            ),
+            self.handle_response(response, confirm=confirm, on_auto_approve=on_auto_approve, on_message=on_message),
             response,
             False,
         )
@@ -6380,7 +6369,10 @@ class Agent:
         if ctx.pending_verify_requested:
             self._warn_agent('ignored verify status="pending".', self.RULE_VERIFY_DIRECTLY)
         if self.session.state.pending_user_feedback and ctx.goal_will_change:
-            self._warn_agent("Pending User Feedback is not a new task by default.", "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.")
+            self._warn_agent(
+                "Pending User Feedback is not a new task by default.",
+                "answer it without rewriting Goal unless the user explicitly replaces or cancels the task.",
+            )
             self._drop_goal_rewrite_actions(ctx)
         if ctx.goal_was_empty and not ctx.has_goal_action and ctx.state_or_work_requested and (ctx.pending_verify_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Goal/Plan was set.", self.RULE_GOAL_PLAN_FIRST)
@@ -6547,7 +6539,12 @@ class Agent:
                 item = KnownItem.from_json(raw)
                 if item is not None and KnownItem.source_of(item):
                     return
-        self._remember_observe_error(self._warning("weak observe memory: known facts need source tr.N or keep/forget coverage.", "use source-backed known/hypothesis or keep important raw results."))
+        self._remember_observe_error(
+            self._warning(
+                "weak observe memory: known facts need source tr.N or keep/forget coverage.",
+                "use source-backed known/hypothesis or keep important raw results.",
+            )
+        )
 
     def _forget_tool_result_error(self, actions: list[Json]) -> str:
         keys = ToolResultContext.forget_result_keys_from_actions(actions)
@@ -8300,7 +8297,9 @@ class AgentLoop:
 
     def _print_welcome(self) -> None:
         index_status, _index_message = _code_index_status(self.agent.session)
-        index_tip = [("ansibrightblack", "  tip: "), ("ansicyan", "/index"), ("ansiwhite", " initializes indexed code tools\n")] if index_status == "missing" else []
+        index_tip = (
+            [("ansibrightblack", "  tip: "), ("ansicyan", "/index"), ("ansiwhite", " initializes indexed code tools\n")] if index_status == "missing" else []
+        )
         plain_tip = "  tip: /index initializes indexed code tools\n" if index_status == "missing" else ""
         self._emit_segments(
             [("bold ansicyan", "nanocode"), ("ansiwhite", " - AI coding assistant\n")]
@@ -8322,8 +8321,7 @@ class AgentLoop:
             "nanocode - AI coding assistant\n"
             "  /help [question] for help or source-aware questions\n"
             "  /status for current session state;\n"
-            "  during work: enter queues, c-c cancels, c-d exits\n"
-            + plain_tip,
+            "  during work: enter queues, c-c cancels, c-d exits\n" + plain_tip,
             end="",
         )
 
