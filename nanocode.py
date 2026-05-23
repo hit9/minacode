@@ -1411,12 +1411,7 @@ class ToolResultContext:
         return blocks
 
     def raw_context_chars(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> int:
-        return len(
-            "\n\n".join(
-                self.unreduced_recent_blocks(checkpoint, exclude_keys=exclude_keys)
-                + self.latest_raw_blocks(exclude_keys=exclude_keys)
-            )
-        )
+        return len("\n\n".join(self.unreduced_recent_blocks(checkpoint, exclude_keys=exclude_keys) + self.latest_raw_blocks(exclude_keys=exclude_keys)))
 
     @classmethod
     def _needs_reduction(cls, block: str, checkpoint: int) -> bool:
@@ -3322,7 +3317,7 @@ State:
 - Goal/Plan track work. Facts are confirmed. Leads are for investigations. Checks are verification. User Rules are future-behavior requests.
 - Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
-Never issue no-op state updates.
+Default Response Format: Text (Not markdown)
 """
 
 AGENT_USER_PROMPT_TEMPLATE = """
@@ -5604,10 +5599,7 @@ class Agent:
         budget = self.context_budget()
         # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
         # Very large failures still trigger observe through raw-context pressure.
-        return (
-            len(pending) >= budget.observe_after_results
-            or self._unreferenced_raw_context_chars() >= budget.raw_chars
-        )
+        return len(pending) >= budget.observe_after_results or self._unreferenced_raw_context_chars() >= budget.raw_chars
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
         return self.tool_context.unreduced_blocks(
