@@ -6,13 +6,13 @@ import nanocode
 from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
-def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False, plan_mode: bool = False) -> Session:
+def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
     data = {
         "provider": {"active": "default", "default": {"model": model}},
         "paths": {"data_dir": str(tmp_path / ".nanocode")},
         "runtime": {"compact_at": compact_at},
     }
-    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode))
+    return Session(cwd=str(tmp_path), config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
 
 
 def _status_text(bar: StatusBar) -> str:
@@ -49,13 +49,13 @@ def test_session_loads_user_rules_from_project_file(tmp_path, monkeypatch):
     assert session.state.user_rules.format() == "# User Rules\n\n- Prompt-only changes do not need tests."
 
 
-def test_runtime_settings_loads_modes_from_config():
-    data = {"runtime": {"yolo": True, "plan_mode": True}}
+def test_runtime_settings_loads_yolo_from_config():
+    data = {"runtime": {"yolo": True}}
 
     settings = RuntimeSettings.from_dict(data)
 
     assert settings.yolo is True
-    assert settings.plan_mode is True
+    assert not hasattr(settings, "plan_mode")
 
 
 def test_runtime_settings_loads_auto_clean_recent():
@@ -88,12 +88,12 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert config["provider"]["default"]["timeout"] == 180
     assert config["provider"]["default"]["first_token_timeout"] == 90
     assert config["runtime"]["compact_at"] == 50
-    assert config["runtime"]["plan_timeout"] == 360
-    assert config["runtime"]["plan_first_token_timeout"] == 180
     assert config["runtime"]["context_budget"] == "medium"
     assert config["runtime"]["auto_clean_recent"] == "1d"
     assert config["runtime"]["yolo"] is False
-    assert config["runtime"]["plan_mode"] is False
+    assert "plan_timeout" not in config["runtime"]
+    assert "plan_first_token_timeout" not in config["runtime"]
+    assert "plan_mode" not in config["runtime"]
 
 
 def test_main_init_config_uses_config_argument(tmp_path, capsys):
@@ -105,6 +105,18 @@ def test_main_init_config_uses_config_argument(tmp_path, capsys):
     assert result == 0
     assert config_path.exists()
     assert "Created config: " + str(config_path) in output.out
+
+
+def test_main_rejects_plan_argument(capsys):
+    try:
+        nanocode.main(["--plan"])
+    except SystemExit as error:
+        assert error.code == 2
+    else:
+        raise AssertionError("--plan should be rejected by argparse")
+
+    output = capsys.readouterr()
+    assert "unrecognized arguments: --plan" in output.err
 
 
 def test_main_loads_config_argument(tmp_path, monkeypatch):
@@ -133,7 +145,7 @@ data_dir = ".custom-nanocode"
 
     monkeypatch.setattr(nanocode.AgentLoop, "run", fake_run)
 
-    result = nanocode.main(["--config", str(config_path), "--plan"])
+    result = nanocode.main(["--config", str(config_path)])
 
     assert result == 0
     assert sessions[0].config.provider.url == "https://example.test/v1"
@@ -141,7 +153,7 @@ data_dir = ".custom-nanocode"
     assert sessions[0].config.provider.model == "custom-model"
     assert sessions[0].config.provider.available_models == ("custom-model", "other-model")
     assert sessions[0].config.data_dir == ".custom-nanocode"
-    assert sessions[0].settings.plan_mode is True
+    assert not hasattr(sessions[0].settings, "plan_mode")
 
 
 def test_status_bar_text_has_visible_sweep_marker(tmp_path):
@@ -195,10 +207,10 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
 
 
 def test_status_bar_shows_active_modes(tmp_path):
-    session = make_session(tmp_path, model="provider/model", yolo=True, plan_mode=True)
+    session = make_session(tmp_path, model="provider/model", yolo=True)
     bar = StatusBar(session)
 
-    assert _status_text(bar) == "model (medium) | yolo | plan | ctx:0/50 | tool:0 | tok:last:- sess:-"
+    assert _status_text(bar) == "model (medium) | yolo | ctx:0/50 | tool:0 | tok:last:- sess:-"
 
 
 def test_status_bar_shows_recent_status_notice(tmp_path):
@@ -308,11 +320,11 @@ def test_agent_loop_styles_compact_state_section_labels(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._compact_state_segments("Hypotheses + Known Updated\nHypotheses\n  1. h1\nKnown\n  1. fact")
+    segments = loop._compact_state_segments("Leads + Facts Updated\nLeads\n  1. h1\nFacts\n  1. fact")
 
-    assert ("bold ansicyan", "Hypotheses + Known Updated\n") in segments
-    assert ("ansicyan", "Hypotheses\n") in segments
-    assert ("ansicyan", "Known\n") in segments
+    assert ("bold ansicyan", "Leads + Facts Updated\n") in segments
+    assert ("ansicyan", "Leads\n") in segments
+    assert ("ansicyan", "Facts\n") in segments
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):
@@ -372,23 +384,19 @@ def test_agent_loop_command_completer_matches_slash_commands():
     set_key_completions = list(completer.get_completions(Document("/set provider."), CompleteEvent(completion_requested=True)))
     set_reasoning_completions = list(completer.get_completions(Document("/set provider.reasoning h"), CompleteEvent(completion_requested=True)))
     set_chat_reasoning_completions = list(completer.get_completions(Document("/set provider.chat_reasoning rea"), CompleteEvent(completion_requested=True)))
-    set_plan_timeout_completions = list(completer.get_completions(Document("/set runtime.plan_"), CompleteEvent(completion_requested=True)))
     model_completions = list(nanocode.CommandCompleter(models=["qwen3", "deepseek"]).get_completions(Document("/model q"), CompleteEvent(completion_requested=True)))
-    plan_completions = list(completer.get_completions(Document("/plan "), CompleteEvent(completion_requested=True)))
     api_completions = list(completer.get_completions(Document("/api r"), CompleteEvent(completion_requested=True)))
     reason_payload_completions = list(completer.get_completions(Document("/reason-payload rea"), CompleteEvent(completion_requested=True)))
 
     assert "/help" in [completion.text for completion in slash_completions]
     assert "/api" in [completion.text for completion in slash_completions]
     assert "/reason-payload" in [completion.text for completion in slash_completions]
-    assert "/plan" in [completion.text for completion in slash_completions]
+    assert "/plan" not in [completion.text for completion in slash_completions]
     assert "/config" in [completion.text for completion in config_completions]
     assert "provider.reasoning" in [completion.text for completion in set_key_completions]
     assert [completion.text for completion in set_reasoning_completions] == ["high"]
     assert [completion.text for completion in set_chat_reasoning_completions] == ["reasoning", "reasoning_effort"]
-    assert {completion.text for completion in set_plan_timeout_completions} == {"runtime.plan_timeout", "runtime.plan_first_token_timeout"}
     assert [completion.text for completion in model_completions] == ["qwen3"]
-    assert [completion.text for completion in plan_completions] == ["on", "off"]
     assert [completion.text for completion in api_completions] == ["responses"]
     assert [completion.text for completion in reason_payload_completions] == ["reasoning", "reasoning_effort"]
 
@@ -396,11 +404,11 @@ def test_agent_loop_command_completer_matches_slash_commands():
 def test_command_lexer_highlights_known_command_prefix_only():
     lexer = CommandLexer()
 
-    known = lexer.lex_document(Document("/plan how?"))(0)
+    removed = lexer.lex_document(Document("/plan how?"))(0)
     unknown = lexer.lex_document(Document("/somecommand"))(0)
     spaced = lexer.lex_document(Document(" /plan how?"))(0)
 
-    assert known == [("class:command-input", "/plan"), ("", " how?")]
+    assert removed == [("", "/plan how?")]
     assert unknown == [("", "/somecommand")]
     assert spaced == [("", " /plan how?")]
 

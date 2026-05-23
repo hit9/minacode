@@ -53,7 +53,6 @@ def _session(
     reasoning: str = "",
     chat_reasoning: str = "",
     yolo: bool = False,
-    plan_mode: bool = False,
     debug: bool = False,
     api: str = "",
 ) -> Session:
@@ -76,7 +75,7 @@ def _session(
     return Session(
         cwd=str(tmp_path),
         config=nanocode.Config.from_dict(data),
-        settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode, debug=debug),
+        settings=nanocode.RuntimeSettings.from_dict(data, yolo=yolo, debug=debug),
     )
 
 
@@ -298,7 +297,7 @@ def test_search_tool_result_uses_larger_output_budget(tmp_path):
     agent.execute_tool_calls([{"name": "Search", "intention": "search large result", "args": ["needle", "sample.txt", "context=0"]}])
 
     item = session.state.tool_result_store["tr.1"]
-    assert item.excerpted is True
+    assert item.excerpted is False
     assert nanocode.MAX_TOOL_OUTPUT_CHARS < len(item.value) <= nanocode.SearchTool.OUTPUT_CHARS
 
 
@@ -515,15 +514,15 @@ def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch)
     prompt = agent._system_prompt()
 
     assert "TASK SHAPES" in prompt
-    assert "Chat:" in prompt
-    assert "One-shot:" in prompt
-    assert "Tracked task:" in prompt
-    assert "Classify the latest request as Chat, One-shot, or Tracked task" in prompt
+    assert "Simple answer:" in prompt
+    assert "One-shot task:" in prompt
+    assert "Multi-step task:" in prompt
+    assert "Classify the latest request as Simple answer, One-shot task, or Multi-step task" in prompt
     assert "call needed tools, then answer with assistant text and stop" in prompt
-    assert "do not create Goal, Plan, Known, or Verify just to report the result" in prompt
-    assert "record Verify only after edits, explicit checks, or correctness-sensitive work" in prompt
-    assert "for root-cause work, set work_mode=investigate and use hypotheses" in prompt
-    assert "Tracked tasks are complete only after goal.complete=true is set" in prompt
+    assert "do not create Goal, Plan, Facts, Leads, or Checks just to report the result" in prompt
+    assert "record Checks only after edits, explicit checks, or correctness-sensitive work" in prompt
+    assert "use Leads only for root-cause/debug/investigation work" in prompt
+    assert "Multi-step tasks are complete only after goal.complete=true is set" in prompt
     assert "InspectCode" not in prompt
     assert "Use Search/List/LineCount when path, symbol, range, or target is unknown" in prompt
     assert "__discovery_hint__" not in prompt
@@ -568,10 +567,10 @@ def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_pat
 
     prompt = agent.build_user_prompt()
 
-    assert "Chat: answer with assistant text only." in prompt
-    assert "One-shot with no Goal or Plan: assistant text is the final answer" in prompt
-    assert "If Current Phase is new and visible tool results answer the request" in prompt
-    assert "Tracked task: assistant text is optional" in prompt
+    assert "Simple answer: answer with assistant text only." in prompt
+    assert "One-shot task with no Goal or Plan: assistant text is the final answer" in prompt
+    assert "If visible tool results already answer a one-shot request" in prompt
+    assert "Multi-step task: assistant text is optional" in prompt
     assert "Goal completion requires goal.complete=true" in prompt
 
 
@@ -591,7 +590,7 @@ def test_one_shot_bash_does_not_require_goal_or_plan(tmp_path):
     assert result.done is False
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.blackboard.task_code == nanocode.TaskCode.NEW
-    assert "Current Phase:\nnew" in agent.build_user_prompt()
+    assert "Current Phase:" not in agent.build_user_prompt()
     assert not any("mutating work before" in error for error in agent.agent_feedback_errors)
 
 
@@ -809,7 +808,7 @@ def test_hypothesis_action_updates_blackboard_and_report(tmp_path):
             context="feed search",
         )
     ]
-    assert messages == ["Hypotheses Updated\n  1. [active] h1: admin filtering drops history events [tr.1] context: feed search"]
+    assert messages == ["Leads Updated\n  1. [active] h1: admin filtering drops history events [tr.1] context: feed search"]
 
 
 def test_forget_rejects_active_hypothesis_source(tmp_path):
@@ -823,8 +822,8 @@ def test_forget_rejects_active_hypothesis_source(tmp_path):
 
     assert result.done is False
     assert "tr.1" in _blocks_text(agent.tool_context.kept_results)
-    assert any("protected source: tr.1 (active hypothesis)" in error for error in agent.agent_feedback_errors)
-    assert messages == ["ToolResult_Gate: protected source: tr.1 (active hypothesis)."]
+    assert any("protected source: tr.1 (active lead)" in error for error in agent.agent_feedback_errors)
+    assert messages == ["ToolResult_Gate: protected source: tr.1 (active lead)."]
 
 
 def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
@@ -851,7 +850,7 @@ def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
     assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.RULED_OUT
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
-        "Hypotheses Updated\n  1. [ruled_out] h1: branch ruled out [tr.1]",
+        "Leads Updated\n  1. [ruled_out] h1: branch ruled out [tr.1]",
         "Tool Result Context: -tr.1",
     ]
 
@@ -877,7 +876,7 @@ def test_forget_allows_source_when_hypothesis_is_dropped_same_response(tmp_path)
     assert agent.blackboard.hypotheses[0].status == nanocode.HypothesisStatus.DROPPED
     assert "tr.1" not in _blocks_text(agent.tool_context.kept_results)
     assert messages == [
-        "Hypotheses Updated\n  1. [dropped] h1: branch no longer matters [tr.1]",
+        "Leads Updated\n  1. [dropped] h1: branch no longer matters [tr.1]",
         "Tool Result Context: -tr.1",
     ]
 
@@ -1281,16 +1280,6 @@ def test_agent_request_responses_api_omits_reasoning_when_disabled(tmp_path, mon
 
     assert calls == []
     assert "reasoning" not in payload
-
-
-def test_plan_mode_uses_runtime_plan_timeouts(tmp_path):
-    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", timeout=12, first_token_timeout=5, plan_mode=True)
-    session.settings.plan_timeout = 240
-    session.settings.plan_first_token_timeout = 80
-    client = nanocode.ModelClient(session)
-
-    assert client._request_timeouts(session.config.provider, activity="agent") == (240, 80)
-    assert client._request_timeouts(session.config.provider, activity="compact") == (12, 5)
 
 
 def test_agent_request_retries_model_timeout(tmp_path, monkeypatch):
@@ -2253,16 +2242,16 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     )
 
     report = agent.state_updater.compact_report()
-    assert report.startswith("Goal + Plan + Known Updated")
+    assert report.startswith("Goal + Plan + Facts Updated")
     assert "\nGoal\n  inspect project\n" in report
     assert "\nPlan\n" in report
     assert "  ... 1 older\n  2. [✓ done] Read config\n  3. [◔ doing] Update code\n  4. [○ todo] Run tests" in report
-    assert "\nKnown\n" in report
+    assert "\nFacts\n" in report
     assert "  ... 1 older\n  2. fact two\n  3. fact three\n  4. fact four" in report
     assert "State Updated" not in report
 
 
-def test_main_agent_compact_report_labels_combined_hypotheses_and_known(tmp_path):
+def test_main_agent_compact_report_labels_combined_leads_and_facts(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.apply_response(
@@ -2280,10 +2269,10 @@ def test_main_agent_compact_report_labels_combined_hypotheses_and_known(tmp_path
     report = agent.state_updater.compact_report()
     assert report == "\n".join(
         [
-            "Hypotheses + Known Updated",
-            "Hypotheses",
+            "Leads + Facts Updated",
+            "Leads",
             "  1. [active] h1: admin selector starves history mode [tr.2]",
-            "Known",
+            "Facts",
             "  1. [tr.3] feed SSE request path is shared by admin and normal users",
         ]
     )
@@ -2357,7 +2346,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
     assert "  Plan\n" in agent.state_updater.latest_report
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
-    assert "  Known\n" in agent.state_updater.latest_report
+    assert "  Facts\n" in agent.state_updater.latest_report
     assert "    1. Search uses rg." in agent.state_updater.latest_report
 
     agent.apply_response(response)
@@ -2949,7 +2938,7 @@ def test_agent_run_ingests_queued_user_input_before_next_model_call(tmp_path):
     response = agent.run("initial task", on_message=messages.append, poll_user_input=lambda: queued_inputs.pop(0) if queued_inputs else None)
 
     assert response["actions"][0]["message_for_complete"] == "done"
-    assert messages == ["Goal Updated\n  initial task", "sent: use chinese", "Known Updated\n  1. queued feedback was visible", "done"]
+    assert messages == ["Goal Updated\n  initial task", "sent: use chinese", "Facts Updated\n  1. queued feedback was visible", "done"]
     assert [item.content for item in agent.session.state.conversation if isinstance(item, nanocode.UserMessage)] == ["initial task", "use chinese"]
     assert agent.blackboard.user_input == "use chinese"
     assert "use chinese" not in agent.model_client.user_prompts[0]
@@ -2959,39 +2948,8 @@ def test_agent_run_ingests_queued_user_input_before_next_model_call(tmp_path):
     assert "Latest User Request:" in agent.model_client.user_prompts[1]
 
 
-def test_agent_plan_mode_tool_gate_allows_only_readonly_tools(tmp_path):
-    agent = Agent(_session(tmp_path, plan_mode=True))
-
-    assert agent._plan_mode_tool_error([{"type": "tool", "name": "Read", "args": ["sample.txt"]}]) == ""
-    assert agent._plan_mode_tool_error([{"type": "tool", "name": "Git", "args": ["status", "--short"]}]) == ""
-    assert "blocked tool=Bash" in agent._plan_mode_tool_error([{"type": "tool", "name": "Bash", "args": ["echo hi"]}])
-    assert "blocked tool=Edit" in agent._plan_mode_tool_error([{"type": "tool", "name": "Edit", "args": ["sample.txt", "old", "new"]}])
-    assert "blocked tool=Git" in agent._plan_mode_tool_error([{"type": "tool", "name": "Git", "args": ["commit", "-m", "x"]}])
-    assert "blocked tool=Lsp" in agent._plan_mode_tool_error([{"type": "tool", "name": "Lsp", "args": ["symbols"]}])
-
-
-def test_agent_plan_mode_rejects_mutating_tool_before_execution(tmp_path):
-    path = tmp_path / "sample.txt"
-    path.write_text("old\n", encoding="utf-8")
-    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
-    _seed_plan(agent, "plan change")
-    messages = []
-    anchor = _read_anchors(agent.session, "sample.txt")[0]
-
-    result = agent.handle_response(
-        {"actions": [{"type": "tool", "name": "EditFile", "intention": "change sample", "args": ["sample.txt", [{"op": "replace", "start": anchor, "end": anchor, "content": "new\n"}]]}]},
-        confirm=lambda call, tool: True,
-        on_message=messages.append,
-    )
-
-    assert result.done is False
-    assert path.read_text(encoding="utf-8") == "old\n"
-    assert agent.tool_runner.latest_executions == []
-    assert messages and messages[0].startswith("PlanMode_Gate: plan mode allows readonly discovery only; blocked tool=EditFile")
-
-
-def test_agent_plan_mode_rejects_invalid_action_instead_of_completing(tmp_path):
-    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
+def test_agent_rejects_invalid_action_instead_of_completing(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
     messages = []
 
     result = agent.handle_response({"actions": [{"type": "invalid", "text": "done"}]}, on_message=messages.append)
@@ -3044,33 +3002,6 @@ def test_agent_normalizes_lowercase_repo_tool_names(tmp_path):
     assert result.done is False
     assert agent.tool_runner.latest_executions[0].call.name == "Search"
     assert not any("Protocol_Gate" in message for message in messages)
-
-
-def test_agent_plan_mode_stores_proposed_plan_completion(tmp_path):
-    agent = Agent(_session(tmp_path, plan_mode=True))
-    _seed_plan(agent, "plan change")
-    message = "<proposed_plan>\n1. Inspect target.\n2. Patch code.\n3. Run tests.\n</proposed_plan>"
-
-    result = agent.handle_response({"actions": [{"type": "goal", "text": "plan change", "complete": True, "message_for_complete": message}]})
-
-    assert result.done is True
-    assert isinstance(agent.session.state.conversation[-1], nanocode.AssistantMessage)
-    assert agent.session.state.conversation[-1].content == message
-
-
-def test_agent_plan_mode_requires_proposed_plan_completion_block(tmp_path):
-    agent = Agent(_session(tmp_path, plan_mode=True, debug=True))
-    _seed_plan(agent, "plan change")
-    messages = []
-
-    result = agent.handle_response(
-        {"actions": [{"type": "goal", "text": "plan change", "complete": True, "message_for_complete": "plain plan"}]},
-        on_message=messages.append,
-    )
-
-    assert result.done is False
-    assert not agent.session.state.conversation
-    assert messages == ["PlanMode_Gate: final plan must be wrapped in <proposed_plan>...</proposed_plan>."]
 
 
 def test_agent_run_allows_readonly_answer_without_verification(tmp_path):
@@ -3141,7 +3072,7 @@ def test_agent_run_executes_edit_tool_and_requires_verification(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert any(message.startswith("[success] EditFile sample.txt 1 edits") for message in messages)
     assert not any(message.startswith("State Updated") for message in messages)
-    assert any("edited files need verification before completion" in error for error in agent.agent_feedback_errors)
+    assert any("edited files need Checks before completion" in error for error in agent.agent_feedback_errors)
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "new\n"
     assert messages[-1] == "done"
 
@@ -3160,7 +3091,7 @@ def test_agent_warns_but_allows_completion_when_verification_required(tmp_path):
     assert result.done is True
     assert messages == ["done"]
     assert agent.agent_feedback_errors == [
-        'Warning blocked: edited files need verification before completion. Next: run verification tools, then report verify status="passed"|"failed"|"blocked".'
+        'Warning blocked: edited files need Checks before completion. Next: run checks, then report verify status="passed"|"failed"|"blocked".'
     ]
 
 
@@ -3718,7 +3649,7 @@ def test_agent_run_retries_when_plan_complete_without_verification(tmp_path):
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 3
-    assert any("Plan is complete but verification is not recorded" in error for error in agent.agent_feedback_errors)
+    assert any("Plan is complete but Checks are not recorded" in error for error in agent.agent_feedback_errors)
     assert agent.blackboard.verification.status == VerificationStatus.DONE
 
 
@@ -3742,8 +3673,8 @@ def test_agent_allows_tool_after_completed_plan_and_verification(tmp_path):
     assert result.done is False
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.tool_runner.latest_executions[0].outcome == "success"
-    assert not any("Completion_Gate: completed plan and verification" in message for message in messages)
-    assert any("Plan and verification are complete" in error for error in agent.agent_feedback_errors)
+    assert not any("Completion_Gate: completed plan and Checks" in message for message in messages)
+    assert any("Plan and Checks are complete" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path):
@@ -3998,10 +3929,10 @@ def test_agent_run_retries_goal_complete_with_unfinished_plan(tmp_path):
     assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
 
 
-def test_investigate_completion_without_root_cause_hypothesis_warns(tmp_path):
+def test_investigate_completion_without_confirmed_lead_warns(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     _seed_plan(agent, "find bug")
-    agent.blackboard.work_mode = nanocode.WorkMode.INVESTIGATE
+    agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="bad admin filter", status=nanocode.HypothesisStatus.ACTIVE, source=("tr.1",))]
     messages = []
 
     result = agent.handle_response(
@@ -4016,7 +3947,7 @@ def test_investigate_completion_without_root_cause_hypothesis_warns(tmp_path):
 
     assert result.done is True
     assert agent.blackboard.goal_reached is False
-    assert any("confirmed hypothesis" in error for error in agent.agent_feedback_errors)
+    assert any("confirmed lead" in error for error in agent.agent_feedback_errors)
     assert messages[-1] == "done"
 
     result = agent.handle_response(
@@ -4069,8 +4000,8 @@ def test_goal_declares_investigate_work_mode(tmp_path):
     result = agent.run("为什么 admin history 不出现")
 
     assert result["actions"][-1]["message_for_complete"] == "done"
-    assert agent.blackboard.work_mode == nanocode.WorkMode.INVESTIGATE
-    assert "Work Mode:\nnormal" in agent.model_client.user_prompts[0]
+    assert "Work Mode:" not in agent.model_client.user_prompts[0]
+    assert "Leads:" not in agent.model_client.user_prompts[0]
 
 
 def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path):

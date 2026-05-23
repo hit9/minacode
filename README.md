@@ -16,7 +16,7 @@ Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, confi
 
 - **Function Tools**: Route model decisions through auditable tools.
 - **Verified Edits**: Reject stale range edits before they touch files.
-- **Autonomous Loop**: Chain reading, editing, running, and verification.
+- **Autonomous Loop**: Chain reading, editing, running, and checks.
 - **Live Telemetry**: Stream tool intent, token use, and status.
 
 ## Install
@@ -61,7 +61,6 @@ Ask a source-aware question about nanocode itself:
 CLI arguments:
 
 - `--yolo`: Skip tool execution confirmations.
-- `--plan`: Plan changes without editing files or running commands.
 - `--debug`: Write request prompts to the current session directory under `~/.nanocode/sessions/`.
 - `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
 - `--init-config`: Create a default config file.
@@ -90,7 +89,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/plan [on|off|question]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/yolo`.
 - Maintenance: `/index [force]`, `/clean`.
 - Exit: `/exit`, `/quit`.
 
@@ -112,5 +111,5 @@ Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
 ## Status
 
-- Status bar: active model, reasoning, active yolo/plan modes, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, task, goal, and verification.
+- Status bar: active model, reasoning, active yolo mode, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
+- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, goal, and checks.

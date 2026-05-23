@@ -100,12 +100,13 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
     assert "tokens: last=1k session=2m" in result.message
     assert "model: model api=chat(auto) reasoning=medium(off) stream=on" in result.message
     assert "session: " + session.session_id in result.message
-    assert "runtime: yolo=off plan=off compact_at=50" in result.message
+    assert "runtime: yolo=off compact_at=50" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
     assert "tools: code_index=unavailable" in result.message
-    assert "task: done" in result.message
+    assert "task:" not in result.message
+    assert "checks: idle" in result.message
     assert "blackboard" not in result.message
 
 
@@ -172,24 +173,22 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "paths.session_dir: " in result.message
     assert "paths.history: " + str(tmp_path / ".nanocode" / "history") in result.message
     assert "runtime.max_agent_steps: 100" in result.message
-    assert "runtime.plan_timeout: 360" in result.message
-    assert "runtime.plan_first_token_timeout: 180" in result.message
     assert "runtime.context_budget: medium" in result.message
     assert "runtime.auto_clean_recent: 1d" in result.message
-    assert "runtime.plan_mode: off" in result.message
+    assert "runtime.plan" not in result.message
 
 
-def test_set_command_updates_plan_timeouts(tmp_path):
+def test_plan_runtime_config_keys_are_removed(tmp_path):
     session = make_session(tmp_path)
     dispatcher = CommandDispatcher(Agent(session))
 
     timeout_result = dispatcher.dispatch("/set runtime.plan_timeout 240")
     first_token_result = dispatcher.dispatch("/set runtime.plan_first_token_timeout 80")
+    mode_result = dispatcher.dispatch("/set runtime.plan_mode on")
 
-    assert timeout_result.message == "Set runtime.plan_timeout = 240"
-    assert first_token_result.message == "Set runtime.plan_first_token_timeout = 80"
-    assert session.settings.plan_timeout == 240
-    assert session.settings.plan_first_token_timeout == 80
+    assert timeout_result.message == "Unknown config key: runtime.plan_timeout"
+    assert first_token_result.message == "Unknown config key: runtime.plan_first_token_timeout"
+    assert mode_result.message == "Unknown config key: runtime.plan_mode"
 
 
 def test_context_command_shows_and_sets_budget(tmp_path):
@@ -212,34 +211,13 @@ def test_context_command_shows_and_sets_budget(tmp_path):
     assert invalid_result.message == "Usage: /context [low|medium|high]"
 
 
-def test_plan_command_toggles_plan_mode(tmp_path):
+def test_plan_command_is_removed(tmp_path):
     session = make_session(tmp_path)
     dispatcher = CommandDispatcher(Agent(session))
 
-    on_result = dispatcher.dispatch("/plan")
-    off_result = dispatcher.dispatch("/plan off")
-    unknown_set_result = dispatcher.dispatch("/set runtime.plan_mode on")
-
-    assert on_result.message == "Set plan mode = on"
-    assert off_result.message == "Set plan mode = off"
-    assert unknown_set_result.message == "Unknown config key: runtime.plan_mode"
-    assert session.settings.plan_mode is False
-
-
-def test_plan_command_runs_one_shot_plan_question(tmp_path):
-    prompts = []
-    session = make_session(tmp_path)
-
-    def run_agent(prompt):
-        prompts.append((prompt, session.settings.plan_mode))
-
-    dispatcher = CommandDispatcher(Agent(session), run_agent=run_agent)
-
     result = dispatcher.dispatch("/plan how should lsp tools work?")
 
-    assert result.message == ""
-    assert prompts == [("how should lsp tools work?", True)]
-    assert session.settings.plan_mode is False
+    assert result.message == "Unknown command: /plan"
 
 
 def test_provider_command_switches_current_provider(tmp_path):

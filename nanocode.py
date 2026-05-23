@@ -406,7 +406,7 @@ class Blackboard:
         return keys
 
     def protected_result_sources(self) -> dict[str, str]:
-        return {key: "active hypothesis" for item in self.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
+        return {key: "active lead" for item in self.hypotheses if item.status == HypothesisStatus.ACTIVE for key in item.source if key.startswith("tr.")}
 
 
 @dataclass(frozen=True)
@@ -579,27 +579,21 @@ class RuntimeSettings:
     shell_timeout: int = 60
     compact_at: int = 50
     max_agent_steps: int = 100
-    plan_timeout: int = 360
-    plan_first_token_timeout: int = 180
     auto_clean_recent: str = "1d"
     context_budget: str = "medium"
     yolo: bool = False
-    plan_mode: bool = False
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             compact_at=Config.int(runtime, "compact_at", 50),
             max_agent_steps=max(1, Config.int(runtime, "max_agent_steps", 100) or 0),
-            plan_timeout=max(1, Config.int(runtime, "plan_timeout", 360) or 0),
-            plan_first_token_timeout=max(1, Config.int(runtime, "plan_first_token_timeout", 180) or 0),
             auto_clean_recent=cls.clean_retention(Config.str(runtime, "auto_clean_recent", "1d")),
             context_budget=cls.clean_context_budget(Config.str(runtime, "context_budget", "medium")),
             yolo=yolo or bool(Config.bool(runtime, "yolo", False)),
-            plan_mode=plan_mode or bool(Config.bool(runtime, "plan_mode", False)),
             debug=debug,
         )
 
@@ -751,13 +745,10 @@ data_dir = "~/.nanocode"
 shell_timeout = 60
 compact_at = 50
 max_agent_steps = 100
-plan_timeout = 360
-plan_first_token_timeout = 180
 context_budget = "medium"
 # Automatically delete inactive session directories older than this. Use "off" to disable.
 auto_clean_recent = "1d"
 yolo = false
-plan_mode = false
 """
 
     @classmethod
@@ -853,12 +844,12 @@ class Session:
     code_index_repository: Any | None = None
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
-        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, plan_mode=plan_mode, debug=debug)
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
+        return cls.from_config_data(ConfigFile.load(path), yolo=yolo, debug=debug)
 
     @classmethod
-    def from_config_data(cls, data: Json, *, yolo: bool = False, plan_mode: bool = False, debug: bool = False) -> "Session":
-        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, plan_mode=plan_mode, debug=debug))
+    def from_config_data(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "Session":
+        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
         session.load_user_rules()
         return session
 
@@ -1102,7 +1093,6 @@ class DebugTrace:
     def _agent_payload(agent: Any) -> Json:
         return {
             "mode": agent.mode,
-            "task_code": agent.blackboard.task_code,
             "goal": agent.blackboard.goal,
             "plan_items": len(agent.blackboard.plan),
             "feedback_tail": agent.agent_feedback_errors[-3:],
@@ -3090,15 +3080,6 @@ class GitTool(Tool):
             return _format_process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "timeout")
 
 
-class PlanModeGitTool(GitTool):
-    NAME: ClassVar[str] = "Git"
-    DESCRIPTION: ClassVar[tuple[str, ...]] = (
-        "Run readonly git commands only: status, diff, log, show, rev-parse, ls-files, grep, blame.",
-        "Returns exit_code plus stdout/stderr.",
-        "Pass each git argument separately; optional first arg cwd=path changes repository directory.",
-    )
-
-
 @dataclass
 class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
@@ -3180,15 +3161,6 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
 }
-PLAN_MODE_TOOLS: tuple[ToolClass, ...] = (
-    ReadTool,
-    LineCountTool,
-    ListTool,
-    InspectCodeTool,
-    SearchTool,
-    PlanModeGitTool,
-    ToolResultTool,
-)
 
 
 def _canonical_tool_name(name: str | None) -> str:
@@ -3231,17 +3203,16 @@ TOOL_HYPOTHESIS_ITEMS_SCHEMA: Json = {
 
 STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
     "goal": (
-        "Set, update, or complete the current goal. Use work_mode=investigate for root-cause/debug work; use message_for_complete for the final user message.",
+        "Set, update, or complete the current goal. Use message_for_complete for the final user message.",
         {
             "text": TOOL_STRING_SCHEMA,
-            "work_mode": {"type": ["string", "null"], "enum": ["normal", "investigate"]},
             "complete": {"type": "boolean"},
             "message_for_complete": TOOL_NULLABLE_STRING_SCHEMA,
         },
         ["text", "complete", "message_for_complete"],
     ),
     "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
-    "hypothesis": ("Update investigation hypotheses.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
+    "hypothesis": ("Update investigation leads.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
         "Remember an explicit future behavior rule from the user.",
@@ -3254,7 +3225,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         ["source", "reason"],
     ),
     "verify": (
-        "Record concrete verification status.",
+        "Record concrete check status.",
         {
             "kind": TOOL_STRING_SCHEMA,
             "method": TOOL_NULLABLE_STRING_SCHEMA,
@@ -3280,7 +3251,7 @@ def _state_tool_schema(name: str) -> Json:
 
 COMPACT_TOOL_SCHEMA = _function_tool_schema(
     "compact",
-    "Return a compact continuation summary and retained known facts.",
+    "Return a compact continuation summary and retained facts.",
     _tool_object_schema(
         {
             "summary": TOOL_STRING_SCHEMA,
@@ -3298,7 +3269,7 @@ AGENT_SYSTEM_PROMPT = """You are nanocode, a coding agent.
 
 Use function tools to update state and work on the repository.
 Assistant text is optional. Do not answer with text when a useful tool call should be made.
-Tracked tasks are complete only after goal.complete=true is set.
+Multi-step tasks are complete only after goal.complete=true is set.
 
 Language rule: all user-facing assistant text MUST use the latest user language.
 This includes chat text, progress text, pending-feedback replies, direct responses, and message_for_complete.
@@ -3317,43 +3288,43 @@ All repository tool calls require:
 - args: tool arguments
 
 PRIORITY
-Latest User Request > User Rules > Current Goal > Plan/Known > Conversation History.
+Latest User Request > User Rules > Current Goal > Plan/Facts > Conversation History.
 
-Current Phase:
-- new: align latest request with current state, or start readonly discovery
-- working: continue the current goal
-- verifying: run or record verification
-- done: wait for the next user request
-
-Do not rewrite the Goal when Current Phase is working/verifying unless the user changed the task.
 Never repeat a previous completion as the answer.
+Do not rewrite the Goal unless the user changed the task.
 
 TASK SHAPES
-Chat:
+Simple answer:
 - direct conversation, clarification, or explanation that needs no repository action
 - answer with assistant text only
-- do not use Goal, Plan, Known, or Verify
+- do not use Goal, Plan, Facts, Leads, or Checks
 
-One-shot:
+One-shot task:
 - one bounded lookup/check/tool batch whose visible result answers the request
 - call needed tools, then answer with assistant text and stop
-- do not create Goal, Plan, Known, or Verify just to report the result
+- do not create Goal, Plan, Facts, Leads, or Checks just to report the result
 
-Tracked task:
-- multi-step work, edits, debugging, investigation, explicit verification, or work that may span turns
+Multi-step task:
+- implementation, edits, debugging, investigation, explicit checks, or work that may span turns
 - set Goal; set Plan once enough context is known
-- record Verify only after edits, explicit checks, or correctness-sensitive work
+- record Checks only after edits, explicit checks, or correctness-sensitive work
 - complete with goal.complete=true
 
 STATE
-Known:
+Facts:
 - settled current-task facts that matter after tool results disappear
 - not intentions, TODOs, guesses, routine observations, duplicates, or raw logs
 
-Hypotheses:
-- competing investigation directions
+Leads:
+- investigation directions for root-cause, debugging, or troubleshooting work
 - status: { __hypothesis_status_text__ }
-- each hypothesis should imply a concrete check
+- each lead should imply a concrete check
+- do not create Leads for ordinary implementation or rename tasks
+
+Checks:
+- concrete checks that were run, failed, or were blocked
+- use the verify tool to record Checks
+- do not record Checks for simple answers unless the user requested checks
 
 User Rules:
 - only explicit future-behavior requests from the user
@@ -3362,34 +3333,25 @@ Tool Results:
 - visible tool results are temporary support context
 - inspect visible results before deciding the next action
 - OBSERVE owns keep/forget cleanup
-- preserve useful conclusions in goal, plan, known, hypothesis, or verify; forget noise when it no longer helps
+- preserve useful conclusions in Goal, Plan, Facts, Leads, or Checks; forget noise when it no longer helps
 - do not let old gate feedback dominate once fresh tool results answer the next step
 
 WORKFLOW
-Classify the latest request as Chat, One-shot, or Tracked task before deciding state tools.
+Classify the latest request as Simple answer, One-shot task, or Multi-step task before deciding state tools.
 
-If the request is Chat:
+If the request is a Simple answer:
 - answer directly and stop
 
-If the request is One-shot:
+If the request is a One-shot task:
 - use tools only until the requested answer is visible
 - answer directly and stop
 
-If there is no Goal and the request is a Tracked task:
+If the request is a Multi-step task:
 - set a Goal
-- if enough context is known, also set a short Plan or call the first useful readonly tools
-- for root-cause work, set work_mode=investigate and use hypotheses to track competing explanations
-
-If there is a Goal but no Plan:
-- set a short Plan
-- or run readonly discovery first if planning needs context
-
-If there is a Goal and Plan:
-- execute the next useful frontier
-- batch independent searches, reads, recalls, and checks
-- serialize only when later arguments depend on earlier results
-- if the next edit/check is clear, do it now instead of rereading for confidence
-- when in verifying phase after edits, prefer the smallest relevant check over more broad reading
+- set a short Plan when enough context is known, or run the first useful readonly discovery first
+- use Leads only for root-cause/debug/investigation work
+- execute the next useful frontier once the Plan exists
+- after edits or requested checks, record Checks with the smallest relevant check
 
 Prefer useful tool calls over state-only turns.
 Pair state updates with the next frontier tool call when tool arguments are already known.
@@ -3398,7 +3360,7 @@ Assistant text is not progress by itself: if you say you will edit/check now, in
 FORWARD PROGRESS
 - Advance as far as safely possible in each turn.
 - Batch independent tool calls whenever their arguments are known.
-- Do not stop after Goal, Plan, Known, or Hypothesis updates if a useful repository tool call is clear.
+- Do not stop after Goal, Plan, Facts, or Leads updates if a useful repository tool call is clear.
 - Serialize only when later arguments depend on earlier results.
 - Ask the user only when the blocker cannot be resolved by available tools.
 
@@ -3412,18 +3374,18 @@ Plan rules:
 - at most one item may be doing
 - done context must cite supporting result context
 - blocked context must name the concrete blocker
-- add a verify step only for edits, explicit checks, or correctness-sensitive work
+- add a check step only for edits, explicit checks, or correctness-sensitive work
 
-If all Plan items are done/blocked and verification passed/blocked, finish by default.
+If all Plan items are done/blocked and Checks passed/blocked, finish by default.
 To continue tools after that, first reopen the Plan with a todo/doing item explaining why completion is insufficient.
 
 INVESTIGATION
-Use work_mode=investigate for root-cause analysis, competing explanations, or branch elimination.
+Use Leads for root-cause analysis, competing explanations, or branch elimination.
 
 Rules:
 - track plausible directions separately
-- mark hypotheses ruled_out when evidence eliminates them
-- mark hypotheses confirmed before claiming root cause
+- mark leads ruled_out when evidence eliminates them
+- mark leads confirmed before claiming root cause
 - stop investigating when the exact target and next edit/check are clear
 
 DISCOVERY AND EDITING
@@ -3447,8 +3409,8 @@ Editing rules:
 - split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
 - copy line anchors exactly from visible tool output; refresh anchors only after EditFile reports a stale/missing anchor
 
-VERIFICATION
-Verification strength:
+CHECKS
+Check strength:
 - none: simple answers
 - light: read/static confirmation
 - tool: code changes or requested checks
@@ -3465,12 +3427,12 @@ verify requires:
 - blocker when blocked
 
 Passed context must cite concrete recent tool result context.
-Blocked verification must include blocker and context.
+Blocked Checks must include blocker and context.
 
-If verification fails, record failed, repair, then verify again.
+If a check fails, record failed, repair, then verify again.
 A test/build run in the same batch as a failed edit does not verify the repaired state.
-Do not use pending verification status.
-Complete with verify blocked only when blocker=user.
+Do not use pending check status.
+Complete with blocked Checks only when blocker=user.
 
 TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
@@ -3484,165 +3446,6 @@ Recall fetches stored result keys; batch distinct keys and recall each needed ke
 
 Never issue a no-op state update.
 Always move the task toward the next useful state.
-"""
-
-AGENT_PLAN_SYSTEM_PROMPT = """You are nanocode in PLAN MODE.
-
-You are a planning agent, not an implementation agent.
-
-OUTPUT PROTOCOL
-- Use function tools for state updates and readonly repository actions.
-- Assistant text is optional; never use it instead of the next useful function tool.
-- PLAN MODE is a tracked planning task; complete it with goal.complete=true.
-- Allowed state tools: goal, plan, hypothesis, known, verify.
-- Allowed repository tools: Read, LineCount, List, Search, Recall, and readonly Git.
-- Repository tool calls require intention and args.
-- Do not invent fields when a tool schema already fits.
-
-MODE BOUNDARIES
-- Produce an implementation plan for the latest user request.
-- Do not implement, change files, run tests, install packages, run shell commands, or mutate repository state.
-- Do not propose non-readonly discovery.
-- Do not turn the plan into code unless the user explicitly asked only for a design/code sketch outside the repository.
-- If the user asks for implementation while you are in PLAN MODE, plan the implementation; do not perform it.
-
-LANGUAGE
-- Use the latest user language for all user-facing text, including progress and the final proposed plan.
-- Preserve code, identifiers, filenames, command names, config keys, API names, and quoted text exactly.
-- If the user mixes languages, follow the dominant language of the latest request.
-- User-facing text is read in a terminal: keep it plain, concise, direct, and CLI-friendly.
-- Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless the user asks for them.
-
-READONLY DISCOVERY
-- Allowed tools: Read, LineCount, List, Search, Recall.
-- Git is allowed only for readonly inspection: status, diff, log, show, rev-parse, ls-files, grep, blame.
-- Use only the provided readonly function tools. Do not request any other tools.
-- Use the smallest useful discovery batch.
-- Prefer targeted Search/Read over broad surveys.
-- Prefer reading the owning file and nearby tests over unrelated code.
-- Stop discovery as soon as the files, ownership boundaries, approach, risks, and verification path are clear enough.
-- Call more readonly tools only when the final proposal would otherwise rely on guesswork.
-
-PLANNING DOCTRINE
-Design before action:
-- First clarify what problem is being solved, what must not change, and what success looks like.
-- Separate the user's goal from the possible implementation mechanism.
-- Prefer a correct direction over a fast but structurally wrong shortcut.
-- Think several steps ahead, but only propose the smallest useful step now.
-
-Fit the existing system:
-- Fit the existing architecture before proposing new abstractions.
-- Identify current ownership boundaries: modules, layers, public APIs, state owners, side-effect owners, and test owners.
-- Respect existing naming, style, dependency direction, error handling, and data flow.
-- Do not introduce a new architectural style when a local change fits the current one.
-
-Begin from concerns:
-- Identify relevant functional concerns.
-- Identify relevant non-functional concerns when they may affect design: performance, consistency, availability, latency, scalability, compatibility, maintainability, security, debuggability, and migration cost.
-- State tradeoffs only when they affect the proposed implementation.
-- Scale the depth of design analysis to the risk and scope of the request.
-
-Keep it simple:
-- Prefer the simplest design that preserves correctness and future flexibility.
-- Avoid speculative generality.
-- Add an abstraction only when it removes real duplication, stabilizes a boundary, hides unavoidable complexity, or enables a known extension.
-- Avoid thin pass-through interfaces that add coupling without adding capability.
-- Avoid special-case fixes unless the request is itself special-case behavior.
-- If two designs are viable, prefer the one with fewer moving parts, clearer ownership, and easier verification.
-
-Module and layer judgment:
-- Decompose top-down for broad changes: subsystem -> module -> file -> symbol.
-- For local changes, begin at the owning symbol and expand only as needed.
-- Keep modules focused on one topic.
-- Keep high-cohesion logic together and low-coupling boundaries explicit.
-- Prefer dependency flow from higher-level orchestration toward lower-level capabilities.
-- Avoid new cycles; if a cycle is unavoidable, call it out as a risk or propose a smaller split.
-- Push unavoidable complexity downward behind a stable boundary when doing so simplifies callers.
-- Do not leak internal failure handling, retries, fallback, or compatibility mechanics into unrelated callers.
-
-Interfaces and contracts:
-- For any public or shared interface, identify the contract before proposing changes.
-- Check whether the interface should be orthogonal to nearby APIs, whether it overlaps existing behavior, and whether important cases are missing.
-- Prefer interfaces that make the common case simple.
-- Note idempotency, undefined behavior, validation, error cases, compatibility, and call ordering when relevant.
-- Prefer explicit names and explicit state transitions over ambiguous combined operations.
-- Preserve backward compatibility unless the user explicitly asks for a breaking change.
-- If compatibility may break, propose versioning, migration, adapter behavior, or rollback.
-
-Data, state, and side effects:
-- Identify what data is read, written, derived, cached, emitted, or persisted.
-- Keep data model changes minimal and direct.
-- Separate calculation from IO when it makes the logic easier to test or reason about.
-- Separate data and behavior when behavior should apply to many entities or batches.
-- Separate strategy/policy from core model when business rules may vary while the model should stay stable.
-- Identify side effects such as filesystem writes, network calls, database writes, cache invalidation, events, logging, metrics, and user-visible output.
-
-Time, concurrency, and sequencing:
-- When behavior spans multiple steps, processes, workers, requests, events, or retries, describe the sequence.
-- Identify the driver: user action, request, IO event, queue consumer, cron/timer, test runner, or background worker.
-- Call out ordering assumptions, races, idempotency requirements, retry behavior, and compensation paths when relevant.
-- For event/signal based designs, avoid circular signal chains and unclear ownership.
-
-Closed-loop reliability:
-- Prefer designs where each module contains its own routine failure handling.
-- Prevent errors, retries, fallback, and cleanup responsibilities from leaking across unrelated boundaries.
-- Include observability/debuggability when useful: logs, metrics, traces, error messages, assertions, or inspection points.
-- Include rollback or migration concerns when a change affects public APIs, persisted data, configuration, deployment, or shared behavior.
-- Use redundancy/fallback only when it addresses a real failure mode; keep the added complexity local.
-
-Verification:
-- Scale verification with risk.
-- For local changes, propose narrow tests or checks near the touched code.
-- For shared contracts, propose broader regression tests.
-- For data, migration, compatibility, or concurrency risks, propose targeted edge-case tests.
-- Include manual verification only when automated verification is unavailable or insufficient.
-- Verification steps must be executable by a coding agent, but you must not run them.
-
-DISCOVERY STRATEGY
-1. When Current Phase is new, set one concise planning goal and 2-4 discovery steps when enough context is known.
-2. Search for owners before reading large files.
-3. Prefer support from code, tests, docs, and recent relevant Git history.
-4. After tool results, use Latest Tool Results, Unreduced Tool Results, and Kept Tool Results; use known for settled current-task facts.
-5. Update plan status as discovery progresses.
-6. If the request is ambiguous but a reasonable reversible path exists, proceed with stated assumptions and include open questions in the final plan.
-7. Complete with goal.complete=true only when the final proposal is ready.
-
-FUNCTION TOOL SEMANTICS
-- goal: initialize or update the planning goal; set work_mode when useful.
-- plan: update discovery or planning item status.
-- known: record durable repository findings from discovery. Do not include guesses.
-- assistant text: brief user-facing status update in the latest user language.
-- repository tools: request readonly discovery.
-- verify: record only concrete verification status from readonly discovery; put planned checks in the final proposed plan.
-- goal: complete the planning task with the final proposed plan.
-
-FINAL MESSAGE CONTRACT
-- The final action must be type="goal" with complete=true.
-- message_for_complete must contain exactly one <proposed_plan>...</proposed_plan> block.
-- Do not include text before or after the <proposed_plan> block inside message_for_complete.
-- The proposed plan must be concrete and executable by a coding agent.
-- The proposed plan must not include implementation output, generated patches, command execution results, or claims that tests were run.
-
-The <proposed_plan> block should include these sections, in this order:
-1. Goal
-2. Current understanding / durable findings
-3. Design rationale
-4. Touched files and symbols
-5. Ordered implementation steps
-6. Verification plan
-7. Risks, tradeoffs, rollback, and open questions
-
-FINAL PLAN QUALITY BAR
-Before completing, ensure the plan answers:
-- What is the smallest correct change?
-- Which module owns the change?
-- What public contracts or data contracts are affected?
-- What state, side effects, or sequencing matter?
-- What failure modes should stay closed-loop within the owning module?
-- What compatibility or migration concern exists, if any?
-- How should the coding agent verify the change?
-- What uncertainty remains?
-
 """
 
 AGENT_USER_PROMPT_TEMPLATE = """
@@ -3676,29 +3479,7 @@ Latest Tool Results:
 Recent Edits:
 {recent_edits}
 
-Known:
-{known}
-
-Current Phase:
-{task_code}
-
-Work Mode:
-{work_mode}
-
-Goal:
-{goal}
-
-Plan:
-{plan}
-
-Current Focus:
-{current_focus}
-
-Hypotheses:
-{hypotheses}
-
-Verification:
-{verification_state}
+{state_sections}
 
 Blocking Feedback - Fix Before Next Action:
 {errors}
@@ -3715,19 +3496,18 @@ Pending feedback rules:
 - Treat it as an interrupt to the current task, not a new task.
 - After responding, continue the existing Goal/Plan unless the user explicitly replaces or cancels the task.
 - Do not rewrite Goal/Plan just to answer a side question or acknowledge a correction.
-If Current Phase is working or verifying, continue from the existing Goal and Plan unless the user changed the task.
-If Current Phase is working and Plan is not empty, do not stop on state-only updates; include tool, verify, or goal.
+If a Goal or Plan is present, continue it unless the user changed the task.
+If a Plan is present, do not stop on state-only updates; include tool, verify, or goal when useful.
 Before repeating or broadening tool calls, inspect visible tool results.
-If Current Phase is new and visible tool results answer the request, answer with assistant text and stop.
-If they already answer a one-shot request, answer directly instead of calling more tools.
+If visible tool results already answer a one-shot request, answer directly instead of calling more tools.
 Otherwise use them to update state, choose the next frontier, or forget noise.
 
 --- Output ---
 
 Use function tools for task state and repository actions.
-Chat: answer with assistant text only.
-One-shot with no Goal or Plan: assistant text is the final answer once visible results answer the request.
-Tracked task: assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
+Simple answer: answer with assistant text only.
+One-shot task with no Goal or Plan: assistant text is the final answer once visible results answer the request.
+Multi-step task: assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
 Language rule: every chat/progress/response text must use the latest user language, including pending-feedback replies and final answers.
 Do not switch to English when the latest user request is Chinese.
 Terminal output rule: every chat/progress/response text should be plain, concise, and CLI-friendly. Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless requested.
@@ -3749,10 +3529,10 @@ Goal:
 Plan:
 {plan}
 
-Hypotheses:
+Leads:
 {hypotheses}
 
-Known:
+Facts:
 {known}
 
 Kept Tool Results:
@@ -3768,7 +3548,7 @@ Unreduced Raw Tool Results:
 
 Use function tools only.
 Prefer explicit KEEP/FORGET decisions. Omitted results are compacted by default.
-Known/hypothesis entries from tool results should cite SOURCE tr.N keys.
+Facts/Leads entries from tool results should cite SOURCE tr.N keys.
 Path-only or vague facts do not replace raw results; KEEP the raw result or record a SOURCE-backed, decision-useful conclusion before forgetting/omitting it.
 
 YOUR OUTPUT:
@@ -3781,11 +3561,11 @@ Use function tools only. No prose.
 Job:
 - Reduce Unreduced Raw Tool Results before ACT continues.
 - Prefer declaring KEEP or FORGET for each result you reviewed.
-- KEEP only raw results that affect the next ACT frontier: target selection, edit choice, verification, error repair, or completion.
+- KEEP only raw results that affect the next ACT frontier: target selection, edit choice, checks, error repair, or completion.
 - FORGET routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
 - If you omit a tr.N key, nanocode compacts it by default; use omission only for unimportant results.
-- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed known or hypothesis.
-- Do not update Plan, Verify, or Goal.
+- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed Facts or Leads.
+- Do not update Plan, Checks, or Goal.
 
 Allowed tools: keep, forget, known, hypothesis.
 """
@@ -3798,7 +3578,7 @@ Allowed tools: keep, forget, known, hypothesis.
 
 COMPACTOR_PROMPT = """You are nanocode's conversation-history compactor.
 
-Compress conversation history and Known facts so the coding agent can continue later.
+Compress conversation history and Facts so the coding agent can continue later.
 Do not solve the task or add unsupported facts.
 Use the compact function tool only.
 
@@ -3809,9 +3589,9 @@ Preserve continuity-critical facts:
 - plan/status
 - files, paths, symbols, and APIs touched
 - commands run and outcomes
-- known facts and context keys needed later
+- facts and context keys needed later
 - unresolved blockers and open questions
-- verification context
+- checks context
 
 Omit noise:
 - raw logs
@@ -3821,14 +3601,14 @@ Omit noise:
 - context values unless needed for continuity
 
 Write the shortest complete continuation summary.
-Compress Known to concise durable facts.
+Compress Facts to concise durable facts.
 """
 
 
 COMPACT_USER_PROMPT_TEMPLATE = """
------------ Known_To_Compact Begin ------------
+----------- Facts_To_Compact Begin ------------
 {known}
---------- Known_To_Compact End ----------------
+--------- Facts_To_Compact End ----------------
 
 ----------- Conversation_To_Compact Begin ------
 {conversation}
@@ -4364,8 +4144,6 @@ class ModelClient:
     def _request_timeouts(self, config: ProviderConfig, *, activity: str) -> tuple[int, int | None]:
         timeout = config.timeout if config.timeout is not None else 180
         first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
-        if activity == "agent" and self.session.settings.plan_mode:
-            return self.session.settings.plan_timeout, self.session.settings.plan_first_token_timeout
         return timeout, first_token_timeout
 
     def _mark_stream_output(self, chars: int, seen: bool, *, request_deadline: float, first_token_timeout: int | None) -> bool:
@@ -4930,12 +4708,12 @@ class AgentStateUpdater:
         hypotheses = [item.format() for item in current.hypotheses]
         if hypotheses != before_hypotheses:
             self._append_state_section(
-                lines, "  Hypotheses", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}")
+                lines, "  Leads", self._format_rows(current.hypotheses, lambda index, item: f"    {index}. {self._compact(item.format())}")
             )
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
             self._append_state_section(
-                lines, "  Known", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}")
+                lines, "  Facts", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}")
             )
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
@@ -4969,16 +4747,16 @@ class AgentStateUpdater:
                 ("Goal", "  Goal" in self.latest_report, ["  " + self._compact(self.blackboard.goal or "(empty)")]),
                 ("Plan", "  Plan" in self.latest_report and self.blackboard.plan, self.latest_compact_plan_rows or self._compact_plan_rows()),
                 (
-                    "Hypotheses",
-                    "  Hypotheses" in self.latest_report and self.blackboard.hypotheses,
+                    "Leads",
+                    "  Leads" in self.latest_report and self.blackboard.hypotheses,
                     self._compact_rows(self.blackboard.hypotheses, lambda item: self._compact(item.format(), 100)),
                 ),
                 (
-                    "Known",
-                    "  Known" in self.latest_report and self.blackboard.known,
+                    "Facts",
+                    "  Facts" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
-                ("Verification", "  Verify" in self.latest_report, ["  " + self._format_verification()]),
+                ("Checks", "  Checks" in self.latest_report, ["  " + self._format_verification()]),
                 ("User Rules", "  User_Rules" in self.latest_report, ["  updated"]),
             )
             if changed
@@ -5213,7 +4991,7 @@ class AgentStateUpdater:
         verification = self.blackboard.verification.format()
         if verification == before_verification:
             return
-        self._append_state_section(lines, "  Verify  " + self._format_verification())
+        self._append_state_section(lines, "  Checks  " + self._format_verification())
 
     @staticmethod
     def _actions_of_type(actions: list[Json], action_type: str) -> Iterator[Json]:
@@ -5389,7 +5167,6 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
     ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "hypothesis", "known", "tool", "verify", "user_rule", "forget"}
-    PLAN_ACTION_TYPES: ClassVar[set[str]] = ACT_ACTION_TYPES - {"user_rule", "forget"}
     OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
@@ -5398,11 +5175,11 @@ class Agent:
     RULE_CLOSE_SOURCE: ClassVar[str] = "close or update state that depends on the result before forgetting its source."
     RULE_CHANGE_FAILED_TOOL: ClassVar[str] = "change args or switch tools; after edit failures use a smaller batch and reread only stale ranges."
     RULE_GOAL_PLAN_FIRST: ClassVar[str] = "set goal and a short plan before mutating tools or verify."
-    RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run verification tools, then report verify status="passed"|"failed"|"blocked".'
+    RULE_VERIFY_DIRECTLY: ClassVar[str] = 'run checks, then report verify status="passed"|"failed"|"blocked".'
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
     RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile(filepath, edits) with visible line anchors; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
-    RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked verification only when blocker=user."
+    RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked Checks only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
     RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
     STALE_TOOL_FEEDBACK_MARKERS: ClassVar[tuple[str, ...]] = (
@@ -5450,23 +5227,37 @@ class Agent:
             environment=self._format_environment(),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
-            known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             tool_result_index=tool_result_index or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
-            task_code=current.task_code,
-            work_mode=current.work_mode,
-            goal=current.goal or "(empty)",
-            plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            current_focus=self._format_current_focus(),
-            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
-            verification_state=current.verification.format(),
+            state_sections=self._format_state_sections(),
             errors="\n".join("! " + error for error in self.agent_feedback_errors) or "(empty)",
             recent_edits="\n".join(self.recent_edits) if self.recent_edits else "(empty)",
             pending_user_feedback=self.session.state.pending_user_feedback or "(empty)",
             user_request=self._format_user_request(),
         ).strip()
+
+    def _format_state_sections(self) -> str:
+        current = self.blackboard
+        sections: list[str] = []
+
+        def add(name: str, value: str) -> None:
+            value = value.strip()
+            if value:
+                sections.append(name + ":\n" + value)
+
+        add("Goal", current.goal)
+        if current.known:
+            add("Facts", "\n".join(KnownItem.format_item(item) for item in current.known))
+        if current.hypotheses:
+            add("Leads", "\n".join(item.format() for item in current.hypotheses))
+        if current.plan:
+            add("Plan", "\n".join(item.format() for item in current.plan))
+            add("Current Focus", self._format_current_focus())
+        if current.verification.has_context() or current.verification_required:
+            add("Checks", current.verification.format() if current.verification.has_context() else "status: required")
+        return "\n\n".join(sections) if sections else "(empty)"
 
     def _format_environment(self) -> str:
         lines = [
@@ -5818,10 +5609,7 @@ class Agent:
             user_prompt = self.build_observe_prompt()
             activity = "observe"
         else:
-            system_prompt = self._system_prompt(
-                AGENT_PLAN_SYSTEM_PROMPT if self.session.settings.plan_mode else None,
-                tools=PLAN_MODE_TOOLS if self.session.settings.plan_mode else None,
-            )
+            system_prompt = self._system_prompt()
             user_prompt = self.build_user_prompt()
             activity = "agent"
         return system_prompt, user_prompt, activity
@@ -5830,9 +5618,6 @@ class Agent:
         if self.mode == AgentMode.OBSERVE:
             action_names = self.OBSERVE_ACTION_TYPES
             tool_classes: Iterable[ToolClass] = ()
-        elif self.session.settings.plan_mode:
-            action_names = self.PLAN_ACTION_TYPES - {"tool"}
-            tool_classes = self._available_tool_classes(PLAN_MODE_TOOLS)
         else:
             action_names = self.ACT_ACTION_TYPES - {"tool"}
             tool_classes = self._available_tool_classes()
@@ -6204,12 +5989,12 @@ class Agent:
         return _json_str(action.get("type")) == "verify" and _json_str(action.get("status")) == "pending"
 
     def _investigate_completion_error(self) -> str:
-        if self.blackboard.work_mode != WorkMode.INVESTIGATE or not self.blackboard.goal_reached:
+        if not self.blackboard.goal_reached or not self.blackboard.hypotheses:
             return ""
         return (
             ""
             if any(item.status == HypothesisStatus.CONFIRMED for item in self.blackboard.hypotheses)
-            else "investigate completion requires a confirmed hypothesis"
+            else "investigation completion requires a confirmed lead"
         )
 
     @staticmethod
@@ -6241,26 +6026,6 @@ class Agent:
                 continue
             if (call.name, _tool_call_args_key(call.args)) == self.failed_tool_call_key:
                 return "same failed tool call repeated after " + str(self.failed_tool_call_count) + " failures: " + _format_tool_call_summary(call)
-        return ""
-
-    def _plan_mode_tool_error(self, tool_calls: list[JsonValue]) -> str:
-        if not self.session.settings.plan_mode:
-            return ""
-        for value in tool_calls:
-            try:
-                call = self.tool_runner.parse_tool_call(value)
-            except ToolCallArgError:
-                continue
-            tool_class = TOOL_REGISTRY.get(call.name)
-            if tool_class is None:
-                return "plan mode allows registered readonly tools only; blocked " + _format_tool_call_summary(call)
-            if tool_class.EFFECT == ToolEffect.READONLY:
-                continue
-            if tool_class is GitTool:
-                args = call.args[1:] if call.args and isinstance(call.args[0], str) and call.args[0].startswith("cwd=") else call.args
-                if args and args[0] in GIT_READONLY_COMMANDS:
-                    continue
-            return "plan mode allows readonly discovery only; blocked " + _format_tool_call_summary(call)
         return ""
 
     def _build_response_context(self, response: Json) -> ResponseContext:
@@ -6361,7 +6126,7 @@ class Agent:
         return (
             self._gate_action_types(
                 ctx.actions,
-                allowed=self.PLAN_ACTION_TYPES if self.session.settings.plan_mode else self.ACT_ACTION_TYPES,
+                allowed=self.ACT_ACTION_TYPES,
                 on_message=on_message,
                 retry_message="Retrying: use a valid agent action.",
                 feedback_message=self._error("this step only accepts agent work actions."),
@@ -6379,14 +6144,6 @@ class Agent:
                 self._error("repeated failed tool call: " + repeated_tool_retry_error + ".", self.RULE_CHANGE_FAILED_TOOL),
                 "Retrying: change the failed tool call instead of repeating it.",
                 "ToolRetry_Gate: " + repeated_tool_retry_error + ".",
-            )
-        plan_mode_tool_error = self._plan_mode_tool_error(ctx.tool_calls)
-        if plan_mode_tool_error:
-            return self._reject_agent(
-                on_message,
-                self._error(plan_mode_tool_error + ".", "produce a proposed plan without executing mutations."),
-                "Retrying: plan mode only allows readonly discovery.",
-                "PlanMode_Gate: " + plan_mode_tool_error + ".",
             )
         return False
 
@@ -6459,21 +6216,20 @@ class Agent:
 
         if ctx.tool_calls and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions) and self._verification_is_settled():
             if self._plan_is_complete():
-                self._warn_agent("Plan and verification are complete; continuing tools without reopening Plan.")
+                self._warn_agent("Plan and Checks are complete; continuing tools without reopening Plan.")
             elif ctx.plan_was_complete and ctx.verification_was_settled:
                 self._warn_agent("Continuing tools after completed Plan; update Plan if the new work changes scope.")
 
         if not ctx.tool_calls and not ctx.plan_was_complete and self._plan_is_complete() and not self.blackboard.goal_reached:
             if not self._verification_is_settled():
                 self._warn_agent(
-                    "Plan is complete but verification is not recorded.",
-                    "run checks when files changed or verification was requested.",
+                    "Plan is complete but Checks are not recorded.",
+                    "run checks when files changed or checks were requested.",
                 )
             else:
-                self._warn_agent("Plan and verification are complete; finish with goal.complete=true when no further work is needed.")
+                self._warn_agent("Plan and Checks are complete; finish with goal.complete=true when no further work is needed.")
         if (
-            not self.session.settings.plan_mode
-            and ctx.has_state_update_action
+            ctx.has_state_update_action
             and self.state_updater.changed
             and not ctx.goal_was_empty
             and not ctx.tool_calls
@@ -6483,18 +6239,6 @@ class Agent:
         ):
             self._warn_agent("state update-only turn; include frontier tool, verify, or goal when arguments are known.")
         return None
-
-    def _plan_mode_completion_error(self, message: str) -> str:
-        if not self.session.settings.plan_mode:
-            return ""
-        text = message.strip()
-        if not text.startswith("<proposed_plan>") or not text.endswith("</proposed_plan>"):
-            return "final plan must be wrapped in <proposed_plan>...</proposed_plan>"
-        if text.count("<proposed_plan>") != 1 or text.count("</proposed_plan>") != 1:
-            return "final plan must contain exactly one proposed_plan block"
-        if not text.removeprefix("<proposed_plan>").removesuffix("</proposed_plan>").strip():
-            return "final plan block is empty"
-        return ""
 
     def _promote_required_verification(self, ctx: ResponseContext) -> None:
         verification = self.blackboard.verification
@@ -6600,7 +6344,7 @@ class Agent:
         self._remember_observe_error(
             self._warning(
                 "weak observe memory: known facts need source tr.N or keep/forget coverage.",
-                "use source-backed known/hypothesis or keep important raw results.",
+                "use source-backed Facts/Leads or keep important raw results.",
             )
         )
 
@@ -6669,11 +6413,11 @@ class Agent:
     def _gate_completion(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
         if self.blackboard.verification.status == VerificationStatus.REQUIRED:
             if self.blackboard.verification_required:
-                self._warn_agent("edited files need verification before completion.", self.RULE_VERIFY_DIRECTLY)
+                self._warn_agent("edited files need Checks before completion.", self.RULE_VERIFY_DIRECTLY)
             else:
-                self._warn_agent("verification required before completion.", self.RULE_VERIFY_DIRECTLY)
+                self._warn_agent("Checks are required before completion.", self.RULE_VERIFY_DIRECTLY)
         if self.blackboard.verification.status == VerificationStatus.FAILED and self.blackboard.goal_reached:
-            self._warn_agent("verification failed; fix the reported issue first.")
+            self._warn_agent("Checks failed; fix the reported issue first.")
         completion_plan_error = self._completion_plan_error(ctx)
         if completion_plan_error:
             return self._reject_completion(
@@ -6684,19 +6428,11 @@ class Agent:
             )
         blocked_completion_error = self._blocked_verification_completion_error()
         if blocked_completion_error:
-            self._warn_agent("blocked verification completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
+            self._warn_agent("blocked Checks completion invalid: " + blocked_completion_error + ".", self.RULE_BLOCKED_BY_USER)
         investigate_completion_error = self._investigate_completion_error()
         if investigate_completion_error:
-            self._warn_agent(investigate_completion_error + ".", "mark a hypothesis confirmed when claiming a root cause.")
+            self._warn_agent(investigate_completion_error + ".", "mark a lead confirmed when claiming a root cause.")
         completion_message = (ctx.completion_message or ctx.assistant_text or "Done.") if self.blackboard.goal_reached else ""
-        plan_mode_completion_error = self._plan_mode_completion_error(completion_message) if self.blackboard.goal_reached else ""
-        if plan_mode_completion_error:
-            return self._reject_completion(
-                on_message,
-                self._error("invalid plan-mode completion: " + plan_mode_completion_error + ".", "return the proposed plan as the final message."),
-                "Retrying: finish plan mode with a proposed_plan block.",
-                "PlanMode_Gate: " + plan_mode_completion_error + ".",
-            )
         return None
 
     def run(
@@ -6872,7 +6608,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "/reason-payload", "Show or set chat reasoning payload", "Config", "/reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
     ),
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
-    CommandSpec("/plan", "Toggle plan mode or ask for a readonly plan", "Config", "/plan [on|off|question]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
     CommandSpec("/index", "Initialize, sync, or rebuild code index", "Maintenance", "/index [force]"),
     CommandSpec("/clean", "Clean inactive session directories", "Maintenance", "/clean"),
@@ -6899,8 +6634,6 @@ CONFIG_RUNTIME_ATTRS: dict[str, str] = {
     "runtime.compact_at": "compact_at",
     "runtime.shell_timeout": "shell_timeout",
     "runtime.max_agent_steps": "max_agent_steps",
-    "runtime.plan_timeout": "plan_timeout",
-    "runtime.plan_first_token_timeout": "plan_first_token_timeout",
     "runtime.context_budget": "context_budget",
     "runtime.yolo": "yolo",
 }
@@ -6920,8 +6653,6 @@ CONFIG_INT_KEYS: set[str] = {
     "runtime.compact_at",
     "runtime.shell_timeout",
     "runtime.max_agent_steps",
-    "runtime.plan_timeout",
-    "runtime.plan_first_token_timeout",
 }
 CONFIG_SET_USAGE = "Usage: /set <key> <value>"
 
@@ -7132,26 +6863,6 @@ class CommandDispatcher:
             return self._set("runtime.yolo " + ("off" if current else "on"))
         return self._set("runtime.yolo " + args)
 
-    def _plan(self, args: str) -> str:
-        text = args.strip()
-        if not text:
-            current = self.agent.session.settings.plan_mode
-            self.agent.session.settings.plan_mode = not current
-            return "Set plan mode = " + self._format_bool(self.agent.session.settings.plan_mode)
-        if text in {"on", "off"}:
-            self.agent.session.settings.plan_mode = text == "on"
-            return "Set plan mode = " + text
-        previous = self.agent.session.settings.plan_mode
-        self.agent.session.settings.plan_mode = True
-        try:
-            if self.run_agent is not None:
-                self.run_agent(text)
-            else:
-                self.agent.run(text)
-        finally:
-            self.agent.session.settings.plan_mode = previous
-        return ""
-
     def _rules(self, args: str) -> str:
         if args:
             return "Usage: /rules"
@@ -7198,8 +6909,6 @@ class CommandDispatcher:
                 "session: " + session.session_id,
                 "runtime: yolo="
                 + self._format_bool(session.settings.yolo)
-                + " plan="
-                + self._format_bool(session.settings.plan_mode)
                 + " compact_at="
                 + str(session.settings.compact_at)
                 + " context_budget="
@@ -7210,9 +6919,8 @@ class CommandDispatcher:
                 "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
                 "models:",
                 model_usage,
-                "task: " + blackboard.task_code,
                 "goal: " + (blackboard.goal or "(empty)"),
-                "verification: " + verification_status,
+                "checks: " + verification_status,
             ]
         )
 
@@ -7290,12 +6998,9 @@ class CommandDispatcher:
                 "runtime.compact_at: " + str(session.settings.compact_at),
                 "runtime.shell_timeout: " + str(session.settings.shell_timeout),
                 "runtime.max_agent_steps: " + str(session.settings.max_agent_steps),
-                "runtime.plan_timeout: " + str(session.settings.plan_timeout),
-                "runtime.plan_first_token_timeout: " + str(session.settings.plan_first_token_timeout),
                 "runtime.context_budget: " + session.settings.context_budget,
                 "runtime.auto_clean_recent: " + session.settings.auto_clean_recent,
                 "runtime.yolo: " + self._format_bool(session.settings.yolo),
-                "runtime.plan_mode: " + self._format_bool(session.settings.plan_mode),
             ]
         )
 
@@ -7495,7 +7200,7 @@ class StatusBar:
         active_model = session.state.current_model_call_label or session.config.provider.model
         model = active_model.rsplit("/", 1)[-1] or active_model or "(no model)"
         reasoning = session.state.current_model_call_reasoning_label or (session.config.provider.reasoning)
-        modes = "".join(" | " + label for label, enabled in (("yolo", session.settings.yolo), ("plan", session.settings.plan_mode)) if enabled)
+        modes = " | yolo" if session.settings.yolo else ""
         context = str(len(session.state.conversation)) + "/" + str(session.settings.compact_at)
         last_tokens = _format_count(session.state.last_total_tokens)
         session_tokens = _format_count(session.state.session_total_tokens)
@@ -7678,8 +7383,6 @@ class AgentLoop:
         labels = []
         if self.agent.session.settings.yolo:
             labels.append("yolo")
-        if self.agent.session.settings.plan_mode:
-            labels.append("plan")
         return "[" + ",".join(labels) + "] > " if labels else "> "
 
     def _start_existing_code_index_refresh(self) -> None:
@@ -8405,12 +8108,20 @@ class AgentLoop:
         if message.startswith(
             (
                 "Plan Updated",
-                "Known Updated",
-                "Hypotheses Updated",
-                "Plan + Known Updated",
-                "Plan + Hypotheses Updated",
-                "Hypotheses + Known Updated",
-                "Plan + Hypotheses + Known Updated",
+                "Facts Updated",
+                "Leads Updated",
+                "Checks Updated",
+                "Plan + Facts Updated",
+                "Plan + Leads Updated",
+                "Plan + Checks Updated",
+                "Leads + Facts Updated",
+                "Leads + Checks Updated",
+                "Facts + Checks Updated",
+                "Plan + Leads + Facts Updated",
+                "Plan + Facts + Checks Updated",
+                "Plan + Leads + Checks Updated",
+                "Leads + Facts + Checks Updated",
+                "Plan + Leads + Facts + Checks Updated",
             )
         ):
             self._emit_segments(self._compact_state_segments(message), message)
@@ -8559,7 +8270,7 @@ class AgentLoop:
         for line in message.splitlines():
             if line.endswith("Updated"):
                 segments.append(("bold ansicyan", line + "\n"))
-            elif line in {"Plan", "Hypotheses", "Known"}:
+            elif line in {"Plan", "Leads", "Facts", "Checks"}:
                 segments.append(("ansicyan", line + "\n"))
             elif line.startswith("  ..."):
                 segments.append(("ansibrightblack", line + "\n"))
@@ -8702,12 +8413,6 @@ class CommandCompleter(Completer):
                 if model.startswith(text):
                     yield Completion(model, start_position=-len(text))
             return
-        if text.startswith("/plan "):
-            text = text[len("/plan ") :]
-            for value in ("on", "off"):
-                if value.startswith(text):
-                    yield Completion(value, start_position=-len(text))
-            return
         if text.startswith("/api "):
             text = text[len("/api ") :]
             for value in ("auto", "chat", "responses"):
@@ -8780,7 +8485,6 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="nanocode: AI coding assistant")
         parser.add_argument("-v", "--version", action="version", version=__version__)
         parser.add_argument("--yolo", action="store_true", help="Skip tool execution confirmations")
-        parser.add_argument("--plan", action="store_true", help="Plan changes without editing or running commands")
         parser.add_argument("--debug", action="store_true", help="Write request prompts to the current session debug directory")
         parser.add_argument("--config", default=None, help="Path to config file (default: ~/.nanocode/config.toml)")
         parser.add_argument("--init-config", action="store_true", help="Create a default config file at --config or ~/.nanocode/config.toml")
@@ -8789,7 +8493,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path, created = ConfigFile.init(args.config)
             print(("Created config: " if created else "Config already exists: ") + config_path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo, plan_mode=args.plan, debug=args.debug)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
         missing = session.missing_required_config()
         if missing:
             print("Missing config: " + ", ".join(missing), file=sys.stderr)
