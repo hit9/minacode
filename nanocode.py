@@ -4285,6 +4285,10 @@ class ModelClient:
         return value if isinstance(value, int) else 0
 
     def _cached_prompt_tokens(self, usage: Json) -> int:
+        for key in ("prompt_cache_hit_tokens", "cached_tokens"):
+            cached_tokens = self._json_int(usage.get(key))
+            if cached_tokens:
+                return cached_tokens
         for key in ("prompt_tokens_details", "input_tokens_details"):
             cached_tokens = self._json_int(_json_dict(usage.get(key)).get("cached_tokens"))
             if cached_tokens:
