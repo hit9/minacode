@@ -10,3 +10,4 @@ __pycache__/
 .ruff_cache/
 uv.lock
 .python-version
+.code-symbol-index/
