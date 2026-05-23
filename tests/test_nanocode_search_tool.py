@@ -245,6 +245,21 @@ def test_search_tool_supports_context_option_without_glob(tmp_path, monkeypatch)
     assert "    6:" in result and "|seven" in result
 
 
+def test_search_tool_omits_context_before_outer_excerpt(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text(("before " + "x" * 300 + "\nneedle\n") * 4, encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+    monkeypatch.setattr(SearchTool, "OUTPUT_CHARS", 700)
+
+    result = SearchTool.make(session, ["needle", "sample.txt", "context=1"]).call()
+
+    assert "* context_omitted:" in result
+    assert "* sample.txt:2: needle" in result
+    assert "|before " not in result
+    assert "[tool result excerpt]" not in result
+
+
 def test_search_tool_accepts_context_30(tmp_path):
     session = Session(cwd=str(tmp_path))
 

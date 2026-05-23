@@ -1873,7 +1873,8 @@ class SearchTool(Tool):
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
         'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code".',
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
-        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 surrounding lines; omitted context defaults to 0.",
+        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py; omitted context defaults to 0.",
+        "Use context=N only when nearby lines are needed; prefer context=0 for broad searches and renames.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
         "Use at most one glob= per Search. For multiple extensions, run multiple Search actions or search path=. without glob.",
         "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
@@ -2084,23 +2085,50 @@ class SearchTool(Tool):
             return []
         return context
 
-    def _format_result(self, engine: str, matches: list[Match], truncated: bool) -> str:
+    def _format_result_lines(self, engine: str, matches: list[Match], *, truncated: bool, include_context: bool, context_omitted: bool = False) -> list[str]:
         lines = ["<SearchToolResult>"]
         lines.append(f"* engine: {engine}")
         if matches:
             lines.append('<note>Context lines are 0-based "line:hash|code"; the "line:hash" part is the line anchor.</note>')
+        if context_omitted:
+            lines.append("* context_omitted: result too large; rerun with a narrower path or fewer matches for surrounding lines")
         if matches:
             for match in matches:
                 lines.append(f"* {self._relpath(match.path)}:{match.line_number}: {match.text}")
-                for index, line in match.context:
-                    marker = ">" if index == match.line_number - 1 else " "
-                    lines.append(f"  {marker} {_numbered_line_preview(index, line)}")
+                if include_context:
+                    for index, line in match.context:
+                        marker = ">" if index == match.line_number - 1 else " "
+                        lines.append(f"  {marker} {_numbered_line_preview(index, line)}")
         else:
             lines.append("No matches.")
         if truncated:
             lines.append("* truncated: true")
         lines.append("</SearchToolResult>")
-        return "\n".join(lines)
+        return lines
+
+    def _format_result(self, engine: str, matches: list[Match], truncated: bool) -> str:
+        lines = self._format_result_lines(engine, matches, truncated=truncated, include_context=True)
+        value = "\n".join(lines)
+        if len(value) <= self.OUTPUT_CHARS:
+            return value
+        if self.context_lines > 0:
+            lines = self._format_result_lines(engine, matches, truncated=truncated, include_context=False, context_omitted=True)
+            value = "\n".join(lines)
+            if len(value) <= self.OUTPUT_CHARS:
+                return value
+
+        lines = self._format_result_lines(engine, [], truncated=True, include_context=False)
+        prefix = lines[:2]
+        suffix = lines[-2:]
+        body: list[str] = []
+        for match in matches:
+            candidate = [*prefix, *body, f"* {self._relpath(match.path)}:{match.line_number}: {match.text}", *suffix]
+            if len("\n".join(candidate)) > self.OUTPUT_CHARS:
+                break
+            body.append(f"* {self._relpath(match.path)}:{match.line_number}: {match.text}")
+        if not body and matches:
+            body.append(_shorten(f"* {self._relpath(matches[0].path)}:{matches[0].line_number}: {matches[0].text}", self.OUTPUT_CHARS // 2))
+        return "\n".join([*prefix, *body, *suffix])
 
     def _rg_command(self, rg: str, *, pcre2: bool = False) -> list[str]:
         cmd = [rg, "--json", "--line-number", "--max-filesize", self.RG_MAX_FILESIZE]
