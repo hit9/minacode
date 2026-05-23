@@ -2321,49 +2321,6 @@ def test_agent_applies_partial_plan_patch(tmp_path):
     ]
 
 
-def test_agent_plan_items_track_opened_and_closed_obligations(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    agent.apply_response(
-        {
-            "actions": [
-                {
-                    "type": "plan",
-                    "items": [
-                        {
-                            "id": "p1",
-                            "text": "Update dependency declaration",
-                            "opens": ["lock/environment must match dependency declaration"],
-                        },
-                        {
-                            "id": "p2",
-                            "text": "Sync dependency environment",
-                            "closes": ["lock/environment must match dependency declaration"],
-                        },
-                    ],
-                }
-            ]
-        }
-    )
-
-    assert agent.blackboard.plan == [
-        nanocode.PlanItem(id="p1", text="Update dependency declaration", opens=("lock/environment must match dependency declaration",)),
-        nanocode.PlanItem(id="p2", text="Sync dependency environment", closes=("lock/environment must match dependency declaration",)),
-    ]
-    assert "opens: lock/environment must match dependency declaration" in agent.build_user_prompt()
-    assert "closes: lock/environment must match dependency declaration" in agent.build_user_prompt()
-
-    agent.apply_response({"actions": [{"type": "plan", "mode": "patch", "items": [{"id": "p1", "status": "done", "context": "pyproject updated"}]}]})
-
-    assert agent.blackboard.plan[0] == nanocode.PlanItem(
-        id="p1",
-        text="Update dependency declaration",
-        status=nanocode.PlanStatus.DONE,
-        context="pyproject updated",
-        opens=("lock/environment must match dependency declaration",),
-    )
-
-
 def test_agent_applies_goal_and_plan_actions(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)

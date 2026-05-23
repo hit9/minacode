@@ -166,8 +166,6 @@ class PlanItem:
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
     context: str = ""
-    opens: tuple[str, ...] = ()
-    closes: tuple[str, ...] = ()
 
     def format(self, indent: str = "") -> str:
         text = "- [" + str(self.status) + "] " + self.text
@@ -176,10 +174,6 @@ class PlanItem:
         lines = [text]
         if self.context:
             lines.append("  context: " + self.context)
-        if self.opens:
-            lines.append("  opens: " + "; ".join(self.opens))
-        if self.closes:
-            lines.append("  closes: " + "; ".join(self.closes))
         return _format_lines(lines, indent)
 
 
@@ -3128,8 +3122,6 @@ TOOL_PLAN_ITEMS_SCHEMA: Json = {
             "text": TOOL_NULLABLE_STRING_SCHEMA,
             "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
-            "opens": {**TOOL_STRING_LIST_SCHEMA, "description": "Follow-up obligations this step creates for later steps or checks to close."},
-            "closes": {**TOOL_STRING_LIST_SCHEMA, "description": "Earlier obligations this step closes."},
         },
         [],
     ),
@@ -3159,7 +3151,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         },
         ["text", "complete", "message_for_complete"],
     ),
-    "plan": ("Replace or patch the current plan; use opens/closes for obligations created or satisfied by steps.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
+    "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
     "lead": ("Update investigation leads.", {"items": TOOL_LEAD_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
@@ -3231,7 +3223,12 @@ Never repeat an old completion. Do not rewrite Goal unless the user changed the 
 Workflow:
 - Chat: answer directly; do not create task state.
 - One-shot: use only needed tools, then answer and stop; do not create task state just to report.
-- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep the shortest necessary correct Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
+- Tracked task:
+  - set Goal.
+  - keep the shortest correct Plan.
+  - act on the current step.
+  - record Checks after edits or requested checks.
+  - finish with goal.complete=true.
 
 Current step:
 - Choose the smallest useful action from latest request, feedback, visible results, and Plan.
@@ -3239,7 +3236,16 @@ Current step:
 - Do not stop at state-only updates when a useful tool call is clear.
 
 State:
-- Goal/Plan track work. Plan is the minimal correct path to Goal, not a loose TODO list; update it when Facts change the path.
+- Goal/Plan track work.
+- Plan is serious.
+- Plan is the shortest correct path to Goal.
+- Plan includes required consistency steps caused by edits:
+  - sync lock/env state.
+  - regenerate derived files.
+  - update generated code.
+  - validate affected behavior.
+- Skip a caused step only when not needed. Put why in Plan context.
+- Update Plan only when Facts change the path.
 - Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
 - Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
@@ -4461,8 +4467,6 @@ class AgentStateUpdater:
             def render_plan_row(index: int, item: PlanItem) -> list[str]:
                 rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
                 rows += ["       context: " + self._compact(item.context)] if item.context else []
-                rows += ["       opens: " + self._compact("; ".join(item.opens))] if item.opens else []
-                rows += ["       closes: " + self._compact("; ".join(item.closes))] if item.closes else []
                 return rows
 
             self._append_state_section(lines, "  Plan", self._format_rows(current.plan, render_plan_row))
@@ -4601,11 +4605,9 @@ class AgentStateUpdater:
                 text = _json_str(patch.get("text")) if "text" in patch else None
                 status = _json_str(patch.get("status")) if "status" in patch else None
                 context = _json_str(patch.get("context")) if "context" in patch else existing.context
-                opens = _string_tuple_from_json(patch.get("opens")) if "opens" in patch else existing.opens
-                closes = _string_tuple_from_json(patch.get("closes")) if "closes" in patch else existing.closes
-                updated = (text or existing.text, PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status, context or "", opens, closes)
-                changed = changed or (existing.text, existing.status, existing.context, existing.opens, existing.closes) != updated
-                existing.text, existing.status, existing.context, existing.opens, existing.closes = updated
+                updated = (text or existing.text, PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status, context or "")
+                changed = changed or (existing.text, existing.status, existing.context) != updated
+                existing.text, existing.status, existing.context = updated
                 continue
             plan_item = self._plan_item_from_json(patch)
             if plan_item is None:
@@ -4630,8 +4632,6 @@ class AgentStateUpdater:
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
             context=_json_str(item.get("context")) or "",
-            opens=_string_tuple_from_json(item.get("opens")),
-            closes=_string_tuple_from_json(item.get("closes")),
         )
 
     @staticmethod
@@ -7907,10 +7907,6 @@ def _source_from_json(item: Json) -> tuple[str, ...]:
         if value:
             source.append(value)
     return tuple(dict.fromkeys(item for item in source if item))
-
-
-def _string_tuple_from_json(value: JsonValue) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(text for raw in _json_list(value) for text in [(_json_str(raw) or "").strip()] if text))
 
 
 def _shorten(text: str, limit: int = 500) -> str:
