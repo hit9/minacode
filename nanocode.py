@@ -55,7 +55,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.4.6"
+__version__ = "0.4.7"
 
 
 JsonValue: TypeAlias = Any
@@ -1554,41 +1554,25 @@ class SessionLock:
         return False
 
 
-@dataclass
-class CleanResult:
-    cleaned: int = 0
-    failed: int = 0
-    skipped: int = 0
-
-
-class SessionCleaner:
-    def __init__(self, session: Session):
-        self.session = session
-
-    def clean(self, *, older_than_seconds: int = 0) -> CleanResult:
-        result = CleanResult()
-        sessions_dir = self.session.data_path("sessions")
-        if not os.path.isdir(sessions_dir):
-            return result
-        cutoff = time.time() - older_than_seconds if older_than_seconds > 0 else 0.0
-        for session_name in sorted(os.listdir(sessions_dir)):
-            session_dir = os.path.join(sessions_dir, session_name)
-            if not os.path.isdir(session_dir):
-                continue
-            if cutoff and os.path.getmtime(session_dir) >= cutoff:
-                continue
-            if session_name == self.session.session_id:
-                result.skipped += 1
-                continue
-            if SessionLock.is_locked(os.path.join(session_dir, "session.lock")):
-                result.skipped += 1
-                continue
-            try:
-                shutil.rmtree(session_dir)
-                result.cleaned += 1
-            except OSError:
-                result.failed += 1
-        return result
+def clean_sessions(session: Session, *, older_than_seconds: int = 0) -> None:
+    sessions_dir = session.data_path("sessions")
+    if not os.path.isdir(sessions_dir):
+        return
+    cutoff = time.time() - older_than_seconds if older_than_seconds > 0 else 0.0
+    for session_name in sorted(os.listdir(sessions_dir)):
+        session_dir = os.path.join(sessions_dir, session_name)
+        if not os.path.isdir(session_dir):
+            continue
+        if cutoff and os.path.getmtime(session_dir) >= cutoff:
+            continue
+        if session_name == session.session_id:
+            continue
+        if SessionLock.is_locked(os.path.join(session_dir, "session.lock")):
+            continue
+        try:
+            shutil.rmtree(session_dir)
+        except OSError:
+            pass
 
 
 ############################
@@ -6322,7 +6306,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/provider", "Show or switch provider", "Config", "/provider [name]"),
     CommandSpec("/yolo", "Toggle yolo mode (skip confirmations)", "Config", "/yolo"),
     CommandSpec("/index", "Initialize, sync, or rebuild code index", "Maintenance", "/index [force]"),
-    CommandSpec("/clean", "Clean inactive session directories", "Maintenance", "/clean"),
     CommandSpec("/exit", "Exit nanocode", "Control", "/exit"),
     CommandSpec("/quit", "Exit nanocode", "Control", "/quit"),
 )
@@ -6794,20 +6777,6 @@ class CommandDispatcher:
             return self.agent.session.config.provider, CONFIG_PROVIDER_ATTRS[key]
         return self.agent.session.settings, CONFIG_RUNTIME_ATTRS[key]
 
-    def _clean(self, args: str) -> str:
-        if args:
-            return "Usage: /clean"
-        sessions_dir = self.agent.session.data_path("sessions")
-        if not os.path.isdir(sessions_dir):
-            return f"No sessions directory found at {sessions_dir}"
-        result = SessionCleaner(self.agent.session).clean()
-        msg = f"Cleaned {result.cleaned} session(s) from {sessions_dir}"
-        if result.skipped:
-            msg += f" ({result.skipped} active session(s) skipped)"
-        if result.failed:
-            msg += f" ({result.failed} failed)"
-        return msg
-
     def _format_bool(self, value: bool | None) -> str:
         return "(fallback)" if value is None else ("on" if value else "off")
 
@@ -7043,7 +7012,7 @@ class AgentLoop:
         with SessionLock(self.agent.session.lock_path()), self.status_bar:
             seconds = RuntimeSettings.clean_retention_seconds(self.agent.session.settings.auto_clean_recent)
             if seconds > 0:
-                SessionCleaner(self.agent.session).clean(older_than_seconds=seconds)
+                clean_sessions(self.agent.session, older_than_seconds=seconds)
             self._start_existing_code_index_refresh()
             dispatcher = CommandDispatcher(
                 self.agent,
