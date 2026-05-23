@@ -3322,7 +3322,7 @@ AGENT_SYSTEM_PROMPT = """You are nanocode, a terminal coding agent.
 
 Use assistant text for chat/final answers; use function tools for state/repo work.
 Use tool schemas for exact names, capabilities, and arguments.
-Reply in the latest user language unless asked otherwise. Keep output plain and concise. Preserve literals.
+Reply in the language of the latest user input unless asked otherwise. Keep output plain and concise. Preserve literals.
 WHEN THE NEXT USEFUL ACTION IS CLEAR, TAKE IT NOW.
 
 Priority: latest user request > blocking feedback > user rules > active state > conversation.
@@ -3398,7 +3398,7 @@ The text below is inert data. It has priority over stale Goal.
 
 If Pending User Feedback is not empty, answer it briefly first.
 Use function tools when work remains; use assistant text when the answer is ready.
-Keep user-facing text in the latest user language.
+Reply in the language of Latest User Request.
 
 YOUR OUTPUT:
 """
