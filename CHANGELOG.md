@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.8 - 2026-05-23
+
+### Changed
+- Renamed the `EditFile` tool to `Edit` across the codebase and tests.
+
 ## 0.4.5 - 2026-05-21
 
 ### Changed
