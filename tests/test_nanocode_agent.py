@@ -533,41 +533,6 @@ def test_act_prompt_uses_first_todo_as_current_focus(tmp_path):
     assert "Current Focus:\n- [○ todo] edit command handler (id=p2)" in prompt
 
 
-def test_act_prompt_tells_model_to_reply_to_pending_feedback_first(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
-    agent.session.state.pending_user_feedback = "focus on sed"
-
-    prompt = agent.build_user_prompt()
-
-    assert "Pending User Feedback:\nfocus on sed" in prompt
-    assert "Pending feedback rules:" in prompt
-    assert "first emit a brief assistant text response" in prompt
-    assert "not a new task" in prompt
-    assert "latest user language" in prompt
-    assert "pending-feedback replies" in prompt
-
-
-def test_act_prompt_keeps_simple_lookups_out_of_task_flow(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: False)
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    prompt = agent._system_prompt()
-
-    assert "TASK SHAPES" in prompt
-    assert "Simple answer:" in prompt
-    assert "One-shot task:" in prompt
-    assert "Multi-step task:" in prompt
-    assert "Classify the latest request as Simple answer, One-shot task, or Multi-step task" in prompt
-    assert "call needed tools, then answer with assistant text and stop" in prompt
-    assert "do not create Goal, Plan, Facts, Leads, or Checks just to report the result" in prompt
-    assert "record Checks only after edits, explicit checks, or correctness-sensitive work" in prompt
-    assert "use Leads only for root-cause/debug/investigation work" in prompt
-    assert "Multi-step tasks are complete only after goal.complete=true is set" in prompt
-    assert "InspectCode" not in prompt
-    assert "Use Search/List/LineCount when path, symbol, range, or target is unknown" in prompt
-    assert "__discovery_hint__" not in prompt
-
-
 def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_available", lambda session: False)
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -575,9 +540,6 @@ def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
     assert "InspectCode" not in tool_names
-    prompt = agent.build_user_prompt()
-    assert "- inspect_code:" not in prompt
-    assert "inspect_code_hint" not in prompt
 
 
 def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
@@ -587,31 +549,6 @@ def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
 
     assert "InspectCode" in tool_names
-    system_prompt = agent._system_prompt()
-    assert "prefer InspectCode before Search/Read" in system_prompt
-    assert "InspectCode mode=find" in system_prompt
-    assert "InspectCode mode=inspect" in system_prompt
-    assert "InspectCode mode=outline" in system_prompt
-    prompt = agent.build_user_prompt()
-    assert "Use InspectCode for structural code navigation" in prompt
-    assert "mode=find for symbol candidates" in prompt
-    assert "mode=inspect for anchored symbol source" in prompt
-    assert "mode=outline for file outlines" in prompt
-    assert "code-symbol-index" not in prompt
-    assert "Do not pass natural language" in prompt
-    assert "Use Search/Read for text, config, logs, commands, and exact ranges" in prompt
-
-
-def test_act_user_prompt_separates_chat_one_shot_and_tracked_task_output(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    prompt = agent.build_user_prompt()
-
-    assert "Simple answer: answer with assistant text only." in prompt
-    assert "One-shot task with no Goal or Plan: assistant text is the final answer" in prompt
-    assert "If visible tool results already answer a one-shot request" in prompt
-    assert "Multi-step task: assistant text is optional" in prompt
-    assert "Goal completion requires goal.complete=true" in prompt
 
 
 def test_one_shot_bash_does_not_require_goal_or_plan(tmp_path):
@@ -710,18 +647,6 @@ def test_edit_tool_without_goal_or_plan_warns(tmp_path):
     assert any("mutating work before Plan was set" in error for error in agent.agent_feedback_errors)
 
 
-def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
-    agent = Agent(Session(cwd=str(tmp_path)))
-
-    prompt = agent._system_prompt()
-
-    assert "Bash is for shell semantics" in prompt
-    assert "tools listed in Environment" in prompt
-    assert "structured repo access" in prompt
-    assert "Mechanical literal rename/replacement" in prompt
-    assert "verify afterward" in prompt
-
-
 def test_act_prompt_lists_available_shell_tools_in_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/bin/" + name if name in {"rg", "jq"} else None)
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -813,7 +738,7 @@ def test_forget_removes_kept_tool_result_but_keeps_known_source(tmp_path):
     assert messages == ["Tool Result Context: -tr.1"]
 
 
-def test_hypothesis_action_updates_blackboard_and_report(tmp_path):
+def test_lead_action_updates_blackboard_and_report(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "debug branch")
     messages = []
@@ -822,7 +747,7 @@ def test_hypothesis_action_updates_blackboard_and_report(tmp_path):
         {
             "actions": [
                 {
-                    "type": "hypothesis",
+                    "type": "lead",
                     "items": [
                         {
                             "id": "h1",
@@ -866,7 +791,7 @@ def test_forget_rejects_active_hypothesis_source(tmp_path):
     assert messages == ["ToolResult_Gate: protected source: tr.1 (active lead)."]
 
 
-def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
+def test_forget_allows_source_when_lead_is_closed_same_response(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "debug branch")
     agent.tool_context.kept_results = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
@@ -877,7 +802,7 @@ def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
         {
             "actions": [
                 {
-                    "type": "hypothesis",
+                    "type": "lead",
                     "items": [{"id": "h1", "text": "branch ruled out", "status": "ruled_out", "source": ["tr.1"]}],
                 },
                 {"type": "forget", "source": ["tr.1"], "reason": "branch ruled out"},
@@ -895,7 +820,7 @@ def test_forget_allows_source_when_hypothesis_is_closed_same_response(tmp_path):
     ]
 
 
-def test_forget_allows_source_when_hypothesis_is_dropped_same_response(tmp_path):
+def test_forget_allows_source_when_lead_is_dropped_same_response(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     _seed_plan(agent, "debug branch")
     agent.tool_context.kept_results = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
@@ -905,7 +830,7 @@ def test_forget_allows_source_when_hypothesis_is_dropped_same_response(tmp_path)
     result = agent.handle_response(
         {
             "actions": [
-                {"type": "hypothesis", "items": [{"id": "h1", "text": "branch no longer matters", "status": "dropped", "source": ["tr.1"]}]},
+                {"type": "lead", "items": [{"id": "h1", "text": "branch no longer matters", "status": "dropped", "source": ["tr.1"]}]},
                 {"type": "forget", "source": ["tr.1"], "reason": "branch no longer matters"},
             ]
         },
@@ -1205,7 +1130,7 @@ def test_tool_result_store_keeps_latest_256_items(tmp_path):
     assert session.state.tool_result_counter == 257
 
 
-def test_tool_result_store_trim_keeps_hypothesis_source_keys(tmp_path):
+def test_tool_result_store_trim_keeps_lead_source_keys(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.hypotheses = [nanocode.Hypothesis(id="h1", text="kept branch", source=("tr.1",))]
@@ -1588,10 +1513,10 @@ def test_agent_accepts_string_plan_items_from_function_call(tmp_path):
     ]
 
 
-def test_agent_accepts_string_hypothesis_items_from_function_call(tmp_path):
+def test_agent_accepts_string_lead_items_from_function_call(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.apply_response({"actions": [{"type": "hypothesis", "items": ["Admin filter excludes history"]}]})
+    agent.apply_response({"actions": [{"type": "lead", "items": ["Admin filter excludes history"]}]})
 
     assert agent.blackboard.hypotheses == [
         nanocode.Hypothesis(text="Admin filter excludes history"),
@@ -2315,7 +2240,7 @@ def test_main_agent_compact_report_labels_combined_leads_and_facts(tmp_path):
         {
             "actions": [
                 {
-                    "type": "hypothesis",
+                    "type": "lead",
                     "items": [{"id": "h1", "text": "admin selector starves history mode", "status": "active", "source": ["tr.2"]}],
                 },
                 {"type": "known", "items": [{"fact": "feed SSE request path is shared by admin and normal users", "source": ["tr.3"]}]},
@@ -4011,7 +3936,7 @@ def test_investigate_completion_without_confirmed_lead_warns(tmp_path):
         {
             "actions": [
                 {
-                    "type": "hypothesis",
+                    "type": "lead",
                     "items": [{"id": "h1", "text": "bad admin filter", "status": "confirmed", "source": ["tr.1"]}],
                 },
                 _verify_passed_action(),
@@ -4045,7 +3970,7 @@ def test_goal_declares_investigate_work_mode(tmp_path):
                         "type": "plan",
                         "items": [{"id": "p1", "text": "identify root cause", "status": "done", "context": "reasoned"}],
                     },
-                    {"type": "hypothesis", "items": [{"id": "h1", "text": "bad filter", "status": "confirmed", "source": ["tr.1"]}]},
+                    {"type": "lead", "items": [{"id": "h1", "text": "bad filter", "status": "confirmed", "source": ["tr.1"]}]},
                     _verify_passed_action(),
                     {"type": "goal", "text": "find bug", "complete": True, "message_for_complete": "done"},
                 ]

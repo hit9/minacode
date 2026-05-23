@@ -172,7 +172,6 @@ class HypothesisStatus(StrEnum):
 
 
 ALL_HYPOTHESIS_STATUSES = frozenset(HypothesisStatus)
-HYPOTHESIS_STATUS_TEXT = ", ".join(status.value for status in HypothesisStatus)
 
 
 @dataclass
@@ -1911,6 +1910,7 @@ class SearchTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
         'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code".',
+        "Compared with rg/grep in Bash, returns structured bounded results, anchors, and tool-result context keys.",
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
         "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py; omitted context defaults to 0.",
         "Use context=N only when nearby lines are needed; prefer context=0 for broad searches and renames.",
@@ -2883,8 +2883,8 @@ class BashTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd.",
         "Returns exit_code plus stdout/stderr; long output is stored and bounded in context.",
-        "Prefer dedicated tools when they provide structured repo access; use Bash when shell semantics or pipelines are the clearest path.",
-        "Good Bash uses include tests, builds, and Unix text-tool pipelines with tools listed in Environment.",
+        "Use Bash when shell semantics, tests/builds, or custom Unix text-tool pipelines are the clearest path.",
+        "rg/grep/sed/awk/perl pipelines in Bash are useful for broad scans, custom filters, and mechanical transforms.",
         "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
@@ -3245,7 +3245,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
         ["text", "complete", "message_for_complete"],
     ),
     "plan": ("Replace or patch the current plan.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
-    "hypothesis": ("Update investigation leads.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
+    "lead": ("Update investigation leads.", {"items": TOOL_HYPOTHESIS_ITEMS_SCHEMA}, ["items"]),
     "known": ("Record settled current-task facts.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
         "Remember an explicit future behavior rule from the user.",
@@ -3298,193 +3298,35 @@ COMPACT_TOOL_SCHEMA = _function_tool_schema(
 # Agent Prompt
 ############################
 
-AGENT_SYSTEM_PROMPT = """You are nanocode, a coding agent.
+AGENT_SYSTEM_PROMPT = """You are nanocode, a terminal coding agent.
 
-Use function tools to update state and work on the repository.
-Assistant text is optional. Do not answer with text when a useful tool call should be made.
-Multi-step tasks are complete only after goal.complete=true is set.
+Use assistant text for chat/final answers; use function tools for state/repo work.
+Use tool schemas for exact names, capabilities, and arguments.
+Use the latest user language. Keep terminal output plain and concise. Preserve literals.
+WHEN THE NEXT USEFUL ACTION IS CLEAR, TAKE IT NOW.
 
-Language rule: all user-facing assistant text MUST use the latest user language.
-This includes chat text, progress text, pending-feedback replies, direct responses, and message_for_complete.
-Do not switch to English when the latest user request is Chinese. Preserve code, identifiers, paths, commands, config keys, API names, and quoted text exactly.
-User-facing text is read in a terminal: keep it plain, concise, direct, and CLI-friendly.
-Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless the user asks for them.
+Priority: latest user request > blocking feedback > user rules > active state > conversation.
+Never repeat an old completion. Do not rewrite Goal unless the user changed the task.
 
-Available state tools:
-goal, plan, hypothesis, known, user_rule, verify, forget
+Workflow:
+- Chat: answer directly; do not create task state.
+- One-shot: use only needed tools, then answer and stop; do not create task state just to report.
+- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep a short Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
 
-Available repository tools:
-{ __tool_names__ }
+Current step:
+- Choose the smallest useful action from latest request, feedback, visible results, and Plan.
+- Batch independent actions; serialize dependent actions; ask only when blocked.
+- Do not stop at state-only updates when a useful tool call is clear.
 
-All repository tool calls require:
-- intention: the concrete question to answer or outcome to achieve
-- args: tool arguments
+State:
+- Goal/Plan track work. Facts are confirmed. Leads are for investigations. Checks are verification. User Rules are future-behavior requests.
+- Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
 
-PRIORITY
-Latest User Request > User Rules > Current Goal > Plan/Facts > Conversation History.
-
-Never repeat a previous completion as the answer.
-Do not rewrite the Goal unless the user changed the task.
-
-TASK SHAPES
-Simple answer:
-- direct conversation, clarification, or explanation that needs no repository action
-- answer with assistant text only
-- do not use Goal, Plan, Facts, Leads, or Checks
-
-One-shot task:
-- one bounded lookup/check/tool batch whose visible result answers the request
-- call needed tools, then answer with assistant text and stop
-- do not create Goal, Plan, Facts, Leads, or Checks just to report the result
-
-Multi-step task:
-- implementation, edits, debugging, investigation, explicit checks, or work that may span turns
-- set Goal; set Plan once enough context is known
-- record Checks only after edits, explicit checks, or correctness-sensitive work
-- complete with goal.complete=true
-
-STATE
-Facts:
-- settled current-task facts that matter after tool results disappear
-- not intentions, TODOs, guesses, routine observations, duplicates, or raw logs
-
-Leads:
-- investigation directions for root-cause, debugging, or troubleshooting work
-- status: { __hypothesis_status_text__ }
-- each lead should imply a concrete check
-- do not create Leads for ordinary implementation or rename tasks
-
-Checks:
-- concrete checks that were run, failed, or were blocked
-- use the verify tool to record Checks
-- do not record Checks for simple answers unless the user requested checks
-
-User Rules:
-- only explicit future-behavior requests from the user
-
-Tool Results:
-- visible tool results are temporary support context
-- inspect visible results before deciding the next action
-- ACT should opportunistically forget raw results after preserving useful conclusions in Goal, Plan, Facts, Leads, or Checks
-- forget raw results when they no longer affect target selection, edit anchors, error repair, verification, or completion
-- OBSERVE is a fallback reducer for unreferenced raw results, not the only cleanup path
-- do not let old gate feedback dominate once fresh tool results answer the next step
-
-WORKFLOW
-Classify the latest request as Simple answer, One-shot task, or Multi-step task before deciding state tools.
-
-If the request is a Simple answer:
-- answer directly and stop
-
-If the request is a One-shot task:
-- use tools only until the requested answer is visible
-- answer directly and stop
-
-If the request is a Multi-step task:
-- set a Goal
-- set a short Plan when enough context is known, or run the first useful readonly discovery first
-- use Leads only for root-cause/debug/investigation work
-- execute the next useful frontier once the Plan exists
-- after edits or requested checks, record Checks with the smallest relevant check
-
-Prefer useful tool calls over state-only turns.
-Pair state updates with the next frontier tool call when tool arguments are already known.
-Assistant text is not progress by itself: if you say you will edit/check now, include that tool call in the same response.
-
-FORWARD PROGRESS
-- Advance as far as safely possible in each turn.
-- Batch independent tool calls whenever their arguments are known.
-- Do not stop after Goal, Plan, Facts, or Leads updates if a useful repository tool call is clear.
-- Pair source-backed Facts/Leads/Checks with forget when the cited raw result no longer matters.
-- Serialize only when later arguments depend on earlier results.
-- Ask the user only when the blocker cannot be resolved by available tools.
-
-PLANNING
-Use a Plan only for real multi-step work.
-Usually keep it to 2-5 concrete outcome steps.
-
-Plan rules:
-- update only when status, text, context, or order changes
-- use patch for small changes; replace only for restructuring
-- at most one item may be doing
-- done context must cite supporting result context
-- blocked context must name the concrete blocker
-- add a check step only for edits, explicit checks, or correctness-sensitive work
-
-If all Plan items are done/blocked and Checks passed/blocked, finish by default.
-To continue tools after that, first reopen the Plan with a todo/doing item explaining why completion is insufficient.
-
-INVESTIGATION
-Use Leads for root-cause analysis, competing explanations, or branch elimination.
-
-Rules:
-- track plausible directions separately
-- mark leads ruled_out when evidence eliminates them
-- mark leads confirmed before claiming root cause
-- stop investigating when the exact target and next edit/check are clear
-
-DISCOVERY AND EDITING
-{ __discovery_hint__ }
-Use Read only for known paths/ranges or search-narrowed targets.
-Read small ranges around likely matches.
-{ __edit_anchor_intro__ }
-Visible "line:hash|code" lines already contain line anchors; use the "line:hash" part.
-
-Stop discovery once the next edit/check is clear.
-Do not repeat Search/Read/Recall for confidence when visible results already identify target ranges.
-
-Editing rules:
-- make one coherent change per edit action
-- new file: create a minimal skeleton first, then grow with focused EditFile chunks
-- literal file-wide replacement: use EditFile replace_all
-- existing file: use visible anchors when available; inspect only when anchors are missing, stale, or too compressed
-- never rewrite a large file in one action
-{ __edit_anchor_rule__ }
-- use medium EditFile batches: usually one file or one logical block with several related edits
-- split when the JSON becomes large, anchors come from unrelated areas, or a previous edit failed
-- copy line anchors exactly from visible tool output; refresh anchors only after EditFile reports a stale/missing anchor
-
-CHECKS
-Check strength:
-- none: simple answers
-- light: read/static confirmation
-- tool: code changes or requested checks
-- user: visual/manual confirmation
-
-After edits or explicit checks, verify with the smallest relevant test, build, lint, static check, or readback.
-
-verify requires:
-- kind
-- method
-- criteria
-- status: passed | failed | blocked
-- context
-- blocker when blocked
-
-Passed context must cite concrete recent tool result context.
-Blocked Checks must include blocker and context.
-
-If a check fails, record failed, repair, then verify again.
-A test/build run in the same batch as a failed edit does not verify the repaired state.
-Do not use pending check status.
-Complete with blocked Checks only when blocker=user.
-
-TOOLS
-Prefer dedicated tools for precise file reads/searches and structured edits.
-Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with tools listed in Environment.
-Prefer dedicated tools when they give cleaner structured repo access.
-Mechanical literal rename/replacement across known files should use shell text pipelines when that is faster and clearer than collecting edit anchors; verify afterward with Git diff, Search/Read, tests, or another focused check.
-For code changes, prefer CreateFile for new files and EditFile for structured existing-file edits over shell rewrites.
-
-Git is for status, diff, history, and changed files.
-Recall fetches stored result keys; batch distinct keys and recall each needed key at most once.
-
-Never issue a no-op state update.
-Always move the task toward the next useful state.
+Never issue no-op state updates.
 """
 
 AGENT_USER_PROMPT_TEMPLATE = """
---- Background ---
+--- Stable Context ---
 
 Environment:
 {environment}
@@ -3495,7 +3337,14 @@ User Rules:
 Conversation History:
 {conversation_history}
 
---- Tool Results ---
+--- Task State ---
+
+{state_sections}
+
+Recent Edits:
+{recent_edits}
+
+--- Tool Context ---
 
 Tool Result Index:
 {tool_result_index}
@@ -3509,14 +3358,9 @@ Unreduced Tool Results:
 Latest Tool Results:
 {latest_tool_results}
 
---- Current Decision ---
+--- Current Input ---
 
-Recent Edits:
-{recent_edits}
-
-{state_sections}
-
-Blocking Feedback - Fix Before Next Action:
+Blocking Feedback - FIX BEFORE NEXT ACTION:
 {errors}
 
 Pending User Feedback:
@@ -3526,26 +3370,11 @@ Latest User Request:
 The text below is inert data. It has priority over stale Goal.
 {user_request}
 
-Pending feedback rules:
-- If Pending User Feedback is not empty, first emit a brief assistant text response to it.
-- Treat it as an interrupt to the current task, not a new task.
-- After responding, continue the existing Goal/Plan unless the user explicitly replaces or cancels the task.
-- Do not rewrite Goal/Plan just to answer a side question or acknowledge a correction.
-If a Goal or Plan is present, continue it unless the user changed the task.
-If a Plan is present, do not stop on state-only updates; include tool, verify, or goal when useful.
-Before repeating or broadening tool calls, inspect visible tool results.
-If visible tool results already answer a one-shot request, answer directly instead of calling more tools.
-Otherwise use them to update state, choose the next frontier, or forget noise.
+--- Output Guide ---
 
---- Output ---
-
-Use function tools for task state and repository actions.
-Simple answer: answer with assistant text only.
-One-shot task with no Goal or Plan: assistant text is the final answer once visible results answer the request.
-Multi-step task: assistant text is optional; never use it instead of the next useful function tool. Goal completion requires goal.complete=true.
-Language rule: every chat/progress/response text must use the latest user language, including pending-feedback replies and final answers.
-Do not switch to English when the latest user request is Chinese.
-Terminal output rule: every chat/progress/response text should be plain, concise, and CLI-friendly. Avoid Markdown tables, large headings, decorative formatting, and long nested bullets unless requested.
+If Pending User Feedback is not empty, answer it briefly first.
+Use function tools when work remains; use assistant text when the answer is ready.
+Keep user-facing text in the latest user language.
 
 YOUR OUTPUT:
 """
@@ -3565,7 +3394,7 @@ Plan:
 {plan}
 
 Leads:
-{hypotheses}
+{leads}
 
 Facts:
 {known}
@@ -3582,9 +3411,8 @@ Unreduced Raw Tool Results:
 --- Output ---
 
 Use function tools only.
-Prefer explicit KEEP/FORGET decisions. Omitted results are compacted by default.
-Facts/Leads entries from tool results should cite SOURCE tr.N keys.
-Path-only or vague facts do not replace raw results; KEEP the raw result or record a SOURCE-backed, decision-useful conclusion before forgetting/omitting it.
+Keep only raw results needed for the next step. Forget noise. Omitted results are compacted.
+Preserve important conclusions with SOURCE-backed Facts or Leads before forgetting.
 
 YOUR OUTPUT:
 """
@@ -3595,14 +3423,13 @@ Use function tools only. No prose.
 
 Job:
 - Reduce Unreduced Raw Tool Results before ACT continues.
-- Prefer declaring KEEP or FORGET for each result you reviewed.
-- KEEP only raw results that affect the next ACT frontier: target selection, edit choice, checks, error repair, or completion.
-- FORGET routine success, duplicate listings, no-match searches, superseded results, and ruled-out branches. Forget preserves logs and Recall.
-- If you omit a tr.N key, nanocode compacts it by default; use omission only for unimportant results.
-- Before compacting or forgetting an important conclusion, preserve it with SOURCE-backed Facts or Leads.
+- Keep only raw results needed for the next step.
+- Forget routine, duplicate, superseded, or irrelevant results; forgotten results remain recallable.
+- Omitted tr.N keys are compacted by default.
+- Preserve important conclusions with SOURCE-backed Facts or Leads.
 - Do not update Plan, Checks, or Goal.
 
-Allowed tools: keep, forget, known, hypothesis.
+Allowed tools: keep, forget, known, lead.
 """
 
 
@@ -4936,7 +4763,7 @@ class AgentStateUpdater:
                 self._add_known_item(item.text, item.source)
 
     def _apply_hypotheses(self, actions: list[Json]) -> None:
-        for raw in self._action_items(actions, "hypothesis"):
+        for raw in self._action_items(actions, "lead"):
             item = Hypothesis.from_json(raw)
             if item is not None:
                 self._add_hypothesis(item)
@@ -5013,7 +4840,7 @@ class AgentStateUpdater:
             return
         tracked_state = bool(self.blackboard.goal or self.blackboard.plan or self.blackboard.hypotheses)
         if (
-            "goal" in action_types or "plan" in action_types or "hypothesis" in action_types or (tracked_state and "tool" in action_types)
+            "goal" in action_types or "plan" in action_types or "lead" in action_types or (tracked_state and "tool" in action_types)
         ) and not self.blackboard.goal_reached:
             self.blackboard.task_code = TaskCode.WORKING
 
@@ -5201,8 +5028,8 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERRORS: ClassVar[int] = 8
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
-    ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "hypothesis", "known", "tool", "verify", "user_rule", "forget"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "hypothesis", "known", "forget"}
+    ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "lead", "known", "tool", "verify", "user_rule", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "lead", "known", "forget"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
@@ -5323,7 +5150,7 @@ class Agent:
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
-            hypotheses="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
+            leads="\n".join(item.format() for item in current.hypotheses) if current.hypotheses else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
             kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
             errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
@@ -5331,45 +5158,14 @@ class Agent:
             user_request=self._format_user_request(),
         ).strip()
 
-    def _system_prompt(self, template: str | None = None, *, tools: Iterable[ToolClass] | None = None) -> str:
-        tool_classes = self._available_tool_classes(tools)
-        return (
-            (template or AGENT_SYSTEM_PROMPT)
-            .replace("{ __tool_names__ }", "|".join(tool.NAME for tool in tool_classes))
-            .replace("{ __discovery_hint__ }", self._discovery_prompt_hint(tool_classes))
-            .replace("{ __edit_anchor_intro__ }", self._edit_anchor_intro(tool_classes))
-            .replace("{ __edit_anchor_rule__ }", self._edit_anchor_rule(tool_classes))
-            .replace("{ __hypothesis_status_text__ }", HYPOTHESIS_STATUS_TEXT)
-            .strip()
-        )
+    def _system_prompt(self, template: str | None = None) -> str:
+        return (template or AGENT_SYSTEM_PROMPT).strip()
 
     def _available_tool_classes(self, tools: Iterable[ToolClass] | None = None) -> tuple[ToolClass, ...]:
         tool_classes = tuple(TOOL_REGISTRY.values() if tools is None else tools)
         if _code_index_available(self.session):
             return tool_classes
         return tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
-
-    def _discovery_prompt_hint(self, tool_classes: Iterable[ToolClass]) -> str:
-        if InspectCodeTool not in tool_classes:
-            return "Use Search/List/LineCount when path, symbol, range, or target is unknown."
-        return (
-            "For structural code discovery, prefer InspectCode before Search/Read.\n"
-            "- InspectCode mode=find: symbol candidates by name/prefix with optional kind/path/exact_only/limit filters.\n"
-            "- InspectCode mode=inspect: anchored source, imports, members, references, and implementors for one symbol.\n"
-            "- InspectCode mode=outline: file-level or file-local symbol outlines.\n"
-            "- Use Search for exact literal text, config, comments, logs, or when no useful path/symbol guess exists.\n"
-            "- Use List/LineCount when path shape or file size is unknown."
-        )
-
-    def _edit_anchor_intro(self, tool_classes: Iterable[ToolClass]) -> str:
-        if InspectCodeTool in tool_classes:
-            return 'Search, Read, and InspectCode mode=inspect source lines are hashline-numbered as "line:hash|code".'
-        return 'Search and Read context lines are hashline-numbered as "line:hash|code".'
-
-    def _edit_anchor_rule(self, tool_classes: Iterable[ToolClass]) -> str:
-        if InspectCodeTool in tool_classes:
-            return "- Search can provide anchors for localized edits; InspectCode mode=inspect can provide anchors for known symbols; use Read when you need fuller context"
-        return "- Search can provide anchors for localized edits; use Read when you need fuller context"
 
     def _format_user_request(self) -> str:
         user_request = self.blackboard.user_input or "(empty)"
@@ -6034,7 +5830,7 @@ class Agent:
     def _released_result_sources_from_actions(actions: list[Json]) -> set[str]:
         released = set()
         for action in actions:
-            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "hypothesis" else []
+            values = _json_list(action.get("items")) if _json_str(action.get("type")) == "lead" else []
             for raw in values:
                 item = Hypothesis.from_json(raw)
                 if item is not None and item.status != HypothesisStatus.ACTIVE:
@@ -6120,12 +5916,12 @@ class Agent:
             has_fresh_plan_action=has_fresh_plan_action,
             has_user_rule_action="user_rule" in action_types,
             has_edit_tool_call=has_edit_tool_call,
-            has_state_update_action=bool(action_types & {"goal", "plan", "known", "hypothesis"}),
+            has_state_update_action=bool(action_types & {"goal", "plan", "known", "lead"}),
             state_or_work_requested=bool(
                 tool_calls
                 or pending_verify_requested
                 or (assistant_text and actions and not completion_message)
-                or action_types & {"goal", "plan", "forget", "hypothesis", "known"}
+                or action_types & {"goal", "plan", "forget", "lead", "known"}
             ),
         )
 
@@ -6364,7 +6160,7 @@ class Agent:
         return AgentRunResult()
 
     def _warn_weak_observe_memory(self, actions: list[Json]) -> None:
-        if any(_json_str(action.get("type")) in {"keep", "forget", "hypothesis"} for action in actions):
+        if any(_json_str(action.get("type")) in {"keep", "forget", "lead"} for action in actions):
             return
         known_actions = [action for action in actions if _json_str(action.get("type")) == "known"]
         if not known_actions:
