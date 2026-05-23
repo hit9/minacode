@@ -194,7 +194,7 @@ def test_search_tool_context_anchor_can_drive_edit_file(tmp_path, monkeypatch):
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
-def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkeypatch):
+def test_search_tool_python_backend_includes_default_context_lines(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("one\ntwo\nthree\nneedle\nfive\nsix\nseven\neight\nnine\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -203,14 +203,12 @@ def test_search_tool_python_backend_includes_four_context_lines(tmp_path, monkey
     result = SearchTool.make(session, ["needle", "sample.txt"]).call()
 
     assert "* sample.txt:4: needle" in result
-    assert "    0:" in result and "|one" in result
-    assert "    1:" in result and "|two" in result
-    assert "    2:" in result and "|three" in result
     assert "  > 3:" in result and "|needle" in result
-    assert "    4:" in result and "|five" in result
-    assert "    5:" in result and "|six" in result
-    assert "    6:" in result and "|seven" in result
-    assert "    7:" in result and "|eight" in result
+    assert "|three" not in result
+    assert "|five" not in result
+    assert "|one" not in result
+    assert "|two" not in result
+    assert "|six" not in result
     assert "|nine" not in result
 
 

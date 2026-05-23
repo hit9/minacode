@@ -1866,14 +1866,14 @@ class SearchTool(Tool):
     OUTPUT_CHARS: ClassVar[int] = 24_000
     MAX_FILE_BYTES: ClassVar[int] = 2_000_000
     RG_MAX_FILESIZE: ClassVar[str] = "2M"
-    CONTEXT_LINES: ClassVar[int] = 4
+    CONTEXT_LINES: ClassVar[int] = 0
     MAX_CONTEXT_LINES: ClassVar[int] = 30
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search before Read; use A|B|C for alternatives and \\n for multiline matches.",
         'Returns matching file paths, matched lines, and 0-based context lines as "line:hash|code".',
         "For exact text, escape regex metacharacters like braces, parens, dots, stars, and brackets.",
-        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 lines; omitted path defaults to current directory.",
+        "Scope with path=FILE_OR_DIR, optionally filter with one glob=*.py, set context=N for 0..30 surrounding lines; omitted context defaults to 0.",
         "Second positional arg is always path, third positional arg is always glob; with path=, extra leading positional args are joined as regex alternatives.",
         "Use at most one glob= per Search. For multiple extensions, run multiple Search actions or search path=. without glob.",
         "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
