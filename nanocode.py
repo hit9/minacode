@@ -2593,6 +2593,8 @@ class EditFileEdit:
     start: str
     end: str
     content: str
+    old: str = ""
+    new: str = ""
 
 
 @dataclass
@@ -2603,13 +2605,15 @@ class EditFileTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Edit an existing UTF-8 file as soon as target lines and replacement text are known.",
         'Use "line:hash" anchors already shown by Read, Search, or InspectCode.',
-        "Supports atomic multi-edit batches: replace, delete, insert_before, and insert_after.",
+        "Supports atomic multi-edit batches: replace, delete, insert_before, insert_after, and replace_all.",
+        "Use replace_all for literal file-wide text replacement when anchors are unnecessary.",
         "Do not reread visible target lines for confidence; reread only if EditFile reports stale or missing anchors.",
         "Returns changed path plus applied edit count.",
     )
-    SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}, ...]) -> EditFileToolResult<path, edits>"
+    SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}|{op:'replace_all',old,new}, ...]) -> EditFileToolResult<path, edits>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Batch: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"},{"op":"delete","start":"20:abc123","end":"20:abc123"}]]',
+        'Literal replace all: ["code.py", [{"op":"replace_all","old":"OldName","new":"NewName"}]]',
         'Insert: ["code.py", [{"op":"insert_after","start":"20:abc123","content":"new line\\n"}]]',
     )
 
@@ -2620,7 +2624,7 @@ class EditFileTool(Tool):
     @classmethod
     def tool_schema(cls) -> Json:
         schema = super().tool_schema()
-        edit_schema: Json = _tool_object_schema(
+        anchored_edit_schema: Json = _tool_object_schema(
             {
                 "op": {"type": "string", "enum": ["replace", "delete", "insert_before", "insert_after"]},
                 "start": {"type": "string", "description": 'Anchor copied from tool output, e.g. "10:a1b2c3".'},
@@ -2629,11 +2633,19 @@ class EditFileTool(Tool):
             },
             ["op", "start"],
         )
+        replace_all_schema: Json = _tool_object_schema(
+            {
+                "op": {"type": "string", "enum": ["replace_all"]},
+                "old": {"type": "string", "description": "Required for replace_all; literal text to replace."},
+                "new": {"type": "string", "description": "Required for replace_all; literal replacement text."},
+            },
+            ["op", "old", "new"],
+        )
         schema["function"]["parameters"]["properties"]["args"] = {
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
-            "items": {"anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": edit_schema}]},
+            "items": {"anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "items": {"anyOf": [anchored_edit_schema, replace_all_schema]}}]},
             "description": 'Exactly two arguments: filepath string, then edits array. Do not pass edits as a JSON string.',
         }
         return schema
@@ -2661,11 +2673,21 @@ class EditFileTool(Tool):
         if not item:
             raise ToolCallArgError("each edit must be an object")
         op = str(item.get("op") or "").strip()
-        if op not in {"replace", "delete", "insert_before", "insert_after"}:
-            raise ToolCallArgError("edit op must be replace, delete, insert_before, or insert_after")
+        if op not in {"replace", "delete", "insert_before", "insert_after", "replace_all"}:
+            raise ToolCallArgError("edit op must be replace, delete, insert_before, insert_after, or replace_all")
         start = str(item.get("start") or "").strip()
         end = str(item.get("end") or "").strip()
         content = str(item.get("content") or "")
+        old = str(item.get("old") or "")
+        new = str(item.get("new") or "")
+        if op == "replace_all":
+            if "old" not in item or "new" not in item:
+                raise ToolCallArgError("replace_all requires old and new")
+            if not old:
+                raise ToolCallArgError("replace_all old cannot be empty")
+            if start or end:
+                raise ToolCallArgError("replace_all does not use anchors")
+            return EditFileEdit(op=op, start="", end="", content="", old=old, new=new)
         if not start:
             raise ToolCallArgError("edit start anchor is required")
         if op in {"replace", "delete"} and not end:
@@ -2703,7 +2725,11 @@ class EditFileTool(Tool):
             f"* path: {relpath}",
             f"* edits: {len(replacements)}",
         ]
-        lines.extend(f"* range[{index}]: {start}:{end}" for index, (start, end, _) in enumerate(replacements, start=1))
+        for index, (start, end, _) in enumerate(replacements, start=1):
+            if start < 0:
+                lines.append(f"* replace_all[{index}]: {end} replacements")
+            else:
+                lines.append(f"* range[{index}]: {start}:{end}")
         lines.append("</EditFileToolResult>")
         return "\n".join(lines)
 
@@ -2713,6 +2739,19 @@ class EditFileTool(Tool):
                 original = f.read()
         except FileNotFoundError:
             raise ToolCallError("file does not exist; use CreateFile for new files")
+        if any(edit.op == "replace_all" for edit in self.edits):
+            if any(edit.op != "replace_all" for edit in self.edits):
+                raise ToolCallError("replace_all cannot be mixed with anchored edits")
+            new_content = original
+            replacements = []
+            for edit in self.edits:
+                count = new_content.count(edit.old)
+                if count == 0:
+                    raise ToolCallError("replace_all old text not found")
+                new_content = new_content.replace(edit.old, edit.new)
+                replacements.append((-1, count, []))
+            return original, new_content, replacements
+
         lines = original.splitlines(keepends=True)
         replacements = []
         for edit in self.edits:
@@ -3352,6 +3391,7 @@ Do not repeat Search/Read/Recall for confidence when visible results already ide
 Editing rules:
 - make one coherent change per edit action
 - new file: create a minimal skeleton first, then grow with focused EditFile chunks
+- literal file-wide replacement: use EditFile replace_all
 - existing file: use visible anchors when available; inspect only when anchors are missing, stale, or too compressed
 - never rewrite a large file in one action
 { __edit_anchor_rule__ }
