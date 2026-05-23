@@ -1499,6 +1499,36 @@ def test_agent_request_sends_function_tool_schema_and_parses_tool_call(tmp_path,
     assert session.state.last_total_tokens == 5
 
 
+def test_agent_step_preserves_raw_bad_function_arguments(tmp_path, monkeypatch):
+    bad_arguments = '{"text":"broken",'
+    _patch_openai(
+        monkeypatch,
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "goal",
+                                    "arguments": bad_arguments,
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+
+    response = Agent(session).step()
+
+    assert response["_format_bad_output"] == bad_arguments
+    assert "invalid tool arguments for goal" in response["_format_error"]
+    assert "Bad output: " + bad_arguments in response["_format_error"]
+
+
 def test_agent_accepts_string_plan_items_from_function_call(tmp_path):
     agent = Agent(Session(cwd=str(tmp_path)))
     response = {"actions": [{"type": "plan", "mode": "replace", "items": ["Create demo", "Run smoke test"]}]}

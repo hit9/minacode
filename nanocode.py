@@ -4277,7 +4277,12 @@ class ModelClient:
         try:
             value = json.loads(arguments or "{}")
         except Exception as error:
-            return {"type": name or "invalid_tool_call", "_format_error": "invalid tool arguments: " + str(error)}
+            tool_name = name or "invalid_tool_call"
+            return {
+                "type": tool_name,
+                "_format_bad_output": arguments,
+                "_format_error": "invalid tool arguments for " + tool_name + ": " + str(error),
+            }
         args = _json_dict(value)
         if name in TOOL_REGISTRY:
             return {"type": "tool", "name": name, "intention": _json_str(args.get("intention")) or "", "args": _json_list(args.get("args"))}
@@ -4491,7 +4496,10 @@ class ModelClient:
         return {
             "actions": [],
             "_format_bad_output": content,
-            "_format_error": "Invalid function-tool response: " + reason + ". Use the provided function tools. Bad output: " + _shorten(content),
+            "_format_error": "Invalid function-tool response: "
+            + reason
+            + ". Use valid function tool calls with JSON arguments matching the tool schema. Bad output: "
+            + _shorten(content),
         }
 
     def _message_content(self, result: JsonValue) -> str | None:
@@ -6043,21 +6051,30 @@ class Agent:
         self.recent_edits.append("- " + path + ": " + _shorten(intention, 160))
         self.recent_edits = self.recent_edits[-self.RECENT_EDITS :]
 
-    def _invalid_action_response(self, response: Json, reason: str) -> Json:
+    def _invalid_action_response(self, response: Json, reason: str, bad_output: str | None = None) -> Json:
+        bad_output = bad_output if bad_output is not None else json.dumps(response, ensure_ascii=False)
         return {
             "actions": [],
-            "_format_error": f"Invalid function-tool response: {reason}. Use the provided function tools. Bad output: "
-            + _shorten(json.dumps(response, ensure_ascii=False)),
+            "_format_bad_output": bad_output,
+            "_format_error": f"Invalid function-tool response: {reason}. Use valid function tool calls with JSON arguments matching the tool schema. Bad output: "
+            + _shorten(bad_output),
         }
 
     def _validate_action_response(self, response: Json) -> Json | None:
         actions = response.get("actions")
         if not isinstance(actions, list):
             return self._invalid_action_response(response, "expected actions array")
-        action_errors = [_json_str(action.get("_format_error")) for action in (_json_dict(item) for item in actions)]
-        action_errors = [error for error in action_errors if error]
+        action_bad_outputs = []
+        action_errors = []
+        for action in (_json_dict(item) for item in actions):
+            error = _json_str(action.get("_format_error"))
+            if error:
+                action_errors.append(error)
+                bad_output = _json_str(action.get("_format_bad_output"))
+                if bad_output:
+                    action_bad_outputs.append(bad_output)
         if action_errors:
-            return self._invalid_action_response(response, "; ".join(action_errors))
+            return self._invalid_action_response(response, "; ".join(action_errors), "\n".join(action_bad_outputs) or None)
         extra_keys = sorted(str(key) for key in response.keys() if key not in {"actions", "_assistant_text"} and not str(key).startswith("_format_"))
         if extra_keys:
             return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
