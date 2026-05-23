@@ -1,9 +1,9 @@
-from prompt_toolkit.completion import CompleteEvent, WordCompleter
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 import time
 
 import nanocode
-from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, ReferenceFileCompleter, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
+from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
 def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
@@ -424,25 +424,6 @@ def test_agent_loop_command_completer_completes_provider_names():
     assert [c.text for c in q_completions] == ["qwen"]
     assert [c.text for c in o_completions] == ["openai"]
     assert {c.text for c in all_completions} == {"qwen", "openai"}
-
-
-def test_reference_file_completer_completes_at_paths_and_keeps_command_fallback(tmp_path):
-    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
-
-    completer = ReferenceFileCompleter(str(tmp_path), WordCompleter(["/help"], WORD=True))
-    event = CompleteEvent(completion_requested=True)
-
-    file_completions = list(completer.get_completions(Document("see @READ"), event))
-    dir_completions = list(completer.get_completions(Document("see @sr"), event))
-    nested_completions = list(completer.get_completions(Document("see @src/ma"), event))
-    command_completions = list(completer.get_completions(Document("/he"), event))
-
-    assert "README.md" in [completion.text for completion in file_completions]
-    assert "src/" in [completion.text for completion in dir_completions]
-    assert "src/main.py" in [completion.text for completion in nested_completions]
-    assert "/help" in [completion.text for completion in command_completions]
 
 
 def test_agent_loop_confirmation_accepts_refusal_reason(tmp_path):

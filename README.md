@@ -2,7 +2,7 @@
 
 A lightweight terminal-based AI coding assistant.
 
-nanocode is used to help building itself, including features such as `@file` path completion.
+nanocode is used to help building itself.
 
 Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, configuration, and behavior may change incompatibly before a 1.0 release.
 

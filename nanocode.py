@@ -6481,8 +6481,6 @@ class CommandDispatcher:
                 current_category = spec.category
                 lines.append(current_category + ":")
             lines.append("  " + spec.usage + " - " + spec.description)
-        lines.append("")
-        lines.append("Tip: use @path to autocomplete file paths in prompts.")
         return "\n".join(lines)
 
     def _format_source_help_question(self, question: str) -> str:
@@ -7661,12 +7659,9 @@ class AgentLoop:
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
         return PromptSession(
             history=FileHistory(self.history_path),
-            completer=ReferenceFileCompleter(
-                self.agent.session.cwd,
-                CommandCompleter(
-                    lambda: self.agent.session.config.providers,
-                    lambda: self.agent.session.config.provider.available_models,
-                ),
+            completer=CommandCompleter(
+                lambda: self.agent.session.config.providers,
+                lambda: self.agent.session.config.provider.available_models,
             ),
             lexer=CommandLexer(),
             complete_while_typing=True,
@@ -8215,34 +8210,6 @@ class CommandLexer(Lexer):
             return [("class:command-input", command), ("", separator + rest)]
 
         return get_line
-
-
-class ReferenceFileCompleter(Completer):
-    def __init__(self, cwd: str, command_completer: Completer):
-        self.cwd = cwd
-        self.command_completer = command_completer
-
-    def get_completions(self, document, complete_event):
-        match = re.search(r"(?:^|\s)@([^\s]*)$", document.text_before_cursor)
-        if match is None:
-            yield from self.command_completer.get_completions(document, complete_event)
-            return
-
-        partial = match.group(1)
-        dirname, prefix = os.path.split(partial)
-        base_dir = os.path.abspath(os.path.join(self.cwd, dirname))
-        try:
-            names = sorted(os.listdir(base_dir))
-        except OSError:
-            return
-
-        for name in names:
-            if not name.startswith(prefix):
-                continue
-            full_path = os.path.join(base_dir, name)
-            suffix = "/" if os.path.isdir(full_path) else ""
-            candidate = os.path.join(dirname, name) + suffix if dirname else name + suffix
-            yield Completion(candidate, start_position=-len(partial), display="@" + candidate)
 
 
 ############################
