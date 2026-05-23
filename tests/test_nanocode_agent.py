@@ -2254,7 +2254,7 @@ def test_agent_ignores_empty_plan_replace(tmp_path):
     assert agent.state_updater.latest_report == ""
 
 
-def test_agent_treats_plan_without_mode_as_replace(tmp_path):
+def test_agent_patches_existing_plan_ids_without_mode(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     agent.blackboard.plan = [
@@ -2266,6 +2266,43 @@ def test_agent_treats_plan_without_mode_as_replace(tmp_path):
     assert agent._build_response_context(response).has_fresh_plan_action is True
     agent.apply_response(response)
 
+    assert [item.text for item in agent.blackboard.plan] == ["Inspect new file", "Edit old file"]
+    assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
+
+
+def test_agent_explicit_plan_replace_discards_old_items(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="Inspect old file", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="Edit old file", status=nanocode.PlanStatus.TODO),
+    ]
+
+    agent.apply_response({"actions": [{"type": "plan", "mode": "replace", "items": [{"id": "p1", "text": "Inspect new file", "status": "doing"}]}]})
+
+    assert [item.text for item in agent.blackboard.plan] == ["Inspect new file"]
+    assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
+
+
+def test_agent_replaces_plan_by_default_when_goal_changes(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    agent.blackboard.goal = "old task"
+    agent.blackboard.plan = [
+        nanocode.PlanItem(id="p1", text="Inspect old file", status=nanocode.PlanStatus.DONE),
+        nanocode.PlanItem(id="p2", text="Edit old file", status=nanocode.PlanStatus.TODO),
+    ]
+
+    agent.apply_response(
+        {
+            "actions": [
+                {"type": "goal", "text": "new task", "complete": False},
+                {"type": "plan", "items": [{"id": "p1", "text": "Inspect new file", "status": "doing"}]},
+            ]
+        }
+    )
+
+    assert agent.blackboard.goal == "new task"
     assert [item.text for item in agent.blackboard.plan] == ["Inspect new file"]
     assert agent.blackboard.plan[0].status == nanocode.PlanStatus.DOING
 
@@ -3980,6 +4017,7 @@ def test_agent_run_retries_goal_complete_when_plan_done_without_context(tmp_path
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert any("before Plan was complete" in error for error in agent.agent_feedback_errors)
+    assert any("plan items missing context" in error for error in agent.agent_feedback_errors)
     assert agent.agent_feedback_errors
     assert agent.blackboard.plan == [nanocode.PlanItem(id="p1", text="answer", status=nanocode.PlanStatus.DONE, context="answered")]
 

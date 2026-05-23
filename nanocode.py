@@ -2794,6 +2794,7 @@ class BashTool(Tool):
     NAME: ClassVar[str] = "Bash"
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Run one explicit shell command via bash -lc in cwd.",
+        "Args must be exactly one command string; do not pass timeout or extra args.",
         "Returns exit_code plus stdout/stderr; long output is stored and bounded in context.",
         "Use Bash when shell semantics, tests/builds, or custom Unix text-tool pipelines are the clearest path.",
         "rg/grep/sed/awk/perl pipelines in Bash are useful for broad scans, custom filters, and mechanical transforms.",
@@ -4414,7 +4415,7 @@ class AgentStateUpdater:
         before_user_rules = self.session.state.user_rules.format()
         before_checks = self.blackboard.checks.format()
         goal_changed = self._apply_goal(actions)
-        plan_replaced = self._apply_plan(actions)
+        plan_replaced = self._apply_plan(actions, replace_by_default=goal_changed)
         if goal_changed and not plan_replaced:
             self.blackboard.plan = []
         for raw in self._action_items(actions, "known"):
@@ -4565,20 +4566,23 @@ class AgentStateUpdater:
                 self.blackboard.goal_reached = complete
         return changed
 
-    def _apply_plan(self, actions: list[Json]) -> bool:
+    def _apply_plan(self, actions: list[Json], *, replace_by_default: bool = False) -> bool:
         replaced = False
         for update in self._actions_of_type(actions, "plan"):
             items = _json_list(update.get("items"))
-            if update.get("mode") != "patch":
-                if not items:
-                    continue
-                plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
-                self._normalize_doing_items(plan)
-                self.blackboard.plan = plan
-                replaced = True
+            mode = _json_str(update.get("mode"))
+            existing_ids = {item.id for item in self.blackboard.plan if item.id}
+            targets_existing = bool(existing_ids) and any(_json_str(_json_dict(raw).get("id")) in existing_ids for raw in items)
+            if mode == "patch" or (not replace_by_default and mode != "replace" and targets_existing):
+                if self._apply_plan_patches(self.blackboard.plan, items):
+                    self._normalize_doing_items(self.blackboard.plan)
                 continue
-            if self._apply_plan_patches(self.blackboard.plan, items):
-                self._normalize_doing_items(self.blackboard.plan)
+            if not items:
+                continue
+            plan = [item for item in (self._plan_item_from_json(raw) for raw in items) if item]
+            self._normalize_doing_items(plan)
+            self.blackboard.plan = plan
+            replaced = True
         return replaced
 
     def _apply_plan_patches(self, plan: list[PlanItem], value: JsonValue) -> bool:
@@ -5997,7 +6001,7 @@ class Agent:
             return self._reject_result(
                 self._remember_agent_error,
                 on_message,
-                self._error("completion before Plan was complete.", self.RULE_COMPLETE_PLAN),
+                self._error("completion before Plan was complete: " + completion_plan_error + ".", self.RULE_COMPLETE_PLAN),
                 "Retrying: finish the plan before completing.",
                 "Completion_Gate: " + completion_plan_error + ".",
             )
