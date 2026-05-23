@@ -1148,7 +1148,8 @@ TOOL_JSON_VALUE_SCHEMA: Json = _json_value_schema()
 class Tool:
     NAME: ClassVar[str]
     DESCRIPTION: ClassVar[tuple[str, ...]] = ()
-    SIGNATURE: ClassVar[str]
+    SIGNATURE: ClassVar[str] = ""
+    SIGNATURES: ClassVar[tuple[str, ...]] = ()
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     PARAM_NAMES: ClassVar[tuple[str, ...]] = ()
     EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
@@ -1179,10 +1180,18 @@ class Tool:
         return json.dumps(text, ensure_ascii=False)
 
     @classmethod
+    def signatures(cls) -> tuple[str, ...]:
+        return cls.SIGNATURES or ((cls.SIGNATURE,) if cls.SIGNATURE else ())
+
+    @classmethod
+    def schema_description(cls) -> str:
+        return " ".join((*cls.DESCRIPTION, *cls.signatures(), *cls.EXAMPLE))
+
+    @classmethod
     def tool_schema(cls) -> Json:
         return _function_tool_schema(
             cls.NAME,
-            " ".join((*cls.DESCRIPTION, cls.SIGNATURE, *cls.EXAMPLE)),
+            cls.schema_description(),
             _tool_object_schema(
                 {
                     "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
@@ -1630,7 +1639,10 @@ class ReadTool(Tool):
         "Each range returns at most 600 lines.",
         'Content is numbered as "line:hash|code"; the "line:hash" part is the line anchor.',
     )
-    SIGNATURE: ClassVar[str] = "Read(filepath[, range_token...]) -> ReadToolResult<hashline-numbered content>"
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "Read(filepath) -> first 600 lines with line:hash anchors",
+        "Read(filepath, 'start,end'[, 'start,end'...]) -> selected 0-based ranges with line:hash anchors",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["code.py", "0,80", "160,220"]',
         'Example args: ["code.py"]',
@@ -1804,7 +1816,11 @@ class ListTool(Tool):
         "Returns each immediate entry with type and relative path.",
         "Batch multiple List actions in one turn when checking several known directories.",
     )
-    SIGNATURE: ClassVar[str] = "List([dirpath][, glob]) -> ListToolResult<entries>"
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "List() -> current directory entries",
+        "List(dirpath) -> one directory entries",
+        "List(dirpath, glob) -> immediate entries matching glob",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["src"]', 'Example args: ["src", "*.py"]', "Current dir args: []")
 
     dirpath: str = ""
@@ -1880,7 +1896,12 @@ class SearchTool(Tool):
         "Batch multiple Search actions in one turn when checking independent patterns or multiple globs.",
         "Only options are path=, glob=, context=; escape regex symbols for literal text.",
     )
-    SIGNATURE: ClassVar[str] = "Search(pattern[, path=path][, glob=pattern][, context=N]) -> SearchToolResult<matches>"
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "Search(pattern) -> recursive match lines under current directory",
+        "Search(pattern, path=FILE_OR_DIR) -> recursive match lines under path",
+        "Search(pattern, path=FILE_OR_DIR, glob=GLOB) -> recursive match lines filtered by glob",
+        "Search(pattern, path=FILE_OR_DIR, context=N) -> match lines plus N surrounding lines",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["class .*Tool", "path=nanocode.py", "context=0"]',
         'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
@@ -2418,7 +2439,11 @@ class InspectCodeTool(Tool):
         "find options: limit, kind, path, exact_only; inspect options: kind, path, exact_only; outline options: symbol.",
         "find/inspect targets are symbol names or prefixes, not natural language or literal text; outline target is a file path.",
     )
-    SIGNATURE: ClassVar[str] = "InspectCode(mode, target[, options]) -> InspectCodeToolResult"
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "InspectCode('find', symbol_prefix[, {limit, kind, path, exact_only}]) -> symbol candidates with file/range",
+        "InspectCode('inspect', symbol_name[, {kind, path, exact_only}]) -> anchored source, signature, imports, and callers/callees when available",
+        "InspectCode('outline', filepath[, {symbol}]) -> file outline, or focused outline for one symbol in the file",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Find: ["find", "Tool", {"kind":"class","limit":20}]',
         'Inspect: ["inspect", "Agent.run", {"path":"nanocode.py","exact_only":true}]',
@@ -2628,7 +2653,12 @@ class EditFileTool(Tool):
         "Do not reread visible target lines for confidence; reread only if EditFile reports stale or missing anchors.",
         "Returns changed path plus applied edit count.",
     )
-    SIGNATURE: ClassVar[str] = "EditFile(filepath, [{op,start,end,content}|{op:'replace_all',old,new}, ...]) -> EditFileToolResult<path, edits>"
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "EditFile(filepath, [{op:'replace', start, end, content}, ...]) -> replace anchored ranges",
+        "EditFile(filepath, [{op:'delete', start, end}, ...]) -> delete anchored ranges",
+        "EditFile(filepath, [{op:'insert_before'|'insert_after', start, content}, ...]) -> insert at anchors",
+        "EditFile(filepath, [{op:'replace_all', old, new}]) -> literal file-wide replacement",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Batch: ["code.py", [{"op":"replace","start":"10:a1b2c3","end":"12:d4e5f6","content":"new lines\\n"},{"op":"delete","start":"20:abc123","end":"20:abc123"}]]',
         'Literal replace all: ["code.py", [{"op":"replace_all","old":"OldName","new":"NewName"}]]',
