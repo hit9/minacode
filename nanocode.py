@@ -154,6 +154,16 @@ class PlanFollowupStatus(StrEnum):
 ALL_PLAN_FOLLOWUP_STATUSES = frozenset(PlanFollowupStatus)
 
 
+@dataclass
+class PlanFollowup:
+    status: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN
+    reason: str = ""
+
+    def format(self) -> str:
+        text = str(self.status)
+        return text + (": " + self.reason if self.reason else "")
+
+
 class TaskCode(StrEnum):
     NEW = "new"
     WORKING = "working"
@@ -177,8 +187,8 @@ class PlanItem:
     status: PlanStatus = PlanStatus.TODO
     id: str = ""
     context: str = ""
-    followup_action: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN
-    followup_check: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN
+    followup_action: PlanFollowup = field(default_factory=PlanFollowup)
+    followup_check: PlanFollowup = field(default_factory=PlanFollowup)
 
     def format(self, indent: str = "") -> str:
         text = "- [" + str(self.status) + "] " + self.text
@@ -187,10 +197,10 @@ class PlanItem:
         lines = [text]
         if self.context:
             lines.append("  context: " + self.context)
-        if self.followup_action != PlanFollowupStatus.UNKNOWN:
-            lines.append("  followup_action: " + str(self.followup_action))
-        if self.followup_check != PlanFollowupStatus.UNKNOWN:
-            lines.append("  followup_check: " + str(self.followup_check))
+        if self.followup_action.status != PlanFollowupStatus.UNKNOWN:
+            lines.append("  followup_action: " + self.followup_action.format())
+        if self.followup_check.status != PlanFollowupStatus.UNKNOWN:
+            lines.append("  followup_check: " + self.followup_check.format())
         return _format_lines(lines, indent)
 
 
@@ -405,6 +415,8 @@ class Blackboard:
             *[item.context for item in self.leads],
             *[item.text for item in self.plan],
             *[item.context for item in self.plan],
+            *[item.followup_action.reason for item in self.plan],
+            *[item.followup_check.reason for item in self.plan],
             self.checks.method,
             self.checks.context,
             self.checks.blocker,
@@ -3134,6 +3146,16 @@ TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA: Json = {
     "type": ["string", "null"],
     "enum": [*ALL_PLAN_FOLLOWUP_STATUSES],
 }
+TOOL_PLAN_FOLLOWUP_SCHEMA: Json = _tool_object_schema(
+    {
+        "status": TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA,
+        "reason": {
+            **TOOL_NULLABLE_STRING_SCHEMA,
+            "description": "Short reason or evidence for this status. Required when status is not unknown.",
+        },
+    },
+    [],
+)
 TOOL_PLAN_ITEMS_SCHEMA: Json = {
     "type": "array",
     "items": _tool_object_schema(
@@ -3143,8 +3165,14 @@ TOOL_PLAN_ITEMS_SCHEMA: Json = {
             "text": TOOL_NULLABLE_STRING_SCHEMA,
             "status": {"type": ["string", "null"], "enum": [*ALL_PLAN_STATUSES]},
             "context": TOOL_NULLABLE_STRING_SCHEMA,
-            "followup_action": {**TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA, "description": "Required non-check work caused by this step: unknown, none, needed, done, or blocked."},
-            "followup_check": {**TOOL_PLAN_FOLLOWUP_STATUS_SCHEMA, "description": "Required checking caused by this step: unknown, none, needed, done, or blocked."},
+            "followup_action": {
+                **TOOL_PLAN_FOLLOWUP_SCHEMA,
+                "description": "Follow-on non-check work caused by this step. Use needed until the action is added/done, none only with reason.",
+            },
+            "followup_check": {
+                **TOOL_PLAN_FOLLOWUP_SCHEMA,
+                "description": "Follow-on validation caused by this step. Use needed until checked, done with evidence, none only with reason.",
+            },
         },
         [],
     ),
@@ -4476,8 +4504,8 @@ class AgentStateUpdater:
             def render_plan_row(index: int, item: PlanItem) -> list[str]:
                 rows = ["    " + str(index) + ". [" + str(item.status) + "] " + self._compact(item.text)]
                 rows += ["       context: " + self._compact(item.context)] if item.context else []
-                rows += ["       followup_action: " + str(item.followup_action)] if item.followup_action != PlanFollowupStatus.UNKNOWN else []
-                rows += ["       followup_check: " + str(item.followup_check)] if item.followup_check != PlanFollowupStatus.UNKNOWN else []
+                rows += ["       followup_action: " + item.followup_action.format()] if item.followup_action.status != PlanFollowupStatus.UNKNOWN else []
+                rows += ["       followup_check: " + item.followup_check.format()] if item.followup_check.status != PlanFollowupStatus.UNKNOWN else []
                 return rows
 
             self._append_state_section(lines, "  Plan", self._format_rows(current.plan, render_plan_row))
@@ -4616,8 +4644,8 @@ class AgentStateUpdater:
                 text = _json_str(patch.get("text")) if "text" in patch else None
                 status = _json_str(patch.get("status")) if "status" in patch else None
                 context = _json_str(patch.get("context")) if "context" in patch else existing.context
-                followup_action = self._plan_followup_status(patch.get("followup_action"), existing.followup_action) if "followup_action" in patch else existing.followup_action
-                followup_check = self._plan_followup_status(patch.get("followup_check"), existing.followup_check) if "followup_check" in patch else existing.followup_check
+                followup_action = self._plan_followup(patch.get("followup_action"), existing.followup_action) if "followup_action" in patch else existing.followup_action
+                followup_check = self._plan_followup(patch.get("followup_check"), existing.followup_check) if "followup_check" in patch else existing.followup_check
                 updated = (text or existing.text, PlanStatus(status) if status in ALL_PLAN_STATUSES else existing.status, context or "", followup_action, followup_check)
                 changed = changed or (existing.text, existing.status, existing.context, existing.followup_action, existing.followup_check) != updated
                 existing.text, existing.status, existing.context, existing.followup_action, existing.followup_check = updated
@@ -4645,14 +4673,23 @@ class AgentStateUpdater:
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
             context=_json_str(item.get("context")) or "",
-            followup_action=self._plan_followup_status(item.get("followup_action")),
-            followup_check=self._plan_followup_status(item.get("followup_check")),
+            followup_action=self._plan_followup(item.get("followup_action")),
+            followup_check=self._plan_followup(item.get("followup_check")),
         )
 
     @staticmethod
-    def _plan_followup_status(value: JsonValue, default: PlanFollowupStatus = PlanFollowupStatus.UNKNOWN) -> PlanFollowupStatus:
-        status = _json_str(value)
-        return PlanFollowupStatus(status) if status in ALL_PLAN_FOLLOWUP_STATUSES else default
+    def _plan_followup(value: JsonValue, default: PlanFollowup | None = None) -> PlanFollowup:
+        fallback = default or PlanFollowup()
+        item = _json_dict(value)
+        if not item:
+            return fallback
+        raw_status = _json_str(item.get("status"))
+        status = PlanFollowupStatus(raw_status) if raw_status in ALL_PLAN_FOLLOWUP_STATUSES else fallback.status
+        reason_value = _json_str(item.get("reason")) if "reason" in item else fallback.reason
+        reason = _shorten(" ".join((reason_value or "").split()), 240)
+        if status != fallback.status and "reason" not in item:
+            reason = ""
+        return PlanFollowup(status=status, reason=reason)
 
     @staticmethod
     def _normalize_doing_items(plan: list[PlanItem]) -> None:
@@ -4882,7 +4919,7 @@ class Agent:
     RULE_TOOL_SIGNATURE: ClassVar[str] = "use the tool signature exactly."
     RULE_EDIT_SIGNATURE: ClassVar[str] = "use EditFile(filepath, edits) with visible line anchors; split oversized batches."
     RULE_COMPLETE_PLAN: ClassVar[str] = "mark every Plan item done or blocked with result context before completion."
-    RULE_PLAN_FOLLOWUP: ClassVar[str] = "set followup_action and followup_check to none, done, or blocked before completion."
+    RULE_PLAN_FOLLOWUP: ClassVar[str] = "set followup_action and followup_check as {status, reason}; resolve needed before completion."
     RULE_BLOCKED_BY_USER: ClassVar[str] = "complete blocked Checks only when blocker=user."
     RULE_FUNCTION_TOOLS: ClassVar[str] = "use the provided function tools."
     RULE_VALID_TOOL_JSON: ClassVar[str] = "rebuild valid function arguments; for EditFile, use one file/logical block and split oversized batches."
@@ -5604,10 +5641,21 @@ class Agent:
         if not self.blackboard.goal_reached or not self.recent_edits:
             return ""
         completed = [item for item in self.blackboard.plan if item.status in self.COMPLETED_PLAN_STATUSES]
-        missing = [item for item in completed if item.followup_action == PlanFollowupStatus.UNKNOWN or item.followup_check == PlanFollowupStatus.UNKNOWN]
+        missing = [
+            item
+            for item in completed
+            if item.followup_action.status == PlanFollowupStatus.UNKNOWN or item.followup_check.status == PlanFollowupStatus.UNKNOWN
+        ]
         if missing:
             return "plan follow-up status missing: " + self._format_plan_gate_items(missing)
-        needed = [item for item in completed if item.followup_action == PlanFollowupStatus.NEEDED or item.followup_check == PlanFollowupStatus.NEEDED]
+        missing_reason = [item for item in completed if not item.followup_action.reason.strip() or not item.followup_check.reason.strip()]
+        if missing_reason:
+            return "plan follow-up reason missing: " + self._format_plan_gate_items(missing_reason)
+        needed = [
+            item
+            for item in completed
+            if item.followup_action.status == PlanFollowupStatus.NEEDED or item.followup_check.status == PlanFollowupStatus.NEEDED
+        ]
         if needed:
             return "plan follow-up still needed: " + self._format_plan_gate_items(needed)
         return ""

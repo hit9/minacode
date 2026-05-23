@@ -2335,8 +2335,8 @@ def test_agent_plan_items_track_followup_statuses(tmp_path):
                             "text": "Update dependency declaration",
                             "status": "done",
                             "context": "pyproject updated",
-                            "followup_action": "needed",
-                            "followup_check": "done",
+                            "followup_action": {"status": "needed", "reason": "dependency change may require sync"},
+                            "followup_check": {"status": "done", "reason": "tests passed after edit"},
                         }
                     ],
                 }
@@ -2350,14 +2350,14 @@ def test_agent_plan_items_track_followup_statuses(tmp_path):
             text="Update dependency declaration",
             status=nanocode.PlanStatus.DONE,
             context="pyproject updated",
-            followup_action=nanocode.PlanFollowupStatus.NEEDED,
-            followup_check=nanocode.PlanFollowupStatus.DONE,
+            followup_action=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.NEEDED, "dependency change may require sync"),
+            followup_check=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.DONE, "tests passed after edit"),
         )
     ]
-    assert "followup_action: needed" in agent.build_user_prompt()
-    assert "followup_check: done" in agent.build_user_prompt()
-    assert "followup_action: needed" in agent.state_updater.latest_report
-    assert "followup_check: done" in agent.state_updater.latest_report
+    assert "followup_action: needed: dependency change may require sync" in agent.build_user_prompt()
+    assert "followup_check: done: tests passed after edit" in agent.build_user_prompt()
+    assert "followup_action: needed: dependency change may require sync" in agent.state_updater.latest_report
+    assert "followup_check: done: tests passed after edit" in agent.state_updater.latest_report
 
 
 def test_agent_completion_after_edit_requires_plan_followup_status(tmp_path):
@@ -2384,8 +2384,8 @@ def test_agent_completion_after_edit_blocks_needed_plan_followup(tmp_path):
             text="edit sample",
             status=nanocode.PlanStatus.DONE,
             context="edited",
-            followup_action=nanocode.PlanFollowupStatus.NEEDED,
-            followup_check=nanocode.PlanFollowupStatus.DONE,
+            followup_action=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.NEEDED, "edit requires another file update"),
+            followup_check=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.DONE, "unit test passed"),
         )
     ]
     agent.recent_edits = ["- sample.txt: edit sample"]
@@ -2395,6 +2395,29 @@ def test_agent_completion_after_edit_blocks_needed_plan_followup(tmp_path):
 
     assert result.done is False
     assert any("plan follow-up still needed" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_completion_after_edit_requires_plan_followup_reason(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.blackboard.goal = "change sample"
+    agent.blackboard.goal_reached = True
+    agent.blackboard.plan = [
+        nanocode.PlanItem(
+            id="p1",
+            text="edit sample",
+            status=nanocode.PlanStatus.DONE,
+            context="edited",
+            followup_action=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.NONE),
+            followup_check=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.DONE),
+        )
+    ]
+    agent.recent_edits = ["- sample.txt: edit sample"]
+    ctx = agent._build_response_context({"actions": [{"type": "goal", "text": "change sample", "complete": True, "message_for_complete": "done"}]})
+
+    result = agent._finish_or_continue(ctx, None)
+
+    assert result.done is False
+    assert any("plan follow-up reason missing" in error for error in agent.agent_feedback_errors)
 
 
 def test_agent_completion_after_edit_allows_resolved_plan_followup(tmp_path):
@@ -2407,8 +2430,8 @@ def test_agent_completion_after_edit_allows_resolved_plan_followup(tmp_path):
             text="edit sample",
             status=nanocode.PlanStatus.DONE,
             context="edited",
-            followup_action=nanocode.PlanFollowupStatus.NONE,
-            followup_check=nanocode.PlanFollowupStatus.DONE,
+            followup_action=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.NONE, "edit has no generated follow-up"),
+            followup_check=nanocode.PlanFollowup(nanocode.PlanFollowupStatus.DONE, "smoke test passed"),
         )
     ]
     agent.recent_edits = ["- sample.txt: edit sample"]
@@ -3108,8 +3131,8 @@ def test_agent_run_executes_edit_tool_and_requires_checks(tmp_path):
                                     "text": "test plan",
                                     "status": "done",
                                     "context": "seeded",
-                                    "followup_action": "none",
-                                    "followup_check": "done",
+                                    "followup_action": {"status": "none", "reason": "seeded plan has no follow-up action"},
+                                    "followup_check": {"status": "done", "reason": "seeded plan check complete"},
                                 }
                             ],
                         },
