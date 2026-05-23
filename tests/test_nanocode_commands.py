@@ -55,6 +55,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     session.state.conversation = [UserMessage(content="one"), UserMessage(content="two"), UserMessage(content="three")]
 
     model_result = dispatcher.dispatch("/set provider.model new-model")
+    cache_result = dispatcher.dispatch("/set provider.prompt_cache_key off")
     reason_result = dispatcher.dispatch("/set provider.reasoning high")
     chat_reasoning_result = dispatcher.dispatch("/set provider.chat_reasoning reasoning")
     stream_result = dispatcher.dispatch("/set provider.stream off")
@@ -66,6 +67,8 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
     assert model_result.status == CommandStatus.HANDLED
     assert session.config.provider.model == "new-model"
+    assert cache_result.message == "Set provider.prompt_cache_key = off"
+    assert session.config.provider.prompt_cache_key == "off"
     assert reason_result.message == "Set provider.reasoning = high"
     assert session.config.provider.reasoning == "high"
     assert chat_reasoning_result.message == "Set provider.chat_reasoning = reasoning"
@@ -89,19 +92,23 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
     monkeypatch.setattr(nanocode, "_code_index_status", lambda session, *, check=False: ("unavailable", ""))
     session = make_session(tmp_path, model="model")
     session.state.last_total_tokens = 1200
+    session.state.last_cached_prompt_tokens = 400
     session.state.session_total_tokens = 2_345_678
-    session.state.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678)
+    session.state.session_prompt_tokens = 1000
+    session.state.session_cached_prompt_tokens = 400
+    session.state.model_usage["model"] = ModelUsage(calls=2, total_tokens=2_345_678, cached_prompt_tokens=400)
     dispatcher = CommandDispatcher(Agent(session))
 
     result = dispatcher.dispatch("/status")
 
     assert result.status == CommandStatus.HANDLED
     assert "tokens: last=1k session=2m" in result.message
+    assert "cache: last=400 session=400 rate=40%" in result.message
     assert "model: model api=chat(auto) reasoning=medium(off) stream=on" in result.message
     assert "session: " + session.session_id in result.message
     assert "runtime: yolo=off compact_at=50" in result.message
     assert "models:" in result.message
-    assert "model: calls=2 tokens=2m" in result.message
+    assert "model: calls=2 tokens=2m cached=400" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
     assert "tools: code_index=unavailable" in result.message
     assert "task:" not in result.message
@@ -165,6 +172,7 @@ def test_config_command_reports_resolved_provider_config(tmp_path):
     assert "config: " in result.message
     assert "provider.active: default" in result.message
     assert "provider.model: config-model" in result.message
+    assert "provider.prompt_cache_key: auto" in result.message
     assert "provider.available_models: config-model, other-model" in result.message
     assert "provider.first_token_timeout: 90" in result.message
     assert "paths.data_dir: " + str(tmp_path / ".nanocode") in result.message

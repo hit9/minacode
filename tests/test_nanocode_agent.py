@@ -56,10 +56,13 @@ def _session(
     yolo: bool = False,
     debug: bool = False,
     api: str = "",
+    prompt_cache_key: str = "",
 ) -> Session:
     provider: dict[str, object] = {"url": api_url, "key": api_key, "model": model}
     if api:
         provider["api"] = api
+    if prompt_cache_key:
+        provider["prompt_cache_key"] = prompt_cache_key
     if stream is not None:
         provider["stream"] = stream
     if timeout is not None:
@@ -1204,6 +1207,7 @@ def test_agent_request_calls_chat_completions_and_returns_text(tmp_path, monkeyp
     assert "response_format" not in payload
     assert "reasoning_effort" not in payload
     assert "reasoning" not in payload
+    assert payload["prompt_cache_key"].startswith("nanocode-")
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
@@ -1242,12 +1246,36 @@ def test_agent_request_sends_temperature_only_when_configured(tmp_path, monkeypa
     assert _sdk_payload(calls[0])["temperature"] == 0.2
 
 
+def test_agent_request_prompt_cache_key_can_be_custom_or_off(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, (_chat_response(), _chat_response()))
+
+    Agent(_session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, prompt_cache_key="project-cache")).request("system", "user")
+    Agent(_session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False, prompt_cache_key="off")).request("system", "user")
+
+    assert _sdk_payload(calls[0])["prompt_cache_key"] == "project-cache"
+    assert "prompt_cache_key" not in _sdk_payload(calls[1])
+
+
+def test_agent_request_auto_prompt_cache_key_is_stable_per_tool_set(tmp_path, monkeypatch):
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, (_chat_response(), _chat_response(), _chat_response()))
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+    agent = Agent(session)
+
+    agent.request("system", "user", tool_schemas=[nanocode.ReadTool.tool_schema(), nanocode.SearchTool.tool_schema()])
+    agent.request("system", "changed user", tool_schemas=[nanocode.SearchTool.tool_schema(), nanocode.ReadTool.tool_schema()])
+    agent.request("system", "user", tool_schemas=[nanocode.ReadTool.tool_schema()])
+
+    keys = [_sdk_payload(call)["prompt_cache_key"] for call in calls]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]
+
+
 def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypatch):
     class FakeResponse:
         output_text = "ok"
 
         def model_dump(self, mode="json"):
-            return {"output": [], "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}
+            return {"output": [], "usage": {"input_tokens": 2, "input_tokens_details": {"cached_tokens": 1}, "output_tokens": 3, "total_tokens": 5}}
 
     calls, response_calls, _client_kwargs = _patch_openai(monkeypatch, FakeResponse())
     session = _session(
@@ -1269,10 +1297,26 @@ def test_agent_request_uses_responses_api_and_sdk_output_text(tmp_path, monkeypa
     assert payload["instructions"] == "system"
     assert payload["input"] == "user"
     assert payload["store"] is False
+    assert payload["prompt_cache_key"].startswith("nanocode-")
     assert payload["reasoning"] == {"effort": "high"}
     assert session.state.last_prompt_tokens == 2
     assert session.state.last_completion_tokens == 3
     assert session.state.last_total_tokens == 5
+    assert session.state.last_cached_prompt_tokens == 1
+    assert session.state.session_cached_prompt_tokens == 1
+
+
+def test_agent_request_records_chat_cached_prompt_tokens(tmp_path, monkeypatch):
+    usage = {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 6}, "completion_tokens": 3, "total_tokens": 13}
+    calls, _response_calls, _client_kwargs = _patch_openai(monkeypatch, _chat_response(usage=usage))
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model", stream=False)
+
+    Agent(session).request("system", "user")
+
+    assert _sdk_payload(calls[0])["prompt_cache_key"].startswith("nanocode-")
+    assert session.state.last_cached_prompt_tokens == 6
+    assert session.state.session_cached_prompt_tokens == 6
+    assert session.state.model_usage["model"].cached_prompt_tokens == 6
 
 
 def test_agent_request_responses_api_omits_reasoning_when_disabled(tmp_path, monkeypatch):
@@ -1891,7 +1935,10 @@ def test_agent_request_auto_detects_chat_reasoning_from_provider_url(tmp_path, m
     assert payloads[2]["thinking_budget"] == nanocode.CHAT_REASONING_EFFORT_VALUES["enable_thinking"]["high"]
     assert payloads[3]["thinking"] == {"type": "enabled"}
     assert payloads[3]["reasoning_effort"] == "max"
-    assert payloads[4] == {"model": "glm-5.1", "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}], "stream": False}
+    assert payloads[4]["model"] == "glm-5.1"
+    assert payloads[4]["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}]
+    assert payloads[4]["stream"] is False
+    assert payloads[4]["prompt_cache_key"].startswith("nanocode-")
     assert payloads[5]["reasoning_effort"] == "medium"
     assert payloads[6]["reasoning"] == {"effort": "high"}
     for payload in payloads[7:]:

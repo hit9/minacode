@@ -495,6 +495,7 @@ class ProviderConfig:
     key: str = ""
     model: str = ""
     api: str = "auto"
+    prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
     reasoning: str = "medium"
@@ -507,6 +508,7 @@ class ProviderConfig:
     def from_dict(cls, data: Json) -> "ProviderConfig":
         defaults = cls()
         api = Config.str(data, "api", defaults.api)
+        prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", defaults.prompt_cache_key))
         reasoning = Config.str(data, "reasoning", defaults.reasoning)
         chat_reasoning = Config.str(data, "chat_reasoning", defaults.chat_reasoning)
         if api not in ("chat", "responses", "auto"):
@@ -520,6 +522,7 @@ class ProviderConfig:
             key=Config.str(data, "key", defaults.key),
             model=Config.str(data, "model", defaults.model),
             api=api,
+            prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", defaults.temperature),
             reasoning=reasoning,
@@ -554,6 +557,18 @@ class ProviderConfig:
         profile = PROVIDER_PROFILES.get(self.host())
         return profile.api if profile else "chat"
 
+    @staticmethod
+    def clean_prompt_cache_key(value: str) -> str:
+        value = value.strip()
+        if not value:
+            return "auto"
+        lower = value.lower()
+        if lower in {"auto", "off"}:
+            return lower
+        if len(value) > 64 or any(char.isspace() for char in value):
+            raise ConfigError("config provider.prompt_cache_key must be auto, off, or a stable key up to 64 chars without whitespace")
+        return value
+
 
 @dataclass
 class ModelUsage:
@@ -561,12 +576,14 @@ class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_prompt_tokens: int = 0
 
-    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+    def add(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int, cached_prompt_tokens: int = 0) -> None:
         self.calls += 1
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
+        self.cached_prompt_tokens += cached_prompt_tokens
 
 
 CONTEXT_BUDGET_CHOICES: tuple[str, ...] = ("low", "medium", "high")
@@ -742,6 +759,8 @@ model = ""
 # api = "auto"
 # Optional: add available_models = ["model-a", "model-b"] manually to pin preferred
 # /model choices above automatically discovered provider models.
+# Prompt cache key: "auto", "off", or a custom stable key.
+prompt_cache_key = "auto"
 # Optional. Uncomment only for models/providers that support temperature.
 # temperature = 0.7
 reasoning = "medium"
@@ -822,9 +841,11 @@ class RuntimeState:
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
+    last_cached_prompt_tokens: int = 0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
+    session_cached_prompt_tokens: int = 0
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
     current_model_call_started_at: float = 0.0
     current_model_call_label: str = ""
@@ -3292,11 +3313,16 @@ COMPACT_TOOL_SCHEMA = _function_tool_schema(
 # Agent Prompt
 ############################
 
+# Prompt design:
+# - Keep the system prompt short and stable; put tool-specific rules in tool descriptions.
+# - Order the user prompt from stable context to volatile context to preserve provider prefix cache hits.
+# - Keep the latest request, blocking feedback, and output guide near the end because they change most and steer the next output.
+# - Keep section names stable; change prompt shape only when the workflow meaning changes.
 AGENT_SYSTEM_PROMPT = """You are nanocode, a terminal coding agent.
 
 Use assistant text for chat/final answers; use function tools for state/repo work.
 Use tool schemas for exact names, capabilities, and arguments.
-Use the latest user language. Keep terminal output plain and concise. Preserve literals.
+Reply in the latest user language unless asked otherwise. Keep output plain and concise. Preserve literals.
 WHEN THE NEXT USEFUL ACTION IS CLEAR, TAKE IT NOW.
 
 Priority: latest user request > blocking feedback > user rules > active state > conversation.
@@ -3653,6 +3679,32 @@ class ModelClient:
     def _reasoning_effort(config: ProviderConfig) -> str:
         return config.reasoning if config.reasoning in REASONING_LEVELS else "medium"
 
+    def _prompt_cache_key(self, config: ProviderConfig, *, model: str, tool_schemas: list[Json] | None) -> str:
+        configured = config.prompt_cache_key
+        if configured == "off":
+            return ""
+        if configured != "auto":
+            return configured
+        payload = {
+            "api": config.resolved_api(),
+            "cwd": self.session.cwd,
+            "host": config.host(),
+            "model": model,
+            "tools": self._tool_schema_cache_names(tool_schemas),
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return "nanocode-" + digest[:24]
+
+    @staticmethod
+    def _tool_schema_cache_names(tool_schemas: list[Json] | None) -> str:
+        names = []
+        for schema in tool_schemas or []:
+            function = _json_dict(schema.get("function"))
+            name = _json_str(function.get("name")) or _json_str(schema.get("name")) or _json_str(schema.get("type"))
+            if name:
+                names.append(name)
+        return ",".join(sorted(names)) or "(none)"
+
     def _chat_completion_params(
         self,
         config: ProviderConfig,
@@ -3665,6 +3717,9 @@ class ModelClient:
     ) -> Json:
         params: Json = {"model": model, "messages": messages, "stream": stream}
         extra_body: Json = {}
+        prompt_cache_key = self._prompt_cache_key(config, model=model, tool_schemas=tool_schemas)
+        if prompt_cache_key:
+            params["prompt_cache_key"] = prompt_cache_key
         if config.temperature is not None:
             params["temperature"] = config.temperature
         if stream:
@@ -3970,6 +4025,9 @@ class ModelClient:
         required_tool: str | None = None,
     ) -> Json:
         params: Json = {"model": model, "instructions": system_prompt, "input": user_prompt, "stream": stream, "store": False}
+        prompt_cache_key = self._prompt_cache_key(config, model=model, tool_schemas=tool_schemas)
+        if prompt_cache_key:
+            params["prompt_cache_key"] = prompt_cache_key
         if tool_schemas:
             params["tools"] = self._responses_tool_schemas(tool_schemas)
             params["tool_choice"] = {"type": "function", "name": required_tool} if required_tool else "auto"
@@ -4208,21 +4266,31 @@ class ModelClient:
         prompt_tokens = self._json_int(usage.get("prompt_tokens")) or self._json_int(usage.get("input_tokens"))
         completion_tokens = self._json_int(usage.get("completion_tokens")) or self._json_int(usage.get("output_tokens"))
         total_tokens = self._json_int(usage.get("total_tokens"))
+        cached_prompt_tokens = self._cached_prompt_tokens(usage)
         if completion_tokens > 0 and elapsed > 0:
             self.session.state.last_model_call_rate = completion_tokens / elapsed
         self.session.state.last_prompt_tokens = prompt_tokens
         self.session.state.last_completion_tokens = completion_tokens
         self.session.state.last_total_tokens = total_tokens
+        self.session.state.last_cached_prompt_tokens = cached_prompt_tokens
         self.session.state.session_prompt_tokens += prompt_tokens
         self.session.state.session_completion_tokens += completion_tokens
         self.session.state.session_total_tokens += total_tokens
+        self.session.state.session_cached_prompt_tokens += cached_prompt_tokens
         self.session.state.model_usage.setdefault(config.model or "(empty)", ModelUsage()).add(
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, cached_prompt_tokens=cached_prompt_tokens
         )
 
     @staticmethod
     def _json_int(value: JsonValue) -> int:
         return value if isinstance(value, int) else 0
+
+    def _cached_prompt_tokens(self, usage: Json) -> int:
+        for key in ("prompt_tokens_details", "input_tokens_details"):
+            cached_tokens = self._json_int(_json_dict(usage.get(key)).get("cached_tokens"))
+            if cached_tokens:
+                return cached_tokens
+        return 0
 
 
 ############################
@@ -6318,6 +6386,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
 
 CONFIG_PROVIDER_ATTRS: dict[str, str] = {
     "provider.model": "model",
+    "provider.prompt_cache_key": "prompt_cache_key",
     "provider.reasoning": "reasoning",
     "provider.chat_reasoning": "chat_reasoning",
     "provider.stream": "stream",
@@ -6576,7 +6645,13 @@ class CommandDispatcher:
         api = provider.resolved_api() + ("(" + provider.api + ")" if provider.api == "auto" else "")
         model_usage = (
             "\n".join(
-                "  " + (model.rsplit("/", 1)[-1] or model) + ": calls=" + str(usage.calls) + " tokens=" + _format_count(usage.total_tokens)
+                "  "
+                + (model.rsplit("/", 1)[-1] or model)
+                + ": calls="
+                + str(usage.calls)
+                + " tokens="
+                + _format_count(usage.total_tokens)
+                + ((" cached=" + _format_count(usage.cached_prompt_tokens)) if usage.cached_prompt_tokens else "")
                 for model, usage in session.state.model_usage.items()
             )
             if session.state.model_usage
@@ -6593,34 +6668,40 @@ class CommandDispatcher:
         elif code_index_status in {"missing", "stale"}:
             code_index_message = (code_index_message + "; " if code_index_message else "") + "run /index"
         code_index = code_index_status + (": " + _shorten(code_index_message, 80) if code_index_message else "")
-        return "\n".join(
-            [
-                "provider: " + session.config.active_provider,
-                "model: "
-                + (provider.model or "(empty)")
-                + " api="
-                + api
-                + " reasoning="
-                + (reasoning or "(empty)")
-                + " stream="
-                + self._format_bool(provider.stream),
-                "session: " + session.session_id,
-                "runtime: yolo="
-                + self._format_bool(session.settings.yolo)
-                + " compact_at="
-                + str(session.settings.compact_at)
-                + " context_budget="
-                + session.settings.context_budget,
-                "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
-                "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
-                "tools: code_index=" + code_index,
-                "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
-                "models:",
-                model_usage,
-                "goal: " + (blackboard.goal or "(empty)"),
-                "checks: " + checks_status,
-            ]
-        )
+        lines = [
+            "provider: " + session.config.active_provider,
+            "model: "
+            + (provider.model or "(empty)")
+            + " api="
+            + api
+            + " reasoning="
+            + (reasoning or "(empty)")
+            + " stream="
+            + self._format_bool(provider.stream),
+            "session: " + session.session_id,
+            "runtime: yolo="
+            + self._format_bool(session.settings.yolo)
+            + " compact_at="
+            + str(session.settings.compact_at)
+            + " context_budget="
+            + session.settings.context_budget,
+            "conversation: " + str(len(session.state.conversation)) + "/" + str(session.settings.compact_at),
+            "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
+            "tools: code_index=" + code_index,
+            "tokens: last=" + _format_count(session.state.last_total_tokens) + " session=" + _format_count(session.state.session_total_tokens),
+        ]
+        if session.state.last_cached_prompt_tokens or session.state.session_cached_prompt_tokens:
+            rate = _format_percent(session.state.session_cached_prompt_tokens, session.state.session_prompt_tokens)
+            lines.append(
+                "cache: last="
+                + _format_count(session.state.last_cached_prompt_tokens)
+                + " session="
+                + _format_count(session.state.session_cached_prompt_tokens)
+                + " rate="
+                + rate
+            )
+        lines.extend(["models:", model_usage, "goal: " + (blackboard.goal or "(empty)"), "checks: " + checks_status])
+        return "\n".join(lines)
 
     def _compact(self, args: str) -> str:
         if args:
@@ -6682,6 +6763,7 @@ class CommandDispatcher:
                 "provider.key: " + ("(set)" if provider_config.key else "(empty)"),
                 "provider.model: " + (provider_config.model or "(empty)"),
                 "provider.api: " + provider_config.api,
+                "provider.prompt_cache_key: " + provider_config.prompt_cache_key,
                 "provider.available_models: " + (", ".join(provider_config.available_models) or "(empty)"),
                 "provider.reasoning: " + provider_config.reasoning,
                 "provider.chat_reasoning: " + (provider_config.chat_reasoning or "(empty)"),
@@ -6735,6 +6817,12 @@ class CommandDispatcher:
 
     def _apply_config_value(self, key: str, value: str) -> str:
         target, attr = self._config_target(key)
+        if key == "provider.prompt_cache_key":
+            try:
+                setattr(target, attr, ProviderConfig.clean_prompt_cache_key(value))
+            except ConfigError:
+                return "Usage: /set provider.prompt_cache_key [auto|off|<stable-key>]"
+            return ""
         if key in CONFIG_BOOL_KEYS:
             if value not in {"on", "off"}:
                 return "Usage: /set " + key + " [on|off]"
@@ -6795,6 +6883,10 @@ def _format_count(value: int) -> str:
     if value >= 1_000:
         return str(value // 1_000) + "k"
     return str(value)
+
+
+def _format_percent(value: int, total: int) -> str:
+    return "-" if value <= 0 or total <= 0 else str(round(value * 100 / total)) + "%"
 
 
 ############################
