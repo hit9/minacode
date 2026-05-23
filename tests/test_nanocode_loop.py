@@ -597,13 +597,14 @@ def test_agent_loop_run_agent_uses_runtime_ui_without_status_thread(tmp_path, mo
     monkeypatch.setattr(loop.status_bar, "reset_timer", lambda: calls.append("reset"))
     monkeypatch.setattr(loop.status_bar, "resume", lambda: calls.append("resume"))
     monkeypatch.setattr(loop.status_bar, "pause", lambda: calls.append("pause"))
+    monkeypatch.setattr(nanocode, "_code_index_update_pending", lambda session: calls.append("index"))
 
     loop._run_agent("hello")
 
     assert loop.agent.runs == ["hello"]
     assert loop.agent.poll_user_input.__self__ is loop
     assert loop.agent.poll_user_input.__func__ is AgentLoop._pop_queued_input
-    assert calls == ["reset", "start-ui", "stop-ui", "pause"]
+    assert calls == ["reset", "start-ui", "stop-ui", "index", "pause"]
 
 
 def test_agent_loop_clears_queued_input_on_cancel(tmp_path, monkeypatch):

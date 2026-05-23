@@ -55,7 +55,7 @@ from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-__version__ = "0.4.8"
+__version__ = "0.4.9"
 
 
 JsonValue: TypeAlias = Any
@@ -2432,14 +2432,29 @@ def _code_index_sync(session: Session, *, force: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _code_index_update(session: Session, filepath: str) -> None:
-    if _code_index_module() is None or not session.is_path_in_cwd(filepath):
-        return
-    status, _message = _code_index_status(session)
-    if status == "missing":
+CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT = 20
+
+
+def _code_index_update_pending(session: Session, *, limit: int = CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT) -> None:
+    module = _code_index_module()
+    if module is None or session.state.code_index_refreshing:
         return
     try:
-        _code_index_repository(session).update([filepath])
+        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=True, max_pending_files=limit + 1, format="object")
+    except Exception as error:
+        session.state.code_index_error = str(error)
+        return
+    if str(getattr(status, "status", "")) != "stale":
+        return
+    pending_changes = getattr(status, "pending_changes", None)
+    files = [str(path) for path in getattr(status, "pending_files", ()) if path]
+    if not files or len(files) > limit or (isinstance(pending_changes, int) and pending_changes > limit):
+        return
+    paths = list(dict.fromkeys(path for path in (session.resolve_path(path) for path in files) if session.is_path_in_cwd(path)))
+    if not paths:
+        return
+    try:
+        _code_index_repository(session).update(paths)
         session.state.code_index_error = ""
     except Exception as error:
         session.state.code_index_error = str(error)
@@ -5613,8 +5628,6 @@ class Agent:
             self.blackboard.checks_required = True
             self.blackboard.task_code = TaskCode.CHECKING
             self._remember_recent_edit(execution)
-            if execution.call.args:
-                _code_index_update(self.session, self.session.resolve_path(str(execution.call.args[0])))
 
     def _remember_tool_failure(self, execution: ToolCallExecution) -> None:
         if execution.outcome != "failure":
@@ -7717,6 +7730,7 @@ class AgentLoop:
             self.agent.session.state.manual_model_retry_requested = False
             if runtime_ui_running:
                 self._stop_runtime_ui()
+            _code_index_update_pending(self.agent.session)
             self.status_bar.pause()
 
     def _run_with_status(self, action: StatusAction) -> str:

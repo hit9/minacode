@@ -47,14 +47,21 @@ class FakeRepository:
         return "file: " + filepath + "\noutline:\n  class Tool 0:2 class Tool:"
 
 
-def fake_code_index_module(status="ready", *, refresh_status=None):
+def fake_code_index_module(status="ready", *, refresh_status=None, pending_changes=None, pending_files=()):
     FakeRepository.status = status
     FakeRepository.refresh_status = refresh_status
 
     def status_fn(root, *, db_path=None, check=False, max_pending_files=50, format="object"):
         status = FakeRepository.status
         FakeRepository.events.append(("status", root, db_path, check, max_pending_files, format))
-        return SimpleNamespace(status=status, reason="index not initialized" if status == "missing" else "", message="")
+        files = tuple(pending_files[:max_pending_files])
+        return SimpleNamespace(
+            status=status,
+            reason="index not initialized" if status == "missing" else "",
+            message="",
+            pending_changes=len(pending_files) if pending_changes is None else pending_changes,
+            pending_files=files,
+        )
 
     def refresh_async(root, *, db_path=None, progress=None, **kwargs):
         FakeRepository.events.append(("refresh_async", root, db_path, progress is not None, kwargs))
@@ -171,6 +178,25 @@ def test_code_index_refresh_existing_async_starts_for_ready_index(tmp_path, monk
 
     assert isinstance(session.code_index_repository, FakeRepository)
     assert session.state.code_index_reload_needed is False
+
+
+def test_code_index_update_pending_updates_small_stale_file_set(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("stale", pending_files=("a.py", "pkg/b.py")))
+
+    nanocode._code_index_update_pending(session, limit=3)
+
+    assert ("status", str(tmp_path), nanocode._code_index_db_path(session), True, 4, "object") in FakeRepository.events
+    assert ("update", (str(tmp_path / "a.py"), str(tmp_path / "pkg" / "b.py")), str(tmp_path), nanocode._code_index_db_path(session), False) in FakeRepository.events
+
+
+def test_code_index_update_pending_skips_large_stale_file_set(tmp_path, monkeypatch):
+    session = Session(cwd=str(tmp_path), config=nanocode.Config(data_dir=str(tmp_path / "data")))
+    monkeypatch.setattr(nanocode, "_code_index_module", lambda: fake_code_index_module("stale", pending_changes=4, pending_files=("a.py", "b.py", "c.py")))
+
+    nanocode._code_index_update_pending(session, limit=3)
+
+    assert not [event for event in FakeRepository.events if event[0] == "update"]
 
 
 def test_inspect_code_find_uses_search_text(tmp_path, monkeypatch):
