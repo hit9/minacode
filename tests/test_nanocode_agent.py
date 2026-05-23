@@ -387,7 +387,7 @@ def test_referenced_unreduced_results_do_not_count_toward_observe_threshold(tmp_
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     observe_prompt = agent.build_observe_prompt()
-    observe_raw = observe_prompt.split("Unreduced Raw Tool Results:\n", 1)[1].split("\n--- Output ---", 1)[0]
+    observe_raw = observe_prompt.split("Unreduced Raw Tool Results:\n", 1)[1].split("\n--- Blocking Feedback ---", 1)[0]
     assert "one.txt" not in observe_raw
     assert "two.txt" in observe_raw
     assert "three.txt" in observe_raw
