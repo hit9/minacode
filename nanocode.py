@@ -2774,7 +2774,7 @@ class BashTool(Tool):
         "Run one explicit shell command via bash -lc in cwd.",
         "Returns exit_code plus stdout/stderr; long output is stored and bounded in context.",
         "Prefer dedicated tools when they provide structured repo access; use Bash when shell semantics or pipelines are the clearest path.",
-        "Good Bash uses include tests, builds, and Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.",
+        "Good Bash uses include tests, builds, and Unix text-tool pipelines with tools listed in Environment.",
         "Mechanical shell edits are allowed, but verify afterward with Git diff, Read, tests, or another focused check.",
     )
     SIGNATURE: ClassVar[str] = "Bash(command) -> BashToolResult<exit_code, stdout, stderr>"
@@ -3386,7 +3386,7 @@ Complete with verify blocked only when blocker=user.
 
 TOOLS
 Prefer dedicated tools for precise file reads/searches and structured edits.
-Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with find, sed, awk, perl, xargs, or grep.
+Bash is for shell semantics: tests/builds, explicit commands, and fast Unix text-tool pipelines with tools listed in Environment.
 Prefer dedicated tools when they give cleaner structured repo access.
 Mechanical literal rename/replacement across known files should use shell text pipelines when that is faster and clearer than collecting edit anchors; verify afterward with Git diff, Search/Read, tests, or another focused check.
 For code changes, prefer CreateFile for new files and EditFile for structured existing-file edits over shell rewrites.
@@ -5375,6 +5375,9 @@ class Agent:
             "- arch: " + self.session.arch,
             "- cwd: " + self.session.cwd,
         ]
+        shell_tools = [name for name in ("find", "rg", "perl", "sed", "awk", "xargs", "grep", "jq") if shutil.which(name)]
+        if shell_tools:
+            lines.append("- shell_tools: " + ", ".join(shell_tools))
         if _code_index_available(self.session):
             lines.append(
                 "- inspect_code_hint: Use InspectCode for structural code navigation: mode=find for symbol candidates, mode=inspect for anchored symbol source, mode=outline for file outlines. Do not pass natural language. Use Search/Read for text, config, logs, commands, and exact ranges."

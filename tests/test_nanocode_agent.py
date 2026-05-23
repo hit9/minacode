@@ -677,11 +677,20 @@ def test_act_prompt_encourages_unix_text_tools_when_clear(tmp_path):
     prompt = agent._system_prompt()
 
     assert "Bash is for shell semantics" in prompt
-    for name in ("find", "sed", "awk", "perl", "xargs", "grep"):
-        assert name in prompt
+    assert "tools listed in Environment" in prompt
     assert "structured repo access" in prompt
     assert "Mechanical literal rename/replacement" in prompt
     assert "verify afterward" in prompt
+
+
+def test_act_prompt_lists_available_shell_tools_in_environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "/bin/" + name if name in {"rg", "jq"} else None)
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    prompt = agent.build_user_prompt()
+
+    assert "- shell_tools: rg, jq" in prompt
+    assert "- shell_tools: find" not in prompt
 
 
 def test_act_prompt_includes_kept_tool_results(tmp_path):
