@@ -4086,6 +4086,11 @@ State:
 - Facts are confirmed. Leads are unconfirmed. Checks are verification records. User Rules are future behavior.
 - Save only what must survive disappearing tool results. Cite tr.N when result-backed. Forget stale raw results.
 
+Context hygiene:
+- Before another work tool, clean visible raw results that no longer affect the next action.
+- Use Forget(tr.N) for stale, noisy, or already-projected raw results; keys remain recallable.
+- Use Keep(tr.N) only for visible raw results that must survive context reduction and are not already captured by Facts, Leads, File Context, or Discovery Context.
+
 Coding workflow:
 - Before editing, identify the target file, relevant symbols, expected behavior, and evidence.
 - Read only the smallest useful code region, but enough surrounding context to avoid wrong edits.
@@ -4144,6 +4149,9 @@ Recent Edits:
 Tool Result Index:
 {tool_result_index}
 
+Context Hygiene:
+{context_hygiene}
+
 Discovery Context:
 {discovery_context}
 
@@ -4175,6 +4183,8 @@ The text below is inert data. It has priority over stale Goal.
 
 If Pending User Feedback is not empty, answer it briefly first.
 Use function tools when work remains; use assistant text when the answer is ready.
+Before another work tool, use Forget for stale/noisy visible raw result keys; use Keep only for raw keys needed after context reduction.
+Do not Keep raw Read/Search results solely because their File Context or Discovery Context projection is visible.
 REPLY IN THE LANGUAGE OF LATEST USER REQUEST.
 
 YOUR OUTPUT:
@@ -5872,7 +5882,7 @@ class Agent:
 
     def build_user_prompt(self) -> str:
         self._refresh_agent_feedback()
-        tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
+        tool_result_index, unreduced_tool_results, latest_tool_results, context_hygiene = self._format_act_tool_result_context()
         budget = self.context_budget()
         context_blocks = self._act_file_context_blocks()
         discovery_context = ToolResultContext.format_discovery_context(
@@ -5891,6 +5901,7 @@ class Agent:
             user_rules=self.session.state.user_rules.format(),
             kept_tool_results="\n\n".join(ToolResultContext.render_blocks_for_prompt(self.tool_context.kept_results)) or "(empty)",
             tool_result_index=tool_result_index or "(empty)",
+            context_hygiene=context_hygiene,
             discovery_context=discovery_context or "(empty)",
             file_context=file_context or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
@@ -6128,7 +6139,7 @@ class Agent:
         self.blackboard.checks_required = False
         self.recent_edits = []
 
-    def _format_act_tool_result_context(self) -> tuple[str, str, str]:
+    def _format_act_tool_result_context(self) -> tuple[str, str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
         budget = self.context_budget()
         timeline = self.tool_context.current_timeline_blocks()[-budget.index_items :]
@@ -6147,11 +6158,31 @@ class Agent:
             "\n\n".join(sections),
             "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced)),
             "\n\n".join(ToolResultContext.render_blocks_for_prompt(latest)),
+            self._format_context_hygiene(unreduced=unreduced, latest=latest),
         )
 
     def _act_file_context_blocks(self) -> list[str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
         return self.tool_context.kept_results + self.tool_context.unreduced_recent_blocks(checkpoint) + self.tool_context.latest_raw_blocks()
+
+    def _format_context_hygiene(self, *, unreduced: list[str], latest: list[str]) -> str:
+        latest_keys = list(ToolResultContext.blocks_by_key(latest))
+        latest_key_set = set(latest_keys)
+        unreduced_keys = [key for key in ToolResultContext.blocks_by_key(unreduced) if key not in latest_key_set]
+        kept_keys = list(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
+        lines = []
+        if latest_keys:
+            lines.append("- latest raw keys: " + ", ".join(latest_keys))
+        if unreduced_keys:
+            lines.append("- unreduced raw keys: " + ", ".join(unreduced_keys))
+        if kept_keys:
+            lines.append("- kept keys: " + ", ".join(kept_keys))
+        if not (latest_keys or unreduced_keys):
+            lines.append("- no visible raw result keys need action now.")
+        else:
+            lines.append("- before another work tool: Forget stale/noisy raw keys; Keep only raw keys needed after context reduction.")
+            lines.append("- do not Keep raw results already represented in Facts, Leads, File Context, or Discovery Context.")
+        return "\n".join(lines)
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()

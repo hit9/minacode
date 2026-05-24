@@ -468,7 +468,7 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
-    index, unreduced, latest = agent._format_act_tool_result_context()
+    index, unreduced, latest, hygiene = agent._format_act_tool_result_context()
     assert "one.txt" in unreduced
     assert "|one" not in unreduced
     assert "content=file_context" in unreduced
@@ -478,6 +478,9 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     assert "recall=tr.1" in index
     assert "recall=tr.2" in index
     assert "output:\n<ReadToolResult>" not in index
+    assert "- latest raw keys: tr.2" in hygiene
+    assert "- unreduced raw keys: tr.1" in hygiene
+    assert "Forget stale/noisy raw keys" in hygiene
     file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Kept Tool Results")
     assert "File: one.txt" in file_context
     assert "|one" in file_context
@@ -978,6 +981,19 @@ def test_act_prompt_includes_kept_tool_results(tmp_path):
     assert "content=file_context" in kept
     assert "beta unique" not in prompt
     assert len(agent.tool_context.kept_results) == 1
+
+
+def test_act_prompt_includes_context_hygiene_guidance(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.tool_context.kept_results = ['- ok tool=Read args=["kept.txt"] key=tr.8\n  output:\nkept']
+
+    prompt = agent.build_user_prompt()
+    hygiene = _prompt_section(prompt, "Context Hygiene", "Discovery Context")
+
+    assert "- kept keys: tr.8" in hygiene
+    assert "- no visible raw result keys need action now." in hygiene
+    assert "Before another work tool, use Forget for stale/noisy visible raw result keys" in prompt
+    assert "Do not Keep raw Read/Search results solely because their File Context or Discovery Context projection is visible." in prompt
 
 
 def test_act_prompt_projects_search_results_to_discovery_context(tmp_path):
