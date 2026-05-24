@@ -1565,6 +1565,52 @@ class ToolResultContext:
 
     @classmethod
     def format_file_context(cls, blocks: list[str], *, cwd: str = "", max_chars: int) -> str:
+        segments_by_path, omitted = cls._current_file_context_segments(blocks, cwd=cwd)
+        if not segments_by_path and not omitted:
+            return ""
+
+        lines = [
+            "Source Policy:",
+            "- Built dynamically for this prompt from active raw Read and Edit results.",
+            "- Overlapping lines use the newest active Read/Edit result.",
+            "- Edit results can clear stale older lines when edits shift line numbers.",
+            "- If file stat changed, projected lines are hash-checked against the current file and stale lines are omitted.",
+            "",
+        ]
+        for path in sorted(segments_by_path):
+            segments = segments_by_path[path]
+            lines.extend(["File: " + path, "Ranges:"])
+            for start, end, source, _segment_lines in segments:
+                lines.append("- " + str(start) + ":" + str(end) + " source=" + source)
+            lines.append("Content:")
+            for start, end, source, segment_lines in segments:
+                lines.append("@@ " + str(start) + ":" + str(end) + " source=" + source)
+                lines.extend(segment_lines)
+            lines.append("")
+        if omitted:
+            lines.append("Omitted stale content:")
+            for path in sorted(omitted):
+                for source in sorted(omitted[path], key=cls._result_key_counter):
+                    lines.append("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]))
+            lines.append("")
+
+        rendered = "\n".join(lines).rstrip()
+        return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
+
+    @classmethod
+    def format_file_context_index(cls, blocks: list[str], *, cwd: str = "", max_chars: int) -> str:
+        segments_by_path, _omitted = cls._current_file_context_segments(blocks, cwd=cwd)
+        if not segments_by_path:
+            return ""
+        lines = []
+        for path in sorted(segments_by_path):
+            ranges = [str(start) + ":" + str(end) + " source=" + source for start, end, source, _segment_lines in segments_by_path[path]]
+            lines.append("- " + path + ": " + "; ".join(ranges))
+        rendered = "\n".join(lines)
+        return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
+
+    @classmethod
+    def _current_file_context_segments(cls, blocks: list[str], *, cwd: str) -> tuple[dict[str, list[tuple[int, int, str, list[str]]]], dict[str, dict[str, int]]]:
         files: dict[str, dict[int, tuple[str, str]]] = {}
         omitted: dict[str, dict[str, int]] = {}
         items = sorted(cls._file_context_items(blocks), key=lambda item: (item.order, item.phase, item.path, item.start))
@@ -1596,38 +1642,8 @@ class ToolResultContext:
                 omitted[path][source] += 1
                 continue
             file_lines[start] = (source, line)
-        if not any(files.values()) and not omitted:
-            return ""
-
-        lines = [
-            "Source Policy:",
-            "- Built dynamically for this prompt from active raw Read and Edit results.",
-            "- Overlapping lines use the newest active Read/Edit result.",
-            "- Edit results can clear stale older lines when edits shift line numbers.",
-            "- If file stat changed, projected lines are hash-checked against the current file and stale lines are omitted.",
-            "",
-        ]
-        for path in sorted(files):
-            segments = cls._file_context_segments(files[path])
-            if not segments:
-                continue
-            lines.extend(["File: " + path, "Ranges:"])
-            for start, end, source, _segment_lines in segments:
-                lines.append("- " + str(start) + ":" + str(end) + " source=" + source)
-            lines.append("Content:")
-            for start, end, source, segment_lines in segments:
-                lines.append("@@ " + str(start) + ":" + str(end) + " source=" + source)
-                lines.extend(segment_lines)
-            lines.append("")
-        if omitted:
-            lines.append("Omitted stale content:")
-            for path in sorted(omitted):
-                for source in sorted(omitted[path], key=cls._result_key_counter):
-                    lines.append("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]))
-            lines.append("")
-
-        rendered = "\n".join(lines).rstrip()
-        return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
+        segments = {path: path_segments for path in sorted(files) if (path_segments := cls._file_context_segments(files[path]))}
+        return segments, omitted
 
     @classmethod
     def format_discovery_context(cls, blocks: list[str], *, max_chars: int) -> str:
@@ -5882,9 +5898,9 @@ class Agent:
 
     def build_user_prompt(self) -> str:
         self._refresh_agent_feedback()
-        tool_result_index, unreduced_tool_results, latest_tool_results, context_hygiene = self._format_act_tool_result_context()
         budget = self.context_budget()
         context_blocks = self._act_file_context_blocks()
+        tool_result_index, unreduced_tool_results, latest_tool_results, context_hygiene = self._format_act_tool_result_context(context_blocks=context_blocks)
         discovery_context = ToolResultContext.format_discovery_context(
             context_blocks,
             max_chars=max(1, budget.raw_chars // 3),
@@ -6139,12 +6155,13 @@ class Agent:
         self.blackboard.checks_required = False
         self.recent_edits = []
 
-    def _format_act_tool_result_context(self) -> tuple[str, str, str, str]:
+    def _format_act_tool_result_context(self, *, context_blocks: list[str] | None = None) -> tuple[str, str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
         budget = self.context_budget()
         timeline = self.tool_context.current_timeline_blocks()[-budget.index_items :]
         unreduced = self.tool_context.unreduced_recent_blocks(checkpoint)
         latest = self.tool_context.latest_raw_blocks()
+        context_blocks = context_blocks if context_blocks is not None else self._act_file_context_blocks()
         visible_keys = set(ToolResultContext.blocks_by_key(timeline + unreduced + latest + self.tool_context.kept_results))
         archived_limit = max(0, budget.index_items - len(timeline))
         archived = [item.format(result_key=key) for key, item in self.session.state.tool_result_store.items() if key not in visible_keys]
@@ -6158,18 +6175,19 @@ class Agent:
             "\n\n".join(sections),
             "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced)),
             "\n\n".join(ToolResultContext.render_blocks_for_prompt(latest)),
-            self._format_context_hygiene(unreduced=unreduced, latest=latest),
+            self._format_context_hygiene(unreduced=unreduced, latest=latest, context_blocks=context_blocks),
         )
 
     def _act_file_context_blocks(self) -> list[str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
         return self.tool_context.kept_results + self.tool_context.unreduced_recent_blocks(checkpoint) + self.tool_context.latest_raw_blocks()
 
-    def _format_context_hygiene(self, *, unreduced: list[str], latest: list[str]) -> str:
+    def _format_context_hygiene(self, *, unreduced: list[str], latest: list[str], context_blocks: list[str]) -> str:
         latest_keys = list(ToolResultContext.blocks_by_key(latest))
         latest_key_set = set(latest_keys)
         unreduced_keys = [key for key in ToolResultContext.blocks_by_key(unreduced) if key not in latest_key_set]
         kept_keys = list(ToolResultContext.blocks_by_key(self.tool_context.kept_results))
+        file_context_index = ToolResultContext.format_file_context_index(context_blocks, cwd=self.session.cwd, max_chars=1_200)
         lines = []
         if latest_keys:
             lines.append("- latest raw keys: " + ", ".join(latest_keys))
@@ -6177,6 +6195,10 @@ class Agent:
             lines.append("- unreduced raw keys: " + ", ".join(unreduced_keys))
         if kept_keys:
             lines.append("- kept keys: " + ", ".join(kept_keys))
+        if file_context_index:
+            lines.append("- visible file ranges already available:")
+            lines.extend("  " + line for line in file_context_index.splitlines())
+            lines.append("- use visible File Context line anchors before Read; Read only missing ranges or after file changes.")
         if not (latest_keys or unreduced_keys):
             lines.append("- no visible raw result keys need action now.")
         else:

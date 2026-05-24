@@ -480,6 +480,10 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     assert "output:\n<ReadToolResult>" not in index
     assert "- latest raw keys: tr.2" in hygiene
     assert "- unreduced raw keys: tr.1" in hygiene
+    assert "- visible file ranges already available:" in hygiene
+    assert "one.txt: 0:1 source=tr.1" in hygiene
+    assert "two.txt: 0:1 source=tr.2" in hygiene
+    assert "use visible File Context line anchors before Read" in hygiene
     assert "Forget stale/noisy raw keys" in hygiene
     file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Kept Tool Results")
     assert "File: one.txt" in file_context
@@ -994,6 +998,19 @@ def test_act_prompt_includes_context_hygiene_guidance(tmp_path):
     assert "- no visible raw result keys need action now." in hygiene
     assert "Before another work tool, use Forget for stale/noisy visible raw result keys" in prompt
     assert "Do not Keep raw Read/Search results solely because their File Context or Discovery Context projection is visible." in prompt
+
+
+def test_act_prompt_context_hygiene_lists_visible_file_ranges(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[1, 3])}])
+
+    prompt = agent.build_user_prompt()
+    hygiene = _prompt_section(prompt, "Context Hygiene", "Discovery Context")
+    assert "- visible file ranges already available:" in hygiene
+    assert "sample.txt: 1:3 source=tr.1" in hygiene
+    assert "use visible File Context line anchors before Read" in hygiene
 
 
 def test_act_prompt_projects_search_results_to_discovery_context(tmp_path):
