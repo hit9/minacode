@@ -48,6 +48,26 @@ def _stored_read_result(line: str) -> str:
     )
 
 
+def _read_args(path: str, *, line_range: list[int] | None = None, ranges: list[list[int]] | None = None):
+    spec: dict[str, object] = {"path": path}
+    if line_range is not None:
+        spec["range"] = line_range
+    if ranges is not None:
+        spec["ranges"] = ranges
+    return [spec]
+
+
+def _search_args(pattern: str, *, path: str | None = None, glob: str | None = None, context: int | object | None = None):
+    spec: dict[str, object] = {"pattern": pattern}
+    if path is not None:
+        spec["path"] = path
+    if glob is not None:
+        spec["glob"] = glob
+    if context is not None:
+        spec["context"] = context
+    return [spec]
+
+
 def _observe_tool_result_context(agent):
     return "\n\n".join(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
 
@@ -58,7 +78,7 @@ def _set_context_budget(monkeypatch, agent, **overrides):
 
 
 def _read_anchors(session: Session, filepath: str) -> list[str]:
-    result = nanocode.ReadTool.make(session, [filepath]).call()
+    result = nanocode.ReadTool.make(session, _read_args(filepath)).call()
     return re.findall(r"^(\d+:[0-9a-f]{6})\|", result, re.MULTILINE)
 
 
@@ -178,13 +198,13 @@ def test_agent_tool_results_go_to_latest_tool_results_and_store(tmp_path):
             {
                 "name": "Read",
                 "intention": "read sample",
-                "args": ["sample.txt", "0,1"],
+                "args": _read_args("sample.txt", line_range=[0, 1]),
             }
         ]
     )
 
     assert "alpha" in latest
-    assert '- ok tool=Read args=["sample.txt","0,1"] key=tr.1' in latest
+    assert '- ok tool=Read args=[{"path":"sample.txt","range":[0,1]}] key=tr.1' in latest
     assert "why: read sample" in latest
     assert "output:\n<ReadToolResult>" in latest
     assert session.state.tool_result_store["tr.1"].value.startswith("<ReadToolResult>")
@@ -206,8 +226,8 @@ def test_agent_dedupes_same_batch_readonly_tool_calls_keeping_latest(tmp_path):
 
     latest = agent.execute_tool_calls(
         [
-            {"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]},
-            {"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]},
+            {"name": "Read", "intention": "first read", "args": _read_args("sample.txt", line_range=[0, 1])},
+            {"name": "Read", "intention": "second read", "args": _read_args("sample.txt", line_range=[0, 1])},
         ]
     )
 
@@ -223,14 +243,14 @@ def test_agent_can_append_streamed_tool_calls_to_latest_batch(tmp_path):
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}], append_to_latest=True)
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}], append_to_latest=True)
 
     latest = _blocks_text(agent.tool_context.latest)
     assert "one" in latest
     assert "two" in latest
-    assert 'tool=Read args=["one.txt","0,1"]' in latest
-    assert 'tool=Read args=["two.txt","0,1"]' in latest
+    assert 'tool=Read args=[{"path":"one.txt","range":[0,1]}]' in latest
+    assert 'tool=Read args=[{"path":"two.txt","range":[0,1]}]' in latest
     assert agent.tool_context.recent == []
 
 
@@ -242,9 +262,9 @@ def test_agent_does_not_dedupe_nonconsecutive_same_batch_readonly_tool_calls(tmp
 
     agent.execute_tool_calls(
         [
-            {"name": "Read", "intention": "first read", "args": ["sample.txt", "0,1"]},
-            {"name": "Read", "intention": "middle read", "args": ["sample.txt", "1,2"]},
-            {"name": "Read", "intention": "second read", "args": ["sample.txt", "0,1"]},
+            {"name": "Read", "intention": "first read", "args": _read_args("sample.txt", line_range=[0, 1])},
+            {"name": "Read", "intention": "middle read", "args": _read_args("sample.txt", line_range=[1, 2])},
+            {"name": "Read", "intention": "second read", "args": _read_args("sample.txt", line_range=[0, 1])},
         ]
     )
 
@@ -297,7 +317,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0,1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
 
     item = session.state.tool_result_store["tr.1"]
     assert item.excerpted is True
@@ -319,7 +339,7 @@ def test_search_tool_result_uses_larger_output_budget(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Search", "intention": "search large result", "args": ["needle", "sample.txt", "context=0"]}])
+    agent.execute_tool_calls([{"name": "Search", "intention": "search large result", "args": _search_args("needle", path="sample.txt", context=0)}])
 
     item = session.state.tool_result_store["tr.1"]
     assert item.excerpted is False
@@ -334,7 +354,7 @@ def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path, monkeypat
     _set_context_budget(monkeypatch, agent, index_items=2, observe_after_results=4)
 
     for name in ["one.txt", "two.txt", "three.txt", "four.txt"]:
-        agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": [name, "0,1"]}])
+        agent.execute_tool_calls([{"name": "Read", "intention": "read " + name, "args": _read_args(name, line_range=[0, 1])}])
 
     latest = _blocks_text(agent.tool_context.latest)
     recent = _blocks_text(agent.tool_context.recent)
@@ -362,8 +382,8 @@ def test_agent_observes_full_latest_result_when_it_becomes_recent(tmp_path, monk
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
     context = _observe_tool_result_context(agent)
     assert agent.mode == nanocode.AgentMode.OBSERVE
@@ -399,16 +419,16 @@ def test_referenced_unreduced_results_do_not_count_toward_observe_threshold(tmp_
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
     agent.apply_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "one.txt was inspected."}]}]})
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
     assert len(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter)) == 2
     assert [nanocode.ToolResultContext.result_key(block) for block in agent._unreferenced_unreduced_blocks()] == ["tr.2"]
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read three", "args": ["three.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read three", "args": _read_args("three.txt", line_range=[0, 1])}])
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     observe_prompt = agent.build_observe_prompt()
@@ -427,9 +447,9 @@ def test_unsourced_known_does_not_cover_unreduced_result(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=10_000, observe_after_results=2)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
     agent.apply_response({"actions": [{"type": "known", "items": ["one.txt was inspected."]}]})
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
@@ -442,8 +462,8 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=10_000)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
@@ -470,9 +490,9 @@ def test_act_prompt_file_context_replaces_overlapping_read_lines(tmp_path, monke
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=10_000)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read head", "args": ["sample.txt", "0,2"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read head", "args": _read_args("sample.txt", line_range=[0, 2])}])
     path.write_text("old0\nnew1\nnew2\n", encoding="utf-8")
-    agent.execute_tool_calls([{"name": "Read", "intention": "read overlap", "args": ["sample.txt", "1,3"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read overlap", "args": _read_args("sample.txt", line_range=[1, 3])}])
 
     prompt = agent.build_user_prompt()
     file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
@@ -496,7 +516,7 @@ def test_act_prompt_folds_excerpted_read_result(tmp_path):
     path.write_text("x" * 20_000 + "\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
 
     prompt = agent.build_user_prompt()
     latest = _prompt_section(prompt, "Latest Tool Results", "Current Input")
@@ -544,7 +564,7 @@ def test_recalled_read_does_not_override_newer_read(tmp_path):
     )
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read new", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read new", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.execute_tool_calls([{"name": "Recall", "intention": "recall old", "args": ["tr.1"]}])
 
     assert list(session.state.tool_result_store) == ["tr.1", "tr.2"]
@@ -563,7 +583,7 @@ def test_forget_tool_removes_visible_result_without_new_key(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     latest = agent.execute_tool_calls([{"name": "Forget", "intention": "drop sample", "args": ["tr.1"]}])
 
     assert session.state.tool_result_counter == 1
@@ -580,7 +600,7 @@ def test_recall_tool_reactivates_forgotten_result_without_new_key(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.execute_tool_calls([{"name": "Forget", "intention": "drop sample", "args": ["tr.1"]}])
     agent.execute_tool_calls([{"name": "Recall", "intention": "recall sample", "args": ["tr.1"]}])
 
@@ -600,7 +620,7 @@ def test_observe_keep_tool_keeps_result_without_new_key(tmp_path, monkeypatch):
     agent = Agent(session)
     _set_context_budget(monkeypatch, agent, observe_after_results=1)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     assert agent.mode == nanocode.AgentMode.OBSERVE
     agent.handle_response({"actions": [{"type": "tool", "name": "Keep", "intention": "keep sample", "args": ["tr.1"]}]})
 
@@ -616,8 +636,8 @@ def test_empty_observe_compacts_unreduced_tool_results(tmp_path, monkeypatch):
     agent = Agent(Session(cwd=str(tmp_path)))
     _set_context_budget(monkeypatch, agent, raw_chars=300, observe_after_results=2)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]}])
-    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
     agent.handle_response({"actions": [], "_assistant_text": "checking result"})
 
@@ -629,7 +649,7 @@ def test_empty_observe_compacts_unreduced_tool_results(tmp_path, monkeypatch):
 def test_assistant_text_does_not_mark_memory_checkpoint(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
 
     agent.apply_response({"actions": [], "_assistant_text": "reading sample"})
 
@@ -867,8 +887,8 @@ def test_act_prompt_includes_kept_tool_results(tmp_path):
 
     agent.execute_tool_calls(
         [
-            {"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
-            {"name": "Read", "intention": "read other", "args": ["other.txt", "0,1"]},
+            {"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
+            {"name": "Read", "intention": "read other", "args": _read_args("other.txt", line_range=[0, 1])},
         ]
     )
     agent.mode = nanocode.AgentMode.OBSERVE
@@ -896,7 +916,7 @@ def test_kept_tool_results_deduplicate_by_tool_key(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.handle_response(
         {
@@ -914,7 +934,7 @@ def test_kept_tool_results_deduplicate_by_tool_key(tmp_path):
 def test_observe_reports_kept_tool_result_keys(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.mode = nanocode.AgentMode.OBSERVE
     messages = []
 
@@ -1124,7 +1144,7 @@ def test_keep_tool_results_ignore_non_tool_sources(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.handle_response(
         {
@@ -1152,7 +1172,7 @@ def test_keep_action_is_observe_only(tmp_path):
 def test_observe_rejects_invalid_action_and_allows_empty_actions(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.mode = nanocode.AgentMode.OBSERVE
 
     agent.handle_response({"actions": [{"type": "goal", "text": "answer", "complete": False}]})
@@ -1264,7 +1284,7 @@ def test_kept_tool_results_respect_per_block_char_budget(tmp_path, monkeypatch):
 def test_observe_checkpoint_clears_observe_errors(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.mode = nanocode.AgentMode.OBSERVE
     agent.observe_feedback_errors = ["old observe error"]
 
@@ -1281,7 +1301,7 @@ def test_agent_tool_result_raw_budget_triggers_observe(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("x" * 400 + "\n", encoding="utf-8")
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.context_budget().raw_chars
@@ -1297,7 +1317,7 @@ def test_referenced_raw_context_does_not_force_observe(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("x" * 400 + "\n", encoding="utf-8")
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
     agent.apply_response(
         {"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "sample.txt content was inspected."}]}]}
     )
@@ -1694,7 +1714,7 @@ def test_agent_request_sends_function_tool_schema_and_parses_tool_call(tmp_path,
                             {
                                 "function": {
                                     "name": "Read",
-                                    "arguments": '{"intention":"read sample","args":["sample.txt","0","1"]}',
+                                    "arguments": '{"intention":"read sample","args":[{"path":"sample.txt","range":[0,1]}]}',
                                 }
                             }
                         ],
@@ -1713,7 +1733,7 @@ def test_agent_request_sends_function_tool_schema_and_parses_tool_call(tmp_path,
     assert payload["tool_choice"] == "auto"
     assert payload["parallel_tool_calls"] is True
     assert response == {
-        "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0", "1"]}],
+        "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}],
         "_assistant_text": "Reading the file.",
     }
     assert session.state.last_total_tokens == 5
@@ -1843,7 +1863,7 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
                 [
                     _stream_chunk({"content": "Reading."}),
                     _stream_chunk({"tool_calls": [{"index": "0", "function": {"name": "Read", "arguments": '{"intention":"read sample",'}}]}),
-                    _stream_chunk({"tool_calls": [{"index": "0", "function": {"arguments": '"args":["sample.txt","0","1"]}'}}]}),
+                    _stream_chunk({"tool_calls": [{"index": "0", "function": {"arguments": '"args":[{"path":"sample.txt","range":[0,1]}]}'}}]}),
                     _stream_chunk(usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}, choices=False),
                 ]
             )
@@ -1865,7 +1885,7 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
                 "type": "tool",
                 "name": "Read",
                 "intention": "read sample",
-                "args": ["sample.txt", "0", "1"],
+                "args": _read_args("sample.txt", line_range=[0, 1]),
             }
         ],
         "_assistant_text": "Reading.",
@@ -1880,8 +1900,8 @@ def test_agent_stream_step_preserves_same_response_tool_batch_in_latest(tmp_path
     class FakeModelClient:
         def request(self, *_args, on_stream_action=None, **_kwargs):
             assert on_stream_action is not None
-            on_stream_action({"type": "tool", "name": "Read", "intention": "read one", "args": ["one.txt", "0,1"]})
-            on_stream_action({"type": "tool", "name": "Read", "intention": "read two", "args": ["two.txt", "0,1"]})
+            on_stream_action({"type": "tool", "name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])})
+            on_stream_action({"type": "tool", "name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])})
             return {"actions": []}
 
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -1895,8 +1915,8 @@ def test_agent_stream_step_preserves_same_response_tool_batch_in_latest(tmp_path
     assert committed is True
     assert "one" in latest
     assert "two" in latest
-    assert 'tool=Read args=["one.txt","0,1"]' in latest
-    assert 'tool=Read args=["two.txt","0,1"]' in latest
+    assert 'tool=Read args=[{"path":"one.txt","range":[0,1]}]' in latest
+    assert 'tool=Read args=[{"path":"two.txt","range":[0,1]}]' in latest
     assert agent.tool_context.recent == []
 
 
@@ -2992,7 +3012,7 @@ def test_agent_execute_tool_calls_returns_malformed_tool_call_error(tmp_path):
     latest = agent.execute_tool_calls([{"intention": "bad call", "args": []}])
 
     assert "ToolCallError: tool action missing required field: name" in latest
-    assert '{"type":"tool","name":"Read","intention":"...","args":["path"]}' in latest
+    assert '{"type":"tool","name":"Read","intention":"...","args":[{"path":"path.py"}]}' in latest
     assert "InvalidToolCall" in latest
     assert "bad call" not in latest
     assert session.state.conversation == []
@@ -3003,12 +3023,12 @@ def test_agent_execute_tool_calls_records_arg_errors_in_feedback(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": _read_args("sample.txt", line_range=["bad", 1])}])
 
-    assert "ToolCallError: Read args error: invalid range token" in latest
+    assert "ToolCallError: files[0].range start must be an integer" in latest
     assert len(agent.agent_feedback_errors) == 1
-    assert 'tool=Read args=["sample.txt","bad,1"]' in agent.agent_feedback_errors[0]
-    assert "invalid range token" in agent.agent_feedback_errors[0]
+    assert 'tool=Read args=[{"path":"sample.txt","range":["bad",1]}]' in agent.agent_feedback_errors[0]
+    assert "range start must be an integer" in agent.agent_feedback_errors[0]
 
 
 def test_agent_execute_tool_calls_reports_arg_count_details(tmp_path):
@@ -3039,7 +3059,7 @@ def test_tool_arg_error_does_not_force_observe(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}])
+    agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": _read_args("sample.txt", line_range=["bad", 1])}])
 
     assert agent.mode == nanocode.AgentMode.ACT
     assert agent.agent_feedback_errors
@@ -3062,7 +3082,7 @@ def test_agent_blocks_repeated_identical_failed_tool_call(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
     _seed_plan(agent, "read sample")
-    action = {"type": "tool", "name": "Read", "intention": "bad range", "args": ["sample.txt", "bad,1"]}
+    action = {"type": "tool", "name": "Read", "intention": "bad range", "args": _read_args("sample.txt", line_range=["bad", 1])}
 
     agent.handle_response({"actions": [action]})
     agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "failed read has no useful result"}]})
@@ -3098,7 +3118,7 @@ def test_agent_execute_tool_calls_does_not_record_runtime_errors_in_feedback(tmp
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": ["missing.txt", "0,1"]}])
+    latest = agent.execute_tool_calls([{"name": "Read", "intention": "missing file", "args": _read_args("missing.txt", line_range=[0, 1])}])
 
     assert "ToolCallError: " in latest
     assert agent.agent_feedback_errors == []
@@ -3109,9 +3129,9 @@ def test_main_agent_accepts_search_tool(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
-    latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": ["class Foo"]}])
+    latest = agent.execute_tool_calls([{"name": "Search", "intention": "find symbol", "args": _search_args("class Foo")}])
 
-    assert '- ok tool=Search args=["class Foo"] key=tr.1' in latest
+    assert '- ok tool=Search args=[{"pattern":"class Foo"}] key=tr.1' in latest
     assert "sample.py" in latest
 
 
@@ -3150,7 +3170,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
             self.user_prompts = []
             self.responses = [
                 {
-                    "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]
+                    "actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
@@ -3181,7 +3201,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     response = agent.run("read sample", on_message=messages.append)
 
     assert response["actions"][-1]["message_for_complete"] == "done"
-    assert messages[0].startswith("[success] Read sample.txt 0,1 -> tr.1")
+    assert messages[0].startswith("[success] Read sample.txt 0:1 -> tr.1")
     assert "why:" not in messages[0]
     assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"
@@ -3192,7 +3212,7 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "alpha" in fake_client.user_prompts[2]
     assert "Kept Tool Results:" in fake_client.user_prompts[2]
     assert "<ReadToolResult>" not in fake_client.user_prompts[2]
-    assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
+    assert 'tool=Read args=[{"path":"sample.txt","range":[0,1]}]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
     assert agent.blackboard.user_input == "read sample"
@@ -3260,7 +3280,7 @@ def test_agent_normalizes_protocol_action_type_case(tmp_path):
                 {"type": "USER_RULE", "text": "prefer concise", "message": "saved"},
                 {"type": "FORGET", "source": ["tr.1"], "reason": "old"},
                 {"type": "KEEP", "source": ["tr.2"], "reason": "useful"},
-                {"type": "Tool", "name": "search", "intention": "find", "args": ["needle"]},
+                {"type": "Tool", "name": "search", "intention": "find", "args": _search_args("needle")},
             ]
         }
     )
@@ -3315,7 +3335,7 @@ def test_agent_normalizes_lowercase_repo_tool_names(tmp_path):
     messages = []
 
     result = agent.handle_response(
-        {"actions": [{"type": "search", "intention": "find sample", "args": ["needle", "sample.txt"]}]},
+        {"actions": [{"type": "search", "intention": "find sample", "args": _search_args("needle", path="sample.txt")}]},
         on_message=messages.append,
     )
 
@@ -3331,7 +3351,7 @@ def test_agent_run_allows_readonly_answer_without_checks(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
                 {
                     "actions": [
                         {"type": "goal", "text": "answer sample", "complete": True, "message_for_complete": "sample contains alpha"},
@@ -3456,7 +3476,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path, monkey
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
                 {"_format_error": "Invalid function-tool response: plain answer", "actions": []},
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {"actions": _final_actions("read sample")},
@@ -3485,7 +3505,7 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path, monkey
     assert "Kept Tool Results:" in agent.model_client.user_prompts[3]
     assert "alpha" in agent.model_client.user_prompts[3]
     assert "<ReadToolResult>" not in agent.model_client.user_prompts[3]
-    assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
+    assert 'tool=Read args=[{"path":"sample.txt","range":[0,1]}]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
 
 
@@ -3498,7 +3518,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "tool", "name": "Read", "intention": f"read {index}", "args": [f"sample-{index}.txt", "0,1"]}
+                        {"type": "tool", "name": "Read", "intention": f"read {index}", "args": _read_args(f"sample-{index}.txt", line_range=[0, 1])}
                         for index in range(51)
                     ]
                 },
@@ -3543,7 +3563,7 @@ def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
         def __init__(self):
             self.user_prompts = []
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
                 {"actions": [{"type": "forget", "source": ["tr.1"], "reason": "sample content is not needed"}]},
                 {"actions": _final_actions("read sample", "done too early")},
             ]
@@ -3579,7 +3599,7 @@ def test_agent_run_allows_readonly_tool_before_plan(tmp_path):
                 {
                     "actions": [
                         {"type": "goal", "text": "read sample", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
                     ]
                 },
                 {
@@ -3616,13 +3636,13 @@ def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_p
                 {
                     "actions": [
                         {"type": "goal", "text": "new goal", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
                     ]
                 },
                 {
                     "actions": [
                         {"type": "goal", "text": "new goal", "complete": False},
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
                     ]
                 },
                 {
@@ -3632,7 +3652,7 @@ def test_agent_run_allows_readonly_discovery_when_goal_changes_before_plan(tmp_p
                             "type": "plan",
                             "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
                     ]
                 },
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
@@ -3669,7 +3689,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     class FakeModelClient:
         def __init__(self):
             self.responses = [
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
                 {
                     "actions": [
                         {"type": "goal", "text": "run lint", "complete": False},
@@ -3677,7 +3697,7 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
                             "type": "plan",
                             "items": [{"id": "p1", "text": "Read sample", "status": "doing"}],
                         },
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])},
                     ]
                 },
                 {
@@ -3723,7 +3743,7 @@ def test_agent_run_warns_on_goal_rewrite_after_task_is_working(tmp_path):
                     ]
                 },
                 {"actions": [{"type": "goal", "text": "read sample again", "complete": False}]},
-                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}]},
+                {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
                 {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
                     "actions": [
@@ -4006,7 +4026,7 @@ def test_agent_allows_tool_after_completed_plan_and_checks(tmp_path):
     result = agent.handle_response(
         {
             "actions": [
-                {"type": "tool", "name": "Read", "intention": "inspect again", "args": ["sample.txt", "0,1"]}
+                {"type": "tool", "name": "Read", "intention": "inspect again", "args": _read_args("sample.txt", line_range=[0, 1])}
             ]
         },
         on_message=messages.append,
@@ -4041,7 +4061,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_with_context(tmp_path)
                         }
                     ],
                 },
-                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0,1"]},
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": _read_args("sample.txt", line_range=[0, 1])},
             ]
         }
     )
@@ -4073,7 +4093,7 @@ def test_agent_allows_tool_after_reopening_completed_plan_without_context(tmp_pa
                     "mode": "patch",
                     "items": [{"id": "p2", "text": "Inspect the remaining issue", "status": "doing"}],
                 },
-                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": ["sample.txt", "0,1"]},
+                {"type": "tool", "name": "Read", "intention": "inspect sample", "args": _read_args("sample.txt", line_range=[0, 1])},
             ]
         },
         on_message=messages.append,
@@ -4515,7 +4535,7 @@ def test_agent_shows_progress_with_tool_action_without_storing_it(tmp_path):
             self.responses = [
                 {
                     "actions": [
-                        {"type": "tool", "name": "Read", "intention": "read sample", "args": ["sample.txt"]},
+                        {"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt")},
                     ],
                     "_assistant_text": "reading sample",
                 },

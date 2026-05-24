@@ -8,12 +8,25 @@ def _hashline(index: int, text: str) -> str:
     return f"{index}:{nanocode._line_hash(text)}|{text}"
 
 
+def _read(path: str, *, line_range: list[int] | None = None, ranges: list[list[int]] | None = None):
+    spec: dict[str, object] = {"path": path}
+    if line_range is not None:
+        spec["range"] = line_range
+    if ranges is not None:
+        spec["ranges"] = ranges
+    return [spec]
+
+
+def _read_files(*files: dict[str, object]):
+    return [{"files": list(files)}]
+
+
 def test_read_tool_reads_requested_line_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt", "1,3"])
+    tool = ReadTool.make(session, _read("sample.txt", line_range=[1, 3]))
     result = tool.call()
 
     assert tool.requires_confirmation(session) is False
@@ -28,25 +41,25 @@ def test_read_tool_reads_requested_line_range(tmp_path):
 def test_read_tool_rejects_empty_args_with_actionable_error(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match=r'Read args error: got 0 args; expected \["filepath"\]'):
+    with pytest.raises(ToolCallError, match="Read args error: expected exactly one object"):
         ReadTool.make(session, [])
 
 
-def test_read_tool_rejects_multiple_start_end_pairs(tmp_path):
+def test_read_tool_rejects_positional_args(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="Read args error: for multiple ranges use comma tokens"):
+    with pytest.raises(ToolCallError, match="Read args error: expected exactly one object"):
         ReadTool.make(session, ["sample.txt", "1", "2", "3", "5"])
 
 
-def test_read_tool_reads_multiple_line_range_tokens(tmp_path):
+def test_read_tool_reads_multiple_structured_line_ranges(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt", "1-2", "3-5"])
+    tool = ReadTool.make(session, _read("sample.txt", ranges=[[1, 2], [3, 5]]))
     result = tool.call()
 
     assert tool.ranges == [(1, 2), (3, 5)]
@@ -64,7 +77,7 @@ def test_read_tool_reads_multiple_files(tmp_path):
     (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["pyproject.toml", "uv.lock"])
+    tool = ReadTool.make(session, _read_files({"path": "pyproject.toml"}, {"path": "uv.lock"}))
     result = tool.call()
 
     assert tool.filepaths == [str(tmp_path / "pyproject.toml"), str(tmp_path / "uv.lock")]
@@ -77,12 +90,29 @@ def test_read_tool_reads_multiple_files(tmp_path):
     assert _hashline(0, "version = 1\n") in result
 
 
-def test_read_tool_reads_colon_and_comma_range_tokens(tmp_path):
+def test_read_tool_reads_multiple_files_with_independent_ranges(tmp_path):
+    (tmp_path / "one.txt").write_text("zero\none\ntwo\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, _read_files({"path": "one.txt", "range": [1, 2]}, {"path": "two.txt", "range": [1, 3]}))
+    result = tool.call()
+
+    assert tool.filepaths == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt")]
+    assert "<path>one.txt</path>" in result
+    assert "<path>two.txt</path>" in result
+    assert _hashline(1, "one\n") in result
+    assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
+    assert "|zero" not in result
+    assert "|alpha" not in result
+
+
+def test_read_tool_reads_structured_ranges(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt", "1:2", "3,5"])
+    tool = ReadTool.make(session, _read("sample.txt", ranges=[[1, 2], [3, 5]]))
     result = tool.call()
 
     assert tool.ranges == [(1, 2), (3, 5)]
@@ -100,7 +130,7 @@ def test_read_tool_reads_to_eof_when_end_is_zero(tmp_path):
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    result = ReadTool.make(session, ["sample.txt", "1,0"]).call()
+    result = ReadTool.make(session, _read("sample.txt", line_range=[1, 0])).call()
 
     assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
     assert "|alpha" not in result
@@ -111,7 +141,7 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     path.write_text("alpha\nbeta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt"])
+    tool = ReadTool.make(session, _read("sample.txt"))
     result = tool.call()
 
     assert tool.start == 0
@@ -126,7 +156,7 @@ def test_read_tool_reads_range_token_when_numeric_filenames_exist(tmp_path):
     (tmp_path / "3").write_text("numeric filename three\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    tool = ReadTool.make(session, ["sample.txt", "1,3"])
+    tool = ReadTool.make(session, _read("sample.txt", line_range=[1, 3]))
     result = tool.call()
 
     assert tool.ranges == [(1, 3)]
@@ -140,7 +170,7 @@ def test_read_tool_truncates_full_file_reads_after_600_lines(tmp_path):
     path.write_text("".join(f"line-{index:04d}\n" for index in range(605)), encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    result = ReadTool.make(session, ["sample.txt"]).call()
+    result = ReadTool.make(session, _read("sample.txt")).call()
 
     assert "<range>0:600</range>" in result
     assert "<truncated>true</truncated>" in result
@@ -156,7 +186,7 @@ def test_read_tool_truncates_large_bounded_ranges_after_600_lines(tmp_path):
     path.write_text("".join(f"line-{index:04d}\n" for index in range(700)), encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    result = ReadTool.make(session, ["sample.txt", "10,650"]).call()
+    result = ReadTool.make(session, _read("sample.txt", line_range=[10, 650])).call()
 
     assert "<range>10:610</range>" in result
     assert "<truncated>true</truncated>" in result
@@ -195,7 +225,7 @@ def test_read_tool_bounded_read_stops_at_end(tmp_path, monkeypatch):
 
     monkeypatch.setattr(nanocode, "open", tracking_open, raising=False)
 
-    result = ReadTool.make(session, ["sample.txt", "1,3"]).call()
+    result = ReadTool.make(session, _read("sample.txt", line_range=[1, 3])).call()
 
     assert _hashline(1, "one\n") + _hashline(2, "two\n") in result
     assert "three" not in result
@@ -207,7 +237,7 @@ def test_read_tool_clamps_out_of_bounds_range(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    result = ReadTool.make(session, ["sample.txt", "10,20"]).call()
+    result = ReadTool.make(session, _read("sample.txt", line_range=[10, 20])).call()
 
     assert "alpha" not in result
     assert "  <content hashline-numbered>\n\n  </content>" in result
@@ -218,8 +248,8 @@ def test_read_tool_rejects_non_integer_range(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="invalid range"):
-        ReadTool.make(session, ["sample.txt", "bad,1"])
+    with pytest.raises(ToolCallError, match="range start must be an integer"):
+        ReadTool.make(session, _read("sample.txt", line_range=["bad", 1]))
 
 
 def test_read_tool_rejects_partial_range(tmp_path):
@@ -227,5 +257,5 @@ def test_read_tool_rejects_partial_range(tmp_path):
     path.write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="Read args error: invalid range token"):
-        ReadTool.make(session, ["sample.txt", "0"])
+    with pytest.raises(ToolCallError, match=r"range must be a \[start, end\] integer pair"):
+        ReadTool.make(session, _read("sample.txt", line_range=[0]))

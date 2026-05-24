@@ -10,7 +10,7 @@ def _anchors(read_result: str) -> list[str]:
 
 
 def _read_anchors(session: Session, filepath: str, range_token: str = "0,0") -> list[str]:
-    args = [filepath] if range_token == "0,0" else [filepath, range_token]
+    args = [{"path": filepath}] if range_token == "0,0" else [{"path": filepath, "range": [int(part) for part in re.split(r"[-:,]", range_token)]}]
     return _anchors(ReadTool.make(session, args).call())
 
 
@@ -43,7 +43,7 @@ def test_edit_file_accepts_full_hashline_anchor(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
-    read_result = ReadTool.make(session, ["sample.txt"]).call()
+    read_result = ReadTool.make(session, [{"path": "sample.txt"}]).call()
     full_hashline = next(line for line in read_result.splitlines() if line.endswith("|beta"))
 
     EditTool.make(session, ["sample.txt", [{"op": "replace", "start": full_hashline, "end": full_hashline, "content": "BETA\n"}]]).call()

@@ -1670,7 +1670,17 @@ class ToolResultContext:
             args, _end = json.JSONDecoder().raw_decode(header[start + len(marker) :])
         except json.JSONDecodeError:
             return ""
-        return str(args[0]) if isinstance(args, list) and args else ""
+        if not isinstance(args, list) or not args:
+            return ""
+        payload = _json_dict(args[0])
+        if payload:
+            if "files" in payload:
+                files = _json_list(payload.get("files"))
+                if files:
+                    return _json_str(_json_dict(files[0]).get("path")) or ""
+                return ""
+            return _json_str(payload.get("path")) or ""
+        return str(args[0])
 
     @staticmethod
     def _read_output_file_sections(output: str, *, default_path: str) -> Iterator[tuple[str, str]]:
@@ -1858,9 +1868,16 @@ def _parse_line_range_token(value: str) -> tuple[int, int]:
     return _parse_line_range(match.group(1), match.group(2))
 
 
-def _looks_like_read_range_error(value: JsonValue) -> bool:
-    text = str(value).strip()
-    return bool(re.fullmatch(r"\d+(?:\s*[-:,]\s*)?", text) or re.search(r"[:,]", text))
+def _parse_structured_line_range(value: JsonValue, *, label: str = "range") -> tuple[int, int]:
+    raw = _json_list(value)
+    if len(raw) != 2:
+        raise ToolCallArgError(label + " must be a [start, end] integer pair")
+    start, end = raw
+    if not isinstance(start, int) or isinstance(start, bool):
+        raise ToolCallArgError(label + " start must be an integer")
+    if not isinstance(end, int) or isinstance(end, bool):
+        raise ToolCallArgError(label + " end must be an integer")
+    return _parse_line_range(str(start), str(end))
 
 
 @dataclass
@@ -1870,18 +1887,18 @@ class ReadTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read one or more UTF-8 files with line:hash anchors.",
-        "Multiple files: pass filepaths only; each file returns first 600 lines.",
-        "Ranges: pass one filepath then 0-based start,end tokens; each range returns at most 600 lines.",
+        "Pass one structured object. Use path for one file, or files for multiple files.",
+        "Each file can omit range for the first 600 lines, pass range=[start,end], or ranges=[[start,end],...].",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
-        "Read(filepath) -> first 600 lines with line:hash anchors",
-        "Read(filepath, filepath...) -> first 600 lines from each file",
-        "Read(filepath, range[, range...]) -> selected ranges from one file",
+        "Read({path, range?}) -> selected range or first 600 lines",
+        "Read({path, ranges}) -> selected ranges from one file",
+        "Read({files:[{path, range?|ranges?}, ...]}) -> selected ranges from multiple files",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["pyproject.toml", "uv.lock"]',
-        'Example args: ["code.py", "0,80", "160,220"]',
-        'Example args: ["code.py"]',
+        'Example args: [{"path":"code.py","range":[0,80]}]',
+        'Example args: [{"path":"code.py","ranges":[[0,80],[160,220]]}]',
+        'Example args: [{"files":[{"path":"pyproject.toml"},{"path":"uv.lock","range":[0,120]}]}]',
     )
 
     filepath: str = ""
@@ -1889,81 +1906,214 @@ class ReadTool(Tool):
     end: int = 0
     ranges: list[tuple[int, int]] = field(default_factory=list)
     filepaths: list[str] = field(default_factory=list)
+    targets: list[tuple[str, list[tuple[int, int]]]] = field(default_factory=list)
     cwd: str = ""
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        if not args:
-            return []
-        tokens = [cls.cli_token(args[0])]
-        return tokens + [str(arg) for arg in args[1:]]
+        payload = _json_dict(args[0]) if len(args) == 1 else {}
+        if not payload:
+            return [cls.cli_token(arg) for arg in args]
+        raw_files = _json_list(payload.get("files")) if "files" in payload else [payload]
+        tokens: list[str] = []
+        for raw_file in raw_files:
+            spec = _json_dict(raw_file)
+            path = _json_str(spec.get("path")) or ""
+            if not path:
+                continue
+            ranges = cls._cli_range_tokens(spec)
+            if not ranges:
+                tokens.append(path)
+                continue
+            tokens.append(path)
+            tokens.extend(ranges)
+        return tokens or [cls.cli_token(args[0])]
+
+    @staticmethod
+    def _cli_range_tokens(spec: Json) -> list[str]:
+        if "range" in spec:
+            raw_ranges = [spec.get("range")]
+        else:
+            raw_ranges = _json_list(spec.get("ranges")) if "ranges" in spec else []
+        tokens = []
+        for raw_range in raw_ranges:
+            values = _json_list(raw_range)
+            if len(values) == 2:
+                tokens.append(str(values[0]) + ":" + str(values[1]))
+        return tokens
+
+    @classmethod
+    def tool_schema(cls) -> Json:
+        range_schema = {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "0-based [start, end]. Use end=0 to read to EOF, capped at 600 lines.",
+        }
+        file_schema = _tool_object_schema(
+            {
+                "path": {"type": "string", "description": "File path to read."},
+                "range": range_schema,
+                "ranges": {"type": "array", "items": range_schema, "description": "Multiple 0-based [start, end] ranges for this file."},
+            },
+            ["path"],
+        )
+        read_arg_schema = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Single file path to read."},
+                "range": range_schema,
+                "ranges": {"type": "array", "items": range_schema, "description": "Multiple 0-based [start, end] ranges for the single file."},
+                "files": {"type": "array", "items": file_schema, "minItems": 1, "description": "Multiple files to read, each with its own optional range/ranges."},
+            },
+            "additionalProperties": False,
+            "description": "Use either path or files.",
+        }
+        return _function_tool_schema(
+            cls.NAME,
+            cls.schema_description(),
+            _tool_object_schema(
+                {
+                    "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
+                    "args": {
+                        "type": "array",
+                        "items": read_arg_schema,
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "description": "Exactly one structured Read request object.",
+                    },
+                },
+                ["intention", "args"],
+            ),
+        )
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) == 0:
-            raise ToolCallArgError(
-                'Read args error: got 0 args; expected ["filepath"] or ["filepath", "start,end"]. Example: Read("nanocode.py", "2065,2095"). Do not call Read().'
-            )
-        filepath = session.resolve_path(str(args[0]))
-        if len(args) == 1:
-            ranges = [(0, 0)]
-        elif all(re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", str(arg)) for arg in args[1:]):
-            ranges = [_parse_line_range_token(str(arg)) for arg in args[1:]]
-        elif not any(_looks_like_read_range_error(arg) for arg in args[1:]):
-            filepaths = [session.resolve_path(str(arg)) for arg in args]
-            return cls(filepath=filepaths[0], start=0, end=0, ranges=[(0, 0)], filepaths=filepaths, cwd=session.cwd)
-        elif len(args) == 2:
-            raise ToolCallArgError(
-                'Read args error: invalid range token; expected ["filepath", "start,end"] or ["file1", "file2"]. Example: Read("nanocode.py", "2065,2095").'
-            )
-        else:
-            raise ToolCallArgError('Read args error: for multiple ranges use comma tokens. Example: Read("nanocode.py", "0,40", "200,260").')
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise ToolCallArgError('Read args error: expected exactly one object, e.g. [{"path":"nanocode.py","range":[2065,2095]}]')
+        payload = _json_dict(args[0])
+        targets = cls._parse_targets(session, payload)
+        filepath, ranges = targets[0]
         start, end = ranges[0]
-        return cls(filepath=filepath, start=start, end=end, ranges=ranges, filepaths=[filepath], cwd=session.cwd)
+        return cls(
+            filepath=filepath,
+            start=start,
+            end=end,
+            ranges=ranges,
+            filepaths=[path for path, _ranges in targets],
+            targets=targets,
+            cwd=session.cwd,
+        )
+
+    @classmethod
+    def _parse_targets(cls, session: Session, payload: Json) -> list[tuple[str, list[tuple[int, int]]]]:
+        if "files" in payload:
+            unexpected = sorted(set(payload) - {"files"})
+            if unexpected:
+                raise ToolCallArgError("Read args error: files cannot be combined with " + ", ".join(unexpected))
+            raw_files = _json_list(payload.get("files"))
+            if not raw_files:
+                raise ToolCallArgError("Read args error: files must be a non-empty array")
+        else:
+            raw_files = [payload]
+        targets = [cls._parse_file_spec(session, raw_file, index=index) for index, raw_file in enumerate(raw_files)]
+        if not targets:
+            raise ToolCallArgError("Read args error: no files requested")
+        return targets
+
+    @classmethod
+    def _parse_file_spec(cls, session: Session, value: JsonValue, *, index: int) -> tuple[str, list[tuple[int, int]]]:
+        spec = _json_dict(value)
+        if not spec:
+            raise ToolCallArgError("Read args error: each file must be an object")
+        unexpected = sorted(set(spec) - {"path", "range", "ranges"})
+        if unexpected:
+            raise ToolCallArgError("Read args error: unexpected field in file request: " + ", ".join(unexpected))
+        path = _json_str(spec.get("path"))
+        if not path:
+            raise ToolCallArgError("Read args error: each file request needs a non-empty path")
+        if "range" in spec and "ranges" in spec:
+            raise ToolCallArgError("Read args error: use range or ranges, not both")
+        if "ranges" in spec:
+            raw_ranges = _json_list(spec.get("ranges"))
+            if not raw_ranges:
+                raise ToolCallArgError("Read args error: ranges must be a non-empty array")
+            ranges = [_parse_structured_line_range(raw_range, label=f"files[{index}].ranges[{range_index}]") for range_index, raw_range in enumerate(raw_ranges)]
+        elif "range" in spec:
+            ranges = [_parse_structured_line_range(spec.get("range"), label=f"files[{index}].range")]
+        else:
+            ranges = [(0, 0)]
+        return session.resolve_path(path), ranges
+
+    def _targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
+        if self.targets:
+            return self.targets
+        return [(self.filepath, self.ranges or [(self.start, self.end)])]
 
     def requires_confirmation(self, session: Session) -> bool:
-        return any(not session.is_path_in_cwd(filepath) for filepath in (self.filepaths or [self.filepath]))
+        return any(not session.is_path_in_cwd(filepath) for filepath, _ranges in self._targets())
 
     def preview(self) -> str:
-        if len(self.filepaths) > 1:
-            return "Read(" + ", ".join(self.filepaths) + ")"
-        if len(self.ranges) > 1:
-            ranges = ", ".join(str(start) + ":" + str(end) for start, end in self.ranges)
-            return f"Read({self.filepath}, {ranges})"
-        return f"Read({self.filepath}, {self.start}, {self.end})"
+        targets = self._targets()
+        if len(targets) > 1:
+            chunks = []
+            for filepath, ranges in targets:
+                range_text = ",".join(str(start) + ":" + str(end) for start, end in ranges)
+                chunks.append(filepath + (":" + range_text if range_text != "0:0" else ""))
+            return "Read(" + ", ".join(chunks) + ")"
+        filepath, ranges = targets[0]
+        if len(ranges) > 1:
+            range_text = ", ".join(str(start) + ":" + str(end) for start, end in ranges)
+            return f"Read({filepath}, {range_text})"
+        start, end = ranges[0]
+        return f"Read({filepath}, {start}, {end})"
 
     def call(self) -> str:
-        if len(self.filepaths) > 1:
+        targets = self._targets()
+        if len(targets) > 1:
             lines = [
                 "<ReadToolResult>",
                 '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
-                "  <file_count>" + str(len(self.filepaths)) + "</file_count>",
+                "  <file_count>" + str(len(targets)) + "</file_count>",
             ]
-            for filepath in self.filepaths:
-                content, returned_end, range_end, truncated, total_lines = self._read_range(0, 0, filepath=filepath)
+            for filepath, ranges in targets:
                 lines.extend(["  <ReadFile>", "    <path>" + os.path.relpath(filepath, self.cwd) + "</path>"])
-                lines.extend(self._format_range_result(0, returned_end, range_end, truncated, total_lines, content, indent="    "))
+                if len(ranges) > 1:
+                    lines.append("    <range_count>" + str(len(ranges)) + "</range_count>")
+                for start, end in ranges:
+                    if len(ranges) > 1:
+                        lines.append("    <ReadRange>")
+                        indent = "      "
+                    else:
+                        indent = "    "
+                    content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
+                    lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent=indent))
+                    if len(ranges) > 1:
+                        lines.append("    </ReadRange>")
                 lines.append("  </ReadFile>")
             lines.append("</ReadToolResult>")
             return "\n".join(lines)
 
-        if len(self.ranges) > 1:
+        filepath, ranges = targets[0]
+        if len(ranges) > 1:
             lines = [
                 "<ReadToolResult>",
                 '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
-                "  <range_count>" + str(len(self.ranges)) + "</range_count>",
+                "  <range_count>" + str(len(ranges)) + "</range_count>",
             ]
-            for start, end in self.ranges:
-                content, returned_end, range_end, truncated, total_lines = self._read_range(start, end)
+            for start, end in ranges:
+                content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
                 lines.append("  <ReadRange>")
                 lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="    "))
                 lines.append("  </ReadRange>")
             lines.append("</ReadToolResult>")
             return "\n".join(lines)
 
-        content, returned_end, range_end, truncated, total_lines = self._read_range(self.start, self.end)
+        start, end = ranges[0]
+        content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
         lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>']
-        lines.extend(self._format_range_result(self.start, returned_end, range_end, truncated, total_lines, content, indent="  "))
+        lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
@@ -2138,15 +2288,15 @@ class SearchTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search across files; use before Read when location is unknown.",
         "Returns file:line matches and optional line:hash context anchors.",
-        "Options: path=FILE_OR_DIR, glob=GLOB, context=N. Use at most one glob per call.",
+        "Pass one structured object with pattern, optional path, optional glob, and optional context.",
         "Use InspectCode for symbol structure; use Bash rg/grep for custom shell pipelines.",
         "Escape regex metacharacters for literal text; use A|B for alternatives and \\n for multiline.",
     )
-    SIGNATURES: ClassVar[tuple[str, ...]] = ("Search(pattern[, path=FILE_OR_DIR][, glob=GLOB][, context=N]) -> matching lines",)
+    SIGNATURES: ClassVar[tuple[str, ...]] = ("Search({pattern, path?, glob?, context?}) -> matching lines",)
     EXAMPLE: ClassVar[tuple[str, ...]] = (
-        'Example args: ["class .*Tool", "path=nanocode.py"]',
-        'Example args: ["TODO|FIXME", "path=.", "glob=*.py", "context=2"]',
-        'Literal paren args: ["def __init__\\(", "path=.", "glob=*.py"]',
+        'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"}]',
+        'Example args: [{"pattern":"TODO|FIXME","path":".","glob":"*.py","context":2}]',
+        'Literal paren args: [{"pattern":"def __init__\\\\(","path":".","glob":"*.py"}]',
     )
 
     @dataclass(frozen=True)
@@ -2164,64 +2314,80 @@ class SearchTool(Tool):
     gitignore_patterns: list[str] = field(default_factory=list)
 
     @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        args = [str(arg) for arg in args]
-        path_index = next((index for index, value in enumerate(args[1:], start=1) if value.startswith("path=")), None)
-        if path_index is not None and path_index > 1:
-            args = ["|".join(args[:path_index]), *args[path_index:]]
-        if len(args) < 1 or len(args) > 4:
-            raise ToolCallArgError("requires 1 to 4 args: pattern[, path=path][, glob=pattern][, context=N]")
-        if any(str(arg).startswith("ignore_case") or str(arg).startswith("case_sensitive") for arg in args[1:]):
-            raise ToolCallArgError("Search supports only path=, glob=, and context= options; ignore_case is not supported")
-        raw_pattern = str(args[0])
+    def cli_args(cls, args: list[JsonValue]) -> list[str]:
+        payload = _json_dict(args[0]) if len(args) == 1 else {}
+        if not payload:
+            return [cls.cli_token(arg) for arg in args]
+        tokens = [cls.cli_token(payload.get("pattern", ""))]
+        if "path" in payload:
+            tokens.append("path=" + str(payload.get("path") or "."))
+        if "glob" in payload:
+            tokens.append("glob=" + str(payload.get("glob") or ""))
+        if "context" in payload:
+            tokens.append("context=" + str(payload.get("context")))
+        return tokens
+
+    @classmethod
+    def tool_schema(cls) -> Json:
+        search_arg_schema = _tool_object_schema(
+            {
+                "pattern": {"type": "string", "description": "Case-insensitive regex. Use A|B for alternatives and \\n for multiline."},
+                "path": {"type": "string", "description": "File or directory to search. Defaults to current working directory."},
+                "glob": {"type": "string", "description": "Optional single glob filter such as *.py."},
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": cls.MAX_CONTEXT_LINES,
+                    "description": "Context lines around each match; 0 returns only the matching line.",
+                },
+            },
+            ["pattern"],
+        )
+        return _function_tool_schema(
+            cls.NAME,
+            cls.schema_description(),
+            _tool_object_schema(
+                {
+                    "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
+                    "args": {
+                        "type": "array",
+                        "items": search_arg_schema,
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "description": "Exactly one structured Search request object.",
+                    },
+                },
+                ["intention", "args"],
+            ),
+        )
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise ToolCallArgError('Search args error: expected exactly one object, e.g. [{"pattern":"class Foo","path":"."}]')
+        payload = _json_dict(args[0])
+        unexpected = sorted(set(payload) - {"pattern", "path", "glob", "context"})
+        if unexpected:
+            raise ToolCallArgError("unexpected search option: " + ", ".join(unexpected))
+        raw_pattern = _json_str(payload.get("pattern")) or ""
         if not raw_pattern:
             raise ToolCallArgError("pattern cannot be empty")
         pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
         if not pattern:
             raise ToolCallArgError("pattern cannot be empty")
         pattern = pattern.replace("\\n", "\n").replace("\\r", "\r")
-        target_path_arg = "."
-        glob_pattern = ""
+        target_path_arg = _json_str(payload.get("path")) if "path" in payload else "."
+        target_path_arg = target_path_arg or "."
+        glob_pattern = _json_str(payload.get("glob")) if "glob" in payload else ""
+        glob_pattern = glob_pattern or ""
+        if "glob" in payload and not glob_pattern:
+            raise ToolCallArgError("glob option cannot be empty")
         context_lines = cls.CONTEXT_LINES
-        path_set = False
-        for raw_option in args[1:]:
-            option = str(raw_option)
-            if option.startswith("path="):
-                if path_set:
-                    raise ToolCallArgError("path option cannot be combined with positional path")
-                target_path_arg = option.split("=", 1)[1] or "."
-                path_set = True
-                continue
-            if option.startswith("context=") or option.isdigit():
-                try:
-                    raw_context = option[len("context=") :] if option.startswith("context=") else option
-                    context_lines = int(raw_context)
-                    if context_lines < 0 or context_lines > cls.MAX_CONTEXT_LINES:
-                        raise ValueError
-                except ValueError:
-                    raise ToolCallArgError(f"context must be an integer between 0 and {cls.MAX_CONTEXT_LINES}")
-                continue
-            if option.startswith("glob=") or option.startswith("glob_pattern="):
-                if glob_pattern:
-                    raise ToolCallArgError("unexpected search option: " + option)
-                option = option.split("=", 1)[1]
-                if not option:
-                    raise ToolCallArgError("glob option cannot be empty")
-                glob_pattern = option
-                continue
-            if not option:
-                if path_set:
-                    raise ToolCallArgError("unexpected search option: " + option)
-                target_path_arg = "."
-                path_set = True
-                continue
-            if path_set and not glob_pattern:
-                glob_pattern = option
-                continue
-            if path_set:
-                raise ToolCallArgError("unexpected search option: " + option)
-            target_path_arg = option
-            path_set = True
+        if "context" in payload:
+            raw_context = payload.get("context")
+            if not isinstance(raw_context, int) or isinstance(raw_context, bool) or raw_context < 0 or raw_context > cls.MAX_CONTEXT_LINES:
+                raise ToolCallArgError(f"context must be an integer between 0 and {cls.MAX_CONTEXT_LINES}")
+            context_lines = raw_context
         try:
             re.compile(pattern)
         except re.error as error:
@@ -4839,7 +5005,9 @@ class ToolCallRunner:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
         if not name:
-            raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":["path"]}.')
+            raise ToolCallArgError(
+                'tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":[{"path":"path.py"}]}.'
+            )
         name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
         return ParsedToolCall(name=name, intention=intention, args=list(_json_list(item.get("args"))))
