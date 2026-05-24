@@ -1380,20 +1380,38 @@ def test_observe_checkpoint_clears_observe_errors(tmp_path):
     assert agent.observe_feedback_errors == []
 
 
-def test_agent_tool_result_raw_budget_triggers_observe(tmp_path, monkeypatch):
+def test_projected_read_context_budget_ignores_replaced_raw_read_blocks(tmp_path, monkeypatch):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
-    _set_context_budget(monkeypatch, agent, raw_chars=180, observe_after_results=99)
+    _set_context_budget(monkeypatch, agent, raw_chars=1_000_000, observe_after_results=99)
     path = tmp_path / "sample.txt"
-    path.write_text("x" * 400 + "\n", encoding="utf-8")
+    path.write_text("x" * 2000 + "\n", encoding="utf-8")
 
-    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
+    for _ in range(4):
+        agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
+        assert agent.mode == nanocode.AgentMode.ACT
 
-    assert agent.mode == nanocode.AgentMode.OBSERVE
-    assert agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter) >= agent.context_budget().raw_chars
-    observe_context = _observe_tool_result_context(agent)
-    assert "sample.txt" in observe_context
-    assert "x" * 50 in observe_context
+    pending = agent._unreferenced_unreduced_blocks()
+    raw_chars = agent.tool_context.raw_context_chars(agent.blackboard.memory_checkpoint_tool_result_counter)
+    projected_chars = agent._projected_unreduced_context_chars(pending)
+    assert projected_chars < raw_chars
+
+    _set_context_budget(monkeypatch, agent, raw_chars=(raw_chars + projected_chars) // 2, observe_after_results=99)
+
+    assert raw_chars >= agent.context_budget().raw_chars
+    assert agent._projected_unreduced_context_chars(pending) < agent.context_budget().raw_chars
+    assert agent._should_observe_after_tools() is False
+
+
+def test_projected_raw_output_budget_triggers_observe(tmp_path, monkeypatch):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=180, observe_after_results=99)
+    agent.tool_context.latest = ['- ok tool=Bash args=["big"] key=tr.1\n  output:\n' + ("x" * 400)]
+
+    pending = agent._unreferenced_unreduced_blocks()
+
+    assert agent._projected_unreduced_context_chars(pending) >= agent.context_budget().raw_chars
+    assert agent._should_observe_after_tools() is True
 
 
 def test_referenced_raw_context_does_not_force_observe(tmp_path, monkeypatch):

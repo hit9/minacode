@@ -6271,16 +6271,21 @@ class Agent:
         if not pending:
             return False
         budget = self.context_budget()
-        # Tool failures stay visible to ACT as Latest Tool Results plus feedback.
-        # Very large failures still trigger observe through raw-context pressure.
         return (
             len(pending) >= budget.observe_after_results
-            or self.tool_context.raw_context_chars(
-                self.blackboard.memory_checkpoint_tool_result_counter,
-                exclude_keys=self.blackboard.referenced_result_keys(),
-            )
-            >= budget.raw_chars
+            or self._projected_unreduced_context_chars(pending) >= budget.raw_chars
         )
+
+    def _projected_unreduced_context_chars(self, blocks: list[str]) -> int:
+        budget = self.context_budget()
+        file_context = ToolResultContext.format_file_context(
+            blocks,
+            cwd=self.session.cwd,
+            max_chars=budget.raw_chars + budget.kept_chars,
+        )
+        tool_results = "\n\n".join(ToolResultContext.render_blocks_for_prompt(blocks))
+        tool_index = "\n".join(ToolResultContext.compact_block(block) for block in blocks)
+        return len("\n\n".join(part for part in (file_context, tool_index, tool_results) if part))
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
         return self.tool_context.unreduced_blocks(
