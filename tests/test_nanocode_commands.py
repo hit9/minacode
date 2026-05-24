@@ -34,7 +34,7 @@ def patch_openai_models(monkeypatch, models=None, error: Exception | None = None
     return seen
 
 
-def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 50) -> Session:
+def make_session(tmp_path, *, model: str = "", stream: bool | None = None, compact_at: int = 80) -> Session:
     provider: dict[str, object] = {"model": model}
     if stream is not None:
         provider["stream"] = stream
@@ -79,7 +79,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
     assert session.config.provider.first_token_timeout == 6
     assert yolo_result.message == "Set runtime.yolo = on"
     assert session.settings.yolo is True
-    assert compact_result.message == "Set runtime.compact_at = 2"
+    assert compact_result.message == "Set runtime.compact_at = 2%"
     assert session.settings.compact_at == 2
     assert context_result.message == "Set runtime.context_budget = low"
     assert session.settings.context_budget == "low"
@@ -106,7 +106,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
     assert "cache: last=400 session=400 rate=40%" in result.message
     assert "model: model api=chat(auto) reasoning=medium(off) stream=on" in result.message
     assert "session: " + session.session_id in result.message
-    assert "runtime: yolo=off compact_at=50" in result.message
+    assert "runtime: yolo=off compact_at=80%" in result.message
     assert "models:" in result.message
     assert "model: calls=2 tokens=2m cached=400" in result.message
     assert "tool_calls: turn=0 session=0" in result.message
@@ -201,7 +201,6 @@ def test_plan_runtime_config_keys_are_removed(tmp_path):
 def test_context_command_shows_and_sets_budget(tmp_path):
     session = make_session(tmp_path)
     agent = Agent(session)
-    agent.tool_context.kept_results = ['- ok tool=Read args=["large.py"] key=tr.1\n  output:\n' + ("x" * 10_000)]
     dispatcher = CommandDispatcher(agent)
 
     show_result = dispatcher.dispatch("/context")
@@ -210,10 +209,9 @@ def test_context_command_shows_and_sets_budget(tmp_path):
     invalid_result = dispatcher.dispatch("/context tiny")
 
     assert "context_budget: medium" in show_result.message
-    assert "observe_after_results: 10" in show_result.message
+    assert "prompt_chars: 160000" in show_result.message
     assert set_result.message.startswith("Set runtime.context_budget = low\ncontext_budget: low")
     assert session.settings.context_budget == "high"
-    assert len(agent.tool_context.kept_results[0]) <= agent.context_budget().kept_block_chars
     assert alias_result.message.startswith("Set runtime.context_budget = high\ncontext_budget: high")
     assert invalid_result.message == "Usage: /context [low|medium|high]"
 
@@ -491,10 +489,9 @@ def test_command_dispatcher_auto_compacts_only_when_history_exceeds_keep_recent(
 
     result = dispatcher.dispatch("/set runtime.compact_at 2")
 
-    assert result.message == "Set runtime.compact_at = 2 and compacted history"
+    assert result.message == "Set runtime.compact_at = 2%"
     assert len(session.state.conversation) == 6
-    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
-    assert session.state.conversation[1].content == "keep 1"
+    assert session.state.conversation[0].content == "old"
 
 
 def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
@@ -520,7 +517,7 @@ def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
     result = dispatcher.dispatch("/compact")
 
     assert result.status == CommandStatus.HANDLED
-    assert result.message == "Compacted conversation history: 6 item(s) -> 6 item(s)"
+    assert result.message == "Compacted context: 6 item(s)"
     assert status_calls == ["run"]
     assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
 
@@ -534,7 +531,7 @@ def test_compact_command_reports_short_history(tmp_path):
     result = dispatcher.dispatch("/compact")
 
     assert result.status == CommandStatus.HANDLED
-    assert result.message == "Nothing to compact: 2 item(s), keeping recent 5."
+    assert result.message == "Nothing to compact: conversation=2 item(s), raw_results=0."
     assert len(session.state.conversation) == 2
 
 
@@ -555,9 +552,9 @@ def test_command_dispatcher_auto_compact_uses_status_runner(tmp_path):
 
     result = dispatcher.dispatch("/set runtime.compact_at 2")
 
-    assert result.message == "Set runtime.compact_at = 2 and compacted history"
-    assert status_calls == ["run"]
-    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
+    assert result.message == "Set runtime.compact_at = 2%"
+    assert status_calls == []
+    assert session.state.conversation[0].content == "old"
 
 
 def test_command_dispatcher_reports_unhandled_input(tmp_path):

@@ -6,7 +6,7 @@ import nanocode
 from nanocode import AgentLoop, CommandLexer, Config, ConfigFile, Blackboard, ParsedToolCall, RuntimeSettings, Session, StatusBar, ToolCallDisplayFormatter
 
 
-def make_session(tmp_path, *, model: str = "", compact_at: int = 50, yolo: bool = False) -> Session:
+def make_session(tmp_path, *, model: str = "", compact_at: int = 80, yolo: bool = False) -> Session:
     data = {
         "provider": {"active": "default", "default": {"model": model}},
         "paths": {"data_dir": str(tmp_path / ".nanocode")},
@@ -87,7 +87,7 @@ def test_init_config_file_writes_default_toml(tmp_path):
     assert "chat_reasoning" not in config["provider"]["default"]
     assert config["provider"]["default"]["timeout"] == 180
     assert config["provider"]["default"]["first_token_timeout"] == 90
-    assert config["runtime"]["compact_at"] == 50
+    assert config["runtime"]["compact_at"] == 80
     assert config["runtime"]["context_budget"] == "medium"
     assert config["runtime"]["auto_clean_recent"] == "1d"
     assert config["runtime"]["yolo"] is False
@@ -168,14 +168,14 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
 
     assert ">" not in text
     assert "model (medium)" in text
-    assert "ctx:0/9" in text
+    assert "ctx:0%" in text
     assert "tool:3" in text
     assert "tok:last:42 sess:1k" in text
     assert "turn:1.2s" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = _status_text(bar)
-    assert snapshot == "model (medium) | ctx:0/9 | tool:3 | tok:last:42 sess:1k"
+    assert snapshot == "model (medium) | ctx:0% | tool:3 | tok:last:42 sess:1k"
     assert ">" not in snapshot
 
 
@@ -199,9 +199,6 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     assert "10t/s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
     session.state.current_model_call_has_content = False
 
-    session.state.current_model_call_activity = "observe"
-    assert "observing(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
-
     session.state.current_model_call_activity = "compact"
     assert "compacting(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
@@ -210,7 +207,7 @@ def test_status_bar_shows_active_modes(tmp_path):
     session = make_session(tmp_path, model="provider/model", yolo=True)
     bar = StatusBar(session)
 
-    assert _status_text(bar) == "model (medium) | yolo | ctx:0/50 | tool:0 | tok:last:- sess:-"
+    assert _status_text(bar) == "model (medium) | yolo | ctx:0% | tool:0 | tok:last:- sess:-"
 
 
 def test_status_bar_shows_recent_status_notice(tmp_path):
@@ -997,5 +994,5 @@ def test_agent_loop_uses_prompt_toolkit_session(tmp_path):
     assert kwargs["refresh_interval"] == StatusBar.INTERVAL
     assert callable(kwargs["bottom_toolbar"])
     assert "".join(text for _, text in kwargs["bottom_toolbar"]()) == (
-        "model (medium) | ctx:0/50 | tool:0 | tok:last:- sess:-"
+        "model (medium) | ctx:0% | tool:0 | tok:last:- sess:-"
     )
