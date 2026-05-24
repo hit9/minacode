@@ -1345,6 +1345,7 @@ class FileContextItem:
 @dataclass
 class ToolResultContext:
     COMPACT_OUTPUT_SUMMARY_CHARS: ClassVar[int] = 120
+    DISCOVERY_CONTEXT_BLOCK_CHARS: ClassVar[int] = 4_000
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
     kept_results: list[str] = field(default_factory=list)
@@ -1532,6 +1533,11 @@ class ToolResultContext:
 
     @classmethod
     def render_block_for_prompt(cls, block: str) -> str:
+        if cls._is_discovery_result_block(block):
+            compact = cls.compact_block(block)
+            if "\n  out: " in compact:
+                return compact + "; content=discovery_context"
+            return compact
         if not cls._is_file_context_result_block(block):
             return block
         compact = cls.compact_file_context_block(block)
@@ -1620,6 +1626,33 @@ class ToolResultContext:
                     lines.append("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]))
             lines.append("")
 
+        rendered = "\n".join(lines).rstrip()
+        return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
+
+    @classmethod
+    def format_discovery_context(cls, blocks: list[str], *, max_chars: int) -> str:
+        lines = [
+            "Source Policy:",
+            "- Built dynamically for this prompt from active Search and InspectCode results.",
+            "- Treat these as discovery leads, not current source truth.",
+            "- Use Read before editing exact code.",
+            "",
+        ]
+        seen: set[str] = set()
+        for block in blocks:
+            if not cls._is_discovery_result_block(block):
+                continue
+            key = cls.result_key(block)
+            if key and key in seen:
+                continue
+            seen.add(key)
+            header, output = block.split("\n  output:\n", 1)
+            tool_name = cls._block_tool_name(header)
+            block_budget = min(cls.DISCOVERY_CONTEXT_BLOCK_CHARS, max_chars) if max_chars > 0 else cls.DISCOVERY_CONTEXT_BLOCK_CHARS
+            excerpt = _bound_tool_output(output, max_chars=block_budget).value
+            lines.extend(["Source: " + (key or "(unknown)") + " tool=" + tool_name, excerpt.strip(), ""])
+        if len(lines) <= 5:
+            return ""
         rendered = "\n".join(lines).rstrip()
         return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
 
@@ -1749,6 +1782,21 @@ class ToolResultContext:
             (re.search(r"\btool=Read\b", header) and "<ReadToolResult>" in output)
             or (re.search(r"\btool=Edit\b", header) and "<EditToolResult>" in output and ("<content hashline-numbered>" in output or "<invalidate>" in output))
         )
+
+    @classmethod
+    def _is_discovery_result_block(cls, block: str) -> bool:
+        if not cls.is_full_block(block):
+            return False
+        header, output = block.split("\n  output:\n", 1)
+        return bool(
+            (re.search(r"\btool=Search\b", header) and "<SearchToolResult>" in output)
+            or (re.search(r"\btool=InspectCode\b", header) and "<InspectCodeToolResult>" in output)
+        )
+
+    @staticmethod
+    def _block_tool_name(header: str) -> str:
+        match = re.search(r"\btool=([A-Za-z][A-Za-z0-9_]*)\b", header)
+        return match.group(1) if match else "unknown"
 
     @classmethod
     def recalled_result_blocks(cls, recall_block: str) -> list[str]:
@@ -3988,6 +4036,9 @@ Recent Edits:
 Tool Result Index:
 {tool_result_index}
 
+Discovery Context:
+{discovery_context}
+
 File Context:
 {file_context}
 
@@ -4042,6 +4093,9 @@ Facts:
 {known}
 
 --- Tool Context ---
+
+Discovery Context:
+{discovery_context}
 
 File Context:
 {file_context}
@@ -5709,10 +5763,16 @@ class Agent:
         self.tool_context.prune_recent(max_index_items=budget.index_items, checkpoint=checkpoint)
 
     def build_user_prompt(self) -> str:
+        self._refresh_agent_feedback()
         tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
         budget = self.context_budget()
+        context_blocks = self._act_file_context_blocks()
+        discovery_context = ToolResultContext.format_discovery_context(
+            context_blocks,
+            max_chars=max(1, budget.raw_chars // 3),
+        )
         file_context = ToolResultContext.format_file_context(
-            self._act_file_context_blocks(),
+            context_blocks,
             cwd=self.session.cwd,
             max_chars=budget.raw_chars + budget.kept_chars,
         )
@@ -5723,6 +5783,7 @@ class Agent:
             user_rules=self.session.state.user_rules.format(),
             kept_tool_results="\n\n".join(ToolResultContext.render_blocks_for_prompt(self.tool_context.kept_results)) or "(empty)",
             tool_result_index=tool_result_index or "(empty)",
+            discovery_context=discovery_context or "(empty)",
             file_context=file_context or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
@@ -5786,6 +5847,10 @@ class Agent:
             cwd=self.session.cwd,
             max_chars=budget.raw_chars + budget.kept_chars,
         )
+        discovery_context = ToolResultContext.format_discovery_context(
+            self.tool_context.kept_results + unreduced_blocks,
+            max_chars=max(1, budget.raw_chars // 3),
+        )
         unreduced = "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced_blocks))
         return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
             user_rules=self.session.state.user_rules.format(),
@@ -5793,6 +5858,7 @@ class Agent:
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
             leads="\n".join(item.format() for item in current.leads) if current.leads else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
+            discovery_context=discovery_context or "(empty)",
             file_context=file_context or "(empty)",
             kept_tool_results="\n\n".join(ToolResultContext.render_blocks_for_prompt(self.tool_context.kept_results)) or "(empty)",
             errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
@@ -6007,6 +6073,31 @@ class Agent:
 
     def _remember_observe_error(self, text: str) -> None:
         self._remember_feedback_error(self.observe_feedback_errors, text)
+
+    def _drop_agent_feedback(self, *markers: str) -> None:
+        lowered = tuple(marker.lower() for marker in markers if marker)
+        if not lowered:
+            return
+        self.agent_feedback_errors = [
+            error for error in self.agent_feedback_errors if not any(marker in error.lower() for marker in lowered)
+        ]
+
+    def _refresh_agent_feedback(self) -> None:
+        markers = []
+        if not self.task_alignment_required or self.blackboard.task_code != TaskCode.NEW:
+            markers.append("previous task context is still present")
+        if self.blackboard.plan:
+            markers.extend(
+                [
+                    "plan is empty after discovery",
+                    "rewrote goal after the task was active",
+                    "changed goal without replacing plan",
+                    "mutating work before plan was set",
+                ]
+            )
+        if self.blackboard.goal:
+            markers.append("mutating work before goal/plan was set")
+        self._drop_agent_feedback(*markers)
 
     def _error(self, text: str, rule: str = "") -> str:
         return "Error blocked: " + text + ((" Next: " + rule) if rule else "")
@@ -6283,9 +6374,13 @@ class Agent:
             cwd=self.session.cwd,
             max_chars=budget.raw_chars + budget.kept_chars,
         )
+        discovery_context = ToolResultContext.format_discovery_context(
+            blocks,
+            max_chars=max(1, budget.raw_chars // 3),
+        )
         tool_results = "\n\n".join(ToolResultContext.render_blocks_for_prompt(blocks))
         tool_index = "\n".join(ToolResultContext.compact_block(block) for block in blocks)
-        return len("\n\n".join(part for part in (file_context, tool_index, tool_results) if part))
+        return len("\n\n".join(part for part in (discovery_context, file_context, tool_index, tool_results) if part))
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
         return self.tool_context.unreduced_blocks(
@@ -6744,6 +6839,8 @@ class Agent:
             and not ctx.tool_calls
             and not ctx.pending_check_requested
             and not ctx.completion_message
+            and not ctx.has_goal_action
+            and not ctx.has_fresh_plan_action
             and ctx.user_rule_message is None
         ):
             self._warn_agent("state update-only turn; include frontier tool, verify, or goal when arguments are known.")
@@ -7010,7 +7107,7 @@ class Agent:
         # Keep previous task state at a new user turn so short follow-ups like
         # "continue" can resume. The first response must align with it before work
         # when the new request does not match the previous goal.
-        self.task_alignment_required = old_task_context and self._task_text_key(user_input) != self._task_text_key(old_goal)
+        self.task_alignment_required = old_task_context and not previous_task_done and self._task_text_key(user_input) != self._task_text_key(old_goal)
         self.blackboard.task_code = TaskCode.NEW
         self.blackboard.goal_reached = False
         self.blackboard.checks_required = False
@@ -7072,6 +7169,7 @@ class Agent:
             DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
             self._emit_state_and_text(ctx, on_message)
             self._emit_tool_context_update([], forgotten_keys, on_message)
+            self._refresh_agent_feedback()
             if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_check_requested:
                 message = ctx.user_rule_message or "Rule saved."
                 self.session.append_conversation(AssistantMessage(content=message))

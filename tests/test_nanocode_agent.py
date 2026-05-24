@@ -980,6 +980,56 @@ def test_act_prompt_includes_kept_tool_results(tmp_path):
     assert len(agent.tool_context.kept_results) == 1
 
 
+def test_act_prompt_projects_search_results_to_discovery_context(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text("class StatusBar:\n    def elapsed(self):\n        return 1\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Search", "intention": "find status", "args": _search_args("StatusBar", path="sample.py", context=1)}])
+
+    prompt = agent.build_user_prompt()
+    discovery = _prompt_section(prompt, "Discovery Context", "File Context")
+    latest = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert "Source: tr.1 tool=Search" in discovery
+    assert "sample.py" in discovery
+    assert "StatusBar" in discovery
+    assert "<SearchToolResult>" not in latest
+    assert "content=discovery_context" in latest
+
+
+def test_discovery_context_follows_active_result_lifecycle(tmp_path, monkeypatch):
+    sample = tmp_path / "sample.py"
+    sample.write_text("class StatusBar:\n    pass\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, observe_after_results=1)
+
+    agent.execute_tool_calls([{"name": "Search", "intention": "find status", "args": _search_args("StatusBar", path="sample.py")}])
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert "Source: tr.1 tool=Search" in _prompt_section(agent.build_observe_prompt(), "Discovery Context", "File Context")
+
+    agent.handle_response({"actions": [{"type": "keep", "source": ["tr.1"], "reason": "status symbol location is still useful"}]})
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert "Source: tr.1 tool=Search" in _prompt_section(agent.build_user_prompt(), "Discovery Context", "File Context")
+
+    agent.handle_response({"actions": [{"type": "forget", "source": ["tr.1"], "reason": "location no longer needed"}]})
+    assert "Discovery Context:\n(empty)" in agent.build_user_prompt()
+
+
+def test_observed_discovery_result_compacts_out_of_discovery_context(tmp_path, monkeypatch):
+    sample = tmp_path / "sample.py"
+    sample.write_text("class StatusBar:\n    pass\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, observe_after_results=1)
+
+    agent.execute_tool_calls([{"name": "Search", "intention": "find status", "args": _search_args("StatusBar", path="sample.py")}])
+    agent.handle_response({"actions": []})
+
+    prompt = agent.build_user_prompt()
+    assert "Discovery Context:\n(empty)" in prompt
+    assert "content=discovery_context" not in prompt
+    assert "recall=tr.1" in prompt
+
+
 def test_kept_tool_results_deduplicate_by_tool_key(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
@@ -3851,7 +3901,29 @@ def test_agent_run_requires_task_alignment_before_work_with_old_context(tmp_path
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert agent.blackboard.goal == "run lint"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
-    assert "previous task context is still present" in " ".join(agent.agent_feedback_errors)
+    assert "previous task context is still present" not in " ".join(agent.agent_feedback_errors)
+
+
+def test_agent_run_does_not_require_alignment_after_completed_task(tmp_path):
+    class FakeModelClient:
+        def __init__(self):
+            self.user_prompts = []
+
+        def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
+            self.user_prompts.append(user_prompt)
+            return {"actions": [], "_assistant_text": "ok"}
+
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "old task"
+    agent.blackboard.plan = [nanocode.PlanItem(id="p1", text="Old task", status=nanocode.PlanStatus.DONE, context="done")]
+    agent.blackboard.task_code = nanocode.TaskCode.DONE
+    agent.model_client = FakeModelClient()
+
+    agent.run("new task")
+
+    assert agent.task_alignment_required is False
+    assert "previous task context is still present" not in "\n".join(agent.model_client.user_prompts)
+    assert "previous task context is still present" not in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_run_warns_on_goal_rewrite_after_task_is_working(tmp_path):
@@ -3872,7 +3944,6 @@ def test_agent_run_warns_on_goal_rewrite_after_task_is_working(tmp_path):
                 },
                 {"actions": [{"type": "goal", "text": "read sample again", "complete": False}]},
                 {"actions": [{"type": "tool", "name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}]},
-                {"actions": [{"type": "keep", "source": ["tr.1"], "reason": "keep useful result"}]},
                 {
                     "actions": [
                         {"type": "plan", "items": [{"id": "p1", "text": "Read sample", "status": "done", "context": "read sample.txt"}]},
@@ -3893,7 +3964,7 @@ def test_agent_run_warns_on_goal_rewrite_after_task_is_working(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert [item.text for item in agent.blackboard.plan] == ["Read sample"]
     assert len(agent.tool_runner.latest_executions) == 1
-    assert "rewrote Goal after the task was active" in " ".join(agent.agent_feedback_errors)
+    assert "rewrote Goal after the task was active" not in " ".join(agent.agent_feedback_errors)
 
 
 def test_agent_allows_plan_with_multiple_doing_items(tmp_path):
@@ -4041,6 +4112,33 @@ def test_agent_warns_when_discovery_runs_long_without_plan(tmp_path, monkeypatch
     agent.handle_response({"actions": [{"type": "tool", "name": "List", "intention": "inspect root again", "args": ["."]}]})
 
     assert any("Plan is empty after discovery" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_clears_stale_task_feedback_after_fresh_goal_and_plan(tmp_path):
+    agent = Agent(Session(cwd=str(tmp_path)))
+    agent.blackboard.goal = "old task"
+    agent.blackboard.task_code = nanocode.TaskCode.WORKING
+    agent.task_alignment_required = True
+    agent.agent_feedback_errors = [
+        "Warning blocked: previous task context is still present. Next: emit goal for a new task.",
+        "Warning blocked: rewrote Goal after the task was active. Next: replace Plan when the task scope changes.",
+        "Warning blocked: Plan is empty after discovery. Next: set a short Plan before more broad exploration.",
+    ]
+
+    agent.handle_response(
+        {
+            "actions": [
+                {"type": "goal", "text": "new task", "complete": False},
+                {"type": "plan", "items": [{"id": "p1", "text": "Inspect target", "status": "doing"}]},
+            ]
+        }
+    )
+
+    feedback = " ".join(agent.agent_feedback_errors)
+    assert "previous task context is still present" not in feedback
+    assert "rewrote Goal after the task was active" not in feedback
+    assert "Plan is empty after discovery" not in feedback
+    assert "state update-only turn" not in feedback
 
 
 def test_agent_run_reports_continuation_only_when_no_actions(tmp_path):
