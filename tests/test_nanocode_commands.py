@@ -209,7 +209,7 @@ def test_context_command_shows_and_sets_budget(tmp_path):
     invalid_result = dispatcher.dispatch("/context tiny")
 
     assert "context_budget: medium" in show_result.message
-    assert "prompt_chars: 160000" in show_result.message
+    assert "prompt_tokens: 128000" in show_result.message
     assert set_result.message.startswith("Set runtime.context_budget = low\ncontext_budget: low")
     assert session.settings.context_budget == "high"
     assert alias_result.message.startswith("Set runtime.context_budget = high\ncontext_budget: high")

@@ -171,7 +171,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert "ctx:0%" in text
     assert "tool:3" in text
     assert "tok:last:42 sess:1k" in text
-    assert "turn:1.2s" in text
+    assert "turn:1s" in text
     assert all(style.startswith("#") for style, _ in fragments)
     assert len({style for style, _ in fragments}) > 3
     snapshot = _status_text(bar)
@@ -179,7 +179,7 @@ def test_status_bar_text_has_visible_sweep_marker(tmp_path):
     assert ">" not in snapshot
 
 
-def test_status_bar_shows_current_model_call_number(tmp_path):
+def test_status_bar_hides_current_model_call_timer(tmp_path):
     session = make_session(tmp_path, model="provider/model")
     session.state.turn_model_calls = 2
     session.state.current_model_call_started_at = 0.4
@@ -191,16 +191,18 @@ def test_status_bar_shows_current_model_call_number(tmp_path):
     text = "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
     assert "active-model (low)" in text
-    assert "working(2):0.6s" in text
+    assert "working(" not in text
 
     session.state.current_model_call_has_content = True
     session.state.current_model_call_streaming_chars = 24
-    assert "working*(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
-    assert "10t/s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+    streamed = "".join(text for _, text in bar._fragments(74.2, now=1.0, show_sweep=True, show_elapsed=True))
+    assert "working" not in streamed
+    assert "10t/s" in streamed
+    assert "turn:1m14s" in streamed
     session.state.current_model_call_has_content = False
 
     session.state.current_model_call_activity = "compact"
-    assert "compacting(2):0.6s" in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
+    assert "compacting(" not in "".join(text for _, text in bar._fragments(0.0, now=1.0, show_sweep=True, show_elapsed=True))
 
 
 def test_status_bar_shows_active_modes(tmp_path):

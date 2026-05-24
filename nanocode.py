@@ -596,14 +596,14 @@ class ContextBudget:
     kept_chars: int
     kept_block_chars: int
     index_items: int
-    prompt_chars: int
+    prompt_tokens: int
     planless_discovery_tool_calls: int
 
 
 CONTEXT_BUDGETS: dict[str, ContextBudget] = {
-    "low": ContextBudget(36_000, 16_000, 4_000, 20, 80_000, 6),
-    "medium": ContextBudget(72_000, 32_000, 6_000, 30, 160_000, 8),
-    "high": ContextBudget(120_000, 64_000, 8_000, 60, 240_000, 12),
+    "low": ContextBudget(36_000, 16_000, 4_000, 20, 64_000, 6),
+    "medium": ContextBudget(72_000, 32_000, 6_000, 30, 128_000, 8),
+    "high": ContextBudget(120_000, 64_000, 8_000, 60, 256_000, 12),
 }
 
 
@@ -846,7 +846,7 @@ class AgentRunResult:
 @dataclass
 class RuntimeState:
     debug_prompt_count: int = 0
-    last_context_chars: int = 0
+    last_context_tokens: int = 0
     last_context_percent: int = 0
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
@@ -4873,6 +4873,10 @@ class ModelClient:
         if completion_tokens > 0 and elapsed > 0:
             self.session.state.last_model_call_rate = completion_tokens / elapsed
         self.session.state.last_prompt_tokens = prompt_tokens
+        if prompt_tokens > 0:
+            budget = CONTEXT_BUDGETS[self.session.settings.context_budget]
+            self.session.state.last_context_tokens = prompt_tokens
+            self.session.state.last_context_percent = _ceil_percent(prompt_tokens, budget.prompt_tokens)
         self.session.state.last_completion_tokens = completion_tokens
         self.session.state.last_total_tokens = total_tokens
         self.session.state.last_cached_prompt_tokens = cached_prompt_tokens
@@ -5810,20 +5814,17 @@ class Agent:
         self.apply_context_budget()
         return compacted_conversation + len(observed_blocks)
 
-    def _prompt_context_chars(self, system_prompt: str, user_prompt: str, tool_schemas: list[Json]) -> int:
+    def _prompt_context_tokens(self, system_prompt: str, user_prompt: str, tool_schemas: list[Json]) -> int:
         schema_chars = len(json.dumps(tool_schemas, ensure_ascii=False, sort_keys=True, separators=(",", ":"))) if tool_schemas else 0
-        return len(system_prompt) + len(user_prompt) + schema_chars
+        return _estimate_prompt_tokens(len(system_prompt) + len(user_prompt) + schema_chars)
 
-    def _context_percent(self, chars: int) -> int:
-        budget_chars = max(1, self.context_budget().prompt_chars)
-        if chars <= 0:
-            return 0
-        return max(1, (chars * 100 + budget_chars - 1) // budget_chars)
+    def _context_percent(self, tokens: int) -> int:
+        return _ceil_percent(tokens, self.context_budget().prompt_tokens)
 
     def _record_context_size(self, system_prompt: str, user_prompt: str, tool_schemas: list[Json]) -> int:
-        chars = self._prompt_context_chars(system_prompt, user_prompt, tool_schemas)
-        percent = self._context_percent(chars)
-        self.session.state.last_context_chars = chars
+        tokens = self._prompt_context_tokens(system_prompt, user_prompt, tool_schemas)
+        percent = self._context_percent(tokens)
+        self.session.state.last_context_tokens = tokens
         self.session.state.last_context_percent = percent
         return percent
 
@@ -7250,7 +7251,7 @@ class CommandDispatcher:
             + "%"
             + " context_budget="
             + session.settings.context_budget,
-            "context: " + str(session.state.last_context_percent) + "% (" + str(session.state.last_context_chars) + " chars)",
+            "context: " + str(session.state.last_context_percent) + "% (" + str(session.state.last_context_tokens) + " tokens)",
             "conversation: " + str(len(session.state.conversation)) + " item(s)",
             "tool_calls: turn=" + str(session.state.turn_tool_calls) + " session=" + str(session.state.session_tool_calls),
             "tools: code_index=" + code_index,
@@ -7316,7 +7317,7 @@ class CommandDispatcher:
                 "kept_chars: " + str(budget.kept_chars),
                 "kept_block_chars: " + str(budget.kept_block_chars),
                 "index_items: " + str(budget.index_items),
-                "prompt_chars: " + str(budget.prompt_chars),
+                "prompt_tokens: " + str(budget.prompt_tokens),
             ]
         )
 
@@ -7468,6 +7469,22 @@ def _format_count(value: int) -> str:
     return str(value)
 
 
+def _estimate_prompt_tokens(chars: int) -> int:
+    return 0 if chars <= 0 else (chars + 3) // 4
+
+
+def _ceil_percent(value: int, total: int) -> int:
+    if value <= 0 or total <= 0:
+        return 0
+    return max(1, (value * 100 + total - 1) // total)
+
+
+def _format_duration(value: float) -> str:
+    seconds = max(0, int(value))
+    minutes, seconds = divmod(seconds, 60)
+    return (str(minutes) + "m" if minutes else "") + str(seconds) + "s"
+
+
 def _format_percent(value: int, total: int) -> str:
     return "-" if value <= 0 or total <= 0 else str(round(value * 100 / total)) + "%"
 
@@ -7561,15 +7578,11 @@ class StatusBar:
         if session.state.status_notice and session.state.status_notice_until > now:
             parts.insert(1, session.state.status_notice)
         if show_elapsed:
-            parts.append(f"turn:{turn_elapsed:.1f}s")
+            parts.append("turn:" + _format_duration(turn_elapsed))
         if session.state.current_model_call_started_at > 0:
-            activity = {"compact": "compacting"}.get(session.state.current_model_call_activity, "working")
-            if session.state.current_model_call_has_content:
-                activity += "*"
             elapsed = max(0.0, now - session.state.current_model_call_started_at)
             if session.state.current_model_call_has_content and elapsed > 0:
                 rate = session.state.current_model_call_streaming_chars / 4 / elapsed
-            parts.append(activity + "(" + str(session.state.turn_model_calls) + "):" + f"{elapsed:.1f}s")
         if rate > 0:
             parts[3] += " " + _format_count(int(rate)) + "t/s"
         return " | ".join(parts)
