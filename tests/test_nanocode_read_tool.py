@@ -21,6 +21,10 @@ def _read_files(*files: dict[str, object]):
     return [{"files": list(files)}]
 
 
+def _target_paths(tool: ReadTool) -> list[str]:
+    return [path for path, _ranges in tool.targets]
+
+
 def test_read_tool_reads_requested_line_range(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
@@ -62,7 +66,7 @@ def test_read_tool_reads_multiple_structured_line_ranges(tmp_path):
     tool = ReadTool.make(session, _read("sample.txt", ranges=[[1, 2], [3, 5]]))
     result = tool.call()
 
-    assert tool.ranges == [(1, 2), (3, 5)]
+    assert tool.targets[0][1] == [(1, 2), (3, 5)]
     assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
@@ -80,7 +84,7 @@ def test_read_tool_reads_multiple_files(tmp_path):
     tool = ReadTool.make(session, _read_files({"path": "pyproject.toml"}, {"path": "uv.lock"}))
     result = tool.call()
 
-    assert tool.filepaths == [str(tmp_path / "pyproject.toml"), str(tmp_path / "uv.lock")]
+    assert _target_paths(tool) == [str(tmp_path / "pyproject.toml"), str(tmp_path / "uv.lock")]
     assert tool.requires_confirmation(session) is False
     assert "pyproject.toml, " in tool.preview()
     assert "<file_count>2</file_count>" in result
@@ -98,7 +102,7 @@ def test_read_tool_reads_multiple_files_with_independent_ranges(tmp_path):
     tool = ReadTool.make(session, _read_files({"path": "one.txt", "range": [1, 2]}, {"path": "two.txt", "range": [1, 3]}))
     result = tool.call()
 
-    assert tool.filepaths == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt")]
+    assert _target_paths(tool) == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt")]
     assert "<path>one.txt</path>" in result
     assert "<path>two.txt</path>" in result
     assert _hashline(1, "one\n") in result
@@ -115,7 +119,7 @@ def test_read_tool_reads_structured_ranges(tmp_path):
     tool = ReadTool.make(session, _read("sample.txt", ranges=[[1, 2], [3, 5]]))
     result = tool.call()
 
-    assert tool.ranges == [(1, 2), (3, 5)]
+    assert tool.targets[0][1] == [(1, 2), (3, 5)]
     assert "1:2, 3:5" in tool.preview()
     assert "<range>1:2</range>" in result
     assert "<range>3:5</range>" in result
@@ -144,8 +148,7 @@ def test_read_tool_allows_omitted_range_for_full_file_read(tmp_path):
     tool = ReadTool.make(session, _read("sample.txt"))
     result = tool.call()
 
-    assert tool.start == 0
-    assert tool.end == 0
+    assert tool.targets[0][1] == [(0, 0)]
     assert "<range>0:0</range>" in result
     assert _hashline(0, "alpha\n") + _hashline(1, "beta\n") in result
 
@@ -159,7 +162,7 @@ def test_read_tool_reads_range_token_when_numeric_filenames_exist(tmp_path):
     tool = ReadTool.make(session, _read("sample.txt", line_range=[1, 3]))
     result = tool.call()
 
-    assert tool.ranges == [(1, 3)]
+    assert tool.targets[0][1] == [(1, 3)]
     assert "<range>1:3</range>" in result
     assert _hashline(1, "one\n") + _hashline(2, "two\n") in result
     assert "numeric filename" not in result

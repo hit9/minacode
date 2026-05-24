@@ -1541,8 +1541,6 @@ class ToolResultContext:
             source = cls.result_key(block)
             if source and cls._is_read_result_block(block):
                 entries.extend((cls.result_counter(block), source, path, number, line) for path, number, line in cls._read_block_file_lines(block))
-                continue
-            entries.extend(cls._recall_block_file_entries(block))
         return entries
 
     @staticmethod
@@ -1580,11 +1578,12 @@ class ToolResultContext:
         for path, section in cls._read_output_file_sections(output, default_path=default_path):
             if not path:
                 continue
-            for content in cls._read_output_content_sections(section):
+            for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", section):
+                content = match.group(1)
                 for line in content.splitlines():
-                    match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
-                    if match:
-                        file_lines.append((path, int(match.group(1)), line))
+                    line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
+                    if line_match:
+                        file_lines.append((path, int(line_match.group(1)), line))
         return file_lines
 
     @classmethod
@@ -1593,20 +1592,6 @@ class ToolResultContext:
             return False
         header, output = block.split("\n  output:\n", 1)
         return bool(re.search(r"\btool=Read\b", header) and "<ReadToolResult>" in output)
-
-    @classmethod
-    def _recall_block_file_entries(cls, block: str) -> list[tuple[int, str, str, int, str]]:
-        if not cls.is_full_block(block):
-            return []
-        header, output = block.split("\n  output:\n", 1)
-        if not re.search(r"\btool=Recall\b", header) or "RecallToolResult:" not in output:
-            return []
-        entries: list[tuple[int, str, str, int, str]] = []
-        for source, description, content in cls._recall_output_items(output):
-            default_path = cls._read_description_default_path(description)
-            order = cls._result_key_counter(source)
-            entries.extend((order, source, path, number, line) for path, number, line in cls._read_output_file_lines(content, default_path=default_path))
-        return entries
 
     @classmethod
     def recalled_result_blocks(cls, recall_block: str) -> list[str]:
@@ -1650,17 +1635,6 @@ class ToolResultContext:
                 yield source, (description_match.group(1) if description_match else ""), content_match.group(1)
 
     @staticmethod
-    def _read_description_default_path(description: str) -> str:
-        match = re.match(r"(?:success|failure) Read\s+(.+?)(?:\s+-\s+.*)?$", description)
-        if match is None:
-            return ""
-        try:
-            tokens = shlex.split(match.group(1))
-        except ValueError:
-            return ""
-        return tokens[0] if tokens else ""
-
-    @staticmethod
     def _read_block_default_path(header: str) -> str:
         marker = " args="
         start = header.find(marker)
@@ -1692,11 +1666,6 @@ class ToolResultContext:
             section = match.group(1)
             path_match = re.search(r"<path>(.*?)</path>", section)
             yield (path_match.group(1).strip() if path_match else default_path), section
-
-    @staticmethod
-    def _read_output_content_sections(text: str) -> Iterator[str]:
-        for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", text):
-            yield match.group(1)
 
     @classmethod
     def bound_block(cls, block: str, *, max_chars: int) -> str:
@@ -1901,11 +1870,6 @@ class ReadTool(Tool):
         'Example args: [{"files":[{"path":"pyproject.toml"},{"path":"uv.lock","range":[0,120]}]}]',
     )
 
-    filepath: str = ""
-    start: int = 0
-    end: int = 0
-    ranges: list[tuple[int, int]] = field(default_factory=list)
-    filepaths: list[str] = field(default_factory=list)
     targets: list[tuple[str, list[tuple[int, int]]]] = field(default_factory=list)
     cwd: str = ""
 
@@ -1921,26 +1885,18 @@ class ReadTool(Tool):
             path = _json_str(spec.get("path")) or ""
             if not path:
                 continue
-            ranges = cls._cli_range_tokens(spec)
+            raw_ranges = [spec.get("range")] if "range" in spec else _json_list(spec.get("ranges")) if "ranges" in spec else []
+            ranges = []
+            for raw_range in raw_ranges:
+                values = _json_list(raw_range)
+                if len(values) == 2:
+                    ranges.append(str(values[0]) + ":" + str(values[1]))
             if not ranges:
                 tokens.append(path)
                 continue
             tokens.append(path)
             tokens.extend(ranges)
         return tokens or [cls.cli_token(args[0])]
-
-    @staticmethod
-    def _cli_range_tokens(spec: Json) -> list[str]:
-        if "range" in spec:
-            raw_ranges = [spec.get("range")]
-        else:
-            raw_ranges = _json_list(spec.get("ranges")) if "ranges" in spec else []
-        tokens = []
-        for raw_range in raw_ranges:
-            values = _json_list(raw_range)
-            if len(values) == 2:
-                tokens.append(str(values[0]) + ":" + str(values[1]))
-        return tokens
 
     @classmethod
     def tool_schema(cls) -> Json:
@@ -1993,18 +1949,7 @@ class ReadTool(Tool):
         if len(args) != 1 or not isinstance(args[0], dict):
             raise ToolCallArgError('Read args error: expected exactly one object, e.g. [{"path":"nanocode.py","range":[2065,2095]}]')
         payload = _json_dict(args[0])
-        targets = cls._parse_targets(session, payload)
-        filepath, ranges = targets[0]
-        start, end = ranges[0]
-        return cls(
-            filepath=filepath,
-            start=start,
-            end=end,
-            ranges=ranges,
-            filepaths=[path for path, _ranges in targets],
-            targets=targets,
-            cwd=session.cwd,
-        )
+        return cls(targets=cls._parse_targets(session, payload), cwd=session.cwd)
 
     @classmethod
     def _parse_targets(cls, session: Session, payload: Json) -> list[tuple[str, list[tuple[int, int]]]]:
@@ -2046,23 +1991,17 @@ class ReadTool(Tool):
             ranges = [(0, 0)]
         return session.resolve_path(path), ranges
 
-    def _targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
-        if self.targets:
-            return self.targets
-        return [(self.filepath, self.ranges or [(self.start, self.end)])]
-
     def requires_confirmation(self, session: Session) -> bool:
-        return any(not session.is_path_in_cwd(filepath) for filepath, _ranges in self._targets())
+        return any(not session.is_path_in_cwd(filepath) for filepath, _ranges in self.targets)
 
     def preview(self) -> str:
-        targets = self._targets()
-        if len(targets) > 1:
+        if len(self.targets) > 1:
             chunks = []
-            for filepath, ranges in targets:
+            for filepath, ranges in self.targets:
                 range_text = ",".join(str(start) + ":" + str(end) for start, end in ranges)
                 chunks.append(filepath + (":" + range_text if range_text != "0:0" else ""))
             return "Read(" + ", ".join(chunks) + ")"
-        filepath, ranges = targets[0]
+        filepath, ranges = self.targets[0]
         if len(ranges) > 1:
             range_text = ", ".join(str(start) + ":" + str(end) for start, end in ranges)
             return f"Read({filepath}, {range_text})"
@@ -2070,14 +2009,13 @@ class ReadTool(Tool):
         return f"Read({filepath}, {start}, {end})"
 
     def call(self) -> str:
-        targets = self._targets()
-        if len(targets) > 1:
+        if len(self.targets) > 1:
             lines = [
                 "<ReadToolResult>",
                 '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
-                "  <file_count>" + str(len(targets)) + "</file_count>",
+                "  <file_count>" + str(len(self.targets)) + "</file_count>",
             ]
-            for filepath, ranges in targets:
+            for filepath, ranges in self.targets:
                 lines.extend(["  <ReadFile>", "    <path>" + os.path.relpath(filepath, self.cwd) + "</path>"])
                 if len(ranges) > 1:
                     lines.append("    <range_count>" + str(len(ranges)) + "</range_count>")
@@ -2095,7 +2033,7 @@ class ReadTool(Tool):
             lines.append("</ReadToolResult>")
             return "\n".join(lines)
 
-        filepath, ranges = targets[0]
+        filepath, ranges = self.targets[0]
         if len(ranges) > 1:
             lines = [
                 "<ReadToolResult>",
@@ -2117,17 +2055,16 @@ class ReadTool(Tool):
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
-    def _read_range(self, start: int, end: int, *, filepath: str | None = None) -> tuple[str, int, int, bool, int]:
-        target_filepath = filepath or self.filepath
+    def _read_range(self, start: int, end: int, *, filepath: str) -> tuple[str, int, int, bool, int]:
         total_lines = 0
         selected_lines = []
         truncated = False
         bounded_read_lines = end - start if end else 0
         if end and bounded_read_lines <= self.MAX_LINES:
-            with open(target_filepath, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 selected_lines = list(itertools.islice(f, start, end))
         else:
-            with open(target_filepath, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     total_lines = index + 1
                     if index < start:
