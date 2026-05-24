@@ -507,7 +507,7 @@ def test_act_prompt_folds_excerpted_read_result(tmp_path):
     assert "x" * 100 not in latest
 
 
-def test_recall_read_projects_into_file_context_without_result_context(tmp_path):
+def test_recall_read_reactivates_original_result_for_file_context(tmp_path):
     session = Session(cwd=str(tmp_path))
     session.state.tool_result_counter = 1
     session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(
@@ -518,8 +518,10 @@ def test_recall_read_projects_into_file_context_without_result_context(tmp_path)
 
     latest = agent.execute_tool_calls([{"name": "Recall", "intention": "recall read", "args": ["tr.1"]}])
 
-    assert latest == ""
-    assert agent.tool_context.latest == []
+    assert "tool=Read" in latest
+    assert "tool=Recall" not in latest
+    assert "key=tr.1" in latest
+    assert agent.tool_context.reactivated_keys == {"tr.1"}
     assert list(session.state.tool_result_store) == ["tr.1"]
     assert session.state.tool_result_counter == 1
     prompt = agent.build_user_prompt()
@@ -554,6 +556,58 @@ def test_recalled_read_does_not_override_newer_read(tmp_path):
     assert "|new" in file_context
     assert "|old" not in file_context
     assert "tool=Recall" not in latest_results
+
+
+def test_forget_tool_removes_visible_result_without_new_key(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    latest = agent.execute_tool_calls([{"name": "Forget", "intention": "drop sample", "args": ["tr.1"]}])
+
+    assert session.state.tool_result_counter == 1
+    assert list(session.state.tool_result_store) == ["tr.1"]
+    assert "tool=Forget" not in latest
+    assert "recall=tr.1" in latest
+    assert "<ReadToolResult>" not in latest
+    prompt = agent.build_user_prompt()
+    assert "File Context:\n(empty)" in prompt
+
+
+def test_recall_tool_reactivates_forgotten_result_without_new_key(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Forget", "intention": "drop sample", "args": ["tr.1"]}])
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall sample", "args": ["tr.1"]}])
+
+    assert session.state.tool_result_counter == 1
+    assert list(session.state.tool_result_store) == ["tr.1"]
+    prompt = agent.build_user_prompt()
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    latest_results = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert "File: sample.txt" in file_context
+    assert "|alpha" in file_context
+    assert "tool=Recall" not in latest_results
+
+
+def test_observe_keep_tool_keeps_result_without_new_key(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    _set_context_budget(monkeypatch, agent, observe_after_results=1)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": ["sample.txt", "0,1"]}])
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    agent.handle_response({"actions": [{"type": "tool", "name": "Keep", "intention": "keep sample", "args": ["tr.1"]}]})
+
+    assert agent.mode == nanocode.AgentMode.ACT
+    assert session.state.tool_result_counter == 1
+    assert list(session.state.tool_result_store) == ["tr.1"]
+    assert "key=tr.1" in _blocks_text(agent.tool_context.kept_results)
 
 
 def test_empty_observe_compacts_unreduced_tool_results(tmp_path, monkeypatch):

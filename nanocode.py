@@ -1310,12 +1310,14 @@ class ToolResultContext:
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
     kept_results: list[str] = field(default_factory=list)
+    reactivated_keys: set[str] = field(default_factory=set)
 
     def forget_results(self, keys: list[str]) -> list[str]:
         wanted = set(keys)
         if not wanted:
             return []
         removed = []
+        self.reactivated_keys.difference_update(wanted)
 
         def update(blocks: list[str], *, compact: bool) -> list[str]:
             updated = []
@@ -1340,6 +1342,10 @@ class ToolResultContext:
             if _json_str(action.get("type")) == "keep":
                 wanted.extend(key for key in _source_from_json(action) if key.startswith("tr."))
         wanted = list(dict.fromkeys(wanted))
+        return self.keep_result_keys(wanted, observed_blocks, max_chars=max_chars, max_block_chars=max_block_chars)
+
+    def keep_result_keys(self, keys: list[str], observed_blocks: list[str], *, max_chars: int, max_block_chars: int) -> list[str]:
+        wanted = list(dict.fromkeys(keys))
         if not wanted:
             return []
         by_key = self.blocks_by_key(observed_blocks)
@@ -1376,8 +1382,10 @@ class ToolResultContext:
 
     def compact_observed(self, observed_blocks: list[str]) -> None:
         observed = {self.result_counter(block) for block in observed_blocks}
+        observed_keys = {self.result_key(block) for block in observed_blocks}
         if not observed:
             return
+        self.reactivated_keys.difference_update(observed_keys)
 
         def compact(block: str) -> str:
             if self.is_full_block(block) and self.result_counter(block) in observed:
@@ -1427,9 +1435,9 @@ class ToolResultContext:
     def raw_context_chars(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> int:
         return len("\n\n".join(self.unreduced_recent_blocks(checkpoint, exclude_keys=exclude_keys) + self.latest_raw_blocks(exclude_keys=exclude_keys)))
 
-    @classmethod
-    def _needs_reduction(cls, block: str, checkpoint: int) -> bool:
-        return cls.is_full_block(block) and cls.result_counter(block) > checkpoint
+    def _needs_reduction(self, block: str, checkpoint: int) -> bool:
+        key = self.result_key(block)
+        return self.is_full_block(block) and (self.result_counter(block) > checkpoint or key in self.reactivated_keys)
 
     @classmethod
     def blocks_by_key(cls, blocks: list[str]) -> dict[str, str]:
@@ -1446,6 +1454,20 @@ class ToolResultContext:
             lines.append("  why: " + execution.call.intention)
         lines.extend(["  output:", execution.output])
         return "\n".join(lines)
+
+    def reactivate_result_blocks(self, blocks: list[str], *, max_index_items: int, checkpoint: int, append: bool = False) -> list[str]:
+        blocks = [block for block in blocks if self.is_full_block(block) and self.result_key(block)]
+        keys = set(self.blocks_by_key(blocks))
+        if not keys:
+            return []
+        self.recent = [block for block in self.recent if self.result_key(block) not in keys]
+        self.latest = [block for block in self.latest if self.result_key(block) not in keys]
+        self.reactivated_keys.update(keys)
+        if self.latest and not append:
+            self.recent.extend(self.latest)
+        self.latest = [*self.latest, *blocks] if append else blocks
+        self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
+        return [key for key in self.blocks_by_key(blocks) if key in keys]
 
     @staticmethod
     def is_full_block(block: str) -> bool:
@@ -1585,6 +1607,37 @@ class ToolResultContext:
             order = cls._result_key_counter(source)
             entries.extend((order, source, path, number, line) for path, number, line in cls._read_output_file_lines(content, default_path=default_path))
         return entries
+
+    @classmethod
+    def recalled_result_blocks(cls, recall_block: str) -> list[str]:
+        if not cls.is_full_block(recall_block):
+            return []
+        header, output = recall_block.split("\n  output:\n", 1)
+        if not re.search(r"\btool=Recall\b", header) or "RecallToolResult:" not in output:
+            return []
+        return [cls._stored_result_block(source, description, content) for source, description, content in cls._recall_output_items(output)]
+
+    @classmethod
+    def _stored_result_block(cls, source: str, description: str, content: str) -> str:
+        status, tool_name, args, intention = cls._stored_result_summary(description)
+        lines = ["- " + status + " tool=" + tool_name + " args=" + json.dumps(args, ensure_ascii=False, separators=(",", ":")) + " key=" + source]
+        if intention:
+            lines.append("  why: " + intention)
+        lines.extend(["  output:", content])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _stored_result_summary(description: str) -> tuple[str, str, list[str], str]:
+        raw_status, separator, rest = description.partition(" ")
+        status = "ok" if raw_status == "success" else "fail" if raw_status == "failure" else "ok"
+        if not separator:
+            return status, "Recall", [], ""
+        call_text, intention = (rest.split(" - ", 1) + [""])[:2] if " - " in rest else (rest, "")
+        try:
+            tokens = shlex.split(call_text)
+        except ValueError:
+            tokens = call_text.split()
+        return status, (tokens[0] if tokens else "Recall"), tokens[1:], intention
 
     @staticmethod
     def _recall_output_items(output: str) -> Iterator[tuple[str, str, str]]:
@@ -3352,6 +3405,74 @@ class ToolResultTool(Tool):
         return "\n".join(chunks)
 
 
+def _tool_result_keys_from_args(args: list[JsonValue]) -> list[str]:
+    keys: list[str] = []
+    values: list[JsonValue] = []
+    for arg in args:
+        values.extend(arg if isinstance(arg, list) else [arg])
+    for value in values:
+        key = str(value).strip()
+        if not re.fullmatch(r"tr\.\d+", key):
+            raise ToolCallArgError("invalid result key: use tr.N")
+        keys.append(key)
+    keys = list(dict.fromkeys(keys))
+    if not keys:
+        raise ToolCallArgError("requires at least one tr.N key")
+    return keys
+
+
+@dataclass
+class ForgetTool(Tool):
+    NAME: ClassVar[str] = "Forget"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Remove visible tool result keys from active context; keys remain recallable.",
+        "This is the inverse of Recall for active context membership.",
+        "Does not create a new result key.",
+    )
+    SIGNATURE: ClassVar[str] = "Forget(key[, key...]) -> remove active context entries"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["tr.1", "tr.2"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
+
+    keys: list[str]
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        return cls(keys=_tool_result_keys_from_args(args))
+
+    def preview(self) -> str:
+        return "Forget " + ", ".join(self.keys)
+
+    def call(self) -> str:
+        return "<ForgetToolResult>\n* requested: " + ", ".join(self.keys) + "\n</ForgetToolResult>"
+
+
+@dataclass
+class KeepTool(Tool):
+    NAME: ClassVar[str] = "Keep"
+    EFFECT: ClassVar[ToolEffect] = ToolEffect.OTHER
+    DESCRIPTION: ClassVar[tuple[str, ...]] = (
+        "Keep visible raw tool result keys in active context.",
+        "Use during observe or when a visible result should survive context reduction.",
+        "Does not create a new result key.",
+    )
+    SIGNATURE: ClassVar[str] = "Keep(key[, key...]) -> keep active context entries"
+    EXAMPLE: ClassVar[tuple[str, ...]] = ('Example args: ["tr.1", "tr.2"]',)
+    REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
+
+    keys: list[str]
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        return cls(keys=_tool_result_keys_from_args(args))
+
+    def preview(self) -> str:
+        return "Keep " + ", ".join(self.keys)
+
+    def call(self) -> str:
+        return "<KeepToolResult>\n* requested: " + ", ".join(self.keys) + "\n</KeepToolResult>"
+
+
 ############################
 # Tool Registry
 ############################
@@ -3368,7 +3489,11 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     BashTool.NAME: BashTool,
     GitTool.NAME: GitTool,
     ToolResultTool.NAME: ToolResultTool,
+    ForgetTool.NAME: ForgetTool,
+    KeepTool.NAME: KeepTool,
 }
+CONTEXT_TOOL_NAMES: frozenset[str] = frozenset({ToolResultTool.NAME, ForgetTool.NAME, KeepTool.NAME})
+CONTEXT_TOOL_CLASSES: tuple[ToolClass, ...] = (ToolResultTool, ForgetTool, KeepTool)
 
 
 def _canonical_tool_name(name: str | None) -> str:
@@ -4617,7 +4742,7 @@ class ToolCallRunner:
                 call = ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
             result_key = ""
             result_excerpted = False
-            if call.name != ToolResultTool.NAME:
+            if call.name not in CONTEXT_TOOL_NAMES:
                 result_key = self._store_tool_result(call, outcome, output)
                 item = self.session.state.tool_result_store[result_key]
                 output = item.value
@@ -5214,7 +5339,7 @@ class Agent:
     MAX_AGENT_FEEDBACK_ERROR_LEN: ClassVar[int] = 220
     MODEL_TIMEOUT_RETRY_DELAYS: ClassVar[tuple[int, ...]] = (3, 10, 20, 30, 60, 120)
     ACT_ACTION_TYPES: ClassVar[set[str]] = {"goal", "plan", "lead", "known", "tool", "verify", "user_rule", "forget"}
-    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "lead", "known", "forget"}
+    OBSERVE_ACTION_TYPES: ClassVar[set[str]] = {"keep", "lead", "known", "forget", "tool"}
     COMPLETED_PLAN_STATUSES: ClassVar[set[PlanStatus]] = {PlanStatus.DONE, PlanStatus.BLOCKED}
     MAX_COMPLETED_GOAL_TOOL_RESULTS: ClassVar[int] = 50
     RECENT_EDITS: ClassVar[int] = 20
@@ -5253,7 +5378,9 @@ class Agent:
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
         self.observe_feedback_errors: list[str] = []
-        self.recalled_context_executions: list[ToolCallExecution] = []
+        self.latest_context_tool_kept: list[str] = []
+        self.latest_context_tool_forgotten: list[str] = []
+        self.latest_context_tool_recalled: list[str] = []
         self.task_alignment_required = False
         self.incomplete_task_context_at_turn_start = False
         self.stream_stop_requested = False
@@ -5534,8 +5661,7 @@ class Agent:
 
     def _act_file_context_blocks(self) -> list[str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
-        recalled_blocks = [ToolResultContext.format_execution(execution) for execution in self.recalled_context_executions]
-        return self.tool_context.kept_results + self.tool_context.unreduced_recent_blocks(checkpoint) + self.tool_context.latest_raw_blocks() + recalled_blocks
+        return self.tool_context.kept_results + self.tool_context.unreduced_recent_blocks(checkpoint) + self.tool_context.latest_raw_blocks()
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()
@@ -5630,10 +5756,10 @@ class Agent:
 
     def _tool_schemas(self) -> list[Json]:
         if self.mode == AgentMode.OBSERVE:
-            action_names = self.OBSERVE_ACTION_TYPES
-            tool_classes: Iterable[ToolClass] = ()
+            action_names = self.OBSERVE_ACTION_TYPES - {"tool", "keep", "forget"}
+            tool_classes: Iterable[ToolClass] = CONTEXT_TOOL_CLASSES
         else:
-            action_names = self.ACT_ACTION_TYPES - {"tool"}
+            action_names = self.ACT_ACTION_TYPES - {"tool", "forget"}
             tool_classes = tuple(TOOL_REGISTRY.values())
             if not _code_index_available(self.session):
                 tool_classes = tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
@@ -5760,21 +5886,25 @@ class Agent:
         confirm: ConfirmCallback | None = None,
         on_auto_approve: ToolDisplayCallback | None = None,
         append_to_latest: bool = False,
+        context_keep_blocks: list[str] | None = None,
     ) -> str:
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        context_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name != ToolResultTool.NAME]
-        recalled = [execution for execution in self.tool_runner.latest_executions if execution.call.name == ToolResultTool.NAME and execution.outcome == "success"]
-        if append_to_latest:
-            self.recalled_context_executions.extend(recalled)
-        else:
-            self.recalled_context_executions = recalled
-        if context_executions:
+        self.latest_context_tool_kept = []
+        self.latest_context_tool_forgotten = []
+        self.latest_context_tool_recalled = []
+        regular_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name not in CONTEXT_TOOL_NAMES]
+        if regular_executions:
             self.tool_context.append_latest(
-                context_executions,
+                regular_executions,
                 max_index_items=self.context_budget().index_items,
                 checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
                 append=append_to_latest,
             )
+        self._apply_context_tool_executions(
+            self.tool_runner.latest_executions,
+            append_to_latest=append_to_latest or bool(regular_executions),
+            keep_source_blocks=context_keep_blocks,
+        )
         self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
@@ -5782,6 +5912,43 @@ class Agent:
         if self._should_observe_after_tools():
             self.mode = AgentMode.OBSERVE
         return "\n\n".join(self.tool_context.latest)
+
+    def _apply_context_tool_executions(
+        self,
+        executions: list[ToolCallExecution],
+        *,
+        append_to_latest: bool,
+        keep_source_blocks: list[str] | None,
+    ) -> None:
+        for execution in executions:
+            if execution.outcome != "success":
+                continue
+            if execution.call.name == ToolResultTool.NAME:
+                blocks = ToolResultContext.recalled_result_blocks(ToolResultContext.format_execution(execution))
+                self.latest_context_tool_recalled.extend(
+                    self.tool_context.reactivate_result_blocks(
+                        blocks,
+                        max_index_items=self.context_budget().index_items,
+                        checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
+                        append=append_to_latest or bool(self.tool_context.latest),
+                    )
+                )
+            elif execution.call.name == ForgetTool.NAME:
+                self.latest_context_tool_forgotten.extend(self.tool_context.forget_results(_tool_result_keys_from_args(execution.call.args)))
+            elif execution.call.name == KeepTool.NAME:
+                source_blocks = keep_source_blocks if keep_source_blocks is not None else self._visible_raw_tool_result_blocks()
+                self.latest_context_tool_kept.extend(
+                    self.tool_context.keep_result_keys(
+                        _tool_result_keys_from_args(execution.call.args),
+                        source_blocks,
+                        max_chars=self.context_budget().kept_chars,
+                        max_block_chars=self.context_budget().kept_block_chars,
+                    )
+                )
+
+    def _visible_raw_tool_result_blocks(self) -> list[str]:
+        checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
+        return self.tool_context.unreduced_blocks(checkpoint) + self.tool_context.latest_raw_blocks() + self.tool_context.kept_results
 
     def _should_observe_after_tools(self) -> bool:
         pending = self._unreferenced_unreduced_blocks()
@@ -5924,6 +6091,12 @@ class Agent:
     @staticmethod
     def _normalize_action(action: Json) -> Json:
         action_type = _json_str(action.get("type"))
+        tool_name = _canonical_tool_name(action_type)
+        if tool_name in TOOL_REGISTRY and ("args" in action or "intention" in action):
+            normalized = dict(action)
+            normalized["type"] = "tool"
+            normalized["name"] = tool_name
+            return normalized
         canonical_action_type = _canonical_protocol_action_type(action_type)
         if canonical_action_type in PROTOCOL_ACTION_TYPES:
             if canonical_action_type == action_type:
@@ -5931,13 +6104,44 @@ class Agent:
             normalized = dict(action)
             normalized["type"] = canonical_action_type
             return normalized
-        tool_name = _canonical_tool_name(action_type)
         if tool_name not in TOOL_REGISTRY:
             return action
         normalized = dict(action)
         normalized["type"] = "tool"
         normalized["name"] = tool_name
         return normalized
+
+    def _context_actions_from_tool_calls(self, tool_calls: list[JsonValue]) -> list[Json]:
+        actions: list[Json] = []
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                continue
+            if call.name == ForgetTool.NAME:
+                try:
+                    keys = _tool_result_keys_from_args(call.args)
+                except ToolCallArgError:
+                    continue
+                actions.append({"type": "forget", "source": keys, "reason": call.intention or "context tool"})
+            elif call.name == KeepTool.NAME:
+                try:
+                    keys = _tool_result_keys_from_args(call.args)
+                except ToolCallArgError:
+                    continue
+                actions.append({"type": "keep", "source": keys, "reason": call.intention or "context tool"})
+        return actions
+
+    def _non_context_tool_error(self, tool_calls: list[JsonValue]) -> str:
+        invalid = []
+        for value in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(value)
+            except ToolCallArgError:
+                continue
+            if call.name not in CONTEXT_TOOL_NAMES:
+                invalid.append(call.name)
+        return ", ".join(dict.fromkeys(invalid))
 
     def _gate_action_types(
         self,
@@ -6126,7 +6330,8 @@ class Agent:
         )
 
     def _gate_tool_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        if self._gate_forget_actions(ctx.actions, on_message, self._remember_agent_error) is not None:
+        context_actions = ctx.actions + self._context_actions_from_tool_calls(ctx.tool_calls)
+        if self._gate_forget_actions(context_actions, on_message, self._remember_agent_error) is not None:
             return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
@@ -6259,6 +6464,11 @@ class Agent:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
             if report:
                 on_message(report)
+            self._emit_tool_context_update(
+                [*self.latest_context_tool_recalled, *self.latest_context_tool_kept],
+                self.latest_context_tool_forgotten,
+                on_message,
+            )
             if self.session.settings.debug and self.tool_runner.skipped_after_failure_count:
                 on_message(f"Tool Calls Skipped: {self.tool_runner.skipped_after_failure_count} after {self.tool_runner.skipped_after_failure_key} failed")
         self.compactor.maybe_compact()
@@ -6292,13 +6502,26 @@ class Agent:
         )
         if gate_result is not None:
             return gate_result
-        forget_gate = self._gate_forget_actions(ctx.actions, on_message, self._remember_observe_error)
+        non_context_tool_error = self._non_context_tool_error(ctx.tool_calls)
+        if non_context_tool_error:
+            return self._reject_result(
+                self._remember_observe_error,
+                on_message,
+                self._error("observe only accepts context tools: " + non_context_tool_error + ".", "use Keep, Forget, or Recall while observing."),
+                "Retrying: observe latest results with context tools only.",
+                "Protocol_Gate: invalid observe tool(s): " + non_context_tool_error + ".",
+            )
+        context_actions = ctx.actions + self._context_actions_from_tool_calls(ctx.tool_calls)
+        forget_gate = self._gate_forget_actions(context_actions, on_message, self._remember_observe_error)
         if forget_gate is not None:
             return forget_gate
         observed_blocks = self._unreferenced_unreduced_blocks()
         observed_counter = ToolResultContext.max_counter(observed_blocks)
         forgotten_keys = self.apply_response(response)
         self._emit_state_and_text(ctx, on_message)
+        if ctx.tool_calls:
+            self.execute_tool_calls(ctx.tool_calls, context_keep_blocks=observed_blocks)
+            forgotten_keys.extend(self.latest_context_tool_forgotten)
         self.mode = AgentMode.ACT
         kept_keys = self.tool_context.keep_results(
             ctx.actions,
@@ -6306,10 +6529,11 @@ class Agent:
             max_chars=self.context_budget().kept_chars,
             max_block_chars=self.context_budget().kept_block_chars,
         )
+        kept_keys.extend(self.latest_context_tool_kept)
         self.tool_context.compact_observed(observed_blocks)
         self._mark_memory_checkpoint(observed_counter)
         self.observe_feedback_errors = []
-        self._warn_weak_observe_memory(ctx.actions)
+        self._warn_weak_observe_memory(context_actions)
         self._emit_tool_context_update(kept_keys, forgotten_keys, on_message)
         self._promote_required_checks(ctx)
         return AgentRunResult()
@@ -6455,7 +6679,9 @@ class Agent:
         )
         self._prune_tool_result_store()
         self.mode = AgentMode.ACT
-        self.recalled_context_executions = []
+        self.latest_context_tool_kept = []
+        self.latest_context_tool_forgotten = []
+        self.latest_context_tool_recalled = []
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         old_goal = self.blackboard.goal
