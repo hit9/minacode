@@ -268,6 +268,28 @@ def test_agent_loop_styles_compact_tool_call_report(tmp_path):
     assert ("ansibrightblack", " | excerpt") in keyed_segments
 
 
+def test_tool_call_display_formats_structured_args_for_humans():
+    read = ParsedToolCall(
+        name="Read",
+        intention="",
+        args=[{"files": [{"path": "one.py", "range": [0, 10]}, {"path": "two.py", "ranges": [[20, 30], [40, 50]]}]}],
+    )
+    search = ParsedToolCall(
+        name="Search",
+        intention="",
+        args=[{"pattern": "class Foo", "path": ".", "glob": "*.py", "context": 2}],
+    )
+    inspect_code = ParsedToolCall(
+        name="InspectCode",
+        intention="",
+        args=["find", "Tool", {"kind": "class", "limit": 20, "exact_only": True}],
+    )
+
+    assert ToolCallDisplayFormatter.format_call(read) == "Read one.py 0:10 two.py 20:30 40:50"
+    assert ToolCallDisplayFormatter.format_call(search) == 'Search "class Foo" path=. glob=*.py context=2'
+    assert ToolCallDisplayFormatter.format_call(inspect_code) == "InspectCode find Tool kind=class limit=20 exact_only=true"
+
+
 def test_tool_call_report_compacts_interrupted_bash_result():
     output = "<BashToolResult>\n* exit_code: -1\n* interrupted: true\n* reason: user_ctrl_c\n</BashToolResult>"
 

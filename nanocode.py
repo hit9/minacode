@@ -1181,7 +1181,17 @@ class Tool:
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        return [cls.cli_token(arg) for arg in args]
+        tokens: list[str] = []
+        for arg in args:
+            if isinstance(arg, dict):
+                tokens.extend(cls.cli_object_args(arg))
+            else:
+                tokens.append(cls.cli_token(arg))
+        return tokens
+
+    @classmethod
+    def cli_object_args(cls, value: Json) -> list[str]:
+        return [str(key) + "=" + cls.cli_token(item) for key, item in value.items()]
 
     @staticmethod
     def cli_content_summary(value: str) -> str:
@@ -1192,7 +1202,7 @@ class Tool:
 
     @staticmethod
     def cli_token(value: JsonValue) -> str:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value)
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":")) if isinstance(value, (dict, list, bool)) or value is None else str(value)
         if "\n" in text:
             return Tool.cli_content_summary(text)
         text = _shorten(text, 100)
