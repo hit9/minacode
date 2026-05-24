@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1466,6 +1467,175 @@ class ToolResultContext:
         return header + "\n  out: " + ("; ".join(parts) if parts else "ok")
 
     @classmethod
+    def render_blocks_for_prompt(cls, blocks: list[str]) -> list[str]:
+        return [cls.render_block_for_prompt(block) for block in blocks]
+
+    @classmethod
+    def render_block_for_prompt(cls, block: str) -> str:
+        if not cls._is_read_result_block(block):
+            return block
+        compact = cls.compact_block(block)
+        if "\n  out: " in compact:
+            content = "file_context" if cls._read_block_file_lines(block) else "recall"
+            return compact + "; content=" + content
+        return compact
+
+    @classmethod
+    def format_file_context(cls, blocks: list[str], *, max_chars: int) -> str:
+        files: dict[str, dict[int, tuple[str, str]]] = {}
+        entries = sorted(cls._file_context_entries(blocks), key=lambda item: item[0])
+        for _order, source, path, number, line in entries:
+            if source:
+                files.setdefault(path, {})[number] = (source, line)
+        if not files:
+            return ""
+
+        lines = [
+            "Source Policy:",
+            "- Built dynamically for this prompt from active raw Read results.",
+            "- Overlapping lines use the newest active Read result.",
+            "",
+        ]
+        for path in sorted(files):
+            segments = cls._file_context_segments(files[path])
+            if not segments:
+                continue
+            lines.extend(["File: " + path, "Ranges:"])
+            for start, end, source, _segment_lines in segments:
+                lines.append("- " + str(start) + ":" + str(end) + " source=" + source)
+            lines.append("Content:")
+            for start, end, source, segment_lines in segments:
+                lines.append("@@ " + str(start) + ":" + str(end) + " source=" + source)
+                lines.extend(segment_lines)
+            lines.append("")
+
+        rendered = "\n".join(lines).rstrip()
+        return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
+
+    @classmethod
+    def _file_context_entries(cls, blocks: list[str]) -> list[tuple[int, str, str, int, str]]:
+        entries: list[tuple[int, str, str, int, str]] = []
+        for block in blocks:
+            source = cls.result_key(block)
+            if source and cls._is_read_result_block(block):
+                entries.extend((cls.result_counter(block), source, path, number, line) for path, number, line in cls._read_block_file_lines(block))
+                continue
+            entries.extend(cls._recall_block_file_entries(block))
+        return entries
+
+    @staticmethod
+    def _file_context_segments(file_lines: dict[int, tuple[str, str]]) -> list[tuple[int, int, str, list[str]]]:
+        items = sorted(file_lines.items())
+        if not items:
+            return []
+        segments: list[tuple[int, int, str, list[str]]] = []
+        start = previous = items[0][0]
+        source, first_line = items[0][1]
+        segment_lines = [first_line]
+        for number, (line_source, line) in items[1:]:
+            if number == previous + 1 and line_source == source:
+                segment_lines.append(line)
+                previous = number
+                continue
+            segments.append((start, previous + 1, source, segment_lines))
+            start = previous = number
+            source = line_source
+            segment_lines = [line]
+        segments.append((start, previous + 1, source, segment_lines))
+        return segments
+
+    @classmethod
+    def _read_block_file_lines(cls, block: str) -> list[tuple[str, int, str]]:
+        if not cls._is_read_result_block(block):
+            return []
+        header, output = block.split("\n  output:\n", 1)
+        default_path = cls._read_block_default_path(header)
+        return cls._read_output_file_lines(output, default_path=default_path)
+
+    @classmethod
+    def _read_output_file_lines(cls, output: str, *, default_path: str) -> list[tuple[str, int, str]]:
+        file_lines: list[tuple[str, int, str]] = []
+        for path, section in cls._read_output_file_sections(output, default_path=default_path):
+            if not path:
+                continue
+            for content in cls._read_output_content_sections(section):
+                for line in content.splitlines():
+                    match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
+                    if match:
+                        file_lines.append((path, int(match.group(1)), line))
+        return file_lines
+
+    @classmethod
+    def _is_read_result_block(cls, block: str) -> bool:
+        if not cls.is_full_block(block):
+            return False
+        header, output = block.split("\n  output:\n", 1)
+        return bool(re.search(r"\btool=Read\b", header) and "<ReadToolResult>" in output)
+
+    @classmethod
+    def _recall_block_file_entries(cls, block: str) -> list[tuple[int, str, str, int, str]]:
+        if not cls.is_full_block(block):
+            return []
+        header, output = block.split("\n  output:\n", 1)
+        if not re.search(r"\btool=Recall\b", header) or "RecallToolResult:" not in output:
+            return []
+        entries: list[tuple[int, str, str, int, str]] = []
+        for source, description, content in cls._recall_output_items(output):
+            default_path = cls._read_description_default_path(description)
+            order = cls._result_key_counter(source)
+            entries.extend((order, source, path, number, line) for path, number, line in cls._read_output_file_lines(content, default_path=default_path))
+        return entries
+
+    @staticmethod
+    def _recall_output_items(output: str) -> Iterator[tuple[str, str, str]]:
+        for match in re.finditer(r"(?ms)^- result_key: (tr\.\d+)\n(.*?)(?=^- result_key: |\Z)", output):
+            source = match.group(1)
+            body = match.group(2)
+            description_match = re.search(r"(?m)^  description: (.*)$", body)
+            content_match = re.search(r"(?ms)^  <content>\n(.*)^  </content>", body)
+            if content_match:
+                yield source, (description_match.group(1) if description_match else ""), content_match.group(1)
+
+    @staticmethod
+    def _read_description_default_path(description: str) -> str:
+        match = re.match(r"(?:success|failure) Read\s+(.+?)(?:\s+-\s+.*)?$", description)
+        if match is None:
+            return ""
+        try:
+            tokens = shlex.split(match.group(1))
+        except ValueError:
+            return ""
+        return tokens[0] if tokens else ""
+
+    @staticmethod
+    def _read_block_default_path(header: str) -> str:
+        marker = " args="
+        start = header.find(marker)
+        if start < 0:
+            return ""
+        try:
+            args, _end = json.JSONDecoder().raw_decode(header[start + len(marker) :])
+        except json.JSONDecodeError:
+            return ""
+        return str(args[0]) if isinstance(args, list) and args else ""
+
+    @staticmethod
+    def _read_output_file_sections(output: str, *, default_path: str) -> Iterator[tuple[str, str]]:
+        file_matches = list(re.finditer(r"(?ms)^[ \t]*<ReadFile>\n(.*?)^[ \t]*</ReadFile>", output))
+        if not file_matches:
+            yield default_path, output
+            return
+        for match in file_matches:
+            section = match.group(1)
+            path_match = re.search(r"<path>(.*?)</path>", section)
+            yield (path_match.group(1).strip() if path_match else default_path), section
+
+    @staticmethod
+    def _read_output_content_sections(text: str) -> Iterator[str]:
+        for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", text):
+            yield match.group(1)
+
+    @classmethod
     def bound_block(cls, block: str, *, max_chars: int) -> str:
         if len(block) <= max_chars:
             return block
@@ -1486,6 +1656,10 @@ class ToolResultContext:
     @classmethod
     def result_counter(cls, block: str) -> int:
         key = cls.result_key(block)
+        return cls._result_key_counter(key)
+
+    @staticmethod
+    def _result_key_counter(key: str) -> int:
         return int(key.split(".", 1)[1]) if key else 0
 
     @classmethod
@@ -3387,6 +3561,9 @@ Recent Edits:
 Tool Result Index:
 {tool_result_index}
 
+File Context:
+{file_context}
+
 Kept Tool Results:
 {kept_tool_results}
 
@@ -3438,6 +3615,9 @@ Facts:
 {known}
 
 --- Tool Context ---
+
+File Context:
+{file_context}
 
 Kept Tool Results:
 {kept_tool_results}
@@ -5073,6 +5253,7 @@ class Agent:
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
         self.observe_feedback_errors: list[str] = []
+        self.recalled_context_executions: list[ToolCallExecution] = []
         self.task_alignment_required = False
         self.incomplete_task_context_at_turn_start = False
         self.stream_stop_requested = False
@@ -5089,13 +5270,19 @@ class Agent:
 
     def build_user_prompt(self) -> str:
         tool_result_index, unreduced_tool_results, latest_tool_results = self._format_act_tool_result_context()
+        budget = self.context_budget()
+        file_context = ToolResultContext.format_file_context(
+            self._act_file_context_blocks(),
+            max_chars=budget.raw_chars + budget.kept_chars,
+        )
         conversation = self.session.state.conversation
         return AGENT_USER_PROMPT_TEMPLATE.format(
             environment=self._format_environment(),
             conversation_history="\n\n".join(item.format() for item in conversation) if conversation else "(empty)",
             user_rules=self.session.state.user_rules.format(),
-            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
+            kept_tool_results="\n\n".join(ToolResultContext.render_blocks_for_prompt(self.tool_context.kept_results)) or "(empty)",
             tool_result_index=tool_result_index or "(empty)",
+            file_context=file_context or "(empty)",
             unreduced_tool_results=unreduced_tool_results or "(empty)",
             latest_tool_results=latest_tool_results or "(empty)",
             state_sections=self._format_state_sections(),
@@ -5150,14 +5337,21 @@ class Agent:
 
     def build_observe_prompt(self) -> str:
         current = self.blackboard
-        unreduced = "\n\n".join(self._unreferenced_unreduced_blocks())
+        unreduced_blocks = self._unreferenced_unreduced_blocks()
+        budget = self.context_budget()
+        file_context = ToolResultContext.format_file_context(
+            self.tool_context.kept_results + unreduced_blocks,
+            max_chars=budget.raw_chars + budget.kept_chars,
+        )
+        unreduced = "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced_blocks))
         return AGENT_OBSERVE_USER_PROMPT_TEMPLATE.format(
             user_rules=self.session.state.user_rules.format(),
             goal=current.goal or "(empty)",
             plan="\n".join(item.format() for item in current.plan) if current.plan else "(empty)",
             leads="\n".join(item.format() for item in current.leads) if current.leads else "(empty)",
             known="\n".join(KnownItem.format_item(item) for item in current.known) if current.known else "(empty)",
-            kept_tool_results="\n\n".join(self.tool_context.kept_results) or "(empty)",
+            file_context=file_context or "(empty)",
+            kept_tool_results="\n\n".join(ToolResultContext.render_blocks_for_prompt(self.tool_context.kept_results)) or "(empty)",
             errors="\n".join("- " + error for error in self.observe_feedback_errors) or "(empty)",
             unreduced_tool_results=unreduced or "(empty)",
             user_request=self._format_user_request(),
@@ -5332,7 +5526,16 @@ class Agent:
             sections.append("Archived Recall Index:\n" + "\n".join(archived))
         if timeline:
             sections.append("Current Task Timeline:\n" + "\n".join(timeline))
-        return "\n\n".join(sections), "\n\n".join(unreduced), "\n\n".join(latest)
+        return (
+            "\n\n".join(sections),
+            "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced)),
+            "\n\n".join(ToolResultContext.render_blocks_for_prompt(latest)),
+        )
+
+    def _act_file_context_blocks(self) -> list[str]:
+        checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
+        recalled_blocks = [ToolResultContext.format_execution(execution) for execution in self.recalled_context_executions]
+        return self.tool_context.kept_results + self.tool_context.unreduced_recent_blocks(checkpoint) + self.tool_context.latest_raw_blocks() + recalled_blocks
 
     def _prune_tool_result_store(self) -> None:
         keep = self._protected_tool_result_keys()
@@ -5559,12 +5762,19 @@ class Agent:
         append_to_latest: bool = False,
     ) -> str:
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        self.tool_context.append_latest(
-            self.tool_runner.latest_executions,
-            max_index_items=self.context_budget().index_items,
-            checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
-            append=append_to_latest,
-        )
+        context_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name != ToolResultTool.NAME]
+        recalled = [execution for execution in self.tool_runner.latest_executions if execution.call.name == ToolResultTool.NAME and execution.outcome == "success"]
+        if append_to_latest:
+            self.recalled_context_executions.extend(recalled)
+        else:
+            self.recalled_context_executions = recalled
+        if context_executions:
+            self.tool_context.append_latest(
+                context_executions,
+                max_index_items=self.context_budget().index_items,
+                checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
+                append=append_to_latest,
+            )
         self.session.state.turn_tool_calls += len(self.tool_runner.latest_executions)
         self.session.state.session_tool_calls += len(self.tool_runner.latest_executions)
         for execution in self.tool_runner.latest_executions:
@@ -6245,6 +6455,7 @@ class Agent:
         )
         self._prune_tool_result_store()
         self.mode = AgentMode.ACT
+        self.recalled_context_executions = []
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         old_goal = self.blackboard.goal

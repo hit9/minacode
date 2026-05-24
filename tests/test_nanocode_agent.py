@@ -27,6 +27,27 @@ def _blocks_text(blocks):
     return "\n".join(blocks)
 
 
+def _prompt_section(prompt: str, title: str, next_title: str) -> str:
+    remainder = prompt.split(title + ":\n", 1)[1]
+    markers = ("\n\n" + next_title + ":", "\n\n--- " + next_title + " ---")
+    indexes = [index for marker in markers for index in [remainder.find(marker)] if index >= 0]
+    return remainder[: min(indexes)] if indexes else remainder
+
+
+def _stored_read_result(line: str) -> str:
+    return "\n".join(
+        [
+            "<ReadToolResult>",
+            '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
+            "  <range>0:1</range>",
+            "  <content hashline-numbered>",
+            "0:aaaaaa|" + line,
+            "  </content>",
+            "</ReadToolResult>",
+        ]
+    )
+
+
 def _observe_tool_result_context(agent):
     return "\n\n".join(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
 
@@ -391,10 +412,13 @@ def test_referenced_unreduced_results_do_not_count_toward_observe_threshold(tmp_
 
     assert agent.mode == nanocode.AgentMode.OBSERVE
     observe_prompt = agent.build_observe_prompt()
+    file_context = _prompt_section(observe_prompt, "File Context", "Kept Tool Results")
     observe_raw = observe_prompt.split("Unreduced Raw Tool Results:\n", 1)[1].split("\n--- Blocking Feedback ---", 1)[0]
-    assert "one.txt" not in observe_raw
-    assert "two.txt" in observe_raw
-    assert "three.txt" in observe_raw
+    assert "one.txt" not in file_context
+    assert "two.txt" in file_context
+    assert "three.txt" in file_context
+    assert "<ReadToolResult>" not in observe_raw
+    assert "content=file_context" in observe_raw
 
 
 def test_unsourced_known_does_not_cover_unreduced_result(tmp_path, monkeypatch):
@@ -425,12 +449,111 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
     index, unreduced, latest = agent._format_act_tool_result_context()
     assert "one.txt" in unreduced
-    assert "one\n" in unreduced
+    assert "|one" not in unreduced
+    assert "content=file_context" in unreduced
     assert "two.txt" in latest
-    assert "two\n" in latest
+    assert "|two" not in latest
+    assert "content=file_context" in latest
     assert "recall=tr.1" in index
     assert "recall=tr.2" in index
     assert "output:\n<ReadToolResult>" not in index
+    file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Kept Tool Results")
+    assert "File: one.txt" in file_context
+    assert "|one" in file_context
+    assert "File: two.txt" in file_context
+    assert "|two" in file_context
+
+
+def test_act_prompt_file_context_replaces_overlapping_read_lines(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("old0\nold1\nold2\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read head", "args": ["sample.txt", "0,2"]}])
+    path.write_text("old0\nnew1\nnew2\n", encoding="utf-8")
+    agent.execute_tool_calls([{"name": "Read", "intention": "read overlap", "args": ["sample.txt", "1,3"]}])
+
+    prompt = agent.build_user_prompt()
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    latest = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    unreduced = _prompt_section(prompt, "Unreduced Tool Results", "Latest Tool Results")
+    assert "File: sample.txt" in file_context
+    assert "0:1 source=tr.1" in file_context
+    assert "1:3 source=tr.2" in file_context
+    assert "|old0" in file_context
+    assert "|new1" in file_context
+    assert "|new2" in file_context
+    assert "|old1" not in file_context
+    assert "<ReadToolResult>" not in latest
+    assert "<ReadToolResult>" not in unreduced
+    assert "content=file_context" in latest
+    assert "content=file_context" in unreduced
+
+
+def test_act_prompt_folds_excerpted_read_result(tmp_path):
+    path = tmp_path / "sample.txt"
+    path.write_text("x" * 20_000 + "\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": ["sample.txt", "0,1"]}])
+
+    prompt = agent.build_user_prompt()
+    latest = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert "<ReadToolResult>" not in latest
+    assert "excerpt" in latest
+    assert "recall=tr.1" in latest
+    assert "content=file_context" in latest or "content=recall" in latest
+    assert "x" * 100 not in latest
+
+
+def test_recall_read_projects_into_file_context_without_result_context(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_counter = 1
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(
+        description="success Read sample.txt 0,1",
+        value=_stored_read_result("alpha"),
+    )
+    agent = Agent(session)
+
+    latest = agent.execute_tool_calls([{"name": "Recall", "intention": "recall read", "args": ["tr.1"]}])
+
+    assert latest == ""
+    assert agent.tool_context.latest == []
+    assert list(session.state.tool_result_store) == ["tr.1"]
+    assert session.state.tool_result_counter == 1
+    prompt = agent.build_user_prompt()
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    latest_results = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert "File: sample.txt" in file_context
+    assert "0:1 source=tr.1" in file_context
+    assert "|alpha" in file_context
+    assert "tool=Recall" not in latest_results
+    assert "RecallToolResult" not in prompt
+
+
+def test_recalled_read_does_not_override_newer_read(tmp_path):
+    (tmp_path / "sample.txt").write_text("new\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_counter = 1
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(
+        description="success Read sample.txt 0,1",
+        value=_stored_read_result("old"),
+    )
+    agent = Agent(session)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read new", "args": ["sample.txt", "0,1"]}])
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall old", "args": ["tr.1"]}])
+
+    assert list(session.state.tool_result_store) == ["tr.1", "tr.2"]
+    assert session.state.tool_result_counter == 2
+    prompt = agent.build_user_prompt()
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    latest_results = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert "0:1 source=tr.2" in file_context
+    assert "|new" in file_context
+    assert "|old" not in file_context
+    assert "tool=Recall" not in latest_results
 
 
 def test_empty_observe_compacts_unreduced_tool_results(tmp_path, monkeypatch):
@@ -706,7 +829,11 @@ def test_act_prompt_includes_kept_tool_results(tmp_path):
 
     prompt = agent.build_user_prompt()
     assert "Kept Tool Results:" in prompt
-    assert "alpha unique" in prompt
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    kept = _prompt_section(prompt, "Kept Tool Results", "Unreduced Tool Results")
+    assert "alpha unique" in file_context
+    assert "<ReadToolResult>" not in kept
+    assert "content=file_context" in kept
     assert "beta unique" not in prompt
     assert len(agent.tool_context.kept_results) == 1
 
@@ -3005,10 +3132,12 @@ def test_agent_run_loops_tool_results_into_next_model_prompt(tmp_path):
     assert "log: .nanocode/sessions/" not in messages[0]
     assert messages[-1] == "done"
     assert len(fake_client.user_prompts) == 3
-    assert "<ReadToolResult>" in fake_client.user_prompts[1]
+    assert "File Context:" in fake_client.user_prompts[1]
+    assert "alpha" in fake_client.user_prompts[1]
+    assert "<ReadToolResult>" not in fake_client.user_prompts[1]
     assert "alpha" in fake_client.user_prompts[2]
     assert "Kept Tool Results:" in fake_client.user_prompts[2]
-    assert "<ReadToolResult>" in fake_client.user_prompts[2]
+    assert "<ReadToolResult>" not in fake_client.user_prompts[2]
     assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
     assert agent.blackboard.known == ["Read sample.txt and found alpha."]
@@ -3293,10 +3422,15 @@ def test_agent_run_keeps_tool_results_when_format_retry_happens(tmp_path, monkey
 
     assert response["actions"][-1]["message_for_complete"] == "done"
     assert len(agent.model_client.user_prompts) == 4
-    assert "<ReadToolResult>" in agent.model_client.user_prompts[1]
-    assert "<ReadToolResult>" in agent.model_client.user_prompts[2]
+    assert "File Context:" in agent.model_client.user_prompts[1]
+    assert "alpha" in agent.model_client.user_prompts[1]
+    assert "<ReadToolResult>" not in agent.model_client.user_prompts[1]
+    assert "File Context:" in agent.model_client.user_prompts[2]
+    assert "alpha" in agent.model_client.user_prompts[2]
+    assert "<ReadToolResult>" not in agent.model_client.user_prompts[2]
     assert "Kept Tool Results:" in agent.model_client.user_prompts[3]
-    assert "<ReadToolResult>" in agent.model_client.user_prompts[3]
+    assert "alpha" in agent.model_client.user_prompts[3]
+    assert "<ReadToolResult>" not in agent.model_client.user_prompts[3]
     assert 'tool=Read args=["sample.txt","0,1"]' in _blocks_text(agent.tool_context.latest)
     assert agent.tool_context.recent == []
 
@@ -3375,7 +3509,9 @@ def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
     assert response["actions"][-1]["message_for_complete"] == "done too early"
     assert "done too early" in messages
     assert len(agent.model_client.user_prompts) == 3
-    assert "<ReadToolResult>" in agent.model_client.user_prompts[1]
+    assert "File Context:" in agent.model_client.user_prompts[1]
+    assert "alpha" in agent.model_client.user_prompts[1]
+    assert "<ReadToolResult>" not in agent.model_client.user_prompts[1]
     assert "<ReadToolResult>" not in agent.model_client.user_prompts[2]
 
 
