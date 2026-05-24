@@ -1,6 +1,7 @@
 import os
 import signal
 import time
+from contextlib import suppress
 
 from nanocode import BashTool, RuntimeSettings, Session
 
@@ -89,7 +90,5 @@ def test_bash_tool_kills_process_group_on_interrupt(tmp_path, monkeypatch):
     finally:
         if pid_file.exists():
             pid = int(pid_file.read_text(encoding="utf-8").strip())
-            try:
+            with suppress(OSError):
                 os.killpg(pid, signal.SIGKILL)
-            except OSError:
-                pass

@@ -202,7 +202,7 @@ def test_search_tool_retries_rg_with_pcre2_for_lookaround(tmp_path, monkeypatch)
     session = Session(cwd=str(tmp_path))
     calls = []
 
-    def fake_run(cmd, text, stdout, stderr, timeout):
+    def fake_run(cmd, text, capture_output, timeout):
         calls.append(cmd)
         if "--pcre2" not in cmd:
             return nanocode.subprocess.CompletedProcess(

@@ -29,12 +29,13 @@ import threading
 import time
 import tomllib
 import uuid
-from contextlib import nullcontext
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Callable, ClassVar, Iterator, Iterable, Self, Type, TypeAlias
+from typing import Any, ClassVar, Self, TypeAlias
 from urllib.parse import urlparse
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
@@ -236,10 +237,7 @@ class KnownItem:
     @classmethod
     def from_json(cls, value: JsonValue) -> "KnownItem | None":
         item = _json_dict(value)
-        if item:
-            fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip()
-        else:
-            fact = (_json_str(value) or "").strip()
+        fact = (_json_str(item.get("text")) or _json_str(item.get("fact")) or "").strip() if item else (_json_str(value) or "").strip()
         if not fact:
             return None
         if fact.startswith("<") and fact.endswith(">"):
@@ -365,7 +363,7 @@ class UserRules:
     @classmethod
     def load(cls, path: str) -> "UserRules":
         try:
-            with open(path, "r", encoding="utf-8") as file:
+            with open(path, encoding="utf-8") as file:
                 return cls(file.read().strip())
         except FileNotFoundError:
             return cls()
@@ -425,9 +423,6 @@ class Blackboard:
         for text in texts:
             keys.update(TOOL_RESULT_KEY_REF_PATTERN.findall(str(text)))
         return {key for key in keys if key.startswith("tr.")}
-
-    def protected_result_sources(self) -> dict[str, str]:
-        return {key: "active lead" for item in self.leads if item.status == LeadStatus.ACTIVE for key in item.source if key.startswith("tr.")}
 
 
 @dataclass(frozen=True)
@@ -1251,7 +1246,7 @@ class Tool:
         return self.REQUIRES_CONFIRMATION if self.REQUIRES_CONFIRMATION is not None else self.EFFECT == ToolEffect.EDIT
 
 
-ToolClass: TypeAlias = Type[Tool]
+ToolClass: TypeAlias = type[Tool]
 
 
 @dataclass
@@ -1270,7 +1265,7 @@ class ToolCallExecution:
     call: ParsedToolCall
     outcome: str
     output: str
-    error_type: Type[Exception] | None = None
+    error_type: type[Exception] | None = None
     result_key: str = ""
     result_excerpted: bool = False
     requires_checks: bool = False
@@ -1419,9 +1414,6 @@ class ToolResultContext:
                 seen.add(key)
         return blocks
 
-    def raw_context_chars(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> int:
-        return len("\n\n".join(self.unreduced_recent_blocks(checkpoint, exclude_keys=exclude_keys) + self.latest_raw_blocks(exclude_keys=exclude_keys)))
-
     def _needs_reduction(self, block: str, checkpoint: int) -> bool:
         key = self.result_key(block)
         return self.is_full_block(block) and (self.result_counter(block) > checkpoint or key in self.reactivated_keys)
@@ -1538,8 +1530,7 @@ class ToolResultContext:
         if omitted:
             lines.append("Omitted stale content:")
             for path in sorted(omitted):
-                for source in sorted(omitted[path], key=cls._result_key_counter):
-                    lines.append("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]))
+                lines.extend("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]) for source in sorted(omitted[path], key=cls._result_key_counter))
             lines.append("")
 
         rendered = "\n".join(lines).rstrip()
@@ -1658,7 +1649,7 @@ class ToolResultContext:
         max_line = max(wanted)
         lines: dict[int, str] = {}
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     if index in wanted:
                         lines[index] = line
@@ -1708,14 +1699,17 @@ class ToolResultContext:
             if not path:
                 continue
             mtime_ns, size = cls._file_context_section_stat(section)
-            for clear_match in re.finditer(r"(?m)^[ \t]*<invalidate>(\d+):(\d+)</invalidate>", section):
-                items.append(FileContextItem(order, 0, "clear", source, path, int(clear_match.group(1)), int(clear_match.group(2)), "", mtime_ns, size))
+            items.extend(
+                FileContextItem(order, 0, "clear", source, path, int(clear_match.group(1)), int(clear_match.group(2)), "", mtime_ns, size)
+                for clear_match in re.finditer(r"(?m)^[ \t]*<invalidate>(\d+):(\d+)</invalidate>", section)
+            )
             for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", section):
                 content = match.group(1)
-                for line in content.splitlines():
-                    line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
-                    if line_match:
-                        items.append(FileContextItem(order, 1, "line", source, path, int(line_match.group(1)), 0, line, mtime_ns, size))
+                items.extend(
+                    FileContextItem(order, 1, "line", source, path, int(line_match.group(1)), 0, line, mtime_ns, size)
+                    for line in content.splitlines()
+                    if (line_match := re.match(r"(\d+):[0-9a-f]{6}\|", line))
+                )
         return items
 
     @staticmethod
@@ -1825,19 +1819,6 @@ class ToolResultContext:
             yield (path_match.group(1).strip() if path_match else default_path), section
 
     @classmethod
-    def bound_block(cls, block: str, *, max_chars: int) -> str:
-        if len(block) <= max_chars:
-            return block
-        if not cls.is_full_block(block):
-            return _shorten(block, max_chars)
-        header, output = block.split("\n  output:\n", 1)
-        separator = "\n  output:\n"
-        output_budget = max_chars - len(header) - len(separator)
-        if output_budget <= 0:
-            return _shorten(cls.compact_block(block), max_chars)
-        return header + separator + _bound_tool_output(output, max_chars=output_budget).value
-
-    @classmethod
     def result_key(cls, block: str) -> str:
         match = RESULT_KEY_PATTERN.search(block)
         return match.group(1) if match else ""
@@ -1883,7 +1864,7 @@ class SessionLock:
 
     def acquire(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.file = open(self.path, "a+", encoding="utf-8")
+        self.file = open(self.path, "a+", encoding="utf-8")  # noqa: SIM115 - lock file stays open while held
         try:
             fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -1901,10 +1882,8 @@ class SessionLock:
         fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
         self.file.close()
         self.file = None
-        try:
+        with suppress(OSError):
             os.remove(self.path)
-        except OSError:
-            pass
 
     def __enter__(self) -> Self:
         self.acquire()
@@ -1944,10 +1923,8 @@ def clean_sessions(session: Session, *, older_than_seconds: int = 0) -> None:
             continue
         if SessionLock.is_locked(os.path.join(session_dir, "session.lock")):
             continue
-        try:
+        with suppress(OSError):
             shutil.rmtree(session_dir)
-        except OSError:
-            pass
 
 
 ############################
@@ -2208,10 +2185,10 @@ class ReadTool(Tool):
         truncated = False
         bounded_read_lines = end - start if end else 0
         if end and bounded_read_lines <= self.MAX_LINES:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 selected_lines = list(itertools.islice(f, start, end))
         else:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 for index, line in enumerate(f):
                     total_lines = index + 1
                     if index < start:
@@ -2292,7 +2269,7 @@ class LineCountTool(Tool):
             return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
         total = 0
         for filepath in self.filepaths:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as file:
+            with open(filepath, encoding="utf-8", errors="replace") as file:
                 total += sum(1 for _ in file)
         return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
 
@@ -2353,8 +2330,7 @@ class ListTool(Tool):
                 entries.append({"name": entry.name, "path": entry.path, "type": entry_type})
         entries.sort(key=lambda item: (sort_order.get(str(item["type"]), 4), str(item["name"])))
         lines = ["<ListToolResult>"]
-        for e in entries:
-            lines.append(f"* ({e['type']}): {os.path.relpath(str(e['path']), self.cwd)}")
+        lines.extend(f"* ({e['type']}): {os.path.relpath(str(e['path']), self.cwd)}" for e in entries)
         lines.append("</ListToolResult>")
         return "\n".join(lines)
 
@@ -2552,10 +2528,10 @@ class SearchTool(Tool):
         path = os.path.join(cwd, ".gitignore")
         patterns = []
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(path, encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     pattern = line.strip()
-                    if not pattern or pattern.startswith("#") or pattern.startswith("!"):
+                    if not pattern or pattern.startswith(("#", "!")):
                         continue
                     patterns.append(pattern.lstrip("/"))
         except OSError:
@@ -2572,10 +2548,7 @@ class SearchTool(Tool):
             if not pattern:
                 continue
             if directory_only:
-                if "/" in pattern:
-                    matched = relpath == pattern or relpath.startswith(pattern + "/")
-                else:
-                    matched = pattern in parts
+                matched = (relpath == pattern or relpath.startswith(pattern + "/")) if "/" in pattern else pattern in parts
                 if matched:
                     return True
                 continue
@@ -2617,7 +2590,7 @@ class SearchTool(Tool):
         try:
             if os.path.getsize(path) > self.MAX_FILE_BYTES:
                 return []
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(path, encoding="utf-8", errors="ignore") as f:
                 for lineno, line in enumerate(f, start=1):
                     if lineno > end:
                         break
@@ -2688,14 +2661,14 @@ class SearchTool(Tool):
     def _call_rg(self, rg: str) -> str:
         pcre2 = False
         try:
-            proc = subprocess.run(self._rg_command(rg), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            proc = subprocess.run(self._rg_command(rg), text=True, capture_output=True, timeout=30)
         except subprocess.TimeoutExpired:
             raise ToolCallError("rg timed out")
         stderr = proc.stderr.lower()
         if proc.returncode not in (0, 1) and "pcre2" in stderr and ("look-around" in stderr or "look-ahead" in stderr or "look-behind" in stderr):
             pcre2 = True
             try:
-                proc = subprocess.run(self._rg_command(rg, pcre2=True), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                proc = subprocess.run(self._rg_command(rg, pcre2=True), text=True, capture_output=True, timeout=30)
             except subprocess.TimeoutExpired:
                 raise ToolCallError("rg timed out")
         if proc.returncode not in (0, 1):
@@ -2737,7 +2710,7 @@ class SearchTool(Tool):
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
                     continue
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(path, encoding="utf-8", errors="ignore") as f:
                     for lineno, line in enumerate(f, start=1):
                         text = line.rstrip("\n")
                         if not self._line_matches(text):
@@ -2761,7 +2734,7 @@ class SearchTool(Tool):
             try:
                 if os.path.getsize(path) > self.MAX_FILE_BYTES:
                     continue
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(path, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 for match in regex.finditer(content):
                     line_number = content.count("\n", 0, match.start()) + 1
@@ -3412,7 +3385,7 @@ class EditTool(Tool):
 
     def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
         try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
+            with open(self.filepath, encoding="utf-8") as f:
                 original = f.read()
         except FileNotFoundError:
             raise ToolCallError("file does not exist; use CreateFile for new files")
@@ -3618,14 +3591,10 @@ class BashTool(Tool):
         except OSError:
             data = b""
         if not data:
-            try:
+            with suppress(Exception):
                 selector.unregister(key.fileobj)
-            except Exception:
-                pass
-            try:
+            with suppress(Exception):
                 key.fileobj.close()
-            except Exception:
-                pass
             return False
         text = data.decode("utf-8", errors="replace")
         stream = "stdout" if key.data == "stdout" else "stderr"
@@ -3634,10 +3603,8 @@ class BashTool(Tool):
         else:
             stderr_parts.append(text)
         if live_output is not None:
-            try:
+            with suppress(Exception):
                 live_output(stream, text)
-            except Exception:
-                pass
         return True
 
 
@@ -3700,8 +3667,7 @@ class GitTool(Tool):
                 [self.git_path, *self.args],
                 cwd=self.cwd,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=self.timeout,
             )
             return _format_process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
@@ -4795,10 +4761,9 @@ class ModelClient:
         if remaining <= 0:
             raise ModelRequestTimeout("request model timeout")
         self._timeout_reason = "request model timeout"
-        if not first_output_seen and first_token_timeout is not None and first_token_timeout > 0:
-            if first_token_timeout < remaining:
-                remaining = first_token_timeout
-                self._timeout_reason = "request first token timeout"
+        if not first_output_seen and first_token_timeout is not None and 0 < first_token_timeout < remaining:
+            remaining = first_token_timeout
+            self._timeout_reason = "request first token timeout"
         signal.setitimer(signal.ITIMER_REAL, remaining)
 
     def _invalid_model_response(self, content: str, reason: str = "expected a function tool call") -> Json:
@@ -4831,10 +4796,7 @@ class ModelClient:
         for item in _json_list(data.get("output")):
             if _json_str(_json_dict(item).get("type")) != "message":
                 continue
-            for content in _json_list(_json_dict(item).get("content")):
-                text = _json_dict(content).get("text")
-                if isinstance(text, str):
-                    parts.append(text)
+            parts.extend(text for content in _json_list(_json_dict(item).get("content")) if isinstance(text := _json_dict(content).get("text"), str))
         return "".join(parts) if parts else None
 
     def _format_missing_message_content(self, result: JsonValue) -> str:
@@ -4851,7 +4813,7 @@ class ModelClient:
         message = _json_dict(choice.get("message"))
         details: Json = {
             "finish_reason": choice.get("finish_reason"),
-            "message_keys": sorted(str(key) for key in message.keys()),
+            "message_keys": sorted(str(key) for key in message),
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
 
@@ -4905,11 +4867,8 @@ class ToolCallDisplayFormatter:
             return ""
         offset = max(0, len(executions) - cls.DISPLAY_LIMIT)
         visible = executions[offset:]
-        lines = []
-        if offset:
-            lines.append("  ... " + str(offset) + " older")
-        for execution in visible:
-            lines.append(cls._format_execution(execution))
+        lines = ["  ... " + str(offset) + " older"] if offset else []
+        lines.extend(cls._format_execution(execution) for execution in visible)
         return "\n".join(lines)
 
     @classmethod
@@ -4969,7 +4928,7 @@ class ToolCallRunner:
             call: ParsedToolCall | None = None
             outcome = "success"
             output = ""
-            error_type: Type[Exception] | None = None
+            error_type: type[Exception] | None = None
             requires_confirmation = False
             requires_checks = False
             try:
@@ -5369,7 +5328,8 @@ class AgentStateUpdater:
             changed = True
         return changed
 
-    def _plan_item_from_json(self, value: JsonValue) -> PlanItem | None:
+    @staticmethod
+    def _plan_item_from_json(value: JsonValue, *, include_followups: bool = True) -> PlanItem | None:
         if isinstance(value, str):
             text = value.strip()
             return PlanItem(text=text) if text else None
@@ -5385,8 +5345,8 @@ class AgentStateUpdater:
             status=PlanStatus(status),
             id=_json_str(item.get("id")) or "",
             context=_json_str(item.get("context")) or "",
-            followup_action=self._plan_followup(item.get("followup_action")),
-            followup_check=self._plan_followup(item.get("followup_check")),
+            followup_action=AgentStateUpdater._plan_followup(item.get("followup_action")) if include_followups else PlanFollowup(),
+            followup_check=AgentStateUpdater._plan_followup(item.get("followup_check")) if include_followups else PlanFollowup(),
         )
 
     @staticmethod
@@ -5547,8 +5507,8 @@ class ConversationCompactor:
         tool_results = tool_results.strip()
         if count <= self.KEEP_RECENT and not tool_results:
             return 0
-        old_items = self.session.state.conversation[: -self.KEEP_RECENT] if count > self.KEEP_RECENT else []
-        keep_items = self.session.state.conversation[-self.KEEP_RECENT :] if count > self.KEEP_RECENT else list(self.session.state.conversation)
+        old_items = self.session.state.conversation[: -self.KEEP_RECENT]
+        keep_items = self.session.state.conversation[-self.KEEP_RECENT :]
         snapshot = self._summarize(old_items, tool_results=tool_results, recent_edits=recent_edits or [])
         self.session.state.conversation = [AssistantMessage(content=self.SNAPSHOT_HEADER + "\n" + snapshot)] + keep_items
         return count + (1 if tool_results else 0)
@@ -5570,17 +5530,20 @@ class ConversationCompactor:
         return snapshot.strip()
 
     def _format_blackboard(self) -> str:
-        lines = ["Goal:", self.blackboard.goal or "(empty)", "", "Plan:"]
-        lines.append("\n".join(item.format() for item in self.blackboard.plan) if self.blackboard.plan else "(empty)")
-        lines.extend(["", "Leads:", "\n".join(item.format() for item in self.blackboard.leads) if self.blackboard.leads else "(empty)"])
-        lines.extend(["", "Checks:", self.blackboard.checks.format() if self.blackboard.checks.has_context() else "(empty)"])
-        return "\n".join(lines)
+        return "\n\n".join(
+            (
+                "Goal:\n" + (self.blackboard.goal or "(empty)"),
+                "Plan:\n" + ("\n".join(item.format() for item in self.blackboard.plan) or "(empty)"),
+                "Leads:\n" + ("\n".join(item.format() for item in self.blackboard.leads) or "(empty)"),
+                "Checks:\n" + (self.blackboard.checks.format() if self.blackboard.checks.has_context() else "(empty)"),
+            )
+        )
 
     def _apply_snapshot_state(self, response: Json) -> None:
         goal = (_json_str(response.get("goal")) or "").strip()
         if goal:
             self.blackboard.goal = goal
-        plan = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(response.get("plan"))) if item]
+        plan = [item for item in (AgentStateUpdater._plan_item_from_json(raw, include_followups=False) for raw in _json_list(response.get("plan"))) if item]
         if plan:
             self.blackboard.plan = plan
         leads = [item for item in (Lead.from_json(raw) for raw in _json_list(response.get("leads"))) if item]
@@ -5600,44 +5563,26 @@ class ConversationCompactor:
         if rules_changed:
             self.session.save_user_rules()
 
-    @staticmethod
-    def _plan_item_from_json(value: JsonValue) -> PlanItem | None:
-        if isinstance(value, str):
-            text = value.strip()
-            return PlanItem(text=text) if text else None
-        item = _json_dict(value)
-        text = _json_str(item.get("text")) or ""
-        if not text:
-            return None
-        status = _json_str(item.get("status")) or PlanStatus.TODO
-        if status not in ALL_PLAN_STATUSES:
-            status = PlanStatus.TODO
-        return PlanItem(text=text, status=PlanStatus(status), id=_json_str(item.get("id")) or "", context=_json_str(item.get("context")) or "")
-
     def _apply_snapshot_checks(self, item: Json) -> None:
         if not item:
             return
         status = _json_str(item.get("status")) or ""
         if status in frozenset(CheckStatus):
             self.blackboard.checks.status = CheckStatus(status)
-        if "method" in item:
-            self.blackboard.checks.method = _json_str(item.get("method")) or ""
-        if "context" in item:
-            self.blackboard.checks.context = _json_str(item.get("context")) or ""
+        for field_name in ("method", "context"):
+            if field_name in item:
+                setattr(self.blackboard.checks, field_name, _json_str(item.get(field_name)) or "")
         blocker = _json_str(item.get("blocker")) or ""
         if blocker in ALL_CHECK_BLOCKERS:
             self.blackboard.checks.blocker = CheckBlocker(blocker)
 
     @staticmethod
     def _response_json(response: Json) -> Json:
-        if response and response.get("_assistant_text") is None:
+        if response and "_assistant_text" not in response:
             return response
         text = (_json_str(response.get("_assistant_text")) or "").strip()
-        for pattern in (r"(?ms)^```(?:json)?\s*(.*?)\s*```$", r"(?ms)```(?:json)?\s*(.*?)\s*```"):
-            match = re.search(pattern, text)
-            if match:
-                text = match.group(1).strip()
-                break
+        if match := re.search(r"(?ms)```(?:json)?\s*(.*?)\s*```", text):
+            text = match.group(1).strip()
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -5936,10 +5881,9 @@ class Agent:
                 format_error = _json_str(response.get("_format_error"))
                 if format_error:
                     consecutive_format_errors += 1
-                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS:
-                        if on_format_error_limit is not None:
-                            self._remember_format_gate(format_error)
-                            return on_format_error_limit(response, format_error)
+                    if consecutive_format_errors >= self.MAX_CONSECUTIVE_FORMAT_ERRORS and on_format_error_limit is not None:
+                        self._remember_format_gate(format_error)
+                        return on_format_error_limit(response, format_error)
                     self._handle_format_gate(response, format_error, consecutive_format_errors, on_message)
                     continue
                 consecutive_format_errors = 0
@@ -6206,11 +6150,7 @@ class Agent:
             )
             if is_tool:
                 streamed_tool_batch_started = True
-            if latest_result.done or self.stream_stop_requested:
-                return True
-            if is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions):
-                return True
-            return False
+            return latest_result.done or self.stream_stop_requested or (is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions))
 
         system_prompt, user_prompt, activity, tool_schemas = self._prepare_request_context()
         response = self.request(
@@ -6418,7 +6358,7 @@ class Agent:
                     action_bad_outputs.append(bad_output)
         if action_errors:
             return self._invalid_action_response(response, "; ".join(action_errors), "\n".join(action_bad_outputs) or None)
-        extra_keys = sorted(str(key) for key in response.keys() if key not in {"actions", "_assistant_text"} and not str(key).startswith("_format_"))
+        extra_keys = sorted(str(key) for key in response if key not in {"actions", "_assistant_text"} and not str(key).startswith("_format_"))
         if extra_keys:
             return self._invalid_action_response(response, "unexpected top-level keys: " + ", ".join(extra_keys))
         return None
@@ -7698,10 +7638,8 @@ class ModelRetryShortcut:
             signal.signal(signal.SIGQUIT, self.previous_handler)
             self.previous_handler = None
         if self.fd is not None and self.original_attrs is not None:
-            try:
+            with suppress(termios.error):
                 termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_attrs)
-            except termios.error:
-                pass
         self.fd = None
         self.original_attrs = None
 
@@ -7888,10 +7826,8 @@ class AgentLoop:
         self._runtime_ui_ready.wait(timeout=0.2)
         app = self._runtime_ui_app
         if app is not None:
-            try:
+            with suppress(Exception):
                 app.exit()
-            except Exception:
-                pass
         thread.join(timeout=0.8)
         stopped = not thread.is_alive()
         if stopped:
@@ -8268,10 +8204,9 @@ class AgentLoop:
             self._emit("Invalid selection: " + raw_choice)
 
     def _select_model(self, models: tuple[str, ...], current_model: str) -> SelectionResult:
-        labels = {current_model: current_model + " (current)"} if current_model in models else {}
-        for label in CommandDispatcher.MODEL_LABELS:
-            if label in models:
-                labels[label] = label
+        labels = {label: label for label in CommandDispatcher.MODEL_LABELS if label in models}
+        if current_model in models:
+            labels[current_model] = current_model + " (current)"
         while True:
             selected = self._select_choice("Model", models, labels, current=current_model, disabled=set(CommandDispatcher.MODEL_LABELS))
             if not isinstance(selected, str) or selected not in CommandDispatcher.MODEL_LABELS:
@@ -8298,10 +8233,8 @@ class AgentLoop:
             import termios
         except ImportError:
             return
-        try:
+        with suppress(AttributeError, OSError, termios.error):
             termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-        except (AttributeError, OSError, termios.error):
-            pass
 
     def _make_prompt_session(self):
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
@@ -8572,7 +8505,7 @@ class AgentLoop:
         self._emit_segments([("ansicyan", message + "\n")], message)
 
     def _is_tool_call_line(self, line: str) -> bool:
-        return line.startswith("[success] ") or line.startswith("[failure] ")
+        return line.startswith(("[success] ", "[failure] "))
 
     def _emit_segments(self, segments: list[tuple[str, str]], plain: str, *, end: str = "\n") -> None:
         if self.output_fn is print:

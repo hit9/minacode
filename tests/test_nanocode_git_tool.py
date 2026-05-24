@@ -9,7 +9,7 @@ from nanocode import GitTool, Session, ToolCallError
 def test_git_tool_runs_readonly_git_command(tmp_path):
     if not shutil.which("git"):
         pytest.skip("git not installed")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
