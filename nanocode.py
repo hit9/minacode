@@ -734,13 +734,9 @@ class Config:
             return ()
         if not isinstance(value, list):
             raise ConfigError(f"config value `{key}` must be a string array")
-        models = []
-        for item in value:
-            if not isinstance(item, str):
-                raise ConfigError(f"config value `{key}` must be a string array")
-            if item := item.strip():
-                models.append(item)
-        return tuple(models)
+        if any(not isinstance(item, str) for item in value):
+            raise ConfigError(f"config value `{key}` must be a string array")
+        return tuple(item for raw in value if (item := raw.strip()))
 
 
 class ConfigFile:
@@ -802,8 +798,7 @@ yolo = false
         config_path = os.path.expanduser(path) if path else cls.path()
         if os.path.exists(config_path):
             return config_path, False
-        parent = os.path.dirname(config_path)
-        if parent:
+        if parent := os.path.dirname(config_path):
             os.makedirs(parent, exist_ok=True)
         with open(config_path, "w", encoding="utf-8") as file:
             file.write(cls.DEFAULT_TEXT)
@@ -892,15 +887,11 @@ class Session:
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
-        if not os.path.isabs(path):
-            path = os.path.join(self.cwd, path)
-        return os.path.abspath(path)
+        return os.path.abspath(path if os.path.isabs(path) else os.path.join(self.cwd, path))
 
     def data_path(self, *parts: str) -> str:
         base = os.path.expanduser(self.config.data_dir)
-        if not os.path.isabs(base):
-            base = os.path.join(self.cwd, base)
-        return os.path.abspath(os.path.join(base, *parts))
+        return os.path.abspath(os.path.join(base if os.path.isabs(base) else os.path.join(self.cwd, base), *parts))
 
     def is_path_in_cwd(self, path: str) -> bool:
         cwd = os.path.realpath(self.cwd)
@@ -996,11 +987,7 @@ class DebugTrace:
 
     @staticmethod
     def tool_names(tool_schemas: list[Json] | None) -> list[str]:
-        names = []
-        for schema in tool_schemas or []:
-            function = _json_dict(schema.get("function")) or schema
-            names.append(_json_str(function.get("name")) or "(unknown)")
-        return names
+        return [_json_str((_json_dict(schema.get("function")) or schema).get("name")) or "(unknown)" for schema in tool_schemas or []]
 
     @classmethod
     def model_request(
@@ -1176,13 +1163,7 @@ class Tool:
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        tokens: list[str] = []
-        for arg in args:
-            if isinstance(arg, dict):
-                tokens.extend(cls.cli_object_args(arg))
-            else:
-                tokens.append(cls.cli_token(arg))
-        return tokens
+        return [token for arg in args for token in (cls.cli_object_args(arg) if isinstance(arg, dict) else [cls.cli_token(arg)])]
 
     @classmethod
     def cli_object_args(cls, value: Json) -> list[str]:
@@ -1285,7 +1266,7 @@ def _tool_output_line_count(output: str) -> int:
     return output.count("\n") + (0 if output.endswith("\n") else 1)
 
 
-def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> BoundedToolOutput:
+def _bound_tool_output(output: str, *, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> BoundedToolOutput:
     original_chars = len(output)
     original_lines = _tool_output_line_count(output)
     if original_chars <= max_chars:
@@ -1368,14 +1349,8 @@ class ToolResultContext:
         if not observed:
             return
         self.reactivated_keys.difference_update(observed_keys)
-
-        def compact(block: str) -> str:
-            if self.is_full_block(block) and self.result_counter(block) in observed:
-                return self.compact_block(block)
-            return block
-
-        self.recent = [compact(block) for block in self.recent]
-        self.latest = [compact(block) for block in self.latest]
+        self.recent = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.recent]
+        self.latest = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.latest]
 
     def current_timeline_blocks(self) -> list[str]:
         seen: set[str] = set()
@@ -1389,18 +1364,15 @@ class ToolResultContext:
             blocks.append(self.compact_block(block))
         return blocks
 
-    def latest_raw_blocks(self, *, exclude_keys: set[str] | None = None) -> list[str]:
-        excluded = exclude_keys or set()
-        return [block for block in self.latest if self.is_full_block(block) and self.result_key(block) not in excluded]
+    def latest_raw_blocks(self) -> list[str]:
+        return [block for block in self.latest if self.is_full_block(block)]
 
-    def unreduced_recent_blocks(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> list[str]:
-        excluded = exclude_keys or set()
+    def unreduced_recent_blocks(self, checkpoint: int) -> list[str]:
         latest_keys = set(self.blocks_by_key(self.latest))
         return [
             block
             for block in self.recent
-            for key in [self.result_key(block)]
-            if key not in latest_keys and key not in excluded and self._needs_reduction(block, checkpoint)
+            if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)
         ]
 
     def unreduced_blocks(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> list[str]:
@@ -1434,11 +1406,11 @@ class ToolResultContext:
         lines.extend(["  output:", execution.output])
         return "\n".join(lines)
 
-    def reactivate_result_blocks(self, blocks: list[str], *, max_index_items: int, checkpoint: int, append: bool = False) -> list[str]:
+    def reactivate_result_blocks(self, blocks: list[str], *, max_index_items: int, checkpoint: int, append: bool = False) -> None:
         blocks = [block for block in blocks if self.is_full_block(block) and self.result_key(block)]
         keys = set(self.blocks_by_key(blocks))
         if not keys:
-            return []
+            return
         self.recent = [block for block in self.recent if self.result_key(block) not in keys]
         self.latest = [block for block in self.latest if self.result_key(block) not in keys]
         self.reactivated_keys.update(keys)
@@ -1446,7 +1418,6 @@ class ToolResultContext:
             self.recent.extend(self.latest)
         self.latest = [*self.latest, *blocks] if append else blocks
         self.prune_recent(max_index_items=max_index_items, checkpoint=checkpoint)
-        return [key for key in self.blocks_by_key(blocks) if key in keys]
 
     @staticmethod
     def is_full_block(block: str) -> bool:
@@ -1846,12 +1817,8 @@ StatusAction: TypeAlias = Callable[[], str]
 StatusRunner: TypeAlias = Callable[[StatusAction], str]
 
 
-class SelectionBack:
-    pass
-
-
-SELECTION_BACK = SelectionBack()
-SelectionResult: TypeAlias = str | None | SelectionBack
+SELECTION_BACK = object()
+SelectionResult: TypeAlias = str | None | object
 ReasoningSelector: TypeAlias = Callable[[], SelectionResult]
 ModelSelector: TypeAlias = Callable[[tuple[str, ...], str], SelectionResult]
 ProviderSelector: TypeAlias = Callable[[tuple[str, ...], str], SelectionResult]
@@ -2083,12 +2050,10 @@ class ReadTool(Tool):
     @classmethod
     def _payload_from_args(cls, args: list[JsonValue]) -> Json | None:
         objects = [_json_object_arg(arg) for arg in args]
-        if len(objects) == 1 and objects[0] is not None:
+        if len(objects) == 1:
             return objects[0]
-        if len(objects) > 1:
-            files = [obj for obj in objects if obj is not None and "files" not in obj]
-            if len(files) == len(objects):
-                return {"files": files}
+        if len(objects) > 1 and all(obj is not None and "files" not in obj for obj in objects):
+            return {"files": objects}
         return None
 
     @classmethod
@@ -2464,9 +2429,7 @@ class SearchTool(Tool):
     @classmethod
     def _payloads_from_args(cls, args: list[JsonValue]) -> list[Json] | None:
         objects = [_json_object_arg(arg) for arg in args]
-        if not objects or any(obj is None for obj in objects):
-            return None
-        return [obj for obj in objects if obj is not None]
+        return None if not objects or any(obj is None for obj in objects) else objects
 
     @classmethod
     def _parse_request(cls, session: Session, payload: Json) -> Request:
@@ -2526,17 +2489,11 @@ class SearchTool(Tool):
     @staticmethod
     def _load_gitignore_patterns(cwd: str) -> list[str]:
         path = os.path.join(cwd, ".gitignore")
-        patterns = []
         try:
             with open(path, encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    pattern = line.strip()
-                    if not pattern or pattern.startswith(("#", "!")):
-                        continue
-                    patterns.append(pattern.lstrip("/"))
+                return [pattern.lstrip("/") for line in f if (pattern := line.strip()) and not pattern.startswith(("#", "!"))]
         except OSError:
-            pass
-        return patterns
+            return []
 
     def _is_gitignored(self, path: str) -> bool:
         relpath = self._relpath(path).replace(os.sep, "/")
@@ -2801,14 +2758,10 @@ class SearchTool(Tool):
             return self._format_result("python", [], False)
 
         rg = shutil.which("rg")
-        if rg:
-            return self._call_rg(rg)
-        return self._call_python()
+        return self._call_rg(rg) if rg else self._call_python()
 
     def call(self) -> str:
-        if self.requests:
-            return self._call_batch()
-        return self._call_single()
+        return self._call_batch() if self.requests else self._call_single()
 
 
 CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT = 20
@@ -3053,12 +3006,9 @@ class InspectCodeTool(Tool):
         target = str(args[1]).strip()
         if not target:
             raise ToolCallArgError("target cannot be empty")
-        if len(args) == 2:
-            options = {}
-        else:
-            options = _json_dict(args[2])
-            if not options:
-                raise ToolCallArgError("options must be an object")
+        options = {} if len(args) == 2 else _json_dict(args[2])
+        if len(args) == 3 and not options:
+            raise ToolCallArgError("options must be an object")
         limit = cls.DEFAULT_LIMIT
         if mode == "find":
             cls._validate_symbolish(target, "query")
@@ -3523,7 +3473,13 @@ class BashTool(Tool):
                 if proc.returncode is None:
                     self._kill_process_group(proc)
                     proc.wait()
-                return self._interrupted_result("".join(stdout_parts), "".join(stderr_parts))
+                return _format_process_result(
+                    "BashToolResult",
+                    -1,
+                    "".join(stdout_parts),
+                    "".join(stderr_parts),
+                    details=("* interrupted: true", "* reason: user_ctrl_c"),
+                )
             except BaseException:
                 if proc.returncode is None:
                     self._kill_process_group(proc)
@@ -3537,27 +3493,10 @@ class BashTool(Tool):
             stdout_text = "".join(stdout_parts)
             stderr_text = "".join(stderr_parts)
             if timed_out:
-                if stderr_text:
-                    stderr_text += "\n"
-                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + "timeout")
+                return _format_process_result("BashToolResult", -1, stdout_text, stderr_text + ("\n" if stderr_text else "") + "timeout")
             return _format_process_result("BashToolResult", proc.returncode, stdout_text, stderr_text)
         except OSError as error:
             raise ToolCallError(str(error))
-
-    @staticmethod
-    def _interrupted_result(stdout: str, stderr: str) -> str:
-        lines = [
-            "<BashToolResult>",
-            "* exit_code: -1",
-            "* interrupted: true",
-            "* reason: user_ctrl_c",
-        ]
-        if stdout:
-            lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
-        if stderr:
-            lines.extend(["<stderr>", stderr.rstrip("\n"), "</stderr>"])
-        lines.append("</BashToolResult>")
-        return "\n".join(lines)
 
     @staticmethod
     def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -3597,14 +3536,10 @@ class BashTool(Tool):
                 key.fileobj.close()
             return False
         text = data.decode("utf-8", errors="replace")
-        stream = "stdout" if key.data == "stdout" else "stderr"
-        if key.data == "stdout":
-            stdout_parts.append(text)
-        else:
-            stderr_parts.append(text)
+        (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
         if live_output is not None:
             with suppress(Exception):
-                live_output(stream, text)
+                live_output(str(key.data), text)
         return True
 
 
@@ -4929,7 +4864,6 @@ class ToolCallRunner:
             outcome = "success"
             output = ""
             error_type: type[Exception] | None = None
-            requires_confirmation = False
             requires_checks = False
             try:
                 call = item if isinstance(item, ParsedToolCall) else self.parse_tool_call(item)
@@ -4941,12 +4875,9 @@ class ToolCallRunner:
                     tool.live_output = self.live_output
                 requires_checks = tool.EFFECT == ToolEffect.EDIT
                 preview_error = getattr(tool, "preview_error", None)
-                if callable(preview_error):
-                    preview_error_text = str(preview_error())
-                    if preview_error_text:
-                        raise ToolCallError("preview unavailable: " + preview_error_text)
-                requires_confirmation = tool.requires_confirmation(self.session)
-                if requires_confirmation:
+                if callable(preview_error) and (preview_error_text := str(preview_error())):
+                    raise ToolCallError("preview unavailable: " + preview_error_text)
+                if tool.requires_confirmation(self.session):
                     if self.session.settings.yolo:
                         if on_auto_approve is not None:
                             on_auto_approve(call, tool)
@@ -4956,12 +4887,9 @@ class ToolCallRunner:
                         confirmation = confirm(call, tool)
                         if confirmation is not True:
                             reason = " ".join(confirmation.split()) if isinstance(confirmation, str) else ""
-                            if reason:
-                                raise Cancellation("user refused: " + reason)
-                            raise Cancellation("user refused")
+                            raise Cancellation("user refused" + (": " + reason if reason else ""))
                 output = tool.call()
-                exit_match = re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)
-                if exit_match and int(exit_match.group(1)) != 0:
+                if (exit_match := re.search(r"^\* exit_code: (-?\d+)$", output, re.MULTILINE)) and int(exit_match.group(1)) != 0:
                     outcome = "failure"
             except Cancellation as error:
                 outcome = "failure"
@@ -4973,9 +4901,7 @@ class ToolCallRunner:
                 error_type = type(error)
             if call is None:
                 raw = _json_dict(item)
-                summary = "invalid tool action"
-                if _json_str(raw.get("type")) == "tool" and not _json_str(raw.get("name")):
-                    summary += ": missing required field name"
+                summary = "invalid tool action" + (": missing required field name" if _json_str(raw.get("type")) == "tool" and not _json_str(raw.get("name")) else "")
                 call = ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
             result_key = ""
             result_excerpted = False
@@ -4995,11 +4921,10 @@ class ToolCallRunner:
                 requires_checks=outcome == "success" and requires_checks,
             )
             executions.append(execution)
-            if outcome == "failure" and error_type is not Cancellation:
-                self.skipped_after_failure_count = len(items) - index - 1
-                self.skipped_after_failure_key = result_key or _format_tool_call_summary(call)
-                break
-            if error_type is Cancellation:
+            if outcome == "failure":
+                if error_type is not Cancellation:
+                    self.skipped_after_failure_count = len(items) - index - 1
+                    self.skipped_after_failure_key = result_key or _format_tool_call_summary(call)
                 break
 
         self.latest_executions = executions
@@ -5038,7 +4963,7 @@ class ToolCallRunner:
             description += " - " + call.intention
         log_path = self._write_tool_result_log(key, output)
         tool_class = TOOL_REGISTRY.get(call.name)
-        bounded = _bound_tool_output(output, log_path=log_path, max_chars=tool_class.OUTPUT_CHARS if tool_class is not None else MAX_TOOL_OUTPUT_CHARS)
+        bounded = _bound_tool_output(output, max_chars=tool_class.OUTPUT_CHARS if tool_class is not None else MAX_TOOL_OUTPUT_CHARS)
         self.session.state.tool_result_store[key] = ToolResultItem(
             description=description,
             value=bounded.value,
@@ -6583,7 +6508,7 @@ class Agent:
             return True
         return False
 
-    def _gate_task_state(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
+    def _gate_task_state(self, ctx: ResponseContext) -> bool:
         if (
             not (self.blackboard.goal or self.blackboard.plan or self.blackboard.leads)
             and any(execution.call.name == BashTool.NAME and execution.outcome == "success" for execution in self.tool_runner.latest_executions)
@@ -6633,7 +6558,7 @@ class Agent:
         if on_message is not None and ctx.assistant_text and ctx.actions and not ctx.completion_message:
             on_message(ctx.assistant_text)
 
-    def _gate_after_apply(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult | None:
+    def _gate_after_apply(self, ctx: ResponseContext) -> AgentRunResult | None:
         if ctx.plan_was_empty and not self.blackboard.plan and (ctx.pending_check_requested or ctx.has_edit_tool_call):
             self._warn_agent("mutating work before Plan was set.", self.RULE_GOAL_PLAN_FIRST)
         if (
@@ -6831,7 +6756,7 @@ class Agent:
             ctx = self._build_response_context(response)
             feedback_checkpoint = len(self.agent_feedback_errors)
             DebugTrace.handle_event(self, "handle-start", ctx, response)
-            if self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx, on_message):
+            if self._gate_protocol_actions(ctx, on_message) or self._gate_tool_actions(ctx, on_message) or self._gate_task_state(ctx):
                 DebugTrace.handle_event(self, "handle-gated-before-apply", ctx, response)
                 return AgentRunResult()
 
@@ -6853,7 +6778,7 @@ class Agent:
                 DebugTrace.handle_event(self, "handle-user-rule", ctx, response)
                 return AgentRunResult(done=True, value=response)
 
-            gate_result = self._gate_after_apply(ctx, on_message)
+            gate_result = self._gate_after_apply(ctx)
             if gate_result is not None:
                 DebugTrace.handle_event(self, "handle-gated-after-apply", ctx, response, result=gate_result)
                 return gate_result
@@ -7105,7 +7030,7 @@ class CommandDispatcher:
                 ids.append(model_id)
         return tuple(dict.fromkeys(sorted(ids)))
 
-    def _set_model(self, model: str, *, back_to_model: bool = False) -> str | SelectionBack:
+    def _set_model(self, model: str, *, back_to_model: bool = False) -> SelectionResult:
         message = "Set provider.model = " + model
         choice = self.select_reasoning() if self.select_reasoning is not None else None
         if choice is SELECTION_BACK:
@@ -8164,14 +8089,11 @@ class AgentLoop:
                     return selected
                 continue
 
-            lines = []
-            index = 1
-            for choice in visible_choices:
-                if choice in disabled:
-                    lines.append("  " + labels.get(choice, choice))
-                    continue
-                lines.append("  " + str(index) + ". " + labels.get(choice, choice))
-                index += 1
+            enabled_index = {choice: str(index) for index, choice in enumerate(enabled_choices, start=1)}
+            lines = [
+                "  " + (labels.get(choice, choice) if choice in disabled else enabled_index[choice] + ". " + labels.get(choice, choice))
+                for choice in visible_choices
+            ]
             self._emit(title + ((" /" + query) if query else "") + ":\n" + "\n".join(lines))
             prompt = "Select " + title.lower() + " [1-" + str(len(enabled_choices)) + "] or /keyword "
             try:
@@ -8647,8 +8569,8 @@ def _make_unified_diff(old_content: str, new_content: str, filepath: str) -> str
     )
 
 
-def _format_process_result(tag: str, exit_code: int, stdout: str, stderr: str) -> str:
-    lines = [f"<{tag}>", f"* exit_code: {exit_code}"]
+def _format_process_result(tag: str, exit_code: int, stdout: str, stderr: str, *, details: tuple[str, ...] = ()) -> str:
+    lines = [f"<{tag}>", f"* exit_code: {exit_code}", *details]
     if stdout:
         lines.extend(["<stdout>", stdout.rstrip("\n"), "</stdout>"])
     if stderr:
@@ -8666,11 +8588,7 @@ def _json_list(value: JsonValue) -> list[JsonValue]:
 
 
 def _json_str(value: JsonValue) -> str | None:
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return None
-    return str(value)
+    return value if isinstance(value, str) else None if value is None else str(value)
 
 
 def _json_object_arg(value: JsonValue) -> Json | None:
@@ -8708,48 +8626,34 @@ class CommandCompleter(Completer):
     def _values(self, values: Iterable[str] | Callable[[], Iterable[str]]) -> Iterable[str]:
         return values() if callable(values) else values
 
+    @staticmethod
+    def _complete_values(values: Iterable[str], text: str) -> Iterator[Completion]:
+        for value in values:
+            if value.startswith(text):
+                yield Completion(value, start_position=-len(text))
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if text.startswith("/set "):
             text = text[len("/set ") :]
             if " " not in text:
-                for key in CONFIG_SET_KEYS:
-                    if key.startswith(text):
-                        yield Completion(key, start_position=-len(text))
+                yield from self._complete_values(CONFIG_SET_KEYS, text)
                 return
             key, _, value_prefix = text.partition(" ")
-            for value in CONFIG_VALUE_COMPLETIONS.get(key, ()):
-                if value.startswith(value_prefix):
-                    yield Completion(value, start_position=-len(value_prefix))
+            yield from self._complete_values(CONFIG_VALUE_COMPLETIONS.get(key, ()), value_prefix)
             return
-        if text.startswith("/provider "):
-            text = text[len("/provider ") :]
-            for provider in self._values(self.providers):
-                if provider.startswith(text):
-                    yield Completion(provider, start_position=-len(text))
-            return
-        if text.startswith("/model "):
-            text = text[len("/model ") :]
-            for model in self._values(self.models):
-                if model.startswith(text):
-                    yield Completion(model, start_position=-len(text))
-            return
-        if text.startswith("/api "):
-            text = text[len("/api ") :]
-            for value in ("auto", "chat", "responses"):
-                if value.startswith(text):
-                    yield Completion(value, start_position=-len(text))
-            return
-        if text.startswith("/reason-payload "):
-            text = text[len("/reason-payload ") :]
-            for value in CHAT_REASONING_CHOICES:
-                if value.startswith(text):
-                    yield Completion(value, start_position=-len(text))
-            return
+        for prefix, values in (
+            ("/provider ", self._values(self.providers)),
+            ("/model ", self._values(self.models)),
+            ("/api ", ("auto", "chat", "responses")),
+            ("/reason-payload ", CHAT_REASONING_CHOICES),
+        ):
+            if text.startswith(prefix):
+                yield from self._complete_values(values, text[len(prefix) :])
+                return
         if text.startswith("/") and " " not in text:
-            for spec in COMMANDS:
-                if spec.name.startswith(text):
-                    yield Completion(spec.name, start_position=-len(text))
+            yield from (Completion(spec.name, start_position=-len(text)) for spec in COMMANDS if spec.name.startswith(text))
+            return
 
 
 class CommandLexer(Lexer):
