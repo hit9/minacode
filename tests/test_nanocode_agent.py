@@ -1254,6 +1254,24 @@ def test_observe_rejects_invalid_action_and_allows_empty_actions(tmp_path):
     assert agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter) == []
 
 
+def test_observe_rejects_search_with_context_tool_guidance(tmp_path):
+    agent = Agent(_session(tmp_path, debug=True))
+    agent.mode = nanocode.AgentMode.OBSERVE
+    agent.tool_context.latest = ['- ok tool=Read args=["a"] key=tr.1\n  output:\na']
+    messages = []
+
+    result = agent.handle_response(
+        {"actions": [{"type": "tool", "name": "Search", "intention": "keep investigating", "args": _search_args("needle")}]},
+        on_message=messages.append,
+    )
+
+    assert result.done is False
+    assert agent.mode == nanocode.AgentMode.OBSERVE
+    assert messages == ["Protocol_Gate: invalid observe tool(s): Search."]
+    assert any("Search is not available in OBSERVE" in error for error in agent.observe_feedback_errors)
+    assert any("Keep, Forget, or Recall" in error for error in agent.observe_feedback_errors)
+
+
 def test_observe_compacts_unmentioned_result_keys_by_default(tmp_path):
     agent = Agent(_session(tmp_path, debug=True))
     agent.mode = nanocode.AgentMode.OBSERVE

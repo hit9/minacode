@@ -4016,6 +4016,9 @@ Observe Errors:
 --- Output Guide ---
 
 Use function tools only.
+OBSERVE may only use context tools: Keep, Forget, Recall.
+Never use work tools during OBSERVE: Search, Read, Edit, Bash, InspectCode, CreateFile, List, LineCount, Git.
+If more investigation is needed, first finish OBSERVE with Keep/Forget/Recall; ACT will continue after context reduction.
 Keep raw results needed for the next step; forget noise.
 Preserve important conclusions with SOURCE-backed Facts or Leads.
 
@@ -4027,6 +4030,9 @@ AGENT_OBSERVE_SYSTEM_PROMPT = """You are nanocode's context reducer.
 Use function tools only. No prose.
 
 Reduce raw tool results before ACT continues.
+Allowed tools in OBSERVE: Keep, Forget, Recall.
+Forbidden tools in OBSERVE: Search, Read, Edit, Bash, InspectCode, CreateFile, List, LineCount, Git.
+If more work is needed, finish OBSERVE first; ACT will continue after context reduction.
 Keep only what affects the next step.
 Forget noise; omitted results are compacted.
 Preserve durable conclusions as source-backed Facts or Leads.
@@ -6767,11 +6773,12 @@ class Agent:
             return gate_result
         non_context_tool_error = self._non_context_tool_error(ctx.tool_calls)
         if non_context_tool_error:
+            detail = non_context_tool_error + " is not available in OBSERVE; use Keep, Forget, or Recall to reduce current results first. ACT may use work tools after OBSERVE completes."
             return self._reject_result(
                 self._remember_observe_error,
                 on_message,
-                self._error("observe only accepts context tools: " + non_context_tool_error + ".", "use Keep, Forget, or Recall while observing."),
-                "Retrying: observe latest results with context tools only.",
+                self._error(detail, "OBSERVE only accepts context tools: Keep, Forget, Recall."),
+                "Retrying: OBSERVE only accepts Keep, Forget, or Recall.",
                 "Protocol_Gate: invalid observe tool(s): " + non_context_tool_error + ".",
             )
         context_actions = ctx.actions + self._context_actions_from_tool_calls(ctx.tool_calls)
