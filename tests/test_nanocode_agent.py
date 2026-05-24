@@ -1979,6 +1979,30 @@ def test_agent_request_chat_stream_parses_function_tool_event(tmp_path, monkeypa
     assert session.state.last_total_tokens == 5
 
 
+def test_agent_request_chat_stream_maps_named_tool_arguments(tmp_path, monkeypatch):
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return iter(
+                [
+                    _stream_chunk({"tool_calls": [{"index": 0, "function": {"name": "Bash", "arguments": '{"intention":"check diff",'}}]}),
+                    _stream_chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"command":"git diff -- nanocode.py"}'}}]}),
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(nanocode, "OpenAI", FakeOpenAI)
+    session = _session(tmp_path, api_url="https://example.test/v1", api_key="key", model="model")
+
+    response = Agent(session).request("system", "user", tool_schemas=[nanocode.BashTool.tool_schema()])
+
+    assert response == {
+        "actions": [{"type": "tool", "name": "Bash", "intention": "check diff", "args": ["git diff -- nanocode.py"]}],
+    }
+
+
 def test_agent_stream_step_preserves_same_response_tool_batch_in_latest(tmp_path, monkeypatch):
     (tmp_path / "one.txt").write_text("one\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("two\n", encoding="utf-8")

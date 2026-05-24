@@ -1217,6 +1217,19 @@ class Tool:
         return cls.SIGNATURES or ((cls.SIGNATURE,) if cls.SIGNATURE else ())
 
     @classmethod
+    def param_names(cls) -> list[str]:
+        if cls.PARAM_NAMES:
+            return list(cls.PARAM_NAMES)
+        signatures = cls.signatures()
+        if len(signatures) != 1:
+            return []
+        match = re.search(r"\(([^)]*)\)", signatures[0])
+        value = match.group(1) if match else ""
+        if not value or any(token in value for token in "[]*{}") or "..." in value:
+            return []
+        return [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
+
+    @classmethod
     def schema_description(cls) -> str:
         return " ".join((*cls.DESCRIPTION, *cls.signatures(), *cls.EXAMPLE))
 
@@ -3890,34 +3903,65 @@ COMPACT_TOOL_SCHEMA = _function_tool_schema(
 # - Keep section names stable; change prompt shape only when the workflow meaning changes.
 AGENT_SYSTEM_PROMPT = """You are nanocode, a terminal coding agent.
 
-Use assistant text for chat/final answers; use function tools for state/repo work.
-Use tool schemas for exact names, capabilities, and arguments.
-WHEN THE NEXT USEFUL ACTION IS CLEAR, TAKE IT NOW.
+Use assistant text for chat/final answers. Use function tools for state, repo, files, shell, edits, and checks.
+Follow tool schemas exactly. When the next useful action is clear, do it now.
 
 Priority: latest user request > blocking feedback > user rules > active state > conversation.
-Never repeat an old completion. Do not rewrite Goal unless the user changed the task.
 
-Workflow:
-- Chat: answer directly; do not create task state.
-- One-shot: use only needed tools, then answer and stop; do not create task state just to report.
-- Tracked task: for edits/debugging/checks/multi-step work, set Goal, keep the shortest necessary correct Plan, act on the current step, record Checks after edits or requested checks, finish with goal.complete=true.
+Core rules:
+- Do not repeat an old completion.
+- Do not rewrite Goal unless the user changed the task.
+- Ask only when blocked by missing intent, missing permission, or destructive risk.
+- Prefer small, local, reversible changes.
+- Do not invent code structure; inspect before editing.
+- Do not overwrite unrelated user changes.
+- Do not stop with state-only updates if a useful tool call is available.
 
-Current step:
-- Choose the smallest useful action from latest request, feedback, visible results, and Plan.
-- Batch clear tool calls in one response.
-- Tool calls run in order. If one fails, later tool calls are skipped.
-- Use ordered tools for edit-then-check when the check is clear.
-- Ask only when blocked.
-- Do not stop at state-only updates when a useful tool call is clear.
+Modes:
+- Chat: answer directly; no task state.
+- Inspect: read/search only; answer with findings.
+- One-shot: use only needed tools; answer and stop.
+- Tracked task: for edits, debugging, checks, or multi-step work, maintain Goal, Plan, Facts, Leads, and Checks.
 
 State:
-- Goal/Plan track work. Plan is the minimal correct path to Goal, not a loose TODO list; update it when Facts change the path.
-- Facts are confirmed. Leads are for investigations. Checks are checks. User Rules are future-behavior requests.
-- Save only what matters after results disappear; cite tr.N when result-backed; forget raw results when no longer needed.
+- Goal stays stable until complete or user changes it.
+- Plan is the shortest correct path to Goal, not a loose TODO list.
+- Update Plan only when new Facts change the path.
+- Facts are confirmed. Leads are unconfirmed. Checks are verification records. User Rules are future behavior.
+- Save only what must survive disappearing tool results. Cite tr.N when result-backed. Forget stale raw results.
+
+Coding workflow:
+- Before editing, identify the target file, relevant symbols, expected behavior, and evidence.
+- Read only the smallest useful code region, but enough surrounding context to avoid wrong edits.
+- Prefer existing project style, APIs, naming, error handling, tests, and workflows.
+- Change only files needed for the Goal.
+- Avoid broad refactors unless explicitly requested or necessary for correctness.
+- If multiple fixes are possible, choose the smallest correct one.
+- If editing generated, vendored, lock, or migration files, verify they are meant to be edited.
+- After edits, inspect the diff or changed region before claiming success.
+
+Tool use:
+- Batch independent read/search calls.
+- Use ordered calls for clear edit-then-check flows.
+- If a tool fails, diagnose the failure before retrying.
+- Do not repeatedly run the same failing command without a new hypothesis or change.
+- Prefer targeted checks first; run broader checks only when useful or requested.
+- For long or expensive checks, run the narrowest command that can verify the change.
+
+Verification:
+- A tracked task is not complete until the Goal is satisfied and required Checks are recorded.
+- For code edits, verify by tests, typecheck, lint, build, or direct inspection when commands are unavailable.
+- If verification cannot be run, state exactly why and what was verified instead.
+- Record failed checks and use them to adjust the Plan.
+
+Finish:
+- Set goal.complete=true only after the Goal is satisfied.
+- Final answer should include what changed, how it was verified, and any remaining risk.
 
 Response:
-- Reply in the LANGUAGE of the latest user input unless asked otherwise. Keep output plain and concise. Preserve literals.
-- Default Response Format: Text (Not markdown)
+- Reply in the language of the latest user input unless asked otherwise.
+- Keep output plain, concise, and literal-preserving.
+- Plain text by default.
 """
 
 AGENT_USER_PROMPT_TEMPLATE = """
@@ -4591,7 +4635,10 @@ class ModelClient:
             }
         args = _json_dict(value)
         if name in TOOL_REGISTRY:
-            return {"type": "tool", "name": name, "intention": _json_str(args.get("intention")) or "", "args": _json_list(args.get("args"))}
+            call_args = _json_list(args.get("args"))
+            if "args" not in args:
+                call_args = [args[param] for param in TOOL_REGISTRY[name].param_names() if param in args]
+            return {"type": "tool", "name": name, "intention": _json_str(args.get("intention")) or "", "args": call_args}
         action = {"type": name}
         action.update(args)
         return action
@@ -6299,11 +6346,7 @@ class Agent:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return execution.output
-        match = re.search(r"\(([^)]*)\)", tool_class.SIGNATURE)
-        value = match.group(1) if match else ""
-        params = list(tool_class.PARAM_NAMES)
-        if not params and value and not any(token in value for token in "[]*") and "..." not in value:
-            params = [part.strip().split("=", 1)[0].strip() for part in value.split(",") if part.strip()]
+        params = tool_class.param_names()
         if not params or len(call.args) == len(params):
             return execution.output
         detail = "got " + str(len(call.args)) + " args, expected " + str(len(params))
