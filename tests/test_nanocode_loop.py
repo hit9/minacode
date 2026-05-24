@@ -544,7 +544,7 @@ def test_agent_loop_dispatches_commands_and_user_input(tmp_path):
 
 
 def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_status", lambda session: ("missing", ""))
+    monkeypatch.setattr(nanocode.CodeIndex, "status", lambda self: ("missing", ""))
 
     class FakeAgent:
         def __init__(self):
@@ -559,7 +559,7 @@ def test_agent_loop_welcome_suggests_index_when_missing(tmp_path, monkeypatch):
 def test_agent_loop_starts_existing_index_refresh_async(tmp_path, monkeypatch):
     refreshed = []
 
-    def refresh_existing(session, *, progress=None):
+    def refresh_existing(self, *, progress=None):
         refreshed.append(progress is not None)
         if progress is not None:
             progress("file", done=1, total=2)
@@ -570,7 +570,7 @@ def test_agent_loop_starts_existing_index_refresh_async(tmp_path, monkeypatch):
             self.session = make_session(tmp_path, model="model")
             self.blackboard = Blackboard()
 
-    monkeypatch.setattr(nanocode, "_code_index_refresh_existing_async", refresh_existing)
+    monkeypatch.setattr(nanocode.CodeIndex, "refresh_existing_async", refresh_existing)
     outputs = []
     loop = AgentLoop(FakeAgent(), input_fn=lambda prompt: "/exit", output_fn=outputs.append)
 
@@ -619,7 +619,7 @@ def test_agent_loop_run_agent_uses_runtime_ui_without_status_thread(tmp_path, mo
     monkeypatch.setattr(loop.status_bar, "reset_timer", lambda: calls.append("reset"))
     monkeypatch.setattr(loop.status_bar, "resume", lambda: calls.append("resume"))
     monkeypatch.setattr(loop.status_bar, "pause", lambda: calls.append("pause"))
-    monkeypatch.setattr(nanocode, "_code_index_update_pending", lambda session: calls.append("index"))
+    monkeypatch.setattr(nanocode.CodeIndex, "update_pending", lambda self: calls.append("index"))
 
     loop._run_agent("hello")
 

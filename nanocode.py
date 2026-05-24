@@ -2726,192 +2726,193 @@ class SearchTool(Tool):
         return self._call_python()
 
 
-def _code_index_module() -> Any | None:
-    try:
-        return importlib.import_module("code_symbol_index")
-    except ImportError:
-        return None
-
-
-def _code_index_db_path(session: Session) -> str:
-    return os.path.join(session.project_dir(), "code-symbol-index", "index.sqlite")
-
-
-def _code_index_repository(session: Session, *, create_index: bool = False) -> Any:
-    if not create_index and session.code_index_repository is not None:
-        return session.code_index_repository
-    module = _code_index_module()
-    if module is None:
-        raise ToolCallError("code index is unavailable")
-    db_path = _code_index_db_path(session)
-    if create_index:
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    repository = module.Repository(session.cwd, db_path=db_path, create_index=create_index)
-    if not create_index:
-        session.code_index_repository = repository
-    return repository
-
-
-def _code_index_status(session: Session, *, check: bool = False) -> tuple[str, str]:
-    module = _code_index_module()
-    if module is None:
-        return "unavailable", ""
-    try:
-        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=check, max_pending_files=20, format="object")
-    except Exception as error:
-        return "error", str(error)
-    message = str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
-    changes = getattr(status, "pending_changes", None)
-    files = getattr(status, "pending_files", ())
-    if changes:
-        pending = "pending " + str(changes)
-        if isinstance(files, (list, tuple)) and files:
-            sample = ", ".join(str(item) for item in files[:3])
-            pending += " (" + sample + ("..." if len(files) > 3 else "") + ")"
-        message = (message + "; " if message else "") + pending
-    return str(getattr(status, "status", "error")), message
-
-
-def _code_index_language_breakdown(session: Session) -> str:
-    module = _code_index_module()
-    if module is None:
-        return ""
-    try:
-        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=False, max_pending_files=0, format="object")
-    except Exception:
-        return ""
-    if str(getattr(status, "status", "error")) not in {"ready", "stale"}:
-        return ""
-    rows = []
-    for item in getattr(status, "language_breakdown", ()) or ():
-        language = item.get("language") if isinstance(item, dict) else getattr(item, "language", None)
-        files = item.get("files") if isinstance(item, dict) else getattr(item, "files", None)
-        percent = item.get("percent") if isinstance(item, dict) else getattr(item, "percent", None)
-        if language and files is not None and percent is not None:
-            try:
-                rows.append(f"{language} {files} files ({float(percent):.1f}%)")
-            except (TypeError, ValueError):
-                rows.append(f"{language} {files} files")
-    if rows:
-        return ", ".join(rows)
-    languages = getattr(status, "languages", ()) or ()
-    if isinstance(languages, str):
-        languages = (languages,)
-    return ", ".join(str(language) for language in languages if language)
-
-
-def _code_index_available(session: Session) -> bool:
-    status, message = _code_index_status(session)
-    session.state.code_index_error = message if status == "error" else ""
-    return status in {"ready", "stale"}
-
-
-def _set_code_index_notice(session: Session, event: str, *, done: int = 0, total: int = 0, seconds: int = 30) -> None:
-    phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
-    suffix = (" " + str(done) + "/" + str(total)) if total > 0 else ""
-    session.state.status_notice = "index:" + phase + suffix
-    session.state.status_notice_until = time.monotonic() + seconds
-    session.state.code_index_refreshing = phase not in {"done", "error"}
-
-
-def _code_index_progress(session: Session) -> Callable[..., None]:
-    def update(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
-        _set_code_index_notice(session, event, done=done, total=total)
-
-    return update
-
-
-def _code_index_refresh_existing_async(session: Session, progress: Callable[..., None] | None = None) -> bool:
-    status, _message = _code_index_status(session)
-    if status not in {"ready", "stale"}:
-        return False
-    module = _code_index_module()
-    if module is None:
-        return False
-    session.code_index_repository = None
-    session.state.code_index_error = ""
-    session.state.code_index_refreshing = True
-    session.state.code_index_reload_needed = False
-    callback = progress or _code_index_progress(session)
-
-    def refresh_progress(event: str, *, done: int = 0, total: int = 0, **kwargs: object) -> None:
-        callback(event, done=done, total=total, **kwargs)
-        if {"finish": "done", "done": "done"}.get(event, event) == "done":
-            session.state.code_index_reload_needed = True
-
-    try:
-        module.refresh_async(session.cwd, db_path=_code_index_db_path(session), progress=refresh_progress)
-    except Exception as error:
-        session.state.code_index_refreshing = False
-        session.state.code_index_reload_needed = False
-        session.state.code_index_error = str(error)
-    return True
-
-
-def _code_index_reload_if_ready(session: Session) -> None:
-    if not session.state.code_index_reload_needed or session.state.code_index_refreshing:
-        return
-    try:
-        _code_index_repository(session)
-        session.state.code_index_error = ""
-    except Exception as error:
-        session.code_index_repository = None
-        session.state.code_index_error = str(error)
-    session.state.code_index_reload_needed = False
-
-
-def _code_index_sync(session: Session, *, force: bool = False) -> str:
-    before, _message = _code_index_status(session)
-    if force:
-        if _code_index_module() is None:
-            return "code_index: error\ncode index is unavailable"
-        session.code_index_repository = None
-        shutil.rmtree(os.path.dirname(_code_index_db_path(session)), ignore_errors=True)
-    try:
-        repository = _code_index_repository(session, create_index=True)
-        repository.refresh(progress=_code_index_progress(session))
-        session.code_index_repository = repository
-        session.state.code_index_reload_needed = False
-    except Exception as error:
-        session.code_index_repository = None
-        session.state.code_index_error = str(error)
-        return "code_index: error\n" + str(error)
-    session.state.code_index_error = ""
-    _set_code_index_notice(session, "done", seconds=2)
-    status, message = _code_index_status(session)
-    action = "rebuilt" if force else ("initialized" if before == "missing" else "synced")
-    lines = ["code_index: " + action, "status: " + status, "path: " + _code_index_db_path(session)]
-    if message:
-        lines.append("note: " + message)
-    return "\n".join(lines)
-
-
 CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT = 20
 
 
-def _code_index_update_pending(session: Session, *, limit: int = CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT) -> None:
-    module = _code_index_module()
-    if module is None or session.state.code_index_refreshing:
-        return
-    try:
-        status = module.status(session.cwd, db_path=_code_index_db_path(session), check=True, max_pending_files=limit + 1, format="object")
-    except Exception as error:
-        session.state.code_index_error = str(error)
-        return
-    if str(getattr(status, "status", "")) != "stale":
-        return
-    pending_changes = getattr(status, "pending_changes", None)
-    files = [str(path) for path in getattr(status, "pending_files", ()) if path]
-    if not files or len(files) > limit or (isinstance(pending_changes, int) and pending_changes > limit):
-        return
-    paths = list(dict.fromkeys(path for path in (session.resolve_path(path) for path in files) if session.is_path_in_cwd(path)))
-    if not paths:
-        return
-    try:
-        _code_index_repository(session).update(paths)
+class CodeIndex:
+    def __init__(self, session: Session):
+        self.session = session
+
+    @staticmethod
+    def module() -> Any | None:
+        try:
+            return importlib.import_module("code_symbol_index")
+        except ImportError:
+            return None
+
+    def db_path(self) -> str:
+        return os.path.join(self.session.project_dir(), "code-symbol-index", "index.sqlite")
+
+    def repository(self, *, create_index: bool = False) -> Any:
+        session = self.session
+        if not create_index and session.code_index_repository is not None:
+            return session.code_index_repository
+        module = self.module()
+        if module is None:
+            raise ToolCallError("code index is unavailable")
+        db_path = self.db_path()
+        if create_index:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        repository = module.Repository(session.cwd, db_path=db_path, create_index=create_index)
+        if not create_index:
+            session.code_index_repository = repository
+        return repository
+
+    def raw_status(self, *, check: bool = False, max_pending_files: int = 20) -> Any | None:
+        module = self.module()
+        if module is None:
+            return None
+        return module.status(self.session.cwd, db_path=self.db_path(), check=check, max_pending_files=max_pending_files, format="object")
+
+    def status(self, *, check: bool = False) -> tuple[str, str]:
+        try:
+            status = self.raw_status(check=check)
+        except Exception as error:
+            return "error", str(error)
+        if status is None:
+            return "unavailable", ""
+        return str(getattr(status, "status", "error")), self._status_message(status)
+
+    @staticmethod
+    def _status_message(status: Any) -> str:
+        message = str(getattr(status, "message", None) or getattr(status, "reason", None) or "")
+        changes = getattr(status, "pending_changes", None)
+        files = getattr(status, "pending_files", ())
+        if changes:
+            pending = "pending " + str(changes)
+            if isinstance(files, (list, tuple)) and files:
+                sample = ", ".join(str(item) for item in files[:3])
+                pending += " (" + sample + ("..." if len(files) > 3 else "") + ")"
+            message = (message + "; " if message else "") + pending
+        return message
+
+    def language_breakdown(self) -> str:
+        try:
+            status = self.raw_status(max_pending_files=0)
+        except Exception:
+            return ""
+        if status is None or str(getattr(status, "status", "error")) not in {"ready", "stale"}:
+            return ""
+        rows = []
+        for item in getattr(status, "language_breakdown", ()) or ():
+            language = item.get("language") if isinstance(item, dict) else getattr(item, "language", None)
+            files = item.get("files") if isinstance(item, dict) else getattr(item, "files", None)
+            percent = item.get("percent") if isinstance(item, dict) else getattr(item, "percent", None)
+            if language and files is not None and percent is not None:
+                try:
+                    rows.append(f"{language} {files} files ({float(percent):.1f}%)")
+                except (TypeError, ValueError):
+                    rows.append(f"{language} {files} files")
+        if rows:
+            return ", ".join(rows)
+        languages = getattr(status, "languages", ()) or ()
+        if isinstance(languages, str):
+            languages = (languages,)
+        return ", ".join(str(language) for language in languages if language)
+
+    def available(self) -> bool:
+        status, message = self.status()
+        self.session.state.code_index_error = message if status == "error" else ""
+        return status in {"ready", "stale"}
+
+    def set_notice(self, event: str, *, done: int = 0, total: int = 0, seconds: int = 30) -> None:
+        phase = {"scan": "scan", "start": "parse", "file": "parse", "finish": "done"}.get(event, event)
+        suffix = (" " + str(done) + "/" + str(total)) if total > 0 else ""
+        self.session.state.status_notice = "index:" + phase + suffix
+        self.session.state.status_notice_until = time.monotonic() + seconds
+        self.session.state.code_index_refreshing = phase not in {"done", "error"}
+
+    def progress(self) -> Callable[..., None]:
+        def update(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
+            self.set_notice(event, done=done, total=total)
+
+        return update
+
+    def refresh_existing_async(self, progress: Callable[..., None] | None = None) -> bool:
+        status, _message = self.status()
+        module = self.module()
+        if status not in {"ready", "stale"} or module is None:
+            return False
+        session = self.session
+        session.code_index_repository = None
         session.state.code_index_error = ""
-    except Exception as error:
-        session.state.code_index_error = str(error)
+        session.state.code_index_refreshing = True
+        session.state.code_index_reload_needed = False
+        callback = progress or self.progress()
+
+        def refresh_progress(event: str, *, done: int = 0, total: int = 0, **kwargs: object) -> None:
+            callback(event, done=done, total=total, **kwargs)
+            if {"finish": "done", "done": "done"}.get(event, event) == "done":
+                session.state.code_index_reload_needed = True
+
+        try:
+            module.refresh_async(session.cwd, db_path=self.db_path(), progress=refresh_progress)
+        except Exception as error:
+            session.state.code_index_refreshing = False
+            session.state.code_index_reload_needed = False
+            session.state.code_index_error = str(error)
+        return True
+
+    def reload_if_ready(self) -> None:
+        session = self.session
+        if not session.state.code_index_reload_needed or session.state.code_index_refreshing:
+            return
+        try:
+            self.repository()
+            session.state.code_index_error = ""
+        except Exception as error:
+            session.code_index_repository = None
+            session.state.code_index_error = str(error)
+        session.state.code_index_reload_needed = False
+
+    def sync(self, *, force: bool = False) -> str:
+        session = self.session
+        before, _message = self.status()
+        if force:
+            if self.module() is None:
+                return "code_index: error\ncode index is unavailable"
+            session.code_index_repository = None
+            shutil.rmtree(os.path.dirname(self.db_path()), ignore_errors=True)
+        try:
+            repository = self.repository(create_index=True)
+            repository.refresh(progress=self.progress())
+            session.code_index_repository = repository
+            session.state.code_index_reload_needed = False
+        except Exception as error:
+            session.code_index_repository = None
+            session.state.code_index_error = str(error)
+            return "code_index: error\n" + str(error)
+        session.state.code_index_error = ""
+        self.set_notice("done", seconds=2)
+        status, message = self.status()
+        action = "rebuilt" if force else ("initialized" if before == "missing" else "synced")
+        lines = ["code_index: " + action, "status: " + status, "path: " + self.db_path()]
+        if message:
+            lines.append("note: " + message)
+        return "\n".join(lines)
+
+    def update_pending(self, *, limit: int = CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT) -> None:
+        if self.module() is None or self.session.state.code_index_refreshing:
+            return
+        try:
+            status = self.raw_status(check=True, max_pending_files=limit + 1)
+        except Exception as error:
+            self.session.state.code_index_error = str(error)
+            return
+        if status is None or str(getattr(status, "status", "")) != "stale":
+            return
+        pending_changes = getattr(status, "pending_changes", None)
+        files = [str(path) for path in getattr(status, "pending_files", ()) if path]
+        if not files or len(files) > limit or (isinstance(pending_changes, int) and pending_changes > limit):
+            return
+        paths = list(dict.fromkeys(path for path in (self.session.resolve_path(path) for path in files) if self.session.is_path_in_cwd(path)))
+        if not paths:
+            return
+        try:
+            self.repository().update(paths)
+            self.session.state.code_index_error = ""
+        except Exception as error:
+            self.session.state.code_index_error = str(error)
 
 
 @dataclass
@@ -2997,7 +2998,7 @@ class InspectCodeTool(Tool):
             if re.search(r"\s", symbol):
                 raise ToolCallArgError("outline symbol filter must be one symbol name or prefix")
             options["symbol"] = symbol
-        if not _code_index_available(session):
+        if not CodeIndex(session).available():
             raise ToolCallError("code index is not available")
         return cls(
             mode=mode,
@@ -3034,7 +3035,7 @@ class InspectCodeTool(Tool):
     def call(self) -> str:
         if self.session is None:
             raise ToolCallError("missing session")
-        repo = _code_index_repository(self.session)
+        repo = CodeIndex(self.session).repository()
         if self.mode == "find":
             text = repo.search_text(
                 self.target,
@@ -5713,8 +5714,9 @@ class Agent:
         shell_tools = [name for name in ("find", "rg", "python3", "perl", "sed", "awk", "xargs", "grep", "jq") if shutil.which(name)]
         if shell_tools:
             lines.append("- detected-available-shell-commands: " + ", ".join(shell_tools))
-        if _code_index_available(self.session):
-            language_breakdown = _code_index_language_breakdown(self.session)
+        code_index = CodeIndex(self.session)
+        if code_index.available():
+            language_breakdown = code_index.language_breakdown()
             if language_breakdown:
                 lines.append("- indexed-language-breakdown: " + language_breakdown)
             lines.append(
@@ -6022,7 +6024,7 @@ class Agent:
         else:
             action_names = self.ACT_ACTION_TYPES - {"tool", "forget"}
             tool_classes = tuple(TOOL_REGISTRY.values())
-            if not _code_index_available(self.session):
+            if not CodeIndex(self.session).available():
                 tool_classes = tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
         actions = [_state_tool_schema(name) for name in STATE_TOOL_PARAMS if name in action_names]
         return actions + [tool.tool_schema() for tool in tool_classes]
@@ -7375,7 +7377,7 @@ class CommandDispatcher:
             else "  (empty)"
         )
         checks_status = blackboard.checks.status
-        code_index_status, code_index_message = _code_index_status(session, check=True)
+        code_index_status, code_index_message = CodeIndex(session).status(check=True)
         if session.state.code_index_error:
             code_index_status = "error"
             code_index_message = session.state.code_index_error
@@ -7441,7 +7443,7 @@ class CommandDispatcher:
         value = args.strip()
         if value not in {"", "force"}:
             return "Usage: /index [force]"
-        return self._with_status(lambda: _code_index_sync(self.agent.session, force=value == "force"))
+        return self._with_status(lambda: CodeIndex(self.agent.session).sync(force=value == "force"))
 
     def _context(self, args: str) -> str:
         value = args.strip()
@@ -7832,7 +7834,7 @@ class AgentLoop:
                 select_provider=self._select_provider,
             )
             while True:
-                _code_index_reload_if_ready(self.agent.session)
+                CodeIndex(self.agent.session).reload_if_ready()
                 if self._exit_after_current_turn:
                     return 0
                 try:
@@ -7850,7 +7852,7 @@ class AgentLoop:
                     continue
                 if not user_input:
                     continue
-                _code_index_reload_if_ready(self.agent.session)
+                CodeIndex(self.agent.session).reload_if_ready()
                 try:
                     result = dispatcher.dispatch(user_input)
                 except Exception as error:
@@ -7871,10 +7873,12 @@ class AgentLoop:
         return "[" + ",".join(labels) + "] > " if labels else "> "
 
     def _start_existing_code_index_refresh(self) -> None:
-        def progress(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
-            _set_code_index_notice(self.agent.session, event, done=done, total=total)
+        code_index = CodeIndex(self.agent.session)
 
-        _code_index_refresh_existing_async(self.agent.session, progress=progress)
+        def progress(event: str, *, done: int = 0, total: int = 0, **_kwargs: object) -> None:
+            code_index.set_notice(event, done=done, total=total)
+
+        code_index.refresh_existing_async(progress=progress)
 
     def _read_input(self, prompt: str) -> str:
         if self.prompt_session is None:
@@ -8428,7 +8432,7 @@ class AgentLoop:
             self.agent.session.state.manual_model_retry_requested = False
             if runtime_ui_running:
                 self._stop_runtime_ui()
-            _code_index_update_pending(self.agent.session)
+            CodeIndex(self.agent.session).update_pending()
             self.status_bar.pause()
 
     def _run_with_status(self, action: StatusAction) -> str:
@@ -8540,7 +8544,7 @@ class AgentLoop:
         self._with_status_paused(lambda: self._print_message(message))
 
     def _print_welcome(self) -> None:
-        index_status, _index_message = _code_index_status(self.agent.session)
+        index_status, _index_message = CodeIndex(self.agent.session).status()
         index_tip = (
             [("ansibrightblack", "  tip: "), ("ansicyan", "/index"), ("ansiwhite", " initializes indexed code tools\n")] if index_status == "missing" else []
         )

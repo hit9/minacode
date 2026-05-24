@@ -803,7 +803,7 @@ def test_act_prompt_uses_first_todo_as_current_focus(tmp_path):
 
 
 def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: False)
+    monkeypatch.setattr(nanocode.CodeIndex, "available", lambda self: False)
     agent = Agent(Session(cwd=str(tmp_path)))
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
@@ -812,7 +812,7 @@ def test_inspect_code_tools_is_hidden_until_available(tmp_path, monkeypatch):
 
 
 def test_inspect_code_tools_is_visible_when_available(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_available", lambda session: True)
+    monkeypatch.setattr(nanocode.CodeIndex, "available", lambda self: True)
     agent = Agent(Session(cwd=str(tmp_path)))
 
     tool_names = [schema["function"]["name"] for schema in agent._tool_schemas() if schema.get("type") == "function"]
@@ -940,7 +940,7 @@ def test_act_prompt_lists_indexed_language_breakdown_in_environment(tmp_path, mo
             ),
         )
 
-    monkeypatch.setattr(nanocode, "_code_index_module", lambda: SimpleNamespace(status=status_fn))
+    monkeypatch.setattr(nanocode.CodeIndex, "module", staticmethod(lambda: SimpleNamespace(status=status_fn)))
     agent = Agent(Session(cwd=str(tmp_path)))
 
     prompt = agent.build_user_prompt()

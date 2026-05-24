@@ -89,7 +89,7 @@ def test_command_dispatcher_updates_config_and_auto_compacts(tmp_path):
 
 
 def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
-    monkeypatch.setattr(nanocode, "_code_index_status", lambda session, *, check=False: ("unavailable", ""))
+    monkeypatch.setattr(nanocode.CodeIndex, "status", lambda self, *, check=False: ("unavailable", ""))
     session = make_session(tmp_path, model="model")
     session.state.last_total_tokens = 1200
     session.state.last_cached_prompt_tokens = 400
@@ -118,7 +118,7 @@ def test_status_reports_tokens_in_human_readable_format(tmp_path, monkeypatch):
 
 def test_index_command_syncs_code_index(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(nanocode, "_code_index_sync", lambda session, *, force=False: calls.append(force) or "code_index: synced")
+    monkeypatch.setattr(nanocode.CodeIndex, "sync", lambda self, *, force=False: calls.append(force) or "code_index: synced")
     dispatcher = CommandDispatcher(Agent(make_session(tmp_path)))
 
     result = dispatcher.dispatch("/index")
