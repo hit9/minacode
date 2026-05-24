@@ -2069,18 +2069,20 @@ class ReadTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read one or more UTF-8 files with line:hash anchors.",
-        "Pass one structured object. Use path for one file, or files for multiple files.",
+        "Pass one structured object. Use path for one file, files for multiple files, or multiple file objects as args.",
         "Each file can omit range for the first 600 lines, pass range=[start,end], or ranges=[[start,end],...].",
     )
     SIGNATURES: ClassVar[tuple[str, ...]] = (
         "Read({path, range?}) -> selected range or first 600 lines",
         "Read({path, ranges}) -> selected ranges from one file",
         "Read({files:[{path, range?|ranges?}, ...]}) -> selected ranges from multiple files",
+        "Read({path, range?}, {path, range?}) -> selected ranges from multiple files",
     )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: [{"path":"code.py","range":[0,80]}]',
         'Example args: [{"path":"code.py","ranges":[[0,80],[160,220]]}]',
         'Example args: [{"files":[{"path":"pyproject.toml"},{"path":"uv.lock","range":[0,120]}]}]',
+        'Example args: [{"path":"nanocode.py","range":[58,59]},{"path":"pyproject.toml","range":[6,7]}]',
     )
 
     targets: list[tuple[str, list[tuple[int, int]]]] = field(default_factory=list)
@@ -2088,7 +2090,7 @@ class ReadTool(Tool):
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        payload = _json_dict(args[0]) if len(args) == 1 else {}
+        payload = cls._payload_from_args(args) or {}
         if not payload:
             return [cls.cli_token(arg) for arg in args]
         raw_files = _json_list(payload.get("files")) if "files" in payload else [payload]
@@ -2101,7 +2103,7 @@ class ReadTool(Tool):
             raw_ranges = [spec.get("range")] if "range" in spec else _json_list(spec.get("ranges")) if "ranges" in spec else []
             tokens.append(path)
             tokens.extend(str(values[0]) + ":" + str(values[1]) for raw_range in raw_ranges if len(values := _json_list(raw_range)) == 2)
-        return tokens or [cls.cli_token(args[0])]
+        return tokens or [cls.cli_token(arg) for arg in args]
 
     @classmethod
     def tool_schema(cls) -> Json:
@@ -2141,8 +2143,7 @@ class ReadTool(Tool):
                         "type": "array",
                         "items": read_arg_schema,
                         "minItems": 1,
-                        "maxItems": 1,
-                        "description": "Exactly one structured Read request object.",
+                        "description": "One structured Read request object, or multiple file request objects.",
                     },
                 },
                 ["intention", "args"],
@@ -2151,10 +2152,37 @@ class ReadTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) != 1 or not isinstance(args[0], dict):
-            raise ToolCallArgError('Read args error: expected exactly one object, e.g. [{"path":"nanocode.py","range":[2065,2095]}]')
-        payload = _json_dict(args[0])
+        payload = cls._payload_from_args(args)
+        if not payload:
+            raise ToolCallArgError(
+                'Read args error: expected one object or multiple file objects, e.g. [{"path":"nanocode.py","range":[2065,2095]}] '
+                'or [{"path":"nanocode.py","range":[58,59]},{"path":"pyproject.toml","range":[6,7]}]'
+            )
         return cls(targets=cls._parse_targets(session, payload), cwd=session.cwd)
+
+    @classmethod
+    def _payload_from_args(cls, args: list[JsonValue]) -> Json | None:
+        objects = [cls._arg_object(arg) for arg in args]
+        if len(objects) == 1 and objects[0] is not None:
+            return objects[0]
+        if len(objects) > 1:
+            files = [obj for obj in objects if obj is not None and "files" not in obj]
+            if len(files) == len(objects):
+                return {"files": files}
+        return None
+
+    @classmethod
+    def _arg_object(cls, value: JsonValue) -> Json | None:
+        if isinstance(value, dict):
+            return value
+        text = _json_str(value)
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     @classmethod
     def _parse_targets(cls, session: Session, payload: Json) -> list[tuple[str, list[tuple[int, int]]]]:

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import nanocode
@@ -46,7 +48,7 @@ def test_read_tool_reads_requested_line_range(tmp_path):
 def test_read_tool_rejects_empty_args_with_actionable_error(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="Read args error: expected exactly one object"):
+    with pytest.raises(ToolCallError, match="Read args error: expected one object or multiple file objects"):
         ReadTool.make(session, [])
 
 
@@ -55,7 +57,7 @@ def test_read_tool_rejects_positional_args(tmp_path):
     path.write_text("zero\none\ntwo\nthree\nfour\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="Read args error: expected exactly one object"):
+    with pytest.raises(ToolCallError, match="Read args error: expected one object or multiple file objects"):
         ReadTool.make(session, ["sample.txt", "1", "2", "3", "5"])
 
 
@@ -111,6 +113,51 @@ def test_read_tool_reads_multiple_files_with_independent_ranges(tmp_path):
     assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
     assert "|zero" not in result
     assert "|alpha" not in result
+
+
+def test_read_tool_reads_multiple_file_objects_as_args(tmp_path):
+    (tmp_path / "one.txt").write_text("zero\none\ntwo\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(session, [{"path": "one.txt", "range": [1, 2]}, {"path": "two.txt", "range": [1, 3]}])
+    result = tool.call()
+
+    assert _target_paths(tool) == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt")]
+    assert _hashline(1, "one\n") in result
+    assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
+    assert "|zero" not in result
+    assert "|alpha" not in result
+
+
+def test_read_tool_reads_stringified_file_objects_as_args(tmp_path):
+    (tmp_path / "one.txt").write_text("zero\none\ntwo\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+
+    tool = ReadTool.make(
+        session,
+        [
+            json.dumps({"path": "one.txt", "range": [1, 2]}),
+            json.dumps({"path": "two.txt", "range": [1, 3]}),
+        ],
+    )
+    result = tool.call()
+
+    assert _target_paths(tool) == [str(tmp_path / "one.txt"), str(tmp_path / "two.txt")]
+    assert _hashline(1, "one\n") in result
+    assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
+    assert "|zero" not in result
+    assert "|alpha" not in result
+
+
+def test_read_tool_formats_stringified_file_objects_as_readable_cli_args():
+    args = [
+        json.dumps({"path": "nanocode.py", "range": [58, 59]}),
+        json.dumps({"path": "pyproject.toml", "range": [6, 7]}),
+    ]
+
+    assert ReadTool.cli_args(args) == ["nanocode.py", "58:59", "pyproject.toml", "6:7"]
 
 
 def test_read_tool_reads_structured_ranges(tmp_path):
