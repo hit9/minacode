@@ -1,3 +1,4 @@
+import json
 import re
 
 import nanocode
@@ -52,7 +53,7 @@ def test_search_tool_python_backend_finds_or_patterns_and_applies_glob(tmp_path,
 def test_search_tool_rejects_positional_args(tmp_path):
     session = Session(cwd=str(tmp_path))
 
-    with pytest.raises(ToolCallError, match="Search args error: expected exactly one object"):
+    with pytest.raises(ToolCallError, match="Search args error: expected one object or multiple search objects"):
         SearchTool.make(session, ["class Edit", "class Bash", "class Search", "class Read", "class CreateFile"])
 
 
@@ -65,6 +66,63 @@ def test_search_tool_uses_structured_path(tmp_path):
 
     assert tool.pattern == "class Edit|class Bash"
     assert tool.target_path == str(path)
+
+
+def test_search_tool_reads_multiple_search_objects_as_args(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("version = \"1\"\n", encoding="utf-8")
+    (tmp_path / "setup.cfg").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "tox.ini").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "skip.py").write_text("version = 1\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(
+        session,
+        [
+            {"pattern": "version", "glob": "*.toml"},
+            {"pattern": "version", "glob": "*.cfg"},
+            {"pattern": "version", "glob": "*.ini"},
+        ],
+    )
+    result = tool.call()
+
+    assert [request.glob_pattern for request in tool.requests] == ["*.toml", "*.cfg", "*.ini"]
+    assert "* query_count: 3" in result
+    assert "* pyproject.toml:1: version = \"1\"" in result
+    assert "* setup.cfg:1: version = 1" in result
+    assert "* tox.ini:1: version = 1" in result
+    assert "skip.py" not in result
+
+
+def test_search_tool_reads_stringified_search_objects_as_args(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("version = \"1\"\n", encoding="utf-8")
+    (tmp_path / "setup.cfg").write_text("version = 1\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    monkeypatch.setattr(nanocode.shutil, "which", lambda name: "")
+
+    tool = SearchTool.make(
+        session,
+        [
+            json.dumps({"pattern": "version", "glob": "*.toml"}),
+            json.dumps({"pattern": "version", "glob": "*.cfg"}),
+        ],
+    )
+    result = tool.call()
+
+    assert [request.glob_pattern for request in tool.requests] == ["*.toml", "*.cfg"]
+    assert "* query_count: 2" in result
+    assert "* pyproject.toml:1: version = \"1\"" in result
+    assert "* setup.cfg:1: version = 1" in result
+
+
+def test_search_tool_formats_stringified_objects_as_readable_cli_args():
+    args = [
+        json.dumps({"pattern": "version", "glob": "*.toml"}),
+        json.dumps({"pattern": "version", "glob": "*.cfg"}),
+        json.dumps({"pattern": "version", "glob": "*.ini"}),
+    ]
+
+    assert SearchTool.cli_args(args) == ["version", "glob=*.toml", "|", "version", "glob=*.cfg", "|", "version", "glob=*.ini"]
 
 
 def test_search_tool_accepts_structured_path_with_regex_and_context(tmp_path, monkeypatch):

@@ -2162,7 +2162,7 @@ class ReadTool(Tool):
 
     @classmethod
     def _payload_from_args(cls, args: list[JsonValue]) -> Json | None:
-        objects = [cls._arg_object(arg) for arg in args]
+        objects = [_json_object_arg(arg) for arg in args]
         if len(objects) == 1 and objects[0] is not None:
             return objects[0]
         if len(objects) > 1:
@@ -2170,19 +2170,6 @@ class ReadTool(Tool):
             if len(files) == len(objects):
                 return {"files": files}
         return None
-
-    @classmethod
-    def _arg_object(cls, value: JsonValue) -> Json | None:
-        if isinstance(value, dict):
-            return value
-        text = _json_str(value)
-        if not text:
-            return None
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
 
     @classmethod
     def _parse_targets(cls, session: Session, payload: Json) -> list[tuple[str, list[tuple[int, int]]]]:
@@ -2442,15 +2429,19 @@ class SearchTool(Tool):
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Case-insensitive regex search across files; use before Read when location is unknown.",
         "Returns file:line matches and optional line:hash context anchors.",
-        "Pass one structured object with pattern, optional path, optional glob, and optional context.",
+        "Pass one or more structured objects with pattern, optional path, optional glob, and optional context.",
         "Use InspectCode for symbol structure; use Bash rg/grep for custom shell pipelines.",
         "Escape regex metacharacters for literal text; use A|B for alternatives and \\n for multiline.",
     )
-    SIGNATURES: ClassVar[tuple[str, ...]] = ("Search({pattern, path?, glob?, context?}) -> matching lines",)
+    SIGNATURES: ClassVar[tuple[str, ...]] = (
+        "Search({pattern, path?, glob?, context?}) -> matching lines",
+        "Search({pattern, glob?}, {pattern, glob?}) -> matching lines for multiple queries",
+    )
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"}]',
         'Example args: [{"pattern":"TODO|FIXME","path":".","glob":"*.py","context":2}]',
         'Literal paren args: [{"pattern":"def __init__\\\\(","path":".","glob":"*.py"}]',
+        'Example args: [{"pattern":"version","glob":"*.toml"},{"pattern":"version","glob":"*.cfg"}]',
     )
 
     @dataclass(frozen=True)
@@ -2460,18 +2451,35 @@ class SearchTool(Tool):
         text: str
         context: list[tuple[int, str]]
 
+    @dataclass(frozen=True)
+    class Request:
+        pattern: str
+        target_path: str
+        glob_pattern: str
+        context_lines: int
+
     pattern: str = ""
     target_path: str = ""
     glob_pattern: str = ""
     context_lines: int = CONTEXT_LINES
     cwd: str = ""
     gitignore_patterns: list[str] = field(default_factory=list)
+    requests: list[Request] = field(default_factory=list)
 
     @classmethod
     def cli_args(cls, args: list[JsonValue]) -> list[str]:
-        payload = _json_dict(args[0]) if len(args) == 1 else {}
-        if not payload:
+        payloads = cls._payloads_from_args(args) or []
+        if not payloads:
             return [cls.cli_token(arg) for arg in args]
+        tokens: list[str] = []
+        for index, payload in enumerate(payloads):
+            if index:
+                tokens.append("|")
+            tokens.extend(cls._cli_payload_tokens(payload))
+        return tokens or [cls.cli_token(arg) for arg in args]
+
+    @classmethod
+    def _cli_payload_tokens(cls, payload: Json) -> list[str]:
         tokens = [cls.cli_token(payload.get("pattern", ""))]
         if "path" in payload:
             tokens.append("path=" + str(payload.get("path") or "."))
@@ -2507,8 +2515,7 @@ class SearchTool(Tool):
                         "type": "array",
                         "items": search_arg_schema,
                         "minItems": 1,
-                        "maxItems": 1,
-                        "description": "Exactly one structured Search request object.",
+                        "description": "One structured Search request object, or multiple Search request objects.",
                     },
                 },
                 ["intention", "args"],
@@ -2517,9 +2524,33 @@ class SearchTool(Tool):
 
     @classmethod
     def make(cls, session: Session, args: list[JsonValue]) -> Self:
-        if len(args) != 1 or not isinstance(args[0], dict):
-            raise ToolCallArgError('Search args error: expected exactly one object, e.g. [{"pattern":"class Foo","path":"."}]')
-        payload = _json_dict(args[0])
+        payloads = cls._payloads_from_args(args)
+        if not payloads:
+            raise ToolCallArgError(
+                'Search args error: expected one object or multiple search objects, e.g. [{"pattern":"class Foo","path":"."}] '
+                'or [{"pattern":"version","glob":"*.toml"},{"pattern":"version","glob":"*.cfg"}]'
+            )
+        requests = [cls._parse_request(session, payload) for payload in payloads]
+        first = requests[0]
+        return cls(
+            pattern=first.pattern,
+            target_path=first.target_path,
+            glob_pattern=first.glob_pattern,
+            context_lines=first.context_lines,
+            cwd=session.cwd,
+            gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
+            requests=requests if len(requests) > 1 else [],
+        )
+
+    @classmethod
+    def _payloads_from_args(cls, args: list[JsonValue]) -> list[Json] | None:
+        objects = [_json_object_arg(arg) for arg in args]
+        if not objects or any(obj is None for obj in objects):
+            return None
+        return [obj for obj in objects if obj is not None]
+
+    @classmethod
+    def _parse_request(cls, session: Session, payload: Json) -> Request:
         unexpected = sorted(set(payload) - {"pattern", "path", "glob", "context"})
         if unexpected:
             raise ToolCallArgError("unexpected search option: " + ", ".join(unexpected))
@@ -2542,19 +2573,22 @@ class SearchTool(Tool):
             re.compile(pattern)
         except re.error as error:
             raise ToolCallArgError("invalid regex: " + str(error))
-        return cls(
-            pattern=pattern,
-            target_path=session.resolve_path(target_path_arg),
-            glob_pattern=glob_pattern,
-            context_lines=context_lines,
-            cwd=session.cwd,
-            gitignore_patterns=cls._load_gitignore_patterns(session.cwd),
-        )
+        return cls.Request(pattern, session.resolve_path(target_path_arg), glob_pattern, context_lines)
 
     def requires_confirmation(self, session: Session) -> bool:
+        if self.requests:
+            return any(not session.is_path_in_cwd(request.target_path) for request in self.requests)
         return not session.is_path_in_cwd(self.target_path)
 
     def preview(self) -> str:
+        if self.requests:
+            parts = []
+            for request in self.requests[:3]:
+                glob_text = f', "{request.glob_pattern}"' if request.glob_pattern else ""
+                parts.append(f'Search("{request.pattern}", {request.target_path}{glob_text})')
+            if len(self.requests) > 3:
+                parts.append("...")
+            return "; ".join(parts)
         if self.glob_pattern:
             return f'Search("{self.pattern}", {self.target_path}, "{self.glob_pattern}")'
         return f'Search("{self.pattern}", {self.target_path})'
@@ -2801,7 +2835,48 @@ class SearchTool(Tool):
         except re.error as error:
             raise ToolCallArgError("invalid regex: " + str(error))
 
-    def call(self) -> str:
+    def _tool_for_request(self, request: Request, *, output_chars: int | None = None) -> Self:
+        tool = type(self)(
+            pattern=request.pattern,
+            target_path=request.target_path,
+            glob_pattern=request.glob_pattern,
+            context_lines=request.context_lines,
+            cwd=self.cwd,
+            gitignore_patterns=self.gitignore_patterns,
+        )
+        if output_chars is not None:
+            tool.OUTPUT_CHARS = output_chars
+        return tool
+
+    @staticmethod
+    def _result_body(result: str) -> list[str]:
+        lines = result.splitlines()
+        if lines and lines[0] == "<SearchToolResult>":
+            lines = lines[1:]
+        if lines and lines[-1] == "</SearchToolResult>":
+            lines = lines[:-1]
+        return lines
+
+    def _call_batch(self) -> str:
+        per_query_chars = max(2_000, (self.OUTPUT_CHARS - 1_000) // max(1, len(self.requests)))
+        lines = ["<SearchToolResult>", f"* query_count: {len(self.requests)}"]
+        for index, request in enumerate(self.requests, start=1):
+            tool = self._tool_for_request(request, output_chars=per_query_chars)
+            section = [f'<SearchQuery index="{index}">', f"* pattern: {request.pattern}", f"* path: {tool._relpath(request.target_path)}"]
+            if request.glob_pattern:
+                section.append(f"* glob: {request.glob_pattern}")
+            if request.context_lines:
+                section.append(f"* context: {request.context_lines}")
+            section.extend("  " + line for line in self._result_body(tool._call_single()))
+            section.append("</SearchQuery>")
+            if len("\n".join([*lines, *section, "</SearchToolResult>"])) > self.OUTPUT_CHARS:
+                lines.append("* truncated: true")
+                break
+            lines.extend(section)
+        lines.append("</SearchToolResult>")
+        return "\n".join(lines)
+
+    def _call_single(self) -> str:
         if not (os.path.isdir(self.target_path) or os.path.isfile(self.target_path)):
             if os.path.basename(self.target_path) == "path":
                 raise ToolCallError('not a file or directory: "path" is a placeholder; pass a real file or directory')
@@ -2813,6 +2888,11 @@ class SearchTool(Tool):
         if rg:
             return self._call_rg(rg)
         return self._call_python()
+
+    def call(self) -> str:
+        if self.requests:
+            return self._call_batch()
+        return self._call_single()
 
 
 CODE_INDEX_AUTO_UPDATE_PENDING_LIMIT = 20
@@ -9006,6 +9086,19 @@ def _json_str(value: JsonValue) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _json_object_arg(value: JsonValue) -> Json | None:
+    if isinstance(value, dict):
+        return value
+    text = _json_str(value)
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _source_from_json(item: Json) -> tuple[str, ...]:
