@@ -5673,7 +5673,6 @@ class Agent:
         self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
-        self.latest_recalled_result_keys: list[str] = []
         self.task_alignment_required = False
         self.incomplete_task_context_at_turn_start = False
         self.stream_stop_requested = False
@@ -6209,7 +6208,6 @@ class Agent:
         append_to_latest: bool = False,
     ) -> str:
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        self.latest_recalled_result_keys = []
         regular_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name not in CONTEXT_TOOL_NAMES]
         if regular_executions:
             self.tool_context.append_latest(
@@ -6239,13 +6237,11 @@ class Agent:
                 continue
             if execution.call.name == ToolResultTool.NAME:
                 blocks = ToolResultContext.recalled_result_blocks(ToolResultContext.format_execution(execution))
-                self.latest_recalled_result_keys.extend(
-                    self.tool_context.reactivate_result_blocks(
-                        blocks,
-                        max_index_items=self.context_budget().index_items,
-                        checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
-                        append=append_to_latest or bool(self.tool_context.latest),
-                    )
+                self.tool_context.reactivate_result_blocks(
+                    blocks,
+                    max_index_items=self.context_budget().index_items,
+                    checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
+                    append=append_to_latest or bool(self.tool_context.latest),
                 )
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
@@ -6708,15 +6704,10 @@ class Agent:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
             if report:
                 on_message(report)
-            self._emit_recalled_context_update(on_message)
             if self.session.settings.debug and self.tool_runner.skipped_after_failure_count:
                 on_message(f"Tool Calls Skipped: {self.tool_runner.skipped_after_failure_count} after {self.tool_runner.skipped_after_failure_key} failed")
         self.apply_context_budget()
         return True
-
-    def _emit_recalled_context_update(self, on_message: MessageCallback | None) -> None:
-        if on_message is not None and self.latest_recalled_result_keys:
-            on_message("Tool Result Context: " + " ".join("+" + key for key in self.latest_recalled_result_keys))
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         completion_gate = self._gate_completion(ctx, on_message)
@@ -6785,7 +6776,6 @@ class Agent:
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self._prune_tool_result_store()
-        self.latest_recalled_result_keys = []
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         old_goal = self.blackboard.goal
@@ -8472,10 +8462,6 @@ class AgentLoop:
             )
         ):
             self._emit_segments(self._compact_state_segments(message), message)
-            return
-        if message.startswith("Tool Result Context:"):
-            plain = "  ctx: " + message.removeprefix("Tool Result Context:").strip()
-            self._emit_segments([("ansibrightblack", plain + "\n")], plain)
             return
         if message.startswith("Tool Calls Skipped:"):
             plain = "  skipped: " + message.removeprefix("Tool Calls Skipped:").strip()

@@ -308,19 +308,6 @@ def test_agent_loop_indents_top_level_tool_report(tmp_path):
     assert captured == ["  Read sample.txt 0:1"]
 
 
-def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    captured = []
-    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
-
-    loop._print_message("Tool Result Context: +tr.12 +tr.15")
-
-    assert captured == ["  ctx: +tr.12 +tr.15"]
-
-
 def test_agent_loop_styles_compact_state_section_labels(tmp_path):
     class FakeAgent:
         def __init__(self):
