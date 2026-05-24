@@ -34,6 +34,7 @@ def test_edit_file_replaces_range_from_read_anchors(tmp_path):
     assert "* range[1]: 1:2" in result
     assert "<EditFile>" in result
     assert "<path>sample.txt</path>" in result
+    assert "<file_stat " in result
     assert "<invalidate>1:2</invalidate>" in result
     assert "<range>1:2</range>" in result
     assert "|BETA" in result

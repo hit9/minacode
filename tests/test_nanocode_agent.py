@@ -35,13 +35,14 @@ def _prompt_section(prompt: str, title: str, next_title: str) -> str:
 
 
 def _stored_read_result(line: str) -> str:
+    hash_text = line if line.endswith("\n") else line + "\n"
     return "\n".join(
         [
             "<ReadToolResult>",
             '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
             "  <range>0:1</range>",
             "  <content hashline-numbered>",
-            "0:aaaaaa|" + line,
+            "0:" + nanocode._line_hash(hash_text) + "|" + line,
             "  </content>",
             "</ReadToolResult>",
         ]
@@ -543,6 +544,40 @@ def test_act_prompt_file_context_uses_edit_result_as_newest_file_content(tmp_pat
     assert "content=file_context" in latest
 
 
+def test_act_prompt_file_context_omits_stale_read_lines_after_external_change(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("old0\nold1\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 2])}])
+    path.write_text("changed0\nchanged1\n", encoding="utf-8")
+
+    file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Kept Tool Results")
+    assert "File: sample.txt" not in file_context
+    assert "|old0" not in file_context
+    assert "|old1" not in file_context
+    assert "Omitted stale content:" in file_context
+    assert "sample.txt source=tr.1 stale_lines=2" in file_context
+
+
+def test_act_prompt_file_context_keeps_matching_lines_after_external_stat_change(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    agent = Agent(Session(cwd=str(tmp_path)))
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000)
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
+    path.write_text("alpha\nBETA changed\n", encoding="utf-8")
+
+    file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Kept Tool Results")
+    assert "File: sample.txt" in file_context
+    assert "0:1 source=tr.1" in file_context
+    assert "|alpha" in file_context
+    assert "|beta" not in file_context
+    assert "Omitted stale content:" not in file_context
+
+
 def test_act_prompt_folds_excerpted_read_result(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("x" * 20_000 + "\n", encoding="utf-8")
@@ -560,6 +595,7 @@ def test_act_prompt_folds_excerpted_read_result(tmp_path):
 
 
 def test_recall_read_reactivates_original_result_for_file_context(tmp_path):
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     session.state.tool_result_counter = 1
     session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(

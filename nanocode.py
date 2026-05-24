@@ -1314,6 +1314,20 @@ def _tool_call_args_key(args: list[JsonValue]) -> tuple[str, ...]:
     return tuple(json.dumps(arg, ensure_ascii=False, sort_keys=True, separators=(",", ":")) for arg in args)
 
 
+@dataclass(frozen=True)
+class FileContextItem:
+    order: int
+    phase: int
+    kind: str
+    source: str
+    path: str
+    start: int
+    end: int
+    line: str
+    mtime_ns: int = 0
+    size: int = -1
+
+
 @dataclass
 class ToolResultContext:
     COMPACT_OUTPUT_SUMMARY_CHARS: ClassVar[int] = 120
@@ -1518,6 +1532,7 @@ class ToolResultContext:
             return block
         header, output = block.split("\n  output:\n", 1)
         summary_output = re.sub(r"(?ms)^[ \t]*<content hashline-numbered>\n.*?^[ \t]*</content>", "<content hashline-numbered>...</content>", output)
+        summary_output = re.sub(r"(?m)^[ \t]*<file_stat\b[^>]*>[ \t]*$", "", summary_output)
         summary_output = re.sub(r"(?m)^[ \t]*</?(?:ReadToolResult|EditToolResult)>[ \t]*$", "", summary_output)
         parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"]
         if "[tool result excerpt]" in output or "excerpted: true" in output:
@@ -1529,10 +1544,19 @@ class ToolResultContext:
         return header + "\n  out: " + "; ".join(parts)
 
     @classmethod
-    def format_file_context(cls, blocks: list[str], *, max_chars: int) -> str:
+    def format_file_context(cls, blocks: list[str], *, cwd: str = "", max_chars: int) -> str:
         files: dict[str, dict[int, tuple[str, str]]] = {}
-        items = sorted(cls._file_context_items(blocks), key=lambda item: (item[0], item[1], item[4], item[5]))
-        for _order, _phase, kind, source, path, start, end, line in items:
+        omitted: dict[str, dict[str, int]] = {}
+        items = sorted(cls._file_context_items(blocks), key=lambda item: (item.order, item.phase, item.path, item.start))
+        line_numbers_by_path: dict[str, set[int]] = {}
+        for item in items:
+            if item.kind == "line" and item.path:
+                line_numbers_by_path.setdefault(item.path, set()).add(item.start)
+        current_stats: dict[str, tuple[int, int] | None] = {}
+        current_lines: dict[str, dict[int, str] | None] = {}
+
+        for item in items:
+            kind, source, path, start, end, line = item.kind, item.source, item.path, item.start, item.end, item.line
             if not source or not path:
                 continue
             file_lines = files.setdefault(path, {})
@@ -1541,8 +1565,18 @@ class ToolResultContext:
                     if number >= start and (end == 0 or number < end):
                         del file_lines[number]
                 continue
+            if not cls._file_context_item_is_current(
+                item,
+                cwd=cwd,
+                line_numbers_by_path=line_numbers_by_path,
+                current_stats=current_stats,
+                current_lines=current_lines,
+            ):
+                omitted.setdefault(path, {}).setdefault(source, 0)
+                omitted[path][source] += 1
+                continue
             file_lines[start] = (source, line)
-        if not files:
+        if not any(files.values()) and not omitted:
             return ""
 
         lines = [
@@ -1550,6 +1584,7 @@ class ToolResultContext:
             "- Built dynamically for this prompt from active raw Read and Edit results.",
             "- Overlapping lines use the newest active Read/Edit result.",
             "- Edit results can clear stale older lines when edits shift line numbers.",
+            "- If file stat changed, projected lines are hash-checked against the current file and stale lines are omitted.",
             "",
         ]
         for path in sorted(files):
@@ -1564,16 +1599,80 @@ class ToolResultContext:
                 lines.append("@@ " + str(start) + ":" + str(end) + " source=" + source)
                 lines.extend(segment_lines)
             lines.append("")
+        if omitted:
+            lines.append("Omitted stale content:")
+            for path in sorted(omitted):
+                for source in sorted(omitted[path], key=cls._result_key_counter):
+                    lines.append("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]))
+            lines.append("")
 
         rendered = "\n".join(lines).rstrip()
         return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
 
     @classmethod
-    def _file_context_items(cls, blocks: list[str]) -> list[tuple[int, int, str, str, str, int, int, str]]:
-        items: list[tuple[int, int, str, str, str, int, int, str]] = []
+    def _file_context_items(cls, blocks: list[str]) -> list[FileContextItem]:
+        items: list[FileContextItem] = []
         for block in blocks:
             items.extend(cls._file_context_block_items(block))
         return items
+
+    @classmethod
+    def _file_context_item_is_current(
+        cls,
+        item: FileContextItem,
+        *,
+        cwd: str,
+        line_numbers_by_path: dict[str, set[int]],
+        current_stats: dict[str, tuple[int, int] | None],
+        current_lines: dict[str, dict[int, str] | None],
+    ) -> bool:
+        if item.path not in current_stats:
+            current_stats[item.path] = cls._current_file_stat(item.path, cwd=cwd)
+        current_stat = current_stats[item.path]
+        if current_stat is None:
+            return False
+        if item.mtime_ns > 0 and item.size >= 0 and current_stat == (item.mtime_ns, item.size):
+            return True
+        hash_match = re.match(r"\d+:([0-9a-f]{6})\|", item.line)
+        if hash_match is None:
+            return False
+        if item.path not in current_lines:
+            current_lines[item.path] = cls._read_file_context_lines(item.path, cwd=cwd, line_numbers=line_numbers_by_path.get(item.path, set()))
+        lines = current_lines[item.path]
+        if lines is None:
+            return False
+        current_line = lines.get(item.start)
+        return current_line is not None and _line_hash(current_line) == hash_match.group(1)
+
+    @staticmethod
+    def _current_file_stat(path: str, *, cwd: str) -> tuple[int, int] | None:
+        filepath = path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
+        try:
+            stat = os.stat(filepath)
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    @staticmethod
+    def _read_file_context_lines(path: str, *, cwd: str, line_numbers: set[int]) -> dict[int, str] | None:
+        if not line_numbers:
+            return {}
+        filepath = path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
+        wanted = set(line_numbers)
+        max_line = max(wanted)
+        lines: dict[int, str] = {}
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for index, line in enumerate(f):
+                    if index in wanted:
+                        lines[index] = line
+                        if len(lines) == len(wanted):
+                            break
+                    if index >= max_line:
+                        break
+        except OSError:
+            return None
+        return lines
 
     @staticmethod
     def _file_context_segments(file_lines: dict[int, tuple[str, str]]) -> list[tuple[int, int, str, list[str]]]:
@@ -1597,7 +1696,7 @@ class ToolResultContext:
         return segments
 
     @classmethod
-    def _file_context_block_items(cls, block: str) -> list[tuple[int, int, str, str, str, int, int, str]]:
+    def _file_context_block_items(cls, block: str) -> list[FileContextItem]:
         if not cls._is_file_context_result_block(block):
             return []
         header, output = block.split("\n  output:\n", 1)
@@ -1607,20 +1706,54 @@ class ToolResultContext:
     @classmethod
     def _file_context_output_items(
         cls, output: str, *, default_path: str, order: int, source: str
-    ) -> list[tuple[int, int, str, str, str, int, int, str]]:
-        items: list[tuple[int, int, str, str, str, int, int, str]] = []
+    ) -> list[FileContextItem]:
+        items: list[FileContextItem] = []
         for path, section in cls._file_context_file_sections(output, default_path=default_path):
             if not path:
                 continue
+            mtime_ns, size = cls._file_context_section_stat(section)
             for clear_match in re.finditer(r"(?m)^[ \t]*<invalidate>(\d+):(\d+)</invalidate>", section):
-                items.append((order, 0, "clear", source, path, int(clear_match.group(1)), int(clear_match.group(2)), ""))
+                items.append(
+                    FileContextItem(
+                        order=order,
+                        phase=0,
+                        kind="clear",
+                        source=source,
+                        path=path,
+                        start=int(clear_match.group(1)),
+                        end=int(clear_match.group(2)),
+                        line="",
+                        mtime_ns=mtime_ns,
+                        size=size,
+                    )
+                )
             for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", section):
                 content = match.group(1)
                 for line in content.splitlines():
                     line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
                     if line_match:
-                        items.append((order, 1, "line", source, path, int(line_match.group(1)), 0, line))
+                        items.append(
+                            FileContextItem(
+                                order=order,
+                                phase=1,
+                                kind="line",
+                                source=source,
+                                path=path,
+                                start=int(line_match.group(1)),
+                                end=0,
+                                line=line,
+                                mtime_ns=mtime_ns,
+                                size=size,
+                            )
+                        )
         return items
+
+    @staticmethod
+    def _file_context_section_stat(section: str) -> tuple[int, int]:
+        match = re.search(r'<file_stat mtime_ns="(\d+)" size="(\d+)"[ \t]*/>', section)
+        if not match:
+            return 0, -1
+        return int(match.group(1)), int(match.group(2))
 
     @classmethod
     def _is_file_context_result_block(cls, block: str) -> bool:
@@ -1864,6 +1997,14 @@ def _line_hash(content: str) -> str:
     return hashlib.blake2s(content.encode("utf-8"), digest_size=3).hexdigest()
 
 
+def _format_file_stat(filepath: str, *, indent: str) -> list[str]:
+    try:
+        stat = os.stat(filepath)
+    except OSError:
+        return []
+    return [indent + '<file_stat mtime_ns="' + str(stat.st_mtime_ns) + '" size="' + str(stat.st_size) + '" />']
+
+
 ############################
 # Tool Implementations
 ############################
@@ -2056,6 +2197,7 @@ class ReadTool(Tool):
             ]
             for filepath, ranges in self.targets:
                 lines.extend(["  <ReadFile>", "    <path>" + os.path.relpath(filepath, self.cwd) + "</path>"])
+                lines.extend(_format_file_stat(filepath, indent="    "))
                 if len(ranges) > 1:
                     lines.append("    <range_count>" + str(len(ranges)) + "</range_count>")
                 for start, end in ranges:
@@ -2079,6 +2221,7 @@ class ReadTool(Tool):
                 '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
                 "  <range_count>" + str(len(ranges)) + "</range_count>",
             ]
+            lines.extend(_format_file_stat(filepath, indent="  "))
             for start, end in ranges:
                 content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
                 lines.append("  <ReadRange>")
@@ -2088,8 +2231,9 @@ class ReadTool(Tool):
             return "\n".join(lines)
 
         start, end = ranges[0]
-        content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
         lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>']
+        lines.extend(_format_file_stat(filepath, indent="  "))
+        content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
         lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="  "))
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
@@ -3185,6 +3329,7 @@ class EditTool(Tool):
 
     def _format_file_context_update(self, relpath: str, replacements: list[tuple[int, int, list[str]]]) -> list[str]:
         lines = ["  <EditFile>", "    <path>" + relpath + "</path>"]
+        lines.extend(_format_file_stat(self.filepath, indent="    "))
         if any(start < 0 for start, _end, _replacement in replacements):
             lines.extend(["    <invalidate>0:0</invalidate>", "  </EditFile>"])
             return lines
@@ -5573,6 +5718,7 @@ class Agent:
         budget = self.context_budget()
         file_context = ToolResultContext.format_file_context(
             self._act_file_context_blocks(),
+            cwd=self.session.cwd,
             max_chars=budget.raw_chars + budget.kept_chars,
         )
         conversation = self.session.state.conversation
@@ -5641,6 +5787,7 @@ class Agent:
         budget = self.context_budget()
         file_context = ToolResultContext.format_file_context(
             self.tool_context.kept_results + unreduced_blocks,
+            cwd=self.session.cwd,
             max_chars=budget.raw_chars + budget.kept_chars,
         )
         unreduced = "\n\n".join(ToolResultContext.render_blocks_for_prompt(unreduced_blocks))

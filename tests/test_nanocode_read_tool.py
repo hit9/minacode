@@ -37,6 +37,7 @@ def test_read_tool_reads_requested_line_range(tmp_path):
     assert result.startswith("<ReadToolResult>")
     assert "<range>1:3</range>" in result
     assert "<fingerprint>" not in result
+    assert "<file_stat " in result
     assert "<content hashline-numbered>" in result
     assert _hashline(1, "beta\n") + _hashline(2, "gamma\n") in result
     assert "|alpha" not in result
@@ -90,6 +91,7 @@ def test_read_tool_reads_multiple_files(tmp_path):
     assert "<file_count>2</file_count>" in result
     assert "<path>pyproject.toml</path>" in result
     assert "<path>uv.lock</path>" in result
+    assert result.count("<file_stat ") == 2
     assert _hashline(0, "[project]\n") in result
     assert _hashline(0, "version = 1\n") in result
 
