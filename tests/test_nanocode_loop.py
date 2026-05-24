@@ -316,22 +316,9 @@ def test_agent_loop_renders_tool_result_context_as_weak_status(tmp_path):
     captured = []
     loop = AgentLoop(FakeAgent(), output_fn=captured.append)
 
-    loop._print_message("Tool Result Context: +tr.12 +tr.15 / -tr.8")
+    loop._print_message("Tool Result Context: +tr.12 +tr.15")
 
-    assert captured == ["  ctx: +tr.12 +tr.15 / -tr.8"]
-
-
-def test_agent_loop_renders_forgotten_tool_result_context_as_weak_status(tmp_path):
-    class FakeAgent:
-        def __init__(self):
-            self.session = make_session(tmp_path, model="model")
-
-    captured = []
-    loop = AgentLoop(FakeAgent(), output_fn=captured.append)
-
-    loop._print_message("Tool Result Context: -tr.12 -tr.15")
-
-    assert captured == ["  ctx: -tr.12 -tr.15"]
+    assert captured == ["  ctx: +tr.12 +tr.15"]
 
 
 def test_agent_loop_styles_compact_state_section_labels(tmp_path):

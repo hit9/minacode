@@ -2,263 +2,340 @@
 
 ## Agent Model
 
-nanocode uses one agent. The agent is responsible for:
+nanocode uses one primary agent plus a maintenance compactor.
 
-- understanding the user request
-- maintaining goal, plan, hypotheses, and memory
-- calling tools
-- verifying work
+The primary agent is responsible for:
+
+- understanding the latest user request
+- maintaining Goal, Plan, Facts, Leads, Checks, and User Rules
+- calling repository, shell, edit, and context tools
+- verifying work before completion
 - deciding when the task is complete
 
-The agent has a work path and a cleanup path:
+Runtime activities:
 
-- `ACT`: normal work. It plans, investigates, edits, verifies, and answers.
-- `OBSERVE`: tool-result reducer. It decides which unreduced raw tool results stay in context and which are compacted away.
+- `agent`: normal work. It plans, investigates, edits, verifies, and answers.
+- `compact`: maintenance. It rebuilds a minimal Working Context Snapshot from
+  old prompt conversation, blackboard state, and raw tool evidence when context
+  pressure is high or `/compact` is requested.
 
-Conversation compaction is a background maintenance path. It summarizes old conversation history when the conversation list grows too large.
+There is no separate result-reducer mode and no manual result-retention tools.
+Tool-result cleanup is handled by context compaction and by dynamic prompt projection.
 
 ## Model Output Protocol
 
 Model decisions use function tools:
 
-- state tools update goal, plan, hypotheses, known facts, verification, and result retention
-- repository tools read, search, edit, run commands, and recall stored results
-- compaction uses a dedicated `compact` function tool
+- state actions update Goal, Plan, Facts, Leads, Checks, and User Rules
+- repository tools read, search, inspect symbols, edit, run commands, and inspect
+  git state
+- `Recall` retrieves stored tool results by `tr.N` key
+- compaction uses a dedicated JSON response contract in the compact activity
 
-Assistant text is optional user-facing text. It must not replace the next useful
-function tool. Completing work still requires a `goal` function tool call with
-`complete=true`.
+Assistant text is user-facing. It must not replace the next useful function
+tool when work remains. Completing tracked work still requires a goal action
+with `complete=true` after checks are settled.
+
+Function-tool arguments are structured JSON. The CLI display is a separate
+human-readable rendering, so a JSON call such as `Read({"path":"a.py"})` can be
+shown as `Read a.py`.
 
 ## Task State
 
-The main task state lives in the blackboard:
+The active task state lives in the blackboard:
 
 - latest user request
-- current task code
-- goal
+- task code
+- goal and completion flag
 - plan
-- hypotheses
-- known facts: settled facts for the current task
-- verification state
-- recent edits
+- leads: unconfirmed findings, usually source-backed
+- facts: confirmed knowledge, usually source-backed
+- memory checkpoint for compacted tool results
+- check requirement and check result
 
-New user input keeps the previous task state available for follow-ups like "continue".
+Recent edits and feedback errors live in the agent runtime. User Rules are
+durable session rules.
 
-Old task state is cleared only when the model explicitly sets a different goal. When that happens, transient investigation state such as hypotheses and selected tool-result context is reset, while durable knowledge is kept.
-
-## New Goal Handling
-
-New user input does not immediately clear the previous task. This keeps short
-follow-ups such as "continue" usable.
-
-When the model outputs `goal` with a different current-task goal:
-
-- goal and plan are replaced
-- hypotheses are cleared
-- verification is reset
-- kept tool results are cleared
-- visible raw tool results are compacted into summaries
-- full tool logs remain available through `Recall tr.N`
-- known facts remain available
+New user input keeps previous task state available so follow-ups like
+`continue` can resume. The agent must realign the state when the latest request
+changes the task. When the model sets a different non-complete goal, current
+raw tool context is compacted, the memory checkpoint advances, and active Leads
+are cleared. Facts remain available unless explicitly changed by state updates.
 
 ## Context Construction
 
-ACT mode receives a working context:
-
-- goal, plan, hypotheses, verification
-- environment, including whether local symbol inspection is available
-- Tool Result Index
-- Kept Tool Results
-- Unreduced Tool Results
-- Latest Tool Results
-- errors
-- recent edits
-- known facts
-- conversation history
-- latest user request
-
-OBSERVE receives a smaller cleanup context:
-
-- latest user request
-- goal, plan, hypotheses
-- known facts
-- kept tool results
-- observe errors
-- unreduced raw tool results selected from recent/latest storage
-
-OBSERVE reduces tool-result noise before ACT continues.
-
-The code navigation tool is environment-gated. `InspectCode` is shown only when
-the built-in code index is available. It supports `find`, `inspect`, and
-`outline` modes for symbol queries or file paths, not natural-language
-questions. The index is created explicitly with `/index`, rebuilt with
-`/index force`, and lightly updated at startup when it already exists.
-
-Context layout:
-
-Layout rules:
-
-- Lower means closer to `YOUR OUTPUT`.
-- Put stable background and lookup-only indexes higher.
-- Put newer, authoritative, decision-driving context lower.
-- Keep large evidence blocks above the final decision area.
-- Apply the same ordering inside each section.
+Agent prompts are built from stable context toward volatile decision context:
 
 ```text
-ACT user prompt, top -> bottom
+agent user prompt, top -> bottom
 +--------------------------------------------------+------------------------------+
-| Context section                                  | Budget / control             |
+| Section                                          | Main control                 |
 +--------------------------------------------------+------------------------------+
-| Background                                       | compact_at                   |
+| Stable Context                                   | provider prefix cache        |
 |   - Environment                                  |                              |
 |   - User Rules                                   |                              |
-|   - Conversation History                         |                              |
+|   - Conversation History                         | compact activity             |
 +--------------------------------------------------+------------------------------+
-| Tool Result Index                                | TOOL_RESULT_INDEX_ITEMS      |
-|   - Archived Recall Index                        |                              |
-|   - Current Task Timeline                        |                              |
+| Task State                                       | blackboard                   |
+|   - Goal / Facts / Leads / Plan / Focus / Checks |                              |
+|   - Recent Edits                                 | RECENT_EDITS                 |
 +--------------------------------------------------+------------------------------+
-| Kept Tool Results                                | KEPT_TOOL_RESULT_CHARS       |
-|   - kept_results                                 |                              |
+| Tool Context                                     | context budget               |
+|   - Tool Result Index                            | index_items                  |
+|   - Discovery Context                            | raw_chars / 3                |
+|   - File Context                                 | raw_chars + kept_chars       |
+|   - Unreduced Tool Results                       | compact checkpoint           |
+|   - Latest Tool Results                          | latest batch                 |
 +--------------------------------------------------+------------------------------+
-| Unreduced Tool Results                           | TOOL_RESULT_RAW_CHARS trigger|
-|   - unreduced recent                             | OBSERVE_AFTER_PENDING...     |
-+--------------------------------------------------+------------------------------+
-| Latest Tool Results                              | TOOL_RESULT_RAW_CHARS trigger|
-|   - latest                                       | MAX_TOOL_OUTPUT_CHARS/item   |
-+--------------------------------------------------+------------------------------+
-| Current Decision                                 | section-local limits         |
-|   - Recent Edits                                 |                              |
-|   - Known                                        |                              |
-|   - Current Phase / Work Mode                    |                              |
-|   - Goal / Plan / Hypotheses / Verify            |                              |
-|   - Errors                                       |                              |
+| Current Input                                    | latest user request          |
+|   - Blocking Feedback                            |                              |
+|   - Pending User Feedback                        |                              |
 |   - Latest User Request                          |                              |
-|   - Output Instructions                          |                              |
++--------------------------------------------------+------------------------------+
+| Output Guide                                     | final steering               |
 +--------------------------------------------------+------------------------------+
 ```
 
-Bounded raw output means the original tool output after per-result truncation.
-Compact summaries keep only execution metadata, size, and `recall=tr.N`.
+Layout rules:
 
-Raw tool result content is de-duplicated by `tr.N`. Timeline summaries may keep
-duplicate keys as compact index entries, especially for kept results, so the
-model can still see result ordering without rereading raw content.
-
-Tool result context budgets:
-
-- `MAX_TOOL_OUTPUT_CHARS` bounds each raw tool result before it enters context.
-- `KEPT_TOOL_RESULT_CHARS` limits `Kept Tool Results`.
-- `TOOL_RESULT_RAW_CHARS` triggers OBSERVE when `Unreduced Tool Results + Latest Tool Results` grow too large. It is not a pre-observe truncation limit.
-- `TOOL_RESULT_INDEX_ITEMS` limits compact index/timeline entries; current-task timeline entries take priority over archived entries.
-
-## Tool Result Context
-
-Internal tool-result storage has three fields:
-
-- `latest`: raw bounded output from the most recent tool batch
-- `kept_results`: useful raw results selected by OBSERVE and retained for ACT
-- `recent`: older visible results, usually compact summaries
-
-Prompt layout renders those fields as Tool Result Index, Kept Tool Results,
-Unreduced Tool Results, and Latest Tool Results. Recent raw results that have
-not been reduced yet remain visible as Unreduced Tool Results until OBSERVE
-covers them.
-
-ACT should render tool context in this order:
-
-1. Tool Result Index:
-   - archived recallable summaries, separated from the current task timeline
-   - current task timeline summaries
-2. Kept Tool Results: kept raw results
-3. Unreduced Tool Results: unreduced older raw results
-4. Latest Tool Results: latest raw results
-
-This keeps the newest and most actionable tool output closest to the model's
-next decision while preserving a compact timeline above it.
+- Put stable context higher to preserve provider prefix cache hits.
+- Put current user input, blocking feedback, and output rules closest to
+  `YOUR OUTPUT`.
+- Keep large evidence blocks in Tool Context, above the final decision area.
+- Prefer dynamic projections over repeating raw tool outputs.
 
 ## Tool Result Storage
 
-Every tool call gets a result key such as `tr.12`.
+Every non-context tool call gets a result key such as `tr.12`.
 
-The full tool output is written to the session log directory. The model sees
-bounded output or compact summaries in context and can fetch full output later
-with `Recall tr.N`.
+For regular tools:
 
-This separates storage from context:
+- full output is written to the session log directory
+- bounded output is stored in the active `tool_result_store`
+- prompt context receives bounded raw output, compact summaries, or projections
+- full detail can be retrieved later with `Recall tr.N`
 
-- logs keep the full result
-- context keeps active raw evidence and compact recall indexes
-- `Recall` restores detail on demand
-- the active store keeps up to `MAX_COMPLETED_GOAL_TOOL_RESULTS` completed-goal
-  results, inside the lower-level `MAX_TOOL_RESULT_STORE_ITEMS` cap
+Conversation has the same split:
 
-Tool result lifetime:
+- `conversation_log` is append-only audit state for the session
+- `conversation` is prompt context and may be replaced by Working Context
+  Snapshot plus recent turns
 
-- full output is always stored under `tr.N` and can be restored with `Recall`
-- active context starts with bounded raw output in `Latest Tool Results`
-- after another tool batch, older raw output becomes `Unreduced Tool Results`
-- OBSERVE either keeps raw output in `Kept Tool Results` or compacts it into
-  `Tool Result Index`
-- kept results may still have compact timeline entries in `Tool Result Index`
-- old timeline summaries may move under `Archived Recall Index`
+`Recall` is a context tool. It does not receive a new ordinary result key and
+does not add its own raw block to the normal tool-result index. On success, the
+stored results it returns are reconstructed as their original result blocks and
+reactivated in the current tool context.
 
-From the model's view:
+Tool-result storage is bounded:
 
-1. every tool result gets a `tr.N` key and full log entry
-2. ACT sees bounded raw output in Latest Tool Results and Unreduced Tool Results
-3. ACT also sees Kept Tool Results selected by OBSERVE
-4. OBSERVE sees unreduced raw results selected from `latest` and `recent`
-5. OBSERVE must `keep` useful results or `forget` noisy ones
-6. forgotten results leave active context, but full logs remain available through `Recall tr.N`
+- the runner keeps at most `MAX_TOOL_RESULT_STORE_ITEMS` entries during normal
+  storage pressure
+- at the start of a user turn, completed-goal storage is pruned toward
+  `MAX_COMPLETED_GOAL_TOOL_RESULTS`
+- result keys referenced by active state are protected from this pruning
 
-After each tool batch:
+## Tool Result Context
 
-1. the previous `latest` moves into `recent`
+`ToolResultContext` keeps only two active prompt lists:
+
+- `latest`: bounded raw output from the most recent regular tool batch
+- `recent`: older blocks, either still raw or already compacted
+
+There is no `kept_results` bucket. Raw blocks remain visible until they are
+covered by `compact_context()` or by the memory checkpoint.
+
+After each regular tool batch:
+
+1. previous `latest` moves to `recent`
 2. the new batch becomes `latest`
-3. unreduced raw results render as Unreduced Tool Results or Latest Tool Results
-4. OBSERVE later converts unreduced raw results into Kept Tool Results, Tool Result Index summaries, or forgotten context
+3. `recent` is pruned so compact timeline entries fit the current budget
+4. the next prompt renders timeline summaries plus active raw/projection blocks
 
-This keeps tool results visible until the model has had a chance to decide whether they matter.
+The Tool Result Index has two parts:
 
-## Observe Policy
+- `Archived Recall Index`: recallable stored results not otherwise visible
+- `Current Task Timeline`: compact summaries for current `recent + latest`
 
-OBSERVE is triggered when unresolved pending results accumulate by count or raw
-context pressure. Tool failures stay visible to ACT first; very large failures
-still trigger OBSERVE through raw-context pressure.
+Raw content is de-duplicated by result key when rendering unreduced blocks and
+timeline entries.
 
-In OBSERVE, every unreduced result key must be covered by either:
+## File Context
 
-- `keep`: retain this raw result in `kept_results`
-- `forget`: remove this result from future active context
+File Context is a dynamic prompt projection built before each model request.
+It is not separate persistent storage.
 
-`forget` releases context pressure while preserving logs and Recall ability.
+Inputs:
 
-If a forgotten result contained an important conclusion, the model should preserve that conclusion first in plan, known, hypothesis, or verification state.
+- active raw `Read` results
+- active raw `Edit` results
+- successful `Recall` results after they are reactivated into their original
+  blocks
+
+Projection policy:
+
+- Read and Edit outputs carry `source=tr.N`.
+- The rendered `Ranges` list and each `@@` content block show the nearest
+  source key.
+- Lines are merged by file path and line number.
+- Newer active Read/Edit results overwrite older lines.
+- Edit results invalidate stale old ranges and add the edited replacement
+  ranges.
+- `replace_all` invalidates the whole file projection for that source.
+
+Freshness policy:
+
+- Read/Edit outputs include file stat and `line:hash|content` anchors.
+- If the current file stat still matches the tool result stat, projected lines
+  are accepted without rereading the file.
+- If file stat changed, only projected line numbers are reread and their hashes
+  are checked.
+- Stale or missing lines are omitted and reported under `Omitted stale content`.
+
+This prevents Bash or other out-of-band file changes from silently keeping stale
+File Context lines in prompt. The slow path only reads lines that are already
+being projected.
+
+## Discovery Context
+
+Discovery Context is a dynamic prompt projection for source-discovery results.
+
+Inputs:
+
+- active raw `Search` results
+- active raw `InspectCode` results
+- successful `Recall` results after reactivation
+
+Policy:
+
+- Discovery Context is source-backed by `tr.N`, but it is treated as leads, not
+  current source truth.
+- It may include match snippets, symbol outlines, and line anchors.
+- Before editing exact code, the agent should use File Context line anchors or
+  run `Read` for the missing/current range.
+- Discovery blocks are compacted in normal Tool Result Index entries with
+  `content=discovery_context`, so the raw output is not repeated in Recent Tool
+  Results.
+
+## Read, Search, Edit, and Recall
+
+`Read` accepts structured JSON:
+
+- `Read({"path":"code.py","range":[0,80]})`
+- `Read({"path":"code.py","ranges":[[0,80],[160,220]]})`
+- `Read({"files":[{"path":"a.py"},{"path":"b.py","range":[10,40]}]})`
+- `Read({"path":"a.py","range":[0,20]}, {"path":"b.py","range":[20,40]})`
+
+`Search` accepts one or more structured query objects:
+
+- `Search({"pattern":"class .*Tool","path":"nanocode.py"})`
+- `Search({"pattern":"version","glob":"*.toml"}, {"pattern":"version","glob":"*.cfg"})`
+
+`Edit` uses anchored line hashes from Read, Search, or InspectCode. Successful
+Edit results record changed ranges and File Context update data, so modified
+ranges can appear in File Context without a follow-up Read.
+
+`Recall` retrieves stored results by key and optional line ranges. Recalled
+Read/Edit results merge back into File Context. Recalled Search/InspectCode
+results merge back into Discovery Context. Newer active Read/Edit blocks still
+win over older recalled file lines.
+
+## Compact Policy
+
+Context compaction is the single cleanup path.
+
+`/compact` means rebuilding the working prompt context, not deleting logs. It
+reads old prompt conversation, current blackboard state, user rules, recent
+edits, and selected tool evidence. It returns direct JSON, not a function tool
+call, so reasoning/thinking modes stay available and provider `tool_choice`
+quirks do not apply.
+
+The compact JSON contract is:
+
+- `snapshot`: required readable Working Context Snapshot
+- `known`: required durable facts, preserving source keys where available
+- `goal`, `plan`, `leads`, `checks`, and `user_rules`: optional blackboard/rule
+  updates
+
+Before each model request:
+
+1. build the system prompt, user prompt, and tool schemas
+2. estimate prompt tokens and record context percent
+3. if activity is `agent` and `runtime.compact_at` is reached, run
+   `compact_context()`
+4. rebuild once after compaction before sending the model request
+
+`compact_context()`:
+
+- selects unreduced raw tool blocks after the memory checkpoint
+- passes those blocks, bounded by the raw budget, to the compact model
+- replaces old prompt conversation with Working Context Snapshot plus recent
+  turns when enough history or tool evidence exists
+- updates Goal, Plan, Facts, Leads, Checks, and User Rules from compact JSON
+- converts observed raw tool blocks into compact timeline summaries
+- advances the memory checkpoint
+- reapplies index pruning
+
+Tool failures stay visible to the agent at least once through Latest Tool Results and
+blocking feedback. Invalid tool arguments are also remembered as feedback errors
+so the model can correct the next call.
 
 ## Context Budgets
 
 Context is bounded at several layers:
 
-- tool output is bounded before it enters context
-- Tool Result Index has an item budget
-- Kept Tool Results have a character budget
-- Unreduced Tool Results and Latest Tool Results share a raw character pressure threshold that triggers OBSERVE
-- conversation history can be compacted
-- old stored tool results are pruned unless protected by active state
+- each tool output is bounded before it enters active storage
+- Tool Result Index is capped by `index_items`
+- Discovery Context uses part of the raw character budget
+- File Context uses `raw_chars + kept_chars`
+- compact triggering is based on estimated or actual prompt tokens
+- prompt conversation can be compacted into a Working Context Snapshot while
+  full conversation audit state remains append-only
+- old stored tool results are pruned unless referenced by active state
 
-The design favors keeping useful raw tool results visible, while aggressively compacting or forgetting noise.
+Budget presets:
+
+```text
+low:    raw_chars=36000   kept_chars=16000   index_items=20   prompt_tokens=64000
+medium: raw_chars=72000   kept_chars=32000   index_items=30   prompt_tokens=128000
+high:   raw_chars=120000  kept_chars=64000   index_items=60   prompt_tokens=256000
+```
+
+`runtime.compact_at` is a context percent from `1` to `100`, or `0` to disable
+automatic compaction. The default is `80%`.
+
+The prompt-size estimate is `ceil(chars / 4)` plus tool schema size. When the
+provider returns usage, actual prompt/input tokens replace the estimate for
+status reporting.
+
+## Status and Commands
+
+The status bar shows:
+
+- model and reasoning label
+- optional mode/status notice
+- `ctx:NN%`
+- current turn tool-call count
+- token totals and optional streaming token rate
+- current turn elapsed time as `Ns` or `NmNs`
+
+It does not show a separate current model-call timer.
+
+`/context` reports the active context budget, including `prompt_tokens`.
+`/status` reports runtime settings, model usage, token usage, code-index status,
+goal, and checks.
 
 ## Completion and Verification
 
 The agent should complete only when:
 
 - the goal is achieved
-- plan items are done or blocked with concrete context
-- verification strength matches the task risk
-- required verification has passed or is blocked by the user/environment/tool
+- every plan item is done or blocked with concrete context
+- required checks are passed or blocked with a stated reason
+- failed checks have been recorded and addressed
+- the final answer can state what changed, how it was verified, and remaining
+  risk
 
-Verification is ACT work using tool calls plus a `verify` state update.
+Verification is agent work using tools plus a `verify` state update.
 
 Verification strength is intentionally lightweight:
 
@@ -269,6 +346,5 @@ Verification strength is intentionally lightweight:
 
 ## Design Principle
 
-The core idea is:
-
-Keep full data outside context, keep useful evidence inside context, and let OBSERVE periodically remove noise.
+Keep full logs outside prompt, project current evidence by source inside prompt,
+and use compact as the single cleanup path when context pressure requires it.

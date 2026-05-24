@@ -69,7 +69,7 @@ def _search_args(pattern: str, *, path: str | None = None, glob: str | None = No
     return [spec]
 
 
-def _observe_tool_result_context(agent):
+def _unreduced_tool_result_context(agent):
     return "\n\n".join(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter))
 
 
@@ -367,7 +367,7 @@ def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path, monkeypat
     assert "<ReadToolResult>" in latest
     assert "<ReadToolResult>" in recent
     assert len(agent.tool_context.recent) == 3
-    context = _observe_tool_result_context(agent)
+    context = _unreduced_tool_result_context(agent)
     assert "one.txt" in context
     assert "two.txt" in context
     assert "three.txt" in context
@@ -386,7 +386,6 @@ def test_referenced_unreduced_results_are_excluded_from_pending_context(tmp_path
     agent.apply_response({"actions": [{"type": "known", "items": [{"source": ["tr.1"], "text": "one.txt was inspected."}]}]})
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
-    assert agent.mode == nanocode.AgentMode.ACT
     assert agent.blackboard.memory_checkpoint_tool_result_counter == 0
     assert len(agent.tool_context.unreduced_blocks(agent.blackboard.memory_checkpoint_tool_result_counter)) == 2
     assert [nanocode.ToolResultContext.result_key(block) for block in agent._unreferenced_unreduced_blocks()] == ["tr.2"]
@@ -420,7 +419,6 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     agent.execute_tool_calls([{"name": "Read", "intention": "read one", "args": _read_args("one.txt", line_range=[0, 1])}])
     agent.execute_tool_calls([{"name": "Read", "intention": "read two", "args": _read_args("two.txt", line_range=[0, 1])}])
 
-    assert agent.mode == nanocode.AgentMode.ACT
     assert "key=tr.1" in _blocks_text(agent.tool_context.recent)
     index, unreduced, latest = agent._format_act_tool_result_context()
     assert "one.txt" in unreduced
@@ -973,9 +971,9 @@ def test_agent_request_manual_retry_resends_same_model_prompt(tmp_path):
     fake_client = FakeModelClient()
     agent.model_client = fake_client
 
-    response = agent.request("system", "user", activity="observe")
+    response = agent.request("system", "user", activity="agent")
 
-    assert response == {"actions": [{"type": "message", "text": "system/user/observe"}]}
+    assert response == {"actions": [{"type": "message", "text": "system/user/agent"}]}
     assert fake_client.calls == 2
     assert session.state.status_notice == ""
 
@@ -1348,7 +1346,7 @@ def test_function_tool_schemas_define_items_for_every_array():
 
     state_schemas = [nanocode._state_tool_schema(name) for name in nanocode.STATE_TOOL_PARAMS]
     repo_schemas = [tool.tool_schema() for tool in nanocode.TOOL_REGISTRY.values()]
-    for schema in [*state_schemas, *repo_schemas, nanocode.COMPACT_TOOL_SCHEMA]:
+    for schema in [*state_schemas, *repo_schemas]:
         walk(schema)
 
 
@@ -1366,7 +1364,7 @@ def test_function_tool_schemas_do_not_emit_null_enum_values():
 
     state_schemas = [nanocode._state_tool_schema(name) for name in nanocode.STATE_TOOL_PARAMS]
     repo_schemas = [tool.tool_schema() for tool in nanocode.TOOL_REGISTRY.values()]
-    for schema in [*state_schemas, *repo_schemas, nanocode.COMPACT_TOOL_SCHEMA]:
+    for schema in [*state_schemas, *repo_schemas]:
         walk(schema)
 
 
@@ -2617,13 +2615,12 @@ def test_agent_drops_old_feedback_after_successful_tool_progress(tmp_path):
     assert agent.agent_feedback_errors == []
 
 
-def test_tool_arg_error_does_not_force_observe(tmp_path):
+def test_tool_arg_error_stays_visible_for_repair(tmp_path):
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
     agent.execute_tool_calls([{"name": "Read", "intention": "bad range", "args": _read_args("sample.txt", line_range=["bad", 1])}])
 
-    assert agent.mode == nanocode.AgentMode.ACT
     assert agent.agent_feedback_errors
 
 
@@ -2636,7 +2633,6 @@ def test_non_arg_tool_failure_stays_in_act_for_repair(tmp_path):
         confirm=lambda call, tool: True,
     )
 
-    assert agent.mode == nanocode.AgentMode.ACT
     assert "exit 7" in _blocks_text(agent.tool_context.latest)
 
 
@@ -3114,7 +3110,7 @@ def test_agent_run_prunes_tool_result_store_when_next_run_starts(tmp_path):
     assert agent.blackboard.goal_reached is False
 
 
-def test_agent_run_observe_checkpoint_allows_completion_without_known(tmp_path):
+def test_agent_run_compact_checkpoint_allows_completion_without_known(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
 
     class FakeModelClient:

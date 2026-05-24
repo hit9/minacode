@@ -6,13 +6,13 @@ from nanocode import Config, Agent, CommandDispatcher, CommandStatus, ModelUsage
 
 
 class FakeModelClient:
-    def __init__(self, summary="LLM compact summary"):
-        self.summary = summary
+    def __init__(self, snapshot="LLM working snapshot"):
+        self.snapshot = snapshot
         self.requests = []
 
     def request(self, system_prompt, user_prompt, *, activity="agent", **_kwargs):
         self.requests.append((system_prompt, user_prompt, activity))
-        return {"summary": self.summary}
+        return {"snapshot": self.snapshot}
 
 
 def patch_openai_models(monkeypatch, models=None, error: Exception | None = None):
@@ -519,7 +519,7 @@ def test_command_dispatcher_runs_compact_with_status_runner(tmp_path):
     assert result.status == CommandStatus.HANDLED
     assert result.message == "Compacted context: 6 item(s)"
     assert status_calls == ["run"]
-    assert session.state.conversation[0].content == "Conversation compact summary:\nLLM compact summary"
+    assert session.state.conversation[0].content == "Working Context Snapshot:\nLLM working snapshot"
 
 
 def test_compact_command_reports_short_history(tmp_path):

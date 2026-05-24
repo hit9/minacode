@@ -594,16 +594,15 @@ CONTEXT_BUDGET_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 class ContextBudget:
     raw_chars: int
     kept_chars: int
-    kept_block_chars: int
     index_items: int
     prompt_tokens: int
     planless_discovery_tool_calls: int
 
 
 CONTEXT_BUDGETS: dict[str, ContextBudget] = {
-    "low": ContextBudget(36_000, 16_000, 4_000, 20, 64_000, 6),
-    "medium": ContextBudget(72_000, 32_000, 6_000, 30, 128_000, 8),
-    "high": ContextBudget(120_000, 64_000, 8_000, 60, 256_000, 12),
+    "low": ContextBudget(36_000, 16_000, 20, 64_000, 6),
+    "medium": ContextBudget(72_000, 32_000, 30, 128_000, 8),
+    "high": ContextBudget(120_000, 64_000, 60, 256_000, 12),
 }
 
 
@@ -828,15 +827,6 @@ yolo = false
         return data if isinstance(data, dict) else {}
 
 
-############################
-# Agent Runtime (dataclasses)
-############################
-
-
-class AgentMode(StrEnum):
-    ACT = "act"
-
-
 @dataclass
 class AgentRunResult:
     done: bool = False
@@ -869,6 +859,7 @@ class RuntimeState:
     status_notice_until: float = 0.0
     pending_user_feedback: str = ""
     conversation: list[ConversationItem] = field(default_factory=list)
+    conversation_log: list[ConversationItem] = field(default_factory=list)
     user_rules: UserRules = field(default_factory=UserRules)
     tool_result_store: dict[str, ToolResultItem] = field(default_factory=dict)
     tool_result_counter: int = 0
@@ -926,6 +917,7 @@ class Session:
 
     def append_conversation(self, item: ConversationItem) -> None:
         self.state.conversation.append(item)
+        self.state.conversation_log.append(item)
 
     def project_key(self) -> str:
         cwd = os.path.realpath(self.cwd)
@@ -1139,7 +1131,6 @@ class DebugTrace:
     @staticmethod
     def _agent_payload(agent: Any) -> Json:
         return {
-            "mode": agent.mode,
             "goal": agent.blackboard.goal,
             "plan_items": len(agent.blackboard.plan),
             "feedback_tail": agent.agent_feedback_errors[-3:],
@@ -3724,7 +3715,7 @@ class ToolResultTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Retrieve stored tool results by tr.N key.",
-        "Use when output was truncated, forgotten, or no longer visible.",
+        "Use when output was truncated, compacted, or no longer visible.",
         "Optional 0-based ranges read exact slices from the stored full log.",
         "Returns result metadata plus content.",
     )
@@ -3802,7 +3793,6 @@ TOOL_REGISTRY: dict[str, ToolClass] = {
     ToolResultTool.NAME: ToolResultTool,
 }
 CONTEXT_TOOL_NAMES: frozenset[str] = frozenset({ToolResultTool.NAME})
-REMOVED_CONTEXT_TOOL_NAMES: frozenset[str] = frozenset({"Forget", "Keep"})
 
 
 def _canonical_tool_name(name: str | None) -> str:
@@ -3907,18 +3897,6 @@ def _state_tool_schema(name: str) -> Json:
     description, properties, required = STATE_TOOL_PARAMS[name]
     return _function_tool_schema(name, description, _tool_object_schema(properties, required))
 
-
-COMPACT_TOOL_SCHEMA = _function_tool_schema(
-    "compact",
-    "Return a compact continuation summary and retained facts.",
-    _tool_object_schema(
-        {
-            "summary": TOOL_STRING_SCHEMA,
-            "known": TOOL_ITEMS_SCHEMA,
-        },
-        ["summary", "known"],
-    ),
-)
 
 ############################
 # Agent Prompt
@@ -4056,40 +4034,56 @@ YOUR OUTPUT:
 ############################
 
 
-COMPACTOR_PROMPT = """You are nanocode's conversation-history compactor.
+COMPACTOR_PROMPT = """You are nanocode's working-context compactor for an AI coding agent.
 
-Compress conversation history and Facts so the coding agent can continue later.
-If tool results are included, preserve only conclusions, file paths, ranges, errors, and decisions needed to continue.
-Do not solve the task or add unsupported facts.
-Use the compact function tool only.
+Rebuild the smallest state snapshot that lets the agent continue the task.
+You are not chatting, solving the task, deleting logs, or deciding which tr.N records exist.
+Full conversation and tool logs remain outside prompt for audit and Recall.
 
-Preserve continuity-critical facts:
-- user requests and changes
-- decisions made
-- current goal and commitments
-- plan/status
-- files, paths, symbols, and APIs touched
-- commands run and outcomes
-- facts and context keys needed later
-- unresolved blockers and open questions
-- checks context
+Return exactly one JSON object. Do not wrap it in markdown.
 
-Omit noise:
-- raw logs
-- repeated output
-- full stack traces
-- chatter
-- context values unless needed for continuity
+Required fields:
+- snapshot: string, concise continuation state for prompt context.
+- known: array of durable facts. Each item may be a string or {"text": "...", "source": ["tr.N"]}.
 
-Write the shortest complete continuation summary.
-Compress Facts to concise durable facts.
+Optional fields:
+- goal: current goal if still active.
+- plan: array of {"id"?, "text", "status"?, "context"?}.
+- leads: array of {"id"?, "text", "status"?, "source"?, "context"?}.
+- checks: {"status"?, "method"?, "context"?, "blocker"?}.
+- user_rules: array of durable user rules explicitly stated by the user.
+
+Snapshot content should cover only continuity-critical state:
+- latest user intent and task changes
+- current goal, commitments, plan state, and next step
+- confirmed facts and active leads
+- files, paths, symbols, APIs, commands, outcomes, and recent edits needed later
+- important source keys such as tr.N
+- unresolved blockers, open questions, and checks
+
+Preserve source keys when evidence comes from tool results.
+Prefer facts/plan/leads fields for structured state; use snapshot for the readable minimal working context.
+Omit raw logs, repeated output, full stack traces, obsolete branches, and process chatter.
+Do not invent facts not supported by the input.
 """
 
 
 COMPACT_USER_PROMPT_TEMPLATE = """
------------ Facts_To_Compact Begin ------------
+----------- Current_Blackboard Begin ----------
+{blackboard}
+-------- Current_Blackboard End ---------------
+
+----------- User_Rules Begin ------------------
+{user_rules}
+-------- User_Rules End -----------------------
+
+----------- Existing_Facts Begin --------------
 {known}
---------- Facts_To_Compact End ----------------
+-------- Existing_Facts End -------------------
+
+----------- Recent_Edits Begin ----------------
+{recent_edits}
+-------- Recent_Edits End ---------------------
 
 ----------- Conversation_To_Compact Begin ------
 {conversation}
@@ -4125,7 +4119,6 @@ class ModelClient:
         activity: str = "agent",
         on_stream_action: Callable[[Json], bool] | None = None,
         tool_schemas: list[Json] | None = None,
-        required_tool: str | None = None,
     ) -> Json:
         config = self.session.config.provider
         if not config.url:
@@ -4152,10 +4145,9 @@ class ModelClient:
                 user_prompt=user_prompt,
                 stream=stream,
                 tool_schemas=tool_schemas,
-                required_tool=required_tool,
             )
             if api == "responses"
-            else self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas, required_tool=required_tool)
+            else self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas)
         )
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api=api, model=model, stream=stream, params=params, tool_schemas=tool_schemas)
@@ -4313,7 +4305,6 @@ class ModelClient:
         messages: list[Json],
         stream: bool,
         tool_schemas: list[Json] | None = None,
-        required_tool: str | None = None,
     ) -> Json:
         params: Json = {"model": model, "messages": messages, "stream": stream}
         extra_body: Json = {}
@@ -4324,12 +4315,12 @@ class ModelClient:
             params["temperature"] = config.temperature
         if stream:
             params["stream_options"] = {"include_usage": True}
-        if tool_schemas:
-            params["tools"] = tool_schemas
-            params["tool_choice"] = {"type": "function", "function": {"name": required_tool}} if required_tool else "auto"
-            params["parallel_tool_calls"] = True
         chat_reasoning = config.resolved_chat_reasoning()
         reasoning_enabled = config.reasoning != "off"
+        if tool_schemas:
+            params["tools"] = tool_schemas
+            params["tool_choice"] = "auto"
+            params["parallel_tool_calls"] = True
         if reasoning_enabled and chat_reasoning == "reasoning":
             extra_body["reasoning"] = {"effort": self._reasoning_effort(config)}
         if reasoning_enabled and chat_reasoning == "reasoning_effort":
@@ -4625,7 +4616,6 @@ class ModelClient:
         user_prompt: str,
         stream: bool,
         tool_schemas: list[Json] | None = None,
-        required_tool: str | None = None,
     ) -> Json:
         params: Json = {"model": model, "instructions": system_prompt, "input": user_prompt, "stream": stream, "store": False}
         prompt_cache_key = self._prompt_cache_key(config, model=model, tool_schemas=tool_schemas)
@@ -4633,7 +4623,7 @@ class ModelClient:
             params["prompt_cache_key"] = prompt_cache_key
         if tool_schemas:
             params["tools"] = self._responses_tool_schemas(tool_schemas)
-            params["tool_choice"] = {"type": "function", "name": required_tool} if required_tool else "auto"
+            params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
         if config.temperature is not None:
             params["temperature"] = config.temperature
@@ -5550,39 +5540,118 @@ class ConversationCompactor:
         self.model_client = model_client
         self.blackboard = blackboard
 
-    def compact(self, *, tool_results: str = "") -> int:
+    SNAPSHOT_HEADER: ClassVar[str] = "Working Context Snapshot:"
+
+    def compact(self, *, tool_results: str = "", recent_edits: list[str] | None = None) -> int:
         count = len(self.session.state.conversation)
         tool_results = tool_results.strip()
         if count <= self.KEEP_RECENT and not tool_results:
             return 0
         old_items = self.session.state.conversation[: -self.KEEP_RECENT] if count > self.KEEP_RECENT else []
         keep_items = self.session.state.conversation[-self.KEEP_RECENT :] if count > self.KEEP_RECENT else list(self.session.state.conversation)
-        summary, known = self._summarize(old_items, tool_results=tool_results)
-        self.session.state.conversation = [AssistantMessage(content="Conversation compact summary:\n" + summary)] + keep_items
-        self.blackboard.known = known
+        snapshot = self._summarize(old_items, tool_results=tool_results, recent_edits=recent_edits or [])
+        self.session.state.conversation = [AssistantMessage(content=self.SNAPSHOT_HEADER + "\n" + snapshot)] + keep_items
         return count + (1 if tool_results else 0)
 
-    def _summarize(self, items: list[ConversationItem], *, tool_results: str = "") -> tuple[str, list[KnownItem]]:
+    def _summarize(self, items: list[ConversationItem], *, tool_results: str = "", recent_edits: list[str]) -> str:
         user_prompt = COMPACT_USER_PROMPT_TEMPLATE.format(
+            blackboard=self._format_blackboard(),
+            user_rules=self.session.state.user_rules.format(),
             known="\n".join(KnownItem.format_item(item) for item in self.blackboard.known) or "(empty)",
+            recent_edits="\n".join(recent_edits) or "(empty)",
             conversation="\n\n".join(item.format() for item in items) or "(empty)",
             tool_results=tool_results or "(empty)",
         ).strip()
-        response = self.model_client.request(
-            COMPACTOR_PROMPT.strip(), user_prompt, activity="compact", tool_schemas=[COMPACT_TOOL_SCHEMA], required_tool="compact"
-        )
-        if "actions" in response:
-            response = next(
-                (_json_dict(action) for action in _json_list(response.get("actions")) if _json_str(_json_dict(action).get("type")) == "compact"),
-                {},
-            )
-        summary = _json_str(response.get("summary"))
-        if not summary:
-            raise LLMError("compact response missing summary")
-        known = [item for item in (KnownItem.from_json(raw) for raw in _json_list(response.get("known"))) if item]
+        response = self._response_json(self.model_client.request(COMPACTOR_PROMPT.strip(), user_prompt, activity="compact"))
+        snapshot = _json_str(response.get("snapshot")) or ""
+        if not snapshot:
+            raise LLMError("compact response missing snapshot")
+        self._apply_snapshot_state(response)
+        return snapshot.strip()
+
+    def _format_blackboard(self) -> str:
+        lines = ["Goal:", self.blackboard.goal or "(empty)", "", "Plan:"]
+        lines.append("\n".join(item.format() for item in self.blackboard.plan) if self.blackboard.plan else "(empty)")
+        lines.extend(["", "Leads:", "\n".join(item.format() for item in self.blackboard.leads) if self.blackboard.leads else "(empty)"])
+        lines.extend(["", "Checks:", self.blackboard.checks.format() if self.blackboard.checks.has_context() else "(empty)"])
+        return "\n".join(lines)
+
+    def _apply_snapshot_state(self, response: Json) -> None:
+        goal = (_json_str(response.get("goal")) or "").strip()
+        if goal:
+            self.blackboard.goal = goal
+        plan = [item for item in (self._plan_item_from_json(raw) for raw in _json_list(response.get("plan"))) if item]
+        if plan:
+            self.blackboard.plan = plan
+        leads = [item for item in (Lead.from_json(raw) for raw in _json_list(response.get("leads"))) if item]
+        if leads:
+            self.blackboard.leads = leads
+        self._apply_snapshot_checks(_json_dict(response.get("checks")))
+
+        known = [item for item in (KnownItem.from_json(raw) for raw in (_json_list(response.get("known")) or _json_list(response.get("facts")))) if item]
         if not known:
             known = list(self.blackboard.known)
-        return summary, known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
+        self.blackboard.known = known[-self.MAX_COMPACTED_KNOWN_ITEMS :]
+
+        rules_changed = False
+        for raw_rule in _json_list(response.get("user_rules")):
+            rule = (_json_str(raw_rule) or "").strip()
+            rules_changed = self.session.state.user_rules.add(rule) or rules_changed
+        if rules_changed:
+            self.session.save_user_rules()
+
+    @staticmethod
+    def _plan_item_from_json(value: JsonValue) -> PlanItem | None:
+        if isinstance(value, str):
+            text = value.strip()
+            return PlanItem(text=text) if text else None
+        item = _json_dict(value)
+        text = _json_str(item.get("text")) or ""
+        if not text:
+            return None
+        status = _json_str(item.get("status")) or PlanStatus.TODO
+        if status not in ALL_PLAN_STATUSES:
+            status = PlanStatus.TODO
+        return PlanItem(text=text, status=PlanStatus(status), id=_json_str(item.get("id")) or "", context=_json_str(item.get("context")) or "")
+
+    def _apply_snapshot_checks(self, item: Json) -> None:
+        if not item:
+            return
+        status = _json_str(item.get("status")) or ""
+        if status in frozenset(CheckStatus):
+            self.blackboard.checks.status = CheckStatus(status)
+        if "method" in item:
+            self.blackboard.checks.method = _json_str(item.get("method")) or ""
+        if "context" in item:
+            self.blackboard.checks.context = _json_str(item.get("context")) or ""
+        blocker = _json_str(item.get("blocker")) or ""
+        if blocker in ALL_CHECK_BLOCKERS:
+            self.blackboard.checks.blocker = CheckBlocker(blocker)
+
+    @staticmethod
+    def _response_json(response: Json) -> Json:
+        if response and response.get("_assistant_text") is None:
+            return response
+        text = (_json_str(response.get("_assistant_text")) or "").strip()
+        for pattern in (r"(?ms)^```(?:json)?\s*(.*?)\s*```$", r"(?ms)```(?:json)?\s*(.*?)\s*```"):
+            match = re.search(pattern, text)
+            if match:
+                text = match.group(1).strip()
+                break
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            if start < 0:
+                raise LLMError("compact response invalid JSON")
+            try:
+                parsed, _end = json.JSONDecoder().raw_decode(text[start:])
+            except json.JSONDecodeError as error:
+                raise LLMError("compact response invalid JSON: " + str(error))
+        data = _json_dict(parsed)
+        if not data:
+            raise LLMError("compact response must be a JSON object")
+        return data
 
 
 ############################
@@ -5659,11 +5728,10 @@ class Agent:
         self.failed_tool_call_key: tuple[str, tuple[str, ...]] | None = None
         self.failed_tool_call_count = 0
         self.agent_feedback_errors: list[str] = []
-        self.latest_context_tool_recalled: list[str] = []
+        self.latest_recalled_result_keys: list[str] = []
         self.task_alignment_required = False
         self.incomplete_task_context_at_turn_start = False
         self.stream_stop_requested = False
-        self.mode = AgentMode.ACT
 
     def context_budget(self) -> ContextBudget:
         return CONTEXT_BUDGETS[self.session.settings.context_budget]
@@ -5798,7 +5866,7 @@ class Agent:
         self.session.state.status_notice_until = time.monotonic() + ttl
 
     def compact_history(self) -> int:
-        return self.compactor.compact()
+        return self.compactor.compact(recent_edits=self.recent_edits)
 
     def compact_context(self) -> int:
         observed_blocks = self.tool_context.unreduced_blocks(self.blackboard.memory_checkpoint_tool_result_counter)
@@ -5806,7 +5874,7 @@ class Agent:
             "\n\n".join(observed_blocks),
             self.context_budget().raw_chars,
         )
-        compacted_conversation = self.compactor.compact(tool_results=tool_results)
+        compacted_conversation = self.compactor.compact(tool_results=tool_results, recent_edits=self.recent_edits)
         observed_counter = ToolResultContext.max_counter(observed_blocks)
         if observed_blocks:
             self.tool_context.compact_observed(observed_blocks)
@@ -6075,7 +6143,7 @@ class Agent:
         return self._system_prompt(), self.build_user_prompt(), "agent"
 
     def _tool_schemas(self) -> list[Json]:
-        action_names = self.ACT_ACTION_TYPES - {"tool", "forget"}
+        action_names = self.ACT_ACTION_TYPES - {"tool"}
         tool_classes: Iterable[ToolClass] = tuple(TOOL_REGISTRY.values())
         if not CodeIndex(self.session).available():
             tool_classes = tuple(tool for tool in tool_classes if tool is not InspectCodeTool)
@@ -6165,7 +6233,7 @@ class Agent:
     def _can_stream_tools(self) -> bool:
         return isinstance(self.model_client, ModelClient) and self.session.config.provider.stream is not False
 
-    def apply_response(self, response: Json) -> list[str]:
+    def apply_response(self, response: Json) -> None:
         actions = self._response_actions(response)
         response = {**response, "actions": actions}
         if any(self._is_pending_check_action(action) for action in actions):
@@ -6176,7 +6244,6 @@ class Agent:
             self._mark_memory_checkpoint()
             self.blackboard.leads = []
         self.state_updater.apply(response)
-        return []
 
     def _goal_changes_task(self, actions: list[Json]) -> bool:
         if not self.blackboard.goal:
@@ -6202,7 +6269,7 @@ class Agent:
         append_to_latest: bool = False,
     ) -> str:
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
-        self.latest_context_tool_recalled = []
+        self.latest_recalled_result_keys = []
         regular_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name not in CONTEXT_TOOL_NAMES]
         if regular_executions:
             self.tool_context.append_latest(
@@ -6232,7 +6299,7 @@ class Agent:
                 continue
             if execution.call.name == ToolResultTool.NAME:
                 blocks = ToolResultContext.recalled_result_blocks(ToolResultContext.format_execution(execution))
-                self.latest_context_tool_recalled.extend(
+                self.latest_recalled_result_keys.extend(
                     self.tool_context.reactivate_result_blocks(
                         blocks,
                         max_index_items=self.context_budget().index_items,
@@ -6568,11 +6635,6 @@ class Agent:
         )
 
     def _gate_tool_actions(self, ctx: ResponseContext, on_message: MessageCallback | None) -> bool:
-        unavailable = sorted({_json_str(_json_dict(call).get("name")) for call in ctx.tool_calls if _json_str(_json_dict(call).get("name")) in REMOVED_CONTEXT_TOOL_NAMES})
-        if unavailable:
-            self._remember_agent_error(self._error("context tools are no longer available in ACT: " + ", ".join(unavailable) + "."))
-            self._report_gate(on_message, "Retrying: use Recall or continue work directly.", "Protocol_Gate: unavailable context tool(s): " + ", ".join(unavailable) + ".")
-            return True
         repeated_tool_retry_error = self._repeated_tool_retry_error(ctx.tool_calls)
         if repeated_tool_retry_error:
             self.stream_stop_requested = True
@@ -6706,25 +6768,15 @@ class Agent:
             report = ToolCallDisplayFormatter.latest_report(self.tool_runner.latest_executions)
             if report:
                 on_message(report)
-            self._emit_tool_context_update(
-                self.latest_context_tool_recalled,
-                [],
-                on_message,
-            )
+            self._emit_recalled_context_update(on_message)
             if self.session.settings.debug and self.tool_runner.skipped_after_failure_count:
                 on_message(f"Tool Calls Skipped: {self.tool_runner.skipped_after_failure_count} after {self.tool_runner.skipped_after_failure_key} failed")
         self.apply_context_budget()
         return True
 
-    def _emit_tool_context_update(self, kept: list[str], forgotten: list[str], on_message: MessageCallback | None) -> None:
-        if on_message is None or not (kept or forgotten):
-            return
-        parts = []
-        if kept:
-            parts.append(" ".join("+" + key for key in kept))
-        if forgotten:
-            parts.append(" ".join("-" + key for key in forgotten))
-        on_message("Tool Result Context: " + " / ".join(parts))
+    def _emit_recalled_context_update(self, on_message: MessageCallback | None) -> None:
+        if on_message is not None and self.latest_recalled_result_keys:
+            on_message("Tool Result Context: " + " ".join("+" + key for key in self.latest_recalled_result_keys))
 
     def _finish_or_continue(self, ctx: ResponseContext, on_message: MessageCallback | None) -> AgentRunResult:
         completion_gate = self._gate_completion(ctx, on_message)
@@ -6793,7 +6845,7 @@ class Agent:
             checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
         )
         self._prune_tool_result_store()
-        self.latest_context_tool_recalled = []
+        self.latest_recalled_result_keys = []
         self.session.state.turn_tool_calls = 0
         self.session.state.turn_model_calls = 0
         old_goal = self.blackboard.goal
@@ -6858,10 +6910,9 @@ class Agent:
                 DebugTrace.handle_event(self, "handle-text", ctx, response, result=text_result)
                 return text_result
 
-            forgotten_keys = self.apply_response(response)
-            DebugTrace.handle_event(self, "handle-applied", ctx, response, extra={"forgotten": forgotten_keys})
+            self.apply_response(response)
+            DebugTrace.handle_event(self, "handle-applied", ctx, response)
             self._emit_state_and_text(ctx, on_message)
-            self._emit_tool_context_update([], forgotten_keys, on_message)
             self._refresh_agent_feedback()
             if ctx.has_user_rule_action and not ctx.tool_calls and not ctx.pending_check_requested:
                 message = ctx.user_rule_message or "Rule saved."
@@ -7315,7 +7366,6 @@ class CommandDispatcher:
                 "context_budget: " + self.agent.session.settings.context_budget,
                 "raw_chars: " + str(budget.raw_chars),
                 "kept_chars: " + str(budget.kept_chars),
-                "kept_block_chars: " + str(budget.kept_block_chars),
                 "index_items: " + str(budget.index_items),
                 "prompt_tokens: " + str(budget.prompt_tokens),
             ]
