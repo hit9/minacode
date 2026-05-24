@@ -1304,6 +1304,7 @@ def _bound_tool_output(output: str, *, log_path: str = "", max_chars: int = MAX_
 
 RESULT_KEY_PATTERN: re.Pattern[str] = re.compile(r"\b(?:(?:result_)?key|recall)[:=]\s*(tr\.\d+)\b")
 TOOL_RESULT_KEY_REF_PATTERN: re.Pattern[str] = re.compile(r"\btr\.\d+\b")
+READ_HASHLINE_NOTE = '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>'
 
 
 def _format_tool_call_summary(call: ParsedToolCall) -> str:
@@ -1611,10 +1612,7 @@ class ToolResultContext:
 
     @classmethod
     def _file_context_items(cls, blocks: list[str]) -> list[FileContextItem]:
-        items: list[FileContextItem] = []
-        for block in blocks:
-            items.extend(cls._file_context_block_items(block))
-        return items
+        return [item for block in blocks for item in cls._file_context_block_items(block)]
 
     @classmethod
     def _file_context_item_is_current(
@@ -1713,39 +1711,13 @@ class ToolResultContext:
                 continue
             mtime_ns, size = cls._file_context_section_stat(section)
             for clear_match in re.finditer(r"(?m)^[ \t]*<invalidate>(\d+):(\d+)</invalidate>", section):
-                items.append(
-                    FileContextItem(
-                        order=order,
-                        phase=0,
-                        kind="clear",
-                        source=source,
-                        path=path,
-                        start=int(clear_match.group(1)),
-                        end=int(clear_match.group(2)),
-                        line="",
-                        mtime_ns=mtime_ns,
-                        size=size,
-                    )
-                )
+                items.append(FileContextItem(order, 0, "clear", source, path, int(clear_match.group(1)), int(clear_match.group(2)), "", mtime_ns, size))
             for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", section):
                 content = match.group(1)
                 for line in content.splitlines():
                     line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
                     if line_match:
-                        items.append(
-                            FileContextItem(
-                                order=order,
-                                phase=1,
-                                kind="line",
-                                source=source,
-                                path=path,
-                                start=int(line_match.group(1)),
-                                end=0,
-                                line=line,
-                                mtime_ns=mtime_ns,
-                                size=size,
-                            )
-                        )
+                        items.append(FileContextItem(order, 1, "line", source, path, int(line_match.group(1)), 0, line, mtime_ns, size))
         return items
 
     @staticmethod
@@ -2066,16 +2038,8 @@ class ReadTool(Tool):
             if not path:
                 continue
             raw_ranges = [spec.get("range")] if "range" in spec else _json_list(spec.get("ranges")) if "ranges" in spec else []
-            ranges = []
-            for raw_range in raw_ranges:
-                values = _json_list(raw_range)
-                if len(values) == 2:
-                    ranges.append(str(values[0]) + ":" + str(values[1]))
-            if not ranges:
-                tokens.append(path)
-                continue
             tokens.append(path)
-            tokens.extend(ranges)
+            tokens.extend(str(values[0]) + ":" + str(values[1]) for raw_range in raw_ranges if len(values := _json_list(raw_range)) == 2)
         return tokens or [cls.cli_token(args[0])]
 
     @classmethod
@@ -2189,52 +2153,33 @@ class ReadTool(Tool):
         return f"Read({filepath}, {start}, {end})"
 
     def call(self) -> str:
-        if len(self.targets) > 1:
-            lines = [
-                "<ReadToolResult>",
-                '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
-                "  <file_count>" + str(len(self.targets)) + "</file_count>",
-            ]
-            for filepath, ranges in self.targets:
+        multi_file = len(self.targets) > 1
+        lines = ["<ReadToolResult>", READ_HASHLINE_NOTE]
+        if multi_file:
+            lines.append("  <file_count>" + str(len(self.targets)) + "</file_count>")
+        elif len(self.targets[0][1]) > 1:
+            lines.append("  <range_count>" + str(len(self.targets[0][1])) + "</range_count>")
+
+        for filepath, ranges in self.targets:
+            base_indent = "  "
+            if multi_file:
+                base_indent = "    "
                 lines.extend(["  <ReadFile>", "    <path>" + os.path.relpath(filepath, self.cwd) + "</path>"])
-                lines.extend(_format_file_stat(filepath, indent="    "))
+                lines.extend(_format_file_stat(filepath, indent=base_indent))
                 if len(ranges) > 1:
                     lines.append("    <range_count>" + str(len(ranges)) + "</range_count>")
-                for start, end in ranges:
-                    if len(ranges) > 1:
-                        lines.append("    <ReadRange>")
-                        indent = "      "
-                    else:
-                        indent = "    "
-                    content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
-                    lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent=indent))
-                    if len(ranges) > 1:
-                        lines.append("    </ReadRange>")
-                lines.append("  </ReadFile>")
-            lines.append("</ReadToolResult>")
-            return "\n".join(lines)
-
-        filepath, ranges = self.targets[0]
-        if len(ranges) > 1:
-            lines = [
-                "<ReadToolResult>",
-                '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>',
-                "  <range_count>" + str(len(ranges)) + "</range_count>",
-            ]
-            lines.extend(_format_file_stat(filepath, indent="  "))
+            else:
+                lines.extend(_format_file_stat(filepath, indent=base_indent))
             for start, end in ranges:
+                wrapped = len(ranges) > 1
+                if wrapped:
+                    lines.append(base_indent + "<ReadRange>")
                 content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
-                lines.append("  <ReadRange>")
-                lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="    "))
-                lines.append("  </ReadRange>")
-            lines.append("</ReadToolResult>")
-            return "\n".join(lines)
-
-        start, end = ranges[0]
-        lines = ["<ReadToolResult>", '  <note>Content lines are "line:hash|code"; the "line:hash" part is the line anchor.</note>']
-        lines.extend(_format_file_stat(filepath, indent="  "))
-        content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
-        lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent="  "))
+                lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent=base_indent + ("  " if wrapped else "")))
+                if wrapped:
+                    lines.append(base_indent + "</ReadRange>")
+            if multi_file:
+                lines.append("  </ReadFile>")
         lines.append("</ReadToolResult>")
         return "\n".join(lines)
 
@@ -2489,17 +2434,13 @@ class SearchTool(Tool):
         unexpected = sorted(set(payload) - {"pattern", "path", "glob", "context"})
         if unexpected:
             raise ToolCallArgError("unexpected search option: " + ", ".join(unexpected))
-        raw_pattern = _json_str(payload.get("pattern")) or ""
-        if not raw_pattern:
-            raise ToolCallArgError("pattern cannot be empty")
-        pattern = raw_pattern[3:] if raw_pattern.startswith("re:") else raw_pattern
+        pattern = _json_str(payload.get("pattern")) or ""
+        pattern = pattern[3:] if pattern.startswith("re:") else pattern
         if not pattern:
             raise ToolCallArgError("pattern cannot be empty")
         pattern = pattern.replace("\\n", "\n").replace("\\r", "\r")
-        target_path_arg = _json_str(payload.get("path")) if "path" in payload else "."
-        target_path_arg = target_path_arg or "."
-        glob_pattern = _json_str(payload.get("glob")) if "glob" in payload else ""
-        glob_pattern = glob_pattern or ""
+        target_path_arg = _json_str(payload.get("path")) or "."
+        glob_pattern = _json_str(payload.get("glob")) or ""
         if "glob" in payload and not glob_pattern:
             raise ToolCallArgError("glob option cannot be empty")
         context_lines = cls.CONTEXT_LINES
@@ -2555,7 +2496,7 @@ class SearchTool(Tool):
             pass
         return patterns
 
-    def _is_gitignored(self, path: str, is_dir: bool = False) -> bool:
+    def _is_gitignored(self, path: str) -> bool:
         relpath = self._relpath(path).replace(os.sep, "/")
         name = os.path.basename(path)
         parts = relpath.split("/")
@@ -2579,9 +2520,9 @@ class SearchTool(Tool):
                 return True
         return False
 
-    def _is_skipped_path(self, path: str, is_dir: bool = False) -> bool:
+    def _is_skipped_path(self, path: str) -> bool:
         hidden = any(part.startswith(".") for part in self._relpath(path).split(os.sep) if part and part != ".")
-        return hidden or self._is_gitignored(path, is_dir)
+        return hidden or self._is_gitignored(path)
 
     def _iter_files(self) -> Iterator[str]:
         if os.path.isfile(self.target_path):
@@ -2590,7 +2531,7 @@ class SearchTool(Tool):
             return
 
         for root, dirs, names in os.walk(self.target_path):
-            dirs[:] = [name for name in dirs if not self._is_skipped_path(os.path.join(root, name), is_dir=True)]
+            dirs[:] = [name for name in dirs if not self._is_skipped_path(os.path.join(root, name))]
             for name in names:
                 path = os.path.join(root, name)
                 if self._matches_glob(path) and not self._is_skipped_path(path):
