@@ -1504,28 +1504,52 @@ class ToolResultContext:
 
     @classmethod
     def render_block_for_prompt(cls, block: str) -> str:
-        if not cls._is_read_result_block(block):
+        if not cls._is_file_context_result_block(block):
             return block
-        compact = cls.compact_block(block)
+        compact = cls.compact_file_context_block(block)
         if "\n  out: " in compact:
-            content = "file_context" if cls._read_block_file_lines(block) else "recall"
+            content = "file_context" if cls._file_context_block_items(block) else "recall"
             return compact + "; content=" + content
         return compact
 
     @classmethod
+    def compact_file_context_block(cls, block: str) -> str:
+        if not cls.is_full_block(block):
+            return block
+        header, output = block.split("\n  output:\n", 1)
+        summary_output = re.sub(r"(?ms)^[ \t]*<content hashline-numbered>\n.*?^[ \t]*</content>", "<content hashline-numbered>...</content>", output)
+        summary_output = re.sub(r"(?m)^[ \t]*</?(?:ReadToolResult|EditToolResult)>[ \t]*$", "", summary_output)
+        parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"]
+        if "[tool result excerpt]" in output or "excerpted: true" in output:
+            parts.append("excerpt")
+        if key := cls.result_key(block):
+            parts.append("recall=" + key)
+        if summary_output:
+            parts.append(_shorten(" ".join(summary_output.split()), cls.COMPACT_OUTPUT_SUMMARY_CHARS))
+        return header + "\n  out: " + "; ".join(parts)
+
+    @classmethod
     def format_file_context(cls, blocks: list[str], *, max_chars: int) -> str:
         files: dict[str, dict[int, tuple[str, str]]] = {}
-        entries = sorted(cls._file_context_entries(blocks), key=lambda item: item[0])
-        for _order, source, path, number, line in entries:
-            if source:
-                files.setdefault(path, {})[number] = (source, line)
+        items = sorted(cls._file_context_items(blocks), key=lambda item: (item[0], item[1], item[4], item[5]))
+        for _order, _phase, kind, source, path, start, end, line in items:
+            if not source or not path:
+                continue
+            file_lines = files.setdefault(path, {})
+            if kind == "clear":
+                for number in list(file_lines):
+                    if number >= start and (end == 0 or number < end):
+                        del file_lines[number]
+                continue
+            file_lines[start] = (source, line)
         if not files:
             return ""
 
         lines = [
             "Source Policy:",
-            "- Built dynamically for this prompt from active raw Read results.",
-            "- Overlapping lines use the newest active Read result.",
+            "- Built dynamically for this prompt from active raw Read and Edit results.",
+            "- Overlapping lines use the newest active Read/Edit result.",
+            "- Edit results can clear stale older lines when edits shift line numbers.",
             "",
         ]
         for path in sorted(files):
@@ -1545,13 +1569,11 @@ class ToolResultContext:
         return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
 
     @classmethod
-    def _file_context_entries(cls, blocks: list[str]) -> list[tuple[int, str, str, int, str]]:
-        entries: list[tuple[int, str, str, int, str]] = []
+    def _file_context_items(cls, blocks: list[str]) -> list[tuple[int, int, str, str, str, int, int, str]]:
+        items: list[tuple[int, int, str, str, str, int, int, str]] = []
         for block in blocks:
-            source = cls.result_key(block)
-            if source and cls._is_read_result_block(block):
-                entries.extend((cls.result_counter(block), source, path, number, line) for path, number, line in cls._read_block_file_lines(block))
-        return entries
+            items.extend(cls._file_context_block_items(block))
+        return items
 
     @staticmethod
     def _file_context_segments(file_lines: dict[int, tuple[str, str]]) -> list[tuple[int, int, str, list[str]]]:
@@ -1575,33 +1597,40 @@ class ToolResultContext:
         return segments
 
     @classmethod
-    def _read_block_file_lines(cls, block: str) -> list[tuple[str, int, str]]:
-        if not cls._is_read_result_block(block):
+    def _file_context_block_items(cls, block: str) -> list[tuple[int, int, str, str, str, int, int, str]]:
+        if not cls._is_file_context_result_block(block):
             return []
         header, output = block.split("\n  output:\n", 1)
-        default_path = cls._read_block_default_path(header)
-        return cls._read_output_file_lines(output, default_path=default_path)
+        default_path = cls._read_block_default_path(header) if re.search(r"\btool=Read\b", header) else ""
+        return cls._file_context_output_items(output, default_path=default_path, order=cls.result_counter(block), source=cls.result_key(block))
 
     @classmethod
-    def _read_output_file_lines(cls, output: str, *, default_path: str) -> list[tuple[str, int, str]]:
-        file_lines: list[tuple[str, int, str]] = []
-        for path, section in cls._read_output_file_sections(output, default_path=default_path):
+    def _file_context_output_items(
+        cls, output: str, *, default_path: str, order: int, source: str
+    ) -> list[tuple[int, int, str, str, str, int, int, str]]:
+        items: list[tuple[int, int, str, str, str, int, int, str]] = []
+        for path, section in cls._file_context_file_sections(output, default_path=default_path):
             if not path:
                 continue
+            for clear_match in re.finditer(r"(?m)^[ \t]*<invalidate>(\d+):(\d+)</invalidate>", section):
+                items.append((order, 0, "clear", source, path, int(clear_match.group(1)), int(clear_match.group(2)), ""))
             for match in re.finditer(r"(?ms)^[ \t]*<content hashline-numbered>\n(.*?)^[ \t]*</content>", section):
                 content = match.group(1)
                 for line in content.splitlines():
                     line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
                     if line_match:
-                        file_lines.append((path, int(line_match.group(1)), line))
-        return file_lines
+                        items.append((order, 1, "line", source, path, int(line_match.group(1)), 0, line))
+        return items
 
     @classmethod
-    def _is_read_result_block(cls, block: str) -> bool:
+    def _is_file_context_result_block(cls, block: str) -> bool:
         if not cls.is_full_block(block):
             return False
         header, output = block.split("\n  output:\n", 1)
-        return bool(re.search(r"\btool=Read\b", header) and "<ReadToolResult>" in output)
+        return bool(
+            (re.search(r"\btool=Read\b", header) and "<ReadToolResult>" in output)
+            or (re.search(r"\btool=Edit\b", header) and "<EditToolResult>" in output and ("<content hashline-numbered>" in output or "<invalidate>" in output))
+        )
 
     @classmethod
     def recalled_result_blocks(cls, recall_block: str) -> list[str]:
@@ -1667,13 +1696,13 @@ class ToolResultContext:
         return str(args[0])
 
     @staticmethod
-    def _read_output_file_sections(output: str, *, default_path: str) -> Iterator[tuple[str, str]]:
-        file_matches = list(re.finditer(r"(?ms)^[ \t]*<ReadFile>\n(.*?)^[ \t]*</ReadFile>", output))
+    def _file_context_file_sections(output: str, *, default_path: str) -> Iterator[tuple[str, str]]:
+        file_matches = list(re.finditer(r"(?ms)^[ \t]*<(?P<tag>ReadFile|EditFile)>\n(.*?)^[ \t]*</(?P=tag)>", output))
         if not file_matches:
             yield default_path, output
             return
         for match in file_matches:
-            section = match.group(1)
+            section = match.group(2)
             path_match = re.search(r"<path>(.*?)</path>", section)
             yield (path_match.group(1).strip() if path_match else default_path), section
 
@@ -3150,8 +3179,37 @@ class EditTool(Tool):
                 lines.append(f"* replace_all[{index}]: {end} replacements")
             else:
                 lines.append(f"* range[{index}]: {start}:{end}")
+        lines.extend(self._format_file_context_update(relpath, replacements))
         lines.append("</EditToolResult>")
         return "\n".join(lines)
+
+    def _format_file_context_update(self, relpath: str, replacements: list[tuple[int, int, list[str]]]) -> list[str]:
+        lines = ["  <EditFile>", "    <path>" + relpath + "</path>"]
+        if any(start < 0 for start, _end, _replacement in replacements):
+            lines.extend(["    <invalidate>0:0</invalidate>", "  </EditFile>"])
+            return lines
+
+        delta = 0
+        for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
+            old_len = end - start
+            new_start = start + delta
+            shown = replacement[: ReadTool.MAX_LINES]
+            new_end = new_start + len(shown)
+            clear_end = 0 if len(replacement) != old_len else new_start + old_len
+            lines.extend(["    <EditRange>", "      <invalidate>" + str(new_start) + ":" + str(clear_end) + "</invalidate>"])
+            lines.append("      <range>" + str(new_start) + ":" + str(new_end) + "</range>")
+            if len(shown) < len(replacement):
+                lines.append("      <truncated>true</truncated>")
+            lines.extend(self._format_hashline_content(new_start, shown, indent="      "))
+            lines.append("    </EditRange>")
+            delta += len(replacement) - old_len
+        lines.append("  </EditFile>")
+        return lines
+
+    @staticmethod
+    def _format_hashline_content(start: int, lines: list[str], *, indent: str) -> list[str]:
+        content = "".join(f"{start + index}:{_line_hash(line)}|{line}" for index, line in enumerate(lines))
+        return [indent + "<content hashline-numbered>", content, indent + "</content>"]
 
     def _preview(self) -> tuple[str, str, list[tuple[int, int, list[str]]]]:
         try:

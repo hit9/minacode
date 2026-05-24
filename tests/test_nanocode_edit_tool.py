@@ -28,15 +28,16 @@ def test_edit_file_replaces_range_from_read_anchors(tmp_path):
     assert "-beta\n" in display
     assert "+BETA\n" in display
     assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
-    assert result == "\n".join(
-        [
-            "<EditToolResult>",
-            "* path: sample.txt",
-            "* edits: 1",
-            "* range[1]: 1:2",
-            "</EditToolResult>",
-        ]
-    )
+    assert result.startswith("<EditToolResult>")
+    assert "* path: sample.txt" in result
+    assert "* edits: 1" in result
+    assert "* range[1]: 1:2" in result
+    assert "<EditFile>" in result
+    assert "<path>sample.txt</path>" in result
+    assert "<invalidate>1:2</invalidate>" in result
+    assert "<range>1:2</range>" in result
+    assert "|BETA" in result
+    assert result.endswith("</EditToolResult>")
 
 
 def test_edit_file_accepts_full_hashline_anchor(tmp_path):
@@ -87,6 +88,7 @@ def test_edit_file_replace_all_literal_text_without_anchors(tmp_path):
     assert path.read_text(encoding="utf-8") == "NewName alpha\nNewName beta\n"
     assert "* edits: 1" in result
     assert "* replace_all[1]: 2 replacements" in result
+    assert "<invalidate>0:0</invalidate>" in result
 
 
 def test_edit_file_replace_all_rejects_no_match_or_mixed_edits(tmp_path):

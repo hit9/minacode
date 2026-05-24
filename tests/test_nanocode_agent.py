@@ -511,6 +511,38 @@ def test_act_prompt_file_context_replaces_overlapping_read_lines(tmp_path, monke
     assert "content=file_context" in unreduced
 
 
+def test_act_prompt_file_context_uses_edit_result_as_newest_file_content(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("old0\nold1\nold2\n", encoding="utf-8")
+    session = Session(cwd=str(tmp_path))
+    agent = Agent(session)
+    _set_context_budget(monkeypatch, agent, raw_chars=10_000)
+    anchors = _read_anchors(session, "sample.txt")
+
+    agent.execute_tool_calls([{"name": "Read", "intention": "read sample", "args": _read_args("sample.txt", line_range=[0, 3])}])
+    agent.execute_tool_calls(
+        [{"name": "Edit", "intention": "replace middle", "args": ["sample.txt", [{"op": "replace", "start": anchors[1], "end": anchors[1], "content": "new1\n"}]]}],
+        confirm=lambda call, tool: True,
+    )
+
+    prompt = agent.build_user_prompt()
+    file_context = _prompt_section(prompt, "File Context", "Kept Tool Results")
+    latest = _prompt_section(prompt, "Latest Tool Results", "Current Input")
+    assert path.read_text(encoding="utf-8") == "old0\nnew1\nold2\n"
+    assert "File: sample.txt" in file_context
+    assert "0:1 source=tr.1" in file_context
+    assert "1:2 source=tr.2" in file_context
+    assert "2:3 source=tr.1" in file_context
+    assert "|old0" in file_context
+    assert "|new1" in file_context
+    assert "|old2" in file_context
+    assert "|old1" not in file_context
+    assert "tool=Edit" in latest
+    assert "path: sample.txt" in latest
+    assert "range[1]: 1:2" in latest
+    assert "content=file_context" in latest
+
+
 def test_act_prompt_folds_excerpted_read_result(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("x" * 20_000 + "\n", encoding="utf-8")
