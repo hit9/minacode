@@ -1325,6 +1325,7 @@ class ToolResultContext:
     latest: list[str] = field(default_factory=list)
     recent: list[str] = field(default_factory=list)
     reactivated_keys: set[str] = field(default_factory=set)
+    reactivated_recall_fingerprints: set[str] = field(default_factory=set)
 
     def append_latest(self, executions: list[ToolCallExecution], *, max_index_items: int, checkpoint: int, append: bool = False) -> None:
         if not executions:
@@ -1349,6 +1350,7 @@ class ToolResultContext:
         if not observed:
             return
         self.reactivated_keys.difference_update(observed_keys)
+        self.drop_recall_fingerprints(observed_keys)
         self.recent = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.recent]
         self.latest = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.latest]
 
@@ -1388,6 +1390,23 @@ class ToolResultContext:
 
     def active_raw_keys(self, checkpoint: int) -> set[str]:
         return set(self.blocks_by_key(self.unreduced_recent_blocks(checkpoint) + self.latest_raw_blocks()))
+
+    def active_recall_fingerprints(self, checkpoint: int) -> set[str]:
+        active_keys = self.active_raw_keys(checkpoint)
+        return {fingerprint for fingerprint in self.reactivated_recall_fingerprints if self.recall_fingerprint_key(fingerprint) in active_keys}
+
+    def replace_recall_fingerprints(self, keys: set[str], fingerprints: set[str]) -> None:
+        self.drop_recall_fingerprints(keys)
+        self.reactivated_recall_fingerprints.update(fingerprints)
+
+    def drop_recall_fingerprints(self, keys: set[str]) -> None:
+        self.reactivated_recall_fingerprints = {
+            fingerprint for fingerprint in self.reactivated_recall_fingerprints if self.recall_fingerprint_key(fingerprint) not in keys
+        }
+
+    @staticmethod
+    def recall_fingerprint_key(fingerprint: str) -> str:
+        return fingerprint.split("|", 1)[0]
 
     def _needs_reduction(self, block: str, checkpoint: int) -> bool:
         key = self.result_key(block)
@@ -3714,6 +3733,23 @@ class ToolResultTool(Tool):
     @classmethod
     def request_keys_from_args(cls, args: list[JsonValue]) -> list[str]:
         return [request.key for request in cls.requests_from_args(args)]
+
+    @classmethod
+    def args_from_requests(cls, requests: list[RecallRequest]) -> list[JsonValue]:
+        args: list[JsonValue] = []
+        for request in requests:
+            if not request.ranges:
+                args.append(request.key)
+            elif len(request.ranges) == 1:
+                start, end = request.ranges[0]
+                args.append({"key": request.key, "range": [start, end]})
+            else:
+                args.append({"key": request.key, "ranges": [[start, end] for start, end in request.ranges]})
+        return args
+
+    @staticmethod
+    def request_fingerprint(request: RecallRequest) -> str:
+        return request.key + "|" + ",".join(str(start) + ":" + str(end) for start, end in request.ranges)
 
     @classmethod
     def _requests_from_payload(cls, payload: Json) -> list[RecallRequest]:
@@ -6254,11 +6290,16 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
         append_to_latest: bool = False,
     ) -> str:
-        tool_calls = self._filter_redundant_recall_calls(tool_calls)
+        tool_calls, skipped_recall_executions = self._filter_redundant_recall_calls(tool_calls)
         if not tool_calls:
-            self.tool_runner.latest_executions = []
+            self.tool_runner.latest_executions = skipped_recall_executions
+            self.session.state.turn_tool_calls += len(skipped_recall_executions)
+            self.session.state.session_tool_calls += len(skipped_recall_executions)
+            for execution in skipped_recall_executions:
+                self._after_tool_execution(execution)
             return "\n\n".join(self.tool_context.latest)
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
+        self.tool_runner.latest_executions = [*skipped_recall_executions, *self.tool_runner.latest_executions]
         regular_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name not in CONTEXT_TOOL_NAMES]
         if regular_executions:
             self.tool_context.append_latest(
@@ -6277,12 +6318,15 @@ class Agent:
             self._after_tool_execution(execution)
         return "\n\n".join(self.tool_context.latest)
 
-    def _filter_redundant_recall_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue]:
-        active_keys = self.tool_context.active_raw_keys(self.blackboard.memory_checkpoint_tool_result_counter)
-        if not active_keys:
-            return tool_calls
+    def _filter_redundant_recall_calls(self, tool_calls: list[JsonValue]) -> tuple[list[JsonValue], list[ToolCallExecution]]:
+        checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
+        active_keys = self.tool_context.active_raw_keys(checkpoint)
+        active_fingerprints = self.tool_context.active_recall_fingerprints(checkpoint)
+        if not active_keys and not active_fingerprints:
+            return tool_calls, []
         filtered: list[JsonValue] = []
-        skipped: list[str] = []
+        skipped_executions: list[ToolCallExecution] = []
+        skipped_labels: list[str] = []
         for item in tool_calls:
             try:
                 call = self.tool_runner.parse_tool_call(item)
@@ -6290,17 +6334,44 @@ class Agent:
             except ToolCallArgError:
                 filtered.append(item)
                 continue
-            if call.name != ToolResultTool.NAME or not requests or any(request.ranges for request in requests):
+            if call.name != ToolResultTool.NAME or not requests:
                 filtered.append(item)
                 continue
-            needed = [request.key for request in requests if request.key not in active_keys]
-            skipped.extend(request.key for request in requests if request.key in active_keys)
+            needed, skipped = self._split_recall_requests(requests, active_keys, active_fingerprints)
+            skipped_labels.extend(self._recall_request_label(request) for request in skipped)
             if needed:
-                filtered.append(ParsedToolCall(name=call.name, intention=call.intention, args=needed))
-        if skipped:
-            keys = ", ".join(dict.fromkeys(skipped))
-            self._remember_agent_error("Recall skipped for already-visible result key(s): " + keys + ". Use visible Tool Context content; Read concrete files for new evidence.")
-        return filtered
+                filtered.append(ParsedToolCall(name=call.name, intention=call.intention, args=ToolResultTool.args_from_requests(needed)))
+            elif skipped:
+                skipped_executions.append(
+                    ToolCallExecution(
+                        call=call,
+                        outcome="failure",
+                        output="ToolCallError: redundant Recall skipped because the requested result content is already visible in Tool Context.",
+                        error_type=ToolCallError,
+                    )
+                )
+        if skipped_labels:
+            keys = ", ".join(dict.fromkeys(skipped_labels))
+            self._remember_agent_error("Recall skipped for already-visible result content: " + keys + ". Use visible Tool Context content; Read concrete files for new evidence.")
+        return filtered, skipped_executions
+
+    @staticmethod
+    def _split_recall_requests(
+        requests: list[RecallRequest],
+        active_keys: set[str],
+        active_fingerprints: set[str],
+    ) -> tuple[list[RecallRequest], list[RecallRequest]]:
+        needed: list[RecallRequest] = []
+        skipped: list[RecallRequest] = []
+        for request in requests:
+            redundant = ToolResultTool.request_fingerprint(request) in active_fingerprints if request.ranges else request.key in active_keys
+            (skipped if redundant else needed).append(request)
+        return needed, skipped
+
+    @staticmethod
+    def _recall_request_label(request: RecallRequest) -> str:
+        ranges = " ".join(str(start) + ":" + str(end) for start, end in request.ranges)
+        return request.key + ((" " + ranges) if ranges else "")
 
     def _apply_context_tool_executions(
         self,
@@ -6313,12 +6384,16 @@ class Agent:
                 continue
             if execution.call.name == ToolResultTool.NAME:
                 blocks = ToolResultContext.recalled_result_blocks(ToolResultContext.format_execution(execution))
+                block_keys = set(ToolResultContext.blocks_by_key(blocks))
                 self.tool_context.reactivate_result_blocks(
                     blocks,
                     max_index_items=self.context_budget().index_items,
                     checkpoint=self.blackboard.memory_checkpoint_tool_result_counter,
                     append=append_to_latest or bool(self.tool_context.latest),
                 )
+                requests = [request for request in ToolResultTool.requests_from_args(execution.call.args) if request.key in block_keys]
+                fingerprints = {ToolResultTool.request_fingerprint(request) for request in requests if request.ranges}
+                self.tool_context.replace_recall_fingerprints({request.key for request in requests}, fingerprints)
 
     def _unreferenced_unreduced_blocks(self) -> list[str]:
         return self.tool_context.unreduced_blocks(

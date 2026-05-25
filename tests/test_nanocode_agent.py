@@ -300,7 +300,8 @@ def test_agent_skips_redundant_visible_recall(tmp_path):
     latest = agent.execute_tool_calls([{"name": "Recall", "intention": "recall again", "args": ["tr.1"]}])
 
     assert latest.count("key=tr.1") == 1
-    assert agent.tool_runner.latest_executions == []
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "failure"
     assert any("already-visible" in error for error in agent.agent_feedback_errors)
 
 
@@ -327,6 +328,32 @@ def test_agent_allows_visible_recall_with_range(tmp_path):
 
     assert len(agent.tool_runner.latest_executions) == 1
     assert agent.tool_runner.latest_executions[0].call.name == "Recall"
+
+
+def test_agent_skips_repeated_recall_with_same_range(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Search alpha", value="alpha\nbeta")
+    agent = Agent(session)
+    recall_range = [{"key": "tr.1", "range": [0, 1]}]
+
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall range", "args": recall_range}])
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall range again", "args": recall_range}])
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "failure"
+    assert any("tr.1 0:1" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_allows_recall_with_different_range(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Search alpha", value="alpha\nbeta")
+    agent = Agent(session)
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall first range", "args": [{"key": "tr.1", "range": [0, 1]}]}])
+
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall second range", "args": [{"key": "tr.1", "range": [1, 2]}]}])
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].outcome == "success"
 
 
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
