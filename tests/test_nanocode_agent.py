@@ -291,6 +291,44 @@ def test_agent_merges_adjacent_recall_calls(tmp_path):
     assert agent.tool_runner.latest_executions[0].call.args == ["tr.1", "tr.2"]
 
 
+def test_agent_skips_redundant_visible_recall(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Search alpha", value="alpha")
+    agent = Agent(session)
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall once", "args": ["tr.1"]}])
+
+    latest = agent.execute_tool_calls([{"name": "Recall", "intention": "recall again", "args": ["tr.1"]}])
+
+    assert latest.count("key=tr.1") == 1
+    assert agent.tool_runner.latest_executions == []
+    assert any("already-visible" in error for error in agent.agent_feedback_errors)
+
+
+def test_agent_prunes_visible_keys_from_mixed_recall(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Search alpha", value="alpha")
+    session.state.tool_result_store["tr.2"] = nanocode.ToolResultItem(description="success Search beta", value="beta")
+    agent = Agent(session)
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall first", "args": ["tr.1"]}])
+
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall both", "args": ["tr.1", "tr.2"]}])
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].call.args == ["tr.2"]
+
+
+def test_agent_allows_visible_recall_with_range(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    session.state.tool_result_store["tr.1"] = nanocode.ToolResultItem(description="success Search alpha", value="alpha\nbeta")
+    agent = Agent(session)
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall once", "args": ["tr.1"]}])
+
+    agent.execute_tool_calls([{"name": "Recall", "intention": "recall range", "args": ["tr.1", "0,1"]}])
+
+    assert len(agent.tool_runner.latest_executions) == 1
+    assert agent.tool_runner.latest_executions[0].call.name == "Recall"
+
+
 def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("old\n", encoding="utf-8")

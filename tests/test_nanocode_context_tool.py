@@ -63,6 +63,27 @@ def test_tool_result_tool_reads_internal_log_ranges_without_exposing_path(tmp_pa
     assert "log:" not in result
 
 
+def test_tool_result_tool_accepts_structured_key_ranges(tmp_path):
+    session = Session(cwd=str(tmp_path))
+    log_path = tmp_path / ".nanocode" / "sessions" / "test-session" / "tool_results" / "sample.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
+    session.state.tool_result_store["tr.1"] = ToolResultItem(
+        description="Search sample.",
+        value="[tool result excerpt]",
+        log_path=os.path.relpath(log_path, tmp_path),
+        original_lines=4,
+        original_chars=19,
+        excerpted=True,
+    )
+
+    result = ToolResultTool.make(session, [{"key": "tr.1", "range": [1, 3]}]).call()
+
+    assert "one\ntwo" in result
+    assert "zero" not in result
+    assert ToolResultTool.cli_args([{"key": "tr.1", "range": [1, 3]}]) == ["tr.1", "1:3"]
+
+
 def test_tool_result_item_format_hides_log_path():
     item = ToolResultItem(description="Read sample.", value="line", excerpted=True)
 
@@ -98,3 +119,6 @@ def test_tool_result_invalid_args(tmp_path):
 
     with pytest.raises(ToolCallError, match="Recall requires"):
         ToolResultTool.make(session, []).call()
+
+    with pytest.raises(ToolCallError, match="Recall requires key"):
+        ToolResultTool.make(session, [{}]).call()

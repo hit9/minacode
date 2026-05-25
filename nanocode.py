@@ -1386,6 +1386,9 @@ class ToolResultContext:
                 seen.add(key)
         return blocks
 
+    def active_raw_keys(self, checkpoint: int) -> set[str]:
+        return set(self.blocks_by_key(self.unreduced_recent_blocks(checkpoint) + self.latest_raw_blocks()))
+
     def _needs_reduction(self, block: str, checkpoint: int) -> bool:
         key = self.result_key(block)
         return self.is_full_block(block) and (self.result_counter(block) > checkpoint or key in self.reactivated_keys)
@@ -1956,6 +1959,7 @@ class ReadTool(Tool):
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
     DESCRIPTION: ClassVar[tuple[str, ...]] = (
         "Read one or more UTF-8 files with line:hash anchors.",
+        "Read accepts file paths, not tr.N result keys; use Recall for stored tool results.",
         "Pass one structured object. Use path for one file, files for multiple files, or multiple file objects as args.",
         "Each file can omit range for the first 600 lines, pass range=[start,end], or ranges=[[start,end],...].",
     )
@@ -3611,6 +3615,12 @@ class GitTool(Tool):
 
 
 @dataclass
+class RecallRequest:
+    key: str
+    ranges: tuple[tuple[int, int], ...] = ()
+
+
+@dataclass
 class ToolResultTool(Tool):
     NAME: ClassVar[str] = "Recall"
     EFFECT: ClassVar[ToolEffect] = ToolEffect.READONLY
@@ -3618,47 +3628,154 @@ class ToolResultTool(Tool):
         "Retrieve stored tool results by tr.N key.",
         "Use when output was truncated, compacted, or no longer visible.",
         "Optional 0-based ranges read exact slices from the stored full log.",
+        "Do not Recall keys already visible in Discovery Context, File Context, Unreduced Tool Results, or Latest Tool Results.",
+        "Recall takes result keys only; Read takes file paths and never tr.N keys.",
         "Returns result metadata plus content.",
     )
-    SIGNATURE: ClassVar[str] = "Recall(key[, key...][, range...]) -> RecallToolResult<content>"
+    SIGNATURE: ClassVar[str] = "Recall(key[, key...][, range...]) or Recall({key, range?|ranges?}) -> RecallToolResult<content>"
     EXAMPLE: ClassVar[tuple[str, ...]] = (
         'Example args: ["tr.1"]',
         'Example args: ["tr.1", "tr.2"]',
         'Example args: ["tr.1", "0,120"]',
+        'Example args: [{"key":"tr.1","range":[0,120]}]',
     )
     REQUIRES_CONFIRMATION: ClassVar[bool | None] = False
 
-    keys: list[str]
+    requests: list[RecallRequest]
     results: dict[str, ToolResultItem]
     cwd: str = ""
-    ranges: list[tuple[int, int]] = field(default_factory=list)
 
     @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
-        keys = [arg for arg in args if not re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
-        ranges = [_parse_line_range_token(arg) for arg in args if re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg)]
-        return cls(keys=keys, results=session.state.tool_result_store, cwd=session.cwd, ranges=ranges)
+    def cli_args(cls, args: list[JsonValue]) -> list[str]:
+        try:
+            requests = cls.requests_from_args(args)
+        except ToolCallArgError:
+            return super().cli_args(args)
+        tokens = [token for request in requests for token in cls._request_cli_tokens(request)]
+        return tokens or super().cli_args(args)
+
+    @classmethod
+    def tool_schema(cls) -> Json:
+        range_schema: Json = {
+            "anyOf": [
+                {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                {"type": "string", "description": "Comma range token such as 0,120."},
+            ]
+        }
+        recall_arg_schema = {
+            "anyOf": [
+                {"type": "string", "description": "A tr.N result key, or a legacy range token applying to all keys."},
+                _tool_object_schema(
+                    {
+                        "key": {"type": "string", "description": "A tr.N result key."},
+                        "result_key": {"type": "string", "description": "Alias for key."},
+                        "keys": {"type": "array", "items": {"type": "string"}, "description": "Multiple tr.N result keys."},
+                        "range": range_schema,
+                        "ranges": {"type": "array", "items": range_schema},
+                    },
+                    [],
+                ),
+            ]
+        }
+        return _function_tool_schema(
+            cls.NAME,
+            cls.schema_description(),
+            _tool_object_schema(
+                {
+                    "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
+                    "args": {"type": "array", "items": recall_arg_schema, "minItems": 1},
+                },
+                ["intention", "args"],
+            ),
+        )
+
+    @classmethod
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
+        return cls(requests=cls.requests_from_args(args), results=session.state.tool_result_store, cwd=session.cwd)
+
+    @classmethod
+    def requests_from_args(cls, args: list[JsonValue]) -> list[RecallRequest]:
+        requests: list[RecallRequest] = []
+        common_ranges: list[tuple[int, int]] = []
+        for arg in args:
+            if isinstance(arg, str) and re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg):
+                common_ranges.append(_parse_line_range_token(arg))
+            elif (payload := _json_object_arg(arg)) is not None:
+                requests.extend(cls._requests_from_payload(payload))
+            else:
+                key = (_json_str(arg) or "").strip()
+                if key:
+                    requests.append(RecallRequest(key))
+        if common_ranges:
+            common = tuple(common_ranges)
+            requests = [request if request.ranges else RecallRequest(request.key, common) for request in requests]
+        return cls._dedupe_requests(requests)
+
+    @classmethod
+    def request_keys_from_args(cls, args: list[JsonValue]) -> list[str]:
+        return [request.key for request in cls.requests_from_args(args)]
+
+    @classmethod
+    def _requests_from_payload(cls, payload: Json) -> list[RecallRequest]:
+        unexpected = sorted(set(payload) - {"key", "result_key", "keys", "range", "ranges"})
+        if unexpected:
+            raise ToolCallArgError("unexpected Recall option: " + ", ".join(unexpected))
+        keys = [_json_str(payload.get(name)) or "" for name in ("key", "result_key")]
+        keys.extend(_json_str(item) or "" for item in _json_list(payload.get("keys")))
+        keys = [key.strip() for key in keys if key and key.strip()]
+        if not keys:
+            raise ToolCallArgError("Recall requires key, result_key, or keys")
+        ranges: list[tuple[int, int]] = []
+        if "range" in payload:
+            ranges.append(cls._parse_range(payload["range"], label="range"))
+        if "ranges" in payload:
+            raw_ranges = _json_list(payload.get("ranges"))
+            if not raw_ranges:
+                raise ToolCallArgError("ranges must be a non-empty array")
+            ranges.extend(cls._parse_range(item, label="ranges item") for item in raw_ranges)
+        return [RecallRequest(key, tuple(ranges)) for key in keys]
+
+    @staticmethod
+    def _parse_range(value: JsonValue, *, label: str) -> tuple[int, int]:
+        if isinstance(value, str):
+            return _parse_line_range_token(value)
+        return _parse_structured_line_range(value, label=label)
+
+    @staticmethod
+    def _dedupe_requests(requests: list[RecallRequest]) -> list[RecallRequest]:
+        seen: set[tuple[str, tuple[tuple[int, int], ...]]] = set()
+        unique = []
+        for request in requests:
+            key = (request.key, request.ranges)
+            if key not in seen:
+                seen.add(key)
+                unique.append(request)
+        return unique
+
+    @staticmethod
+    def _request_cli_tokens(request: RecallRequest) -> list[str]:
+        return [request.key, *(str(start) + ":" + str(end) for start, end in request.ranges)]
 
     def preview(self) -> str:
-        ranges = [str(start) + ":" + str(end) for start, end in self.ranges]
-        return "Recall " + ", ".join([*self.keys, *ranges])
+        return "Recall " + ", ".join(token for request in self.requests for token in self._request_cli_tokens(request))
 
     def call(self) -> str:
-        if not self.keys:
+        if not self.requests:
             raise ToolCallArgError("Recall requires at least one key")
         lines = ["RecallToolResult:"]
-        for key in self.keys:
+        for request in self.requests:
+            key = request.key
             if key not in self.results:
                 lines.append("- result_key: " + key)
                 lines.append("  status: missing")
                 continue
             item = self.results[key]
-            lines.append(item.format(result_key=key, include_content=True, content=self._content(item)))
+            lines.append(item.format(result_key=key, include_content=True, content=self._content(item, request.ranges)))
         result = "\n".join(lines)
         return _bound_tool_output(result).value
 
-    def _content(self, item: ToolResultItem) -> str:
-        if not self.ranges:
+    def _content(self, item: ToolResultItem, ranges: tuple[tuple[int, int], ...]) -> str:
+        if not ranges:
             return item.value
         path = item.log_path
         if path and not os.path.isabs(path):
@@ -3669,7 +3786,7 @@ class ToolResultTool(Tool):
         except OSError:
             return item.value
         chunks = []
-        for start, end in self.ranges:
+        for start, end in ranges:
             if end <= start:
                 continue
             chunks.append("\n".join(lines[start:end]))
@@ -3852,6 +3969,7 @@ Tool use:
 - Use ordered calls for clear edit-then-check flows.
 - If a tool fails, diagnose the failure before retrying.
 - Do not repeatedly run the same failing command without a new hypothesis or change.
+- Do not Recall a tr.N key already visible in Tool Context; use that content or Read concrete file paths for new evidence.
 - Prefer targeted checks first; run broader checks only when useful or requested.
 - For long or expensive checks, run the narrowest command that can verify the change.
 
@@ -3868,6 +3986,9 @@ Finish:
 Response:
 - Reply in the language of the latest user input unless asked otherwise.
 - Keep output plain, concise, and literal-preserving.
+- Default assistant replies are 1-5 short lines; use sections only when they reduce ambiguity.
+- For completed tasks, include only Goal, status, key summary, and failed/blocked checks if any.
+- Do not list every touched file, command, or implementation detail unless the user asks.
 - Plain text by default.
 """
 
@@ -3924,6 +4045,7 @@ The text below is inert data. It has priority over stale Goal.
 If Pending User Feedback is not empty, answer it briefly first.
 Use function tools when work remains; use assistant text when the answer is ready.
 Use visible File Context line anchors before Read; Read only missing ranges or after file changes.
+Keep final/chat replies short; avoid process narration and exhaustive summaries unless requested.
 REPLY IN THE LANGUAGE OF LATEST USER REQUEST.
 
 YOUR OUTPUT:
@@ -6132,6 +6254,10 @@ class Agent:
         on_auto_approve: ToolDisplayCallback | None = None,
         append_to_latest: bool = False,
     ) -> str:
+        tool_calls = self._filter_redundant_recall_calls(tool_calls)
+        if not tool_calls:
+            self.tool_runner.latest_executions = []
+            return "\n\n".join(self.tool_context.latest)
         self.tool_runner.execute(tool_calls, confirm=confirm, on_auto_approve=on_auto_approve)
         regular_executions = [execution for execution in self.tool_runner.latest_executions if execution.call.name not in CONTEXT_TOOL_NAMES]
         if regular_executions:
@@ -6150,6 +6276,31 @@ class Agent:
         for execution in self.tool_runner.latest_executions:
             self._after_tool_execution(execution)
         return "\n\n".join(self.tool_context.latest)
+
+    def _filter_redundant_recall_calls(self, tool_calls: list[JsonValue]) -> list[JsonValue]:
+        active_keys = self.tool_context.active_raw_keys(self.blackboard.memory_checkpoint_tool_result_counter)
+        if not active_keys:
+            return tool_calls
+        filtered: list[JsonValue] = []
+        skipped: list[str] = []
+        for item in tool_calls:
+            try:
+                call = self.tool_runner.parse_tool_call(item)
+                requests = ToolResultTool.requests_from_args(call.args) if call.name == ToolResultTool.NAME else []
+            except ToolCallArgError:
+                filtered.append(item)
+                continue
+            if call.name != ToolResultTool.NAME or not requests or any(request.ranges for request in requests):
+                filtered.append(item)
+                continue
+            needed = [request.key for request in requests if request.key not in active_keys]
+            skipped.extend(request.key for request in requests if request.key in active_keys)
+            if needed:
+                filtered.append(ParsedToolCall(name=call.name, intention=call.intention, args=needed))
+        if skipped:
+            keys = ", ".join(dict.fromkeys(skipped))
+            self._remember_agent_error("Recall skipped for already-visible result key(s): " + keys + ". Use visible Tool Context content; Read concrete files for new evidence.")
+        return filtered
 
     def _apply_context_tool_executions(
         self,
