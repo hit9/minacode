@@ -89,7 +89,7 @@ nanocode currently targets macOS and Linux. Windows is not supported.
 ## Commands
 
 - Info: `/help [question]`, `/status`, `/rules`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/yolo`.
+- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses|anthropic]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/yolo`.
 - Maintenance: `/index [force]`, `/clean`.
 - Exit: `/exit`, `/quit`.
 
@@ -100,8 +100,8 @@ During a slow model request, press `Ctrl-G` to cancel that request and resend th
 
 Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, or `auto`; auto uses exact-host profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
-- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; DeepSeek, selected OpenCode models, and DashScope models use their matching Chat reasoning payload shapes.
+- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, `anthropic`, or `auto`; auto uses exact-host/model profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
+- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; OpenCode model-specific endpoints can resolve to Chat or Anthropic Messages; DeepSeek and DashScope models use their matching Chat reasoning payload shapes.
 - Path config: `[paths] data_dir = "~/.nanocode"`.
 - Runtime config: `[runtime]`.
 - `/context [low|medium|high]` shows or switches tool-result context budgets; lower budgets reduce token usage and observe overhead.

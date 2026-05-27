@@ -290,11 +290,11 @@ def test_api_command_shows_and_sets_provider_api(tmp_path):
     auto_result = dispatcher.dispatch("/api auto")
     bad_result = dispatcher.dispatch("/api invalid")
 
-    assert show_result.message == "provider.api: auto (chat)\nUsage: /api [auto|chat|responses]"
+    assert show_result.message == "provider.api: auto (chat)\nUsage: /api [auto|chat|responses|anthropic]"
     assert responses_result.message == "Set provider.api = responses"
     assert chat_result.message == "Set provider.api = chat"
     assert auto_result.message == "Set provider.api = auto"
-    assert bad_result.message == "Usage: /api [auto|chat|responses]"
+    assert bad_result.message == "Usage: /api [auto|chat|responses|anthropic]"
     assert session.config.provider.api == "auto"
 
 

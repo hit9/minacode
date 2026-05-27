@@ -28,6 +28,8 @@ import sys
 import threading
 import time
 import tomllib
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import nullcontext, suppress
@@ -432,15 +434,25 @@ class ChatReasoningRule:
 
 
 @dataclass(frozen=True)
+class ModelApiRule:
+    api: str
+    model_prefixes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ProviderProfile:
     api: str = "chat"
+    api_rules: tuple[ModelApiRule, ...] = ()
     chat_reasoning: str = "off"
     chat_reasoning_rules: tuple[ChatReasoningRule, ...] = ()
 
 
+PROVIDER_API_CHOICES: tuple[str, ...] = ("auto", "chat", "responses", "anthropic")
 REASONING_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES: tuple[str, ...] = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES: tuple[str, ...] = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
+ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 
 
 ALIYUN_CHAT_PROFILE = ProviderProfile(
@@ -457,7 +469,10 @@ ALIYUN_CHAT_PROFILE = ProviderProfile(
 PROVIDER_PROFILES: dict[str, ProviderProfile] = {
     "api.openai.com": ProviderProfile(api="responses", chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)),
     "openrouter.ai": ProviderProfile(api="responses", chat_reasoning="reasoning"),
-    "opencode.ai": ProviderProfile(chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),)),
+    "opencode.ai": ProviderProfile(
+        api_rules=(ModelApiRule("anthropic", ("claude-", "qwen3.")),),
+        chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),),
+    ),
     "api.deepseek.com": ProviderProfile(chat_reasoning="thinking"),
     "dashscope.aliyuncs.com": ALIYUN_CHAT_PROFILE,
     "dashscope-intl.aliyuncs.com": ALIYUN_CHAT_PROFILE,
@@ -507,8 +522,8 @@ class ProviderConfig:
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", defaults.prompt_cache_key))
         reasoning = Config.str(data, "reasoning", defaults.reasoning)
         chat_reasoning = Config.str(data, "chat_reasoning", defaults.chat_reasoning)
-        if api not in ("chat", "responses", "auto"):
-            raise ConfigError("config provider.api must be one of: chat, responses, auto")
+        if api not in PROVIDER_API_CHOICES:
+            raise ConfigError("config provider.api must be one of: " + ", ".join(PROVIDER_API_CHOICES))
         if reasoning not in REASONING_CHOICES:
             raise ConfigError("config provider.reasoning must be one of: " + ", ".join(REASONING_CHOICES))
         if chat_reasoning not in CHAT_REASONING_CHOICES:
@@ -545,13 +560,22 @@ class ProviderConfig:
 
     def base_url(self) -> str:
         url = self.url.rstrip("/")
-        return url[: -len("/chat/completions")] if url.endswith("/chat/completions") else url
+        for suffix in ("/chat/completions", "/responses", "/messages"):
+            if url.endswith(suffix):
+                return url[: -len(suffix)]
+        return url
 
     def resolved_api(self) -> str:
         if self.api != "auto":
             return self.api
         profile = PROVIDER_PROFILES.get(self.host())
-        return profile.api if profile else "chat"
+        if not profile:
+            return "chat"
+        model = self.model.lower()
+        for rule in profile.api_rules:
+            if any(model.startswith(prefix) for prefix in rule.model_prefixes):
+                return rule.api
+        return profile.api
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -753,7 +777,7 @@ url = ""
 key = ""
 # Default model used by nanocode.
 model = ""
-# API backend: "auto" (default), "chat", or "responses".
+# API backend: "auto" (default), "chat", "responses", or "anthropic".
 # "auto" uses nanocode's exact-host provider profile table.
 # api = "auto"
 # Optional: add available_models = ["model-a", "model-b"] manually to pin preferred
@@ -4176,8 +4200,8 @@ class ModelClient:
         timeout = config.timeout if config.timeout is not None else 180
         first_token_timeout = config.first_token_timeout if config.first_token_timeout is not None else timeout
         api = config.resolved_api()
-        params = (
-            self._responses_params(
+        if api == "responses":
+            params = self._responses_params(
                 config,
                 model=model,
                 system_prompt=system_prompt,
@@ -4185,12 +4209,20 @@ class ModelClient:
                 stream=stream,
                 tool_schemas=tool_schemas,
             )
-            if api == "responses"
-            else self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas)
-        )
+        elif api == "anthropic":
+            params = self._anthropic_params(
+                config,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                stream=stream,
+                tool_schemas=tool_schemas,
+            )
+        else:
+            params = self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api=api, model=model, stream=stream, params=params, tool_schemas=tool_schemas)
-        client = OpenAI(api_key=config.key, base_url=config.base_url(), timeout=timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
+        client = None if api == "anthropic" else OpenAI(api_key=config.key, base_url=config.base_url(), timeout=timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
         request_elapsed = 0.0
         try:
             with ModelRetryShortcut(self.session):
@@ -4206,7 +4238,14 @@ class ModelClient:
                 self._timeout_reason = "request model timeout"
                 signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
                 try:
-                    if api == "chat" and stream and tool_schemas:
+                    if api == "anthropic":
+                        result = self._anthropic_request(config, params, timeout=timeout, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                        result["usage"] = self._normalize_anthropic_usage(result.get("usage"))
+                        content = self._anthropic_content(result)
+                        if tool_schemas:
+                            result = {"usage": _json_dict(result.get("usage")), **self._anthropic_tool_response(result)}
+                    elif api == "chat" and stream and tool_schemas:
+                        assert client is not None
                         response, usage = self._read_chat_tool_stream(
                             client,
                             params,
@@ -4219,6 +4258,7 @@ class ModelClient:
                         result = {"usage": usage, **response}
                         content = ""
                     elif api == "responses" and stream and tool_schemas:
+                        assert client is not None
                         response, usage = self._read_responses_tool_stream(
                             client,
                             params,
@@ -4231,6 +4271,7 @@ class ModelClient:
                         result = {"usage": usage, **response}
                         content = ""
                     else:
+                        assert client is not None
                         completion = (
                             client.responses.create(**params, timeout=timeout)
                             if api == "responses"
@@ -4283,7 +4324,7 @@ class ModelClient:
             raise LLMError("request model timeout")
         except APIStatusError as error:
             body = getattr(error.response, "text", "") or str(getattr(error, "body", "")) or str(error)
-            raise LLMError(f"API request failed: HTTP {error.status_code}: {_shorten(body)}")
+            raise LLMError(self._format_api_status_error(error.status_code, body, config))
         except APIConnectionError as error:
             raise LLMError(str(error))
         except APIError as error:
@@ -4297,7 +4338,7 @@ class ModelClient:
             DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
             return parsed
         if not stream:
-            content = self._responses_content(result) if api == "responses" else self._message_content(result)
+            content = self._responses_content(result) if api == "responses" else (self._anthropic_content(result) if api == "anthropic" else self._message_content(result))
         if content is None:
             parsed = self._invalid_model_response(self._format_missing_message_content(result))
             DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
@@ -4309,6 +4350,22 @@ class ModelClient:
     @staticmethod
     def _reasoning_effort(config: ProviderConfig) -> str:
         return config.reasoning if config.reasoning in REASONING_LEVELS else "medium"
+
+    @staticmethod
+    def _format_api_status_error(status_code: int, body: str, config: ProviderConfig) -> str:
+        text = body.strip()
+        message = ""
+        with suppress(json.JSONDecodeError):
+            error = _json_dict(_json_dict(json.loads(text)).get("error"))
+            message = _json_str(error.get("message")) or ""
+        if "not support" in message and "format" in message:
+            return (
+                f"API request failed: HTTP {status_code}: {message}. "
+                f"Current api={config.resolved_api()}; use /api auto or choose the API format that matches this provider/model."
+            )
+        if status_code == 404 and config.resolved_api() == "responses" and "<html" in text.lower():
+            return "API request failed: HTTP 404: this provider endpoint does not appear to support Responses API. Use /api auto or /api chat."
+        return f"API request failed: HTTP {status_code}: {_shorten(text)}"
 
     def _prompt_cache_key(self, config: ProviderConfig, *, model: str, tool_schemas: list[Json] | None) -> str:
         configured = config.prompt_cache_key
@@ -4376,6 +4433,144 @@ class ModelClient:
         if extra_body:
             params["extra_body"] = extra_body
         return params
+
+    def _anthropic_params(
+        self,
+        config: ProviderConfig,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        stream: bool,
+        tool_schemas: list[Json] | None = None,
+    ) -> Json:
+        max_tokens = ANTHROPIC_DEFAULT_MAX_TOKENS
+        params: Json = {
+            "model": model,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+        if config.temperature is not None:
+            params["temperature"] = config.temperature
+        if tool_schemas:
+            params["tools"] = self._anthropic_tool_schemas(tool_schemas)
+            params["tool_choice"] = {"type": "auto"}
+        if config.reasoning != "off":
+            budget = CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(self._reasoning_effort(config), 4096)
+            params["thinking"] = {"type": "enabled", "budget_tokens": min(max_tokens - 1024, int(budget))}
+        return params
+
+    def _anthropic_request(
+        self,
+        config: ProviderConfig,
+        params: Json,
+        *,
+        timeout: int,
+        request_deadline: float,
+        first_token_timeout: int | None,
+    ) -> Json:
+        data = json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(self._anthropic_endpoint(config), data=data, headers=self._anthropic_headers(config), method="POST")
+        try:
+            response = urllib.request.urlopen(request, timeout=timeout)
+            if params.get("stream"):
+                return self._read_anthropic_stream(response, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+            with response:
+                return _json_dict(json.loads(response.read().decode("utf-8")))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            raise LLMError(self._format_api_status_error(error.code, body, config))
+        except urllib.error.URLError as error:
+            raise LLMError(str(error.reason or error))
+
+    def _read_anthropic_stream(self, response: Any, *, request_deadline: float, first_token_timeout: int | None) -> Json:
+        blocks: dict[int, Json] = {}
+        usage: Json = {}
+        stop_reason = ""
+        seen = False
+        with response:
+            for data in self._iter_sse_events(response):
+                event_type = _json_str(data.get("type")) or ""
+                if event_type == "error":
+                    error = _json_dict(data.get("error"))
+                    raise LLMError("API request failed: " + (_json_str(error.get("message")) or json.dumps(data, ensure_ascii=False)))
+                if event_type == "message_start":
+                    usage.update(_json_dict(_json_dict(data.get("message")).get("usage")))
+                elif event_type == "content_block_start":
+                    blocks[self._json_int(data.get("index"))] = dict(_json_dict(data.get("content_block")))
+                elif event_type == "content_block_delta":
+                    index = self._json_int(data.get("index"))
+                    block = blocks.setdefault(index, {})
+                    delta = _json_dict(data.get("delta"))
+                    text = _json_str(delta.get("text")) or _json_str(delta.get("thinking")) or _json_str(delta.get("partial_json")) or ""
+                    if _json_str(delta.get("type")) == "input_json_delta":
+                        block["input_json"] = (_json_str(block.get("input_json")) or "") + text
+                    elif text:
+                        block["text"] = (_json_str(block.get("text")) or "") + text
+                    seen = self._mark_stream_output(len(text), seen, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                elif event_type == "message_delta":
+                    usage.update(_json_dict(data.get("usage")))
+                    stop_reason = _json_str(_json_dict(data.get("delta")).get("stop_reason")) or stop_reason
+        content = []
+        for block in (blocks[index] for index in sorted(blocks)):
+            if block.get("type") == "tool_use":
+                raw_input = _json_str(block.pop("input_json", "")) or ""
+                with suppress(json.JSONDecodeError):
+                    block["input"] = json.loads(raw_input or "{}")
+            content.append(block)
+        return {"content": content, "usage": self._normalize_anthropic_usage(usage), "stop_reason": stop_reason}
+
+    @staticmethod
+    def _iter_sse_events(response: Any) -> Iterator[Json]:
+        lines: list[str] = []
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith("data:"):
+                lines.append(line[5:].strip())
+            elif not line and lines:
+                payload = "\n".join(lines)
+                lines.clear()
+                if payload != "[DONE]":
+                    with suppress(json.JSONDecodeError):
+                        yield _json_dict(json.loads(payload))
+
+    @staticmethod
+    def _anthropic_endpoint(config: ProviderConfig) -> str:
+        return config.base_url().rstrip("/") + "/messages"
+
+    @staticmethod
+    def _anthropic_headers(config: ProviderConfig) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
+            "x-api-key": config.key,
+            "anthropic-version": ANTHROPIC_VERSION,
+        }
+
+    @staticmethod
+    def _anthropic_tool_schemas(tool_schemas: list[Json] | None) -> list[Json]:
+        converted = []
+        for schema in tool_schemas or []:
+            function = _json_dict(schema.get("function"))
+            if function:
+                converted.append(
+                    {
+                        "name": _json_str(function.get("name")) or "",
+                        "description": _json_str(function.get("description")) or "",
+                        "input_schema": _json_dict(function.get("parameters")),
+                    }
+                )
+        return converted
+
+    def _anthropic_tool_response(self, result: JsonValue) -> Json:
+        actions = []
+        for block in _json_list(_json_dict(result).get("content")):
+            item = _json_dict(block)
+            if item.get("type") == "tool_use":
+                actions.append(self._action_from_function_call(_json_str(item.get("name")) or "", json.dumps(item.get("input") or {}, ensure_ascii=False)))
+        return {"actions": actions, "_assistant_text": self._anthropic_content(result) or ""}
 
     def _responses_tool_schemas(self, tool_schemas: list[Json] | None) -> list[Json]:
         converted = []
@@ -4860,6 +5055,14 @@ class ModelClient:
             return None
         return content
 
+    def _anthropic_content(self, result: JsonValue) -> str | None:
+        parts = []
+        for item in _json_list(_json_dict(result).get("content")):
+            block = _json_dict(item)
+            if block.get("type") == "text":
+                parts.append(_json_str(block.get("text")) or "")
+        return "".join(parts) if parts else None
+
     def _responses_content(self, result: JsonValue) -> str | None:
         data = _json_dict(result)
         output_text = data.get("_sdk_output_text")
@@ -4889,6 +5092,16 @@ class ModelClient:
             "message_keys": sorted(str(key) for key in message),
         }
         return "API response missing message content: " + json.dumps(details, ensure_ascii=False)
+
+    def _normalize_anthropic_usage(self, usage: JsonValue) -> Json:
+        normalized = dict(_json_dict(usage))
+        prompt_tokens = self._json_int(normalized.get("input_tokens"))
+        completion_tokens = self._json_int(normalized.get("output_tokens"))
+        normalized.setdefault("prompt_tokens", prompt_tokens)
+        normalized.setdefault("completion_tokens", completion_tokens)
+        normalized.setdefault("total_tokens", prompt_tokens + completion_tokens)
+        normalized.setdefault("cached_tokens", self._json_int(normalized.get("cache_read_input_tokens")))
+        return normalized
 
     def _record_usage(self, usage: Json, config: ProviderConfig, *, elapsed: float = 0.0) -> None:
         prompt_tokens = self._json_int(usage.get("prompt_tokens")) or self._json_int(usage.get("input_tokens"))
@@ -7029,7 +7242,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("/config", "Show resolved runtime config", "Config", "/config"),
     CommandSpec("/context", "Show or set context budget", "Config", "/context [low|medium|high]"),
     CommandSpec("/set", "Set a runtime config override", "Config", "/set <key> <value>"),
-    CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses]"),
+    CommandSpec("/api", "Show or set provider API format", "Config", "/api [auto|chat|responses|anthropic]"),
     CommandSpec("/model", "Show or set model and reasoning", "Config", "/model [model_name]"),
     CommandSpec("/reason", "Set reasoning effort", "Config", "/reason"),
     CommandSpec(
@@ -7090,7 +7303,7 @@ class CommandDispatcher:
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     COMMAND_ALIASES = {"/context-budget": "/context", "/context_budget": "/context"}
-    API_USAGE = "Usage: /api [auto|chat|responses]"
+    API_USAGE = "Usage: /api [auto|chat|responses|anthropic]"
     REASON_PAYLOAD_USAGE = "Usage: /reason-payload [auto|off|reasoning|reasoning_effort|thinking|enable_thinking]"
 
     def __init__(
@@ -7188,7 +7401,7 @@ class CommandDispatcher:
             resolved = provider.resolved_api()
             suffix = " (" + resolved + ")" if provider.api == "auto" else ""
             return "provider.api: " + provider.api + suffix + "\n" + self.API_USAGE
-        if value not in {"auto", "chat", "responses"}:
+        if value not in PROVIDER_API_CHOICES:
             return self.API_USAGE
         provider.api = value
         return "Set provider.api = " + value
@@ -8838,7 +9051,7 @@ class CommandCompleter(Completer):
         for prefix, values in (
             ("/provider ", self._values(self.providers)),
             ("/model ", self._values(self.models)),
-            ("/api ", ("auto", "chat", "responses")),
+            ("/api ", PROVIDER_API_CHOICES),
             ("/reason-payload ", CHAT_REASONING_CHOICES),
         ):
             if text.startswith(prefix):
