@@ -1241,7 +1241,11 @@ class Tool:
             _tool_object_schema(
                 {
                     "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
-                    "args": {"type": "array", "items": TOOL_JSON_VALUE_SCHEMA, "description": "Arguments exactly matching the tool signature."},
+                    "args": {
+                        "type": "array",
+                        "items": TOOL_JSON_VALUE_SCHEMA,
+                        "description": "Arguments exactly matching the tool signature; do not include intention or nested args objects here.",
+                    },
                 },
                 ["intention", "args"],
             ),
@@ -2295,11 +2299,13 @@ class ListTool(Tool):
     cwd: str = ""
 
     @classmethod
-    def make(cls, session: Session, args: list[str]) -> Self:
+    def make(cls, session: Session, args: list[JsonValue]) -> Self:
         if len(args) not in (0, 1, 2):
-            raise ToolCallArgError("requires 0 to 2 args: [dirpath][, glob]")
-        dir_path = str(args[0]) if args else "."
-        glob_pattern = str(args[1]) if len(args) == 2 else ""
+            raise ToolCallArgError("List args error: requires 0 to 2 args: [dirpath][, glob]")
+        if any(not isinstance(arg, str) for arg in args):
+            raise ToolCallArgError("List args error: dirpath and glob must be strings")
+        dir_path = args[0] if args else "."
+        glob_pattern = args[1] if len(args) == 2 else ""
         return cls(dirpath=session.resolve_path(dir_path), glob_pattern=glob_pattern, cwd=session.cwd)
 
     def preview(self) -> str:
