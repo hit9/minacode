@@ -1170,7 +1170,7 @@ class ToolEffect(StrEnum):
     OTHER = "other"
 
 
-MAX_TOOL_OUTPUT_CHARS = 12_000
+MAX_TOOL_OUTPUT_CHARS = 24_000
 TOOL_JSON_VALUE_SCHEMA: Json = _json_value_schema()
 
 
@@ -1399,11 +1399,7 @@ class ToolResultContext:
 
     def unreduced_recent_blocks(self, checkpoint: int) -> list[str]:
         latest_keys = set(self.blocks_by_key(self.latest))
-        return [
-            block
-            for block in self.recent
-            if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)
-        ]
+        return [block for block in self.recent if self.result_key(block) not in latest_keys and self._needs_reduction(block, checkpoint)]
 
     def unreduced_blocks(self, checkpoint: int, *, exclude_keys: set[str] | None = None) -> list[str]:
         excluded = exclude_keys or set()
@@ -1539,14 +1535,19 @@ class ToolResultContext:
         if omitted:
             lines.append("Omitted stale content:")
             for path in sorted(omitted):
-                lines.extend("- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source]) for source in sorted(omitted[path], key=cls._result_key_counter))
+                lines.extend(
+                    "- " + path + " source=" + source + " stale_lines=" + str(omitted[path][source])
+                    for source in sorted(omitted[path], key=cls._result_key_counter)
+                )
             lines.append("")
 
         rendered = "\n".join(lines).rstrip()
         return _shorten(rendered, max_chars) if max_chars > 0 and len(rendered) > max_chars else rendered
 
     @classmethod
-    def _current_file_context_segments(cls, blocks: list[str], *, cwd: str) -> tuple[dict[str, list[tuple[int, int, str, list[str]]]], dict[str, dict[str, int]]]:
+    def _current_file_context_segments(
+        cls, blocks: list[str], *, cwd: str
+    ) -> tuple[dict[str, list[tuple[int, int, str, list[str]]]], dict[str, dict[str, int]]]:
         files: dict[str, dict[int, tuple[str, str]]] = {}
         omitted: dict[str, dict[str, int]] = {}
         items = sorted(cls._file_context_items(blocks), key=lambda item: (item.order, item.phase, item.path, item.start))
@@ -1700,9 +1701,7 @@ class ToolResultContext:
         return cls._file_context_output_items(output, default_path=default_path, order=cls.result_counter(block), source=cls.result_key(block))
 
     @classmethod
-    def _file_context_output_items(
-        cls, output: str, *, default_path: str, order: int, source: str
-    ) -> list[FileContextItem]:
+    def _file_context_output_items(cls, output: str, *, default_path: str, order: int, source: str) -> list[FileContextItem]:
         items: list[FileContextItem] = []
         for path, section in cls._file_context_file_sections(output, default_path=default_path):
             if not path:
@@ -1844,6 +1843,7 @@ class ToolResultContext:
     @classmethod
     def max_counter(cls, blocks: list[str]) -> int:
         return max((cls.result_counter(block) for block in blocks), default=0)
+
 
 ConfirmationResult: TypeAlias = bool | str
 ConfirmCallback: TypeAlias = Callable[[ParsedToolCall, Tool], ConfirmationResult]
@@ -2054,7 +2054,12 @@ class ReadTool(Tool):
                 "path": {"type": "string", "description": "Single file path to read."},
                 "range": range_schema,
                 "ranges": {"type": "array", "items": range_schema, "description": "Multiple 0-based [start, end] ranges for the single file."},
-                "files": {"type": "array", "items": file_schema, "minItems": 1, "description": "Multiple files to read, each with its own optional range/ranges."},
+                "files": {
+                    "type": "array",
+                    "items": file_schema,
+                    "minItems": 1,
+                    "description": "Multiple files to read, each with its own optional range/ranges.",
+                },
             },
             "additionalProperties": False,
             "description": "Use either path or files.",
@@ -2128,7 +2133,9 @@ class ReadTool(Tool):
             raw_ranges = _json_list(spec.get("ranges"))
             if not raw_ranges:
                 raise ToolCallArgError("Read args error: ranges must be a non-empty array")
-            ranges = [_parse_structured_line_range(raw_range, label=f"files[{index}].ranges[{range_index}]") for range_index, raw_range in enumerate(raw_ranges)]
+            ranges = [
+                _parse_structured_line_range(raw_range, label=f"files[{index}].ranges[{range_index}]") for range_index, raw_range in enumerate(raw_ranges)
+            ]
         elif "range" in spec:
             ranges = [_parse_structured_line_range(spec.get("range"), label=f"files[{index}].range")]
         else:
@@ -2175,7 +2182,9 @@ class ReadTool(Tool):
                 if wrapped:
                     lines.append(base_indent + "<ReadRange>")
                 content, returned_end, range_end, truncated, total_lines = self._read_range(start, end, filepath=filepath)
-                lines.extend(self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent=base_indent + ("  " if wrapped else "")))
+                lines.extend(
+                    self._format_range_result(start, returned_end, range_end, truncated, total_lines, content, indent=base_indent + ("  " if wrapped else ""))
+                )
                 if wrapped:
                     lines.append(base_indent + "</ReadRange>")
             if multi_file:
@@ -4228,7 +4237,11 @@ class ModelClient:
             params = self._chat_completion_params(config, model=model, messages=messages, stream=stream, tool_schemas=tool_schemas)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api=api, model=model, stream=stream, params=params, tool_schemas=tool_schemas)
-        client = None if api == "anthropic" else OpenAI(api_key=config.key, base_url=config.base_url(), timeout=timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
+        client = (
+            None
+            if api == "anthropic"
+            else OpenAI(api_key=config.key, base_url=config.base_url(), timeout=timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
+        )
         request_elapsed = 0.0
         try:
             with ModelRetryShortcut(self.session):
@@ -4245,7 +4258,9 @@ class ModelClient:
                 signal.setitimer(signal.ITIMER_REAL, max(0, timeout))
                 try:
                     if api == "anthropic":
-                        result = self._anthropic_request(config, params, timeout=timeout, request_deadline=request_deadline, first_token_timeout=first_token_timeout)
+                        result = self._anthropic_request(
+                            config, params, timeout=timeout, request_deadline=request_deadline, first_token_timeout=first_token_timeout
+                        )
                         result["usage"] = self._normalize_anthropic_usage(result.get("usage"))
                         content = self._anthropic_content(result)
                         if tool_schemas:
@@ -4344,7 +4359,11 @@ class ModelClient:
             DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
             return parsed
         if not stream:
-            content = self._responses_content(result) if api == "responses" else (self._anthropic_content(result) if api == "anthropic" else self._message_content(result))
+            content = (
+                self._responses_content(result)
+                if api == "responses"
+                else (self._anthropic_content(result) if api == "anthropic" else self._message_content(result))
+            )
         if content is None:
             parsed = self._invalid_model_response(self._format_missing_message_content(result))
             DebugTrace.model_response(self.session, activity=activity, api=api, stream=stream, raw=result, parsed=parsed)
@@ -5258,7 +5277,9 @@ class ToolCallRunner:
                 error_type = type(error)
             if call is None:
                 raw = _json_dict(item)
-                summary = "invalid tool action" + (": missing required field name" if _json_str(raw.get("type")) == "tool" and not _json_str(raw.get("name")) else "")
+                summary = "invalid tool action" + (
+                    ": missing required field name" if _json_str(raw.get("type")) == "tool" and not _json_str(raw.get("name")) else ""
+                )
                 call = ParsedToolCall(name="InvalidToolCall", intention=summary, args=[])
             result_key = ""
             result_excerpted = False
@@ -5358,9 +5379,7 @@ class ToolCallRunner:
         item = _json_dict(value)
         name = _json_str(item.get("name"))
         if not name:
-            raise ToolCallArgError(
-                'tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":[{"path":"path.py"}]}.'
-            )
+            raise ToolCallArgError('tool action missing required field: name. Use {"type":"tool","name":"Read","intention":"...","args":[{"path":"path.py"}]}.')
         name = _canonical_tool_name(name)
         intention = _json_str(item.get("intention")) or ""
         return ParsedToolCall(name=name, intention=intention, args=list(_json_list(item.get("args"))))
@@ -6292,9 +6311,7 @@ class Agent:
         lowered = tuple(marker.lower() for marker in markers if marker)
         if not lowered:
             return
-        self.agent_feedback_errors = [
-            error for error in self.agent_feedback_errors if not any(marker in error.lower() for marker in lowered)
-        ]
+        self.agent_feedback_errors = [error for error in self.agent_feedback_errors if not any(marker in error.lower() for marker in lowered)]
 
     def _refresh_agent_feedback(self) -> None:
         markers = []
@@ -6431,7 +6448,11 @@ class Agent:
             )
             if is_tool:
                 streamed_tool_batch_started = True
-            return latest_result.done or self.stream_stop_requested or (is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions))
+            return (
+                latest_result.done
+                or self.stream_stop_requested
+                or (is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions))
+            )
 
         system_prompt, user_prompt, activity, tool_schemas = self._prepare_request_context()
         response = self.request(
@@ -6555,7 +6576,9 @@ class Agent:
                 )
         if skipped_labels:
             keys = ", ".join(dict.fromkeys(skipped_labels))
-            self._remember_agent_error("Recall skipped for already-visible result content: " + keys + ". Use visible Tool Context content; Read concrete files for new evidence.")
+            self._remember_agent_error(
+                "Recall skipped for already-visible result content: " + keys + ". Use visible Tool Context content; Read concrete files for new evidence."
+            )
         return filtered, skipped_executions
 
     def _apply_context_tool_executions(
@@ -7601,11 +7624,7 @@ class CommandDispatcher:
             return (
                 "Context is empty"
                 if before_conversation == 0 and before_raw == 0
-                else "Nothing to compact: conversation="
-                + str(before_conversation)
-                + " item(s), raw_results="
-                + str(before_raw)
-                + "."
+                else "Nothing to compact: conversation=" + str(before_conversation) + " item(s), raw_results=" + str(before_raw) + "."
             )
 
         return self._with_status(compact_context)

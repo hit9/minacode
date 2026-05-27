@@ -1,5 +1,6 @@
 import os
 
+import nanocode
 import pytest
 
 from nanocode import Agent, Session, ToolCallError, ToolResultItem, ToolResultTool
@@ -32,11 +33,11 @@ def test_tool_result_tool_gets_multiple_keys(tmp_path):
 
 def test_tool_result_tool_bounds_large_recall_result(tmp_path):
     session = Session(cwd=str(tmp_path))
-    session.state.tool_result_store["tr.1"] = ToolResultItem(description="Read large.", value="x" * 20_000)
+    session.state.tool_result_store["tr.1"] = ToolResultItem(description="Read large.", value="x" * 30_000)
 
     result = ToolResultTool.make(session, ["tr.1"]).call()
 
-    assert len(result) <= 12_000
+    assert len(result) <= nanocode.MAX_TOOL_OUTPUT_CHARS
     assert "[tool result excerpt]" in result
     assert "original_chars:" in result
 

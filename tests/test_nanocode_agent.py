@@ -379,7 +379,7 @@ def test_agent_does_not_dedupe_same_batch_edit_tool_calls(tmp_path):
 
 def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     path = tmp_path / "sample.txt"
-    path.write_text("H" * 5000 + "M" * 5000 + "T" * 5000 + "\n", encoding="utf-8")
+    path.write_text("H" * 10_000 + "M" * 10_000 + "T" * 10_000 + "\n", encoding="utf-8")
     session = Session(cwd=str(tmp_path))
     agent = Agent(session)
 
@@ -399,7 +399,7 @@ def test_agent_tool_results_are_bounded_and_logged(tmp_path):
     assert (tmp_path / item.log_path).read_text(encoding="utf-8").startswith("<ReadToolResult>")
 
 
-def test_search_tool_result_uses_larger_output_budget(tmp_path):
+def test_search_tool_result_uses_output_budget(tmp_path):
     sample = tmp_path / "sample.txt"
     sample.write_text("".join(f"needle {'x' * 180} {index}\n" for index in range(200)), encoding="utf-8")
     session = Session(cwd=str(tmp_path))
@@ -409,7 +409,7 @@ def test_search_tool_result_uses_larger_output_budget(tmp_path):
 
     item = session.state.tool_result_store["tr.1"]
     assert item.excerpted is False
-    assert nanocode.MAX_TOOL_OUTPUT_CHARS < len(item.value) <= nanocode.SearchTool.OUTPUT_CHARS
+    assert len(item.value) <= nanocode.SearchTool.OUTPUT_CHARS
 
 
 def test_agent_keeps_latest_batch_and_unreduced_tool_results(tmp_path, monkeypatch):
@@ -597,7 +597,7 @@ def test_act_prompt_file_context_keeps_matching_lines_after_external_stat_change
 
 def test_act_prompt_folds_excerpted_read_result(tmp_path):
     path = tmp_path / "sample.txt"
-    path.write_text("x" * 20_000 + "\n", encoding="utf-8")
+    path.write_text("x" * 30_000 + "\n", encoding="utf-8")
     agent = Agent(Session(cwd=str(tmp_path)))
 
     agent.execute_tool_calls([{"name": "Read", "intention": "read large sample", "args": _read_args("sample.txt", line_range=[0, 1])}])
