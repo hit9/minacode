@@ -301,7 +301,8 @@ def test_agent_skips_redundant_visible_recall(tmp_path):
 
     assert latest.count("key=tr.1") == 1
     assert len(agent.tool_runner.latest_executions) == 1
-    assert agent.tool_runner.latest_executions[0].outcome == "failure"
+    assert agent.tool_runner.latest_executions[0].outcome == "skipped"
+    assert "ToolCallError" not in agent.tool_runner.latest_executions[0].output
     assert any("already-visible" in error for error in agent.agent_feedback_errors)
 
 
@@ -340,7 +341,7 @@ def test_agent_skips_repeated_recall_with_same_range(tmp_path):
     agent.execute_tool_calls([{"name": "Recall", "intention": "recall range again", "args": recall_range}])
 
     assert len(agent.tool_runner.latest_executions) == 1
-    assert agent.tool_runner.latest_executions[0].outcome == "failure"
+    assert agent.tool_runner.latest_executions[0].outcome == "skipped"
     assert any("tr.1 0:1" in error for error in agent.agent_feedback_errors)
 
 
@@ -492,8 +493,10 @@ def test_agent_act_context_keeps_pending_raw_after_latest_rotates(tmp_path, monk
     assert "two.txt" in latest
     assert "|two" not in latest
     assert "content=file_context" in latest
-    assert "recall=tr.1" in index
-    assert "recall=tr.2" in index
+    assert "source=tr.1" in index
+    assert "source=tr.2" in index
+    assert "recall=tr.1" not in index
+    assert "recall=tr.2" not in index
     assert "output:\n<ReadToolResult>" not in index
     file_context = _prompt_section(agent.build_user_prompt(), "File Context", "Unreduced Tool Results")
     assert "File: one.txt" in file_context

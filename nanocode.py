@@ -1280,6 +1280,10 @@ class ToolCallExecution:
     requires_checks: bool = False
 
 
+def _execution_failed(execution: ToolCallExecution) -> bool:
+    return execution.outcome == "failure"
+
+
 @dataclass
 class BoundedToolOutput:
     value: str
@@ -1382,16 +1386,18 @@ class ToolResultContext:
         self.recent = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.recent]
         self.latest = [self.compact_block(block) if self.is_full_block(block) and self.result_counter(block) in observed else block for block in self.latest]
 
-    def current_timeline_blocks(self) -> list[str]:
+    def current_timeline_blocks(self, *, source_keys: set[str] | None = None) -> list[str]:
         seen: set[str] = set()
         blocks = []
+        source_keys = source_keys or set()
         for block in self.recent + self.latest:
             key = self.result_key(block)
             if key and key in seen:
                 continue
             if key:
                 seen.add(key)
-            blocks.append(self.compact_block(block))
+            compact = self.compact_block(block, recall_key=key not in source_keys)
+            blocks.append(self._mark_recall_keys_as_sources(compact, source_keys) if key in source_keys else compact)
         return blocks
 
     def latest_raw_blocks(self) -> list[str]:
@@ -1430,7 +1436,7 @@ class ToolResultContext:
 
     @staticmethod
     def format_execution(execution: ToolCallExecution) -> str:
-        status = "ok" if execution.outcome == "success" else "fail"
+        status = "ok" if execution.outcome == "success" else ("skip" if execution.outcome == "skipped" else "fail")
         fields = [status, _format_tool_call_summary(execution.call)]
         if execution.result_key:
             fields.append("key=" + execution.result_key)
@@ -1458,16 +1464,16 @@ class ToolResultContext:
         return "\n  output:\n" in block
 
     @classmethod
-    def compact_block(cls, block: str) -> str:
+    def compact_block(cls, block: str, *, recall_key: bool = True) -> str:
         if not cls.is_full_block(block):
             return block
         header, output = block.split("\n  output:\n", 1)
         match = RESULT_KEY_PATTERN.search(header)
         parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"] if output else []
-        if "[tool result excerpt]" in output or "excerpted: true" in output:
+        if cls._output_is_excerpted(output):
             parts.append("excerpt")
         if match:
-            parts.append("recall=" + match.group(1))
+            parts.append(("recall=" if recall_key else "source=") + match.group(1))
         elif output:
             parts.append(_shorten(" ".join(output.split()), cls.COMPACT_OUTPUT_SUMMARY_CHARS))
         return header + "\n  out: " + ("; ".join(parts) if parts else "ok")
@@ -1479,20 +1485,21 @@ class ToolResultContext:
     @classmethod
     def render_block_for_prompt(cls, block: str) -> str:
         if cls._is_discovery_result_block(block):
-            compact = cls.compact_block(block)
+            compact = cls.compact_block(block, recall_key=cls.block_is_excerpted(block))
             if "\n  out: " in compact:
                 return compact + "; content=discovery_context"
             return compact
         if not cls._is_file_context_result_block(block):
             return block
-        compact = cls.compact_file_context_block(block)
+        has_file_context = bool(cls._file_context_block_items(block))
+        compact = cls.compact_file_context_block(block, recall_key=not has_file_context or cls.block_is_excerpted(block))
         if "\n  out: " in compact:
-            content = "file_context" if cls._file_context_block_items(block) else "recall"
+            content = "file_context" if has_file_context else "recall"
             return compact + "; content=" + content
         return compact
 
     @classmethod
-    def compact_file_context_block(cls, block: str) -> str:
+    def compact_file_context_block(cls, block: str, *, recall_key: bool = True) -> str:
         if not cls.is_full_block(block):
             return block
         header, output = block.split("\n  output:\n", 1)
@@ -1500,13 +1507,38 @@ class ToolResultContext:
         summary_output = re.sub(r"(?m)^[ \t]*<file_stat\b[^>]*>[ \t]*$", "", summary_output)
         summary_output = re.sub(r"(?m)^[ \t]*</?(?:ReadToolResult|EditToolResult)>[ \t]*$", "", summary_output)
         parts = [str(_tool_output_line_count(output)) + " lines, " + str(len(output)) + " chars"]
-        if "[tool result excerpt]" in output or "excerpted: true" in output:
+        if cls._output_is_excerpted(output):
             parts.append("excerpt")
         if key := cls.result_key(block):
-            parts.append("recall=" + key)
+            parts.append(("recall=" if recall_key else "source=") + key)
         if summary_output:
             parts.append(_shorten(" ".join(summary_output.split()), cls.COMPACT_OUTPUT_SUMMARY_CHARS))
         return header + "\n  out: " + "; ".join(parts)
+
+    @staticmethod
+    def _output_is_excerpted(output: str) -> bool:
+        return "[tool result excerpt]" in output or "excerpted: true" in output
+
+    @classmethod
+    def block_is_excerpted(cls, block: str) -> bool:
+        return cls.is_full_block(block) and cls._output_is_excerpted(block.split("\n  output:\n", 1)[1])
+
+    @classmethod
+    def projected_source_keys(cls, blocks: list[str]) -> set[str]:
+        keys = set()
+        for block in blocks:
+            key = cls.result_key(block)
+            if not key or cls.block_is_excerpted(block):
+                continue
+            if cls._is_discovery_result_block(block) or (cls._is_file_context_result_block(block) and cls._file_context_block_items(block)):
+                keys.add(key)
+        return keys
+
+    @staticmethod
+    def _mark_recall_keys_as_sources(block: str, keys: set[str]) -> str:
+        for key in keys:
+            block = re.sub(r"\brecall=" + re.escape(key) + r"\b", "source=" + key, block)
+        return block
 
     @classmethod
     def format_file_context(cls, blocks: list[str], *, cwd: str = "", max_chars: int) -> str:
@@ -3692,6 +3724,7 @@ class ToolResultTool(Tool):
         "Use when output was truncated, compacted, or no longer visible.",
         "Optional 0-based ranges read exact slices from the stored full log.",
         "Do not Recall keys already visible in Discovery Context, File Context, Unreduced Tool Results, or Latest Tool Results.",
+        "Keys shown as source=tr.N are provenance for visible content, not Recall hints.",
         "Recall takes result keys only; Read takes file paths and never tr.N keys.",
         "Returns result metadata plus content.",
     )
@@ -4038,6 +4071,7 @@ Coding workflow:
 Tool use:
 - Batch independent read/search calls.
 - Use Known to avoid redundant reads, searches, and checks.
+- If visible tool output contains durable evidence needed later, store the conclusion as Known instead of recalling the same key.
 - Use ordered calls for clear edit-then-check flows.
 - If a tool fails, diagnose the failure using Known plus the new error before retrying.
 - Do not repeatedly run the same failing command without a new hypothesis or change.
@@ -5201,11 +5235,11 @@ class ToolCallDisplayFormatter:
 
     @classmethod
     def _format_execution(cls, execution: ToolCallExecution) -> str:
-        marker = "[success]" if execution.outcome == "success" else "[failure]"
+        marker = "[failure]" if _execution_failed(execution) else ("[skipped]" if execution.outcome == "skipped" else "[success]")
         text = marker + " " + cls.format_call(execution.call)
         if execution.result_key:
             text += " -> " + execution.result_key
-        if execution.outcome != "success":
+        if _execution_failed(execution) or execution.outcome == "skipped":
             error = cls._compact_tool_error(execution.output)
             if error:
                 text += " | " + error
@@ -6278,9 +6312,10 @@ class Agent:
     def _format_act_tool_result_context(self) -> tuple[str, str, str]:
         checkpoint = self.blackboard.memory_checkpoint_tool_result_counter
         budget = self.context_budget()
-        timeline = self.tool_context.current_timeline_blocks()[-budget.index_items :]
         unreduced = self.tool_context.unreduced_recent_blocks(checkpoint)
         latest = self.tool_context.latest_raw_blocks()
+        projected_source_keys = ToolResultContext.projected_source_keys(unreduced + latest)
+        timeline = self.tool_context.current_timeline_blocks(source_keys=projected_source_keys)[-budget.index_items :]
         visible_keys = set(ToolResultContext.blocks_by_key(timeline + unreduced + latest))
         archived_limit = max(0, budget.index_items - len(timeline))
         archived = [item.format(result_key=key) for key, item in self.session.state.tool_result_store.items() if key not in visible_keys]
@@ -6468,7 +6503,7 @@ class Agent:
             return (
                 latest_result.done
                 or self.stream_stop_requested
-                or (is_tool and any(execution.outcome != "success" for execution in self.tool_runner.latest_executions))
+                or (is_tool and any(_execution_failed(execution) for execution in self.tool_runner.latest_executions))
             )
 
         system_prompt, user_prompt, activity, tool_schemas = self._prepare_request_context()
@@ -6586,15 +6621,16 @@ class Agent:
                 skipped_executions.append(
                     ToolCallExecution(
                         call=call,
-                        outcome="failure",
-                        output="ToolCallError: redundant Recall skipped because the requested result content is already visible in Tool Context.",
-                        error_type=ToolCallError,
+                        outcome="skipped",
+                        output="Recall skipped: requested result content is already visible in Tool Context.",
                     )
                 )
         if skipped_labels:
             keys = ", ".join(dict.fromkeys(skipped_labels))
             self._remember_agent_error(
-                "Recall skipped for already-visible result content: " + keys + ". Use visible Tool Context content; Read concrete files for new evidence."
+                "Recall skipped for already-visible result content: "
+                + keys
+                + ". Use visible Tool Context content; save durable conclusions as Known; Read concrete files for new evidence."
             )
         return filtered, skipped_executions
 
@@ -7021,7 +7057,7 @@ class Agent:
         ):
             self._warn_agent("Plan is empty after discovery.", "set a short Plan before more broad exploration.")
 
-        if ctx.tool_calls and not any(execution.outcome != "success" for execution in self.tool_runner.latest_executions) and self._checks_are_settled():
+        if ctx.tool_calls and not any(_execution_failed(execution) for execution in self.tool_runner.latest_executions) and self._checks_are_settled():
             if self._plan_is_complete():
                 self._warn_agent("Plan and Checks are complete; continuing tools without reopening Plan.")
             elif ctx.plan_was_complete and ctx.checks_settled:
@@ -7240,7 +7276,7 @@ class Agent:
                 if (
                     feedback_checkpoint > 0
                     and self.tool_runner.latest_executions
-                    and all(execution.outcome == "success" for execution in self.tool_runner.latest_executions)
+                    and not any(_execution_failed(execution) for execution in self.tool_runner.latest_executions)
                 ):
                     markers = tuple(marker.lower() for marker in self.STALE_TOOL_FEEDBACK_MARKERS)
                     self.agent_feedback_errors[:feedback_checkpoint] = [
@@ -8839,7 +8875,7 @@ class AgentLoop:
             return
         lines = message.splitlines()
         if lines and (lines[0].startswith("  ...") or self._is_tool_call_line(lines[0])):
-            plain = "\n".join("  " + line.replace("[success] ", "").replace("[failure] ", "") for line in lines)
+            plain = "\n".join("  " + line.replace("[success] ", "").replace("[failure] ", "").replace("[skipped] ", "") for line in lines)
             self._emit_segments(self._indent_segments(self._tool_segments(message), "  "), plain, end="")
             return
         if message.startswith("Retrying:"):
@@ -8861,7 +8897,7 @@ class AgentLoop:
         self._emit_segments([("ansicyan", message + "\n")], message)
 
     def _is_tool_call_line(self, line: str) -> bool:
-        return line.startswith(("[success] ", "[failure] "))
+        return line.startswith(("[success] ", "[failure] ", "[skipped] "))
 
     def _emit_segments(self, segments: list[tuple[str, str]], plain: str, *, end: str = "\n") -> None:
         if self.output_fn is print:
@@ -8977,7 +9013,7 @@ class AgentLoop:
         for line in lines:
             if self._is_tool_call_line(line):
                 marker, _, tail = line.partition(" ")
-                status_style = "ansigreen" if marker == "[success]" else "ansired"
+                status_style = "ansired" if marker == "[failure]" else ("ansibrightblack" if marker == "[skipped]" else "ansigreen")
                 segments.extend(self._tool_call_segments(tail, status_style))
             else:
                 segments.extend([("ansibrightblack", line + "\n")])
