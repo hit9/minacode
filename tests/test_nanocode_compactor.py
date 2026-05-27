@@ -50,7 +50,7 @@ def test_agent_compact_history_builds_working_snapshot_and_keeps_recent(tmp_path
     assert activity == "compact"
     assert kwargs == {}
     assert "Current_Blackboard" in user_prompt
-    assert "Existing_Facts" in user_prompt
+    assert "Existing_Known" in user_prompt
     assert "<raw_result>" not in summary
 
 

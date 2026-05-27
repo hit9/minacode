@@ -315,11 +315,11 @@ def test_agent_loop_styles_compact_state_section_labels(tmp_path):
 
     loop = AgentLoop(FakeAgent(), output_fn=lambda message: None)
 
-    segments = loop._compact_state_segments("Leads + Facts Updated\nLeads\n  1. h1\nFacts\n  1. fact")
+    segments = loop._compact_state_segments("Leads + Known Updated\nLeads\n  1. h1\nKnown\n  1. fact")
 
-    assert ("bold ansicyan", "Leads + Facts Updated\n") in segments
+    assert ("bold ansicyan", "Leads + Known Updated\n") in segments
     assert ("ansicyan", "Leads\n") in segments
-    assert ("ansicyan", "Facts\n") in segments
+    assert ("ansicyan", "Known\n") in segments
 
 
 def test_agent_loop_cancelled_message_mentions_context_is_kept(tmp_path):

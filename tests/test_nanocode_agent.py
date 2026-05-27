@@ -2032,11 +2032,11 @@ def test_main_agent_state_updates_are_compact_without_debug(tmp_path):
     )
 
     report = agent.state_updater.compact_report()
-    assert report.startswith("Goal + Plan + Facts Updated")
+    assert report.startswith("Goal + Plan + Known Updated")
     assert "\nGoal\n  inspect project\n" in report
     assert "\nPlan\n" in report
     assert "  ... 1 older\n  2. [✓ done] Read config\n  3. [◔ doing] Update code\n  4. [○ todo] Run tests" in report
-    assert "\nFacts\n" in report
+    assert "\nKnown\n" in report
     assert "  ... 1 older\n  2. fact two\n  3. fact three\n  4. fact four" in report
     assert "State Updated" not in report
 
@@ -2059,10 +2059,10 @@ def test_main_agent_compact_report_labels_combined_leads_and_facts(tmp_path):
     report = agent.state_updater.compact_report()
     assert report == "\n".join(
         [
-            "Leads + Facts Updated",
+            "Leads + Known Updated",
             "Leads",
             "  1. [active] h1: admin selector starves history mode [tr.2]",
-            "Facts",
+            "Known",
             "  1. [tr.3] feed SSE request path is shared by admin and normal users",
         ]
     )
@@ -2136,7 +2136,7 @@ def test_agent_state_report_only_includes_real_plan_and_known_changes(tmp_path):
 
     assert "  Plan\n" in agent.state_updater.latest_report
     assert "    1. [○ todo] Inspect file" in agent.state_updater.latest_report
-    assert "  Facts\n" in agent.state_updater.latest_report
+    assert "  Known\n" in agent.state_updater.latest_report
     assert "    1. Search uses rg." in agent.state_updater.latest_report
 
     agent.apply_response(response)
@@ -2866,7 +2866,7 @@ def test_agent_run_ingests_queued_user_input_before_next_model_call(tmp_path):
     response = agent.run("initial task", on_message=messages.append, poll_user_input=lambda: queued_inputs.pop(0) if queued_inputs else None)
 
     assert response["actions"][0]["message_for_complete"] == "done"
-    assert messages == ["Goal Updated\n  initial task", "sent: use chinese", "Facts Updated\n  1. queued feedback was visible", "done"]
+    assert messages == ["Goal Updated\n  initial task", "sent: use chinese", "Known Updated\n  1. queued feedback was visible", "done"]
     assert [item.content for item in agent.session.state.conversation if isinstance(item, nanocode.UserMessage)] == ["initial task", "use chinese"]
     assert agent.blackboard.user_input == "use chinese"
     assert "use chinese" not in agent.model_client.user_prompts[0]

@@ -3940,7 +3940,7 @@ STATE_TOOL_PARAMS: dict[str, tuple[str, Json, list[str]]] = {
     ),
     "plan": ("Set or patch the shortest necessary plan for tracked work.", {"mode": TOOL_NULLABLE_STRING_SCHEMA, "items": TOOL_PLAN_ITEMS_SCHEMA}, ["items"]),
     "lead": ("Record investigation leads and their status.", {"items": TOOL_LEAD_ITEMS_SCHEMA}, ["items"]),
-    "known": ("Record confirmed Facts that affect the current task.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
+    "known": ("Record confirmed Known items that affect the current task.", {"items": TOOL_ITEMS_SCHEMA}, ["items"]),
     "user_rule": (
         "Save an explicit future behavior rule from the user.",
         {"text": TOOL_STRING_SCHEMA, "message": TOOL_STRING_SCHEMA},
@@ -3990,6 +3990,8 @@ Priority: latest user request > blocking feedback > user rules > active state > 
 Core rules:
 - Do not repeat an old completion.
 - Do not rewrite Goal unless the user changed the task.
+- Always use relevant Known before taking a tool action or answering.
+- Re-discovering information already captured in Known is a workflow error unless the Known item may be stale.
 - Ask only when blocked by missing intent, missing permission, or destructive risk.
 - Prefer small, local, reversible changes.
 - Do not invent code structure; inspect before editing.
@@ -4000,29 +4002,44 @@ Modes:
 - Chat: answer directly; no task state.
 - Inspect: read/search only; answer with findings.
 - One-shot: use only needed tools; answer and stop.
-- Tracked task: for edits, debugging, checks, or multi-step work, maintain Goal, Plan, Facts, Leads, and Checks.
+- Tracked task: for edits, debugging, checks, or multi-step work, maintain Goal, Plan, Known, Leads, and Checks.
 
 State:
+- Known is mandatory working memory. Every next action must be constrained by relevant Known before using tools, editing, checking, or answering.
 - Goal stays stable until complete or user changes it.
 - Plan is the shortest correct path to Goal, not a loose TODO list.
-- Update Plan only when new Facts change the path.
-- Facts are confirmed. Leads are unconfirmed. Checks are verification records. User Rules are future behavior.
-- Save only what must survive disappearing tool results. Cite tr.N when result-backed.
+- Known contains confirmed working-memory items. Leads are unconfirmed. Checks are verification records. User Rules are future behavior.
+- Save only durable Known that must survive disappearing tool results. Cite tr.N when result-backed.
+- Do not store raw logs as Known; store the conclusion, location, and why it matters.
+- If Known answers the current question or narrows the next action, rely on it instead of rediscovering the same information.
+- Do not repeat a search, read, diagnosis, or check whose result is already captured in Known, unless the file changed, command changed, or old Known may be stale.
+- Before updating Plan, compare new evidence against existing Known. Update Plan only when the path changes.
+
+Known discipline:
+- Treat Known as short-term working memory, not notes.
+- Before every tool call, ask what Known should constrain this action.
+- Before every edit, use Known to identify the exact target, relevant symbols, prior failures, constraints, and expected behavior.
+- Before every check, use Known to choose the narrowest command that verifies the current hypothesis.
+- Before answering, use Known and Checks first; do not reconstruct the story from memory or repeat tool results.
+- If existing Known is sufficient to proceed, act immediately. Do not search just to feel more certain.
+- If Known conflicts with fresh evidence, keep the fresher result and explicitly update stale Known.
+- A tool call that ignores relevant Known and re-discovers the same thing is wasteful and incorrect.
 
 Coding workflow:
-- Before editing, identify the target file, relevant symbols, expected behavior, and evidence.
+- Before editing, identify the target file, relevant symbols, expected behavior, and evidence from Known first; inspect only missing or stale context.
 - Read only the smallest useful code region, but enough surrounding context to avoid wrong edits.
-- Prefer existing project style, APIs, naming, error handling, tests, and workflows.
+- Prefer existing project style, APIs, naming, error handling, tests, and workflows already captured in Known or freshly inspected code.
 - Change only files needed for the Goal.
 - Avoid broad refactors unless explicitly requested or necessary for correctness.
-- If multiple fixes are possible, choose the smallest correct one.
+- If multiple fixes are possible, choose the smallest correct one consistent with Known and observed project style.
 - If editing generated, vendored, lock, or migration files, verify they are meant to be edited.
 - After edits, inspect the diff or changed region before claiming success.
 
 Tool use:
 - Batch independent read/search calls.
+- Use Known to avoid redundant reads, searches, and checks.
 - Use ordered calls for clear edit-then-check flows.
-- If a tool fails, diagnose the failure before retrying.
+- If a tool fails, diagnose the failure using Known plus the new error before retrying.
 - Do not repeatedly run the same failing command without a new hypothesis or change.
 - Do not Recall a tr.N key already visible in Tool Context; use that content or Read concrete file paths for new evidence.
 - Prefer targeted checks first; run broader checks only when useful or requested.
@@ -4122,7 +4139,7 @@ Return exactly one JSON object. Do not wrap it in markdown.
 
 Required fields:
 - snapshot: string, concise continuation state for prompt context.
-- known: array of durable facts. Each item may be a string or {"text": "...", "source": ["tr.N"]}.
+- known: array of durable Known items. Each item may be a string or {"text": "...", "source": ["tr.N"]}.
 
 Optional fields:
 - goal: current goal if still active.
@@ -4134,15 +4151,15 @@ Optional fields:
 Snapshot content should cover only continuity-critical state:
 - latest user intent and task changes
 - current goal, commitments, plan state, and next step
-- confirmed facts and active leads
+- confirmed Known and active leads
 - files, paths, symbols, APIs, commands, outcomes, and recent edits needed later
 - important source keys such as tr.N
 - unresolved blockers, open questions, and checks
 
 Preserve source keys when evidence comes from tool results.
-Prefer facts/plan/leads fields for structured state; use snapshot for the readable minimal working context.
+Prefer known/plan/leads fields for structured state; use snapshot for the readable minimal working context.
 Omit raw logs, repeated output, full stack traces, obsolete branches, and process chatter.
-Do not invent facts not supported by the input.
+Do not invent Known not supported by the input.
 """
 
 
@@ -4155,9 +4172,9 @@ COMPACT_USER_PROMPT_TEMPLATE = """
 {user_rules}
 -------- User_Rules End -----------------------
 
------------ Existing_Facts Begin --------------
+----------- Existing_Known Begin --------------
 {known}
--------- Existing_Facts End -------------------
+-------- Existing_Known End -------------------
 
 ----------- Recent_Edits Begin ----------------
 {recent_edits}
@@ -5477,7 +5494,7 @@ class AgentStateUpdater:
         known = [KnownItem.format_item(item) for item in current.known]
         if known != before_known:
             self._append_state_section(
-                lines, "  Facts", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}")
+                lines, "  Known", self._format_rows(current.known, lambda index, item: f"    {index}. {self._compact(KnownItem.format_item(item))}")
             )
         user_rules = self.session.state.user_rules.format()
         if user_rules != before_user_rules:
@@ -5509,8 +5526,8 @@ class AgentStateUpdater:
                     self._compact_rows(self.blackboard.leads, lambda item: self._compact(item.format(), 100)),
                 ),
                 (
-                    "Facts",
-                    "  Facts" in self.latest_report and self.blackboard.known,
+                    "Known",
+                    "  Known" in self.latest_report and self.blackboard.known,
                     self._compact_rows(self.blackboard.known, lambda item: self._compact(KnownItem.format_item(item), 100)),
                 ),
                 ("Checks", "  Checks" in self.latest_report, ["  " + self._format_checks()]),
@@ -6028,7 +6045,7 @@ class Agent:
 
         add("Goal", current.goal)
         if current.known:
-            add("Facts", "\n".join(KnownItem.format_item(item) for item in current.known))
+            add("Known", "\n".join(KnownItem.format_item(item) for item in current.known))
         if current.leads:
             add("Leads", "\n".join(item.format() for item in current.leads))
         if current.plan:
@@ -8798,20 +8815,20 @@ class AgentLoop:
         if message.startswith(
             (
                 "Plan Updated",
-                "Facts Updated",
+                "Known Updated",
                 "Leads Updated",
                 "Checks Updated",
-                "Plan + Facts Updated",
+                "Plan + Known Updated",
                 "Plan + Leads Updated",
                 "Plan + Checks Updated",
-                "Leads + Facts Updated",
+                "Leads + Known Updated",
                 "Leads + Checks Updated",
-                "Facts + Checks Updated",
-                "Plan + Leads + Facts Updated",
-                "Plan + Facts + Checks Updated",
+                "Known + Checks Updated",
+                "Plan + Leads + Known Updated",
+                "Plan + Known + Checks Updated",
                 "Plan + Leads + Checks Updated",
-                "Leads + Facts + Checks Updated",
-                "Plan + Leads + Facts + Checks Updated",
+                "Leads + Known + Checks Updated",
+                "Plan + Leads + Known + Checks Updated",
             )
         ):
             self._emit_segments(self._compact_state_segments(message), message)
@@ -8946,7 +8963,7 @@ class AgentLoop:
         for line in message.splitlines():
             if line.endswith("Updated"):
                 segments.append(("bold ansicyan", line + "\n"))
-            elif line in {"Plan", "Leads", "Facts", "Checks"}:
+            elif line in {"Plan", "Leads", "Known", "Checks"}:
                 segments.append(("ansicyan", line + "\n"))
             elif line.startswith("  ..."):
                 segments.append(("ansibrightblack", line + "\n"))
