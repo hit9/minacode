@@ -360,13 +360,12 @@ class ModelUsage:
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
-        cached_prompt_tokens = value(
-            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
-        )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
-        self.cached_prompt_tokens += cached_prompt_tokens
+        self.cached_prompt_tokens += value(
+            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+        )
 
 
 @dataclass
@@ -607,10 +606,9 @@ class Tool:
     @staticmethod
     def process_result(tag: str, code: int, stdout: str, stderr: str) -> str:
         lines = [f"<{tag}>", f"* exit_code: {code}"]
-        if stdout:
-            lines.extend(["<stdout>", stdout.rstrip(), "</stdout>"])
-        if stderr:
-            lines.extend(["<stderr>", stderr.rstrip(), "</stderr>"])
+        for name, text in (("stdout", stdout), ("stderr", stderr)):
+            if text:
+                lines.extend([f"<{name}>", text.rstrip(), f"</{name}>"])
         lines.append(f"</{tag}>")
         return "\n".join(lines)
 
@@ -809,8 +807,7 @@ class SearchTool(Tool):
         return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
     def call(self) -> str:
-        sections = [self.search(request) for request in self.requests()]
-        return "\n\n".join(sections)
+        return "\n\n".join(self.search(request) for request in self.requests())
 
     def short_args(self) -> list[str]:
         rows = []
@@ -949,10 +946,9 @@ class SearchTool(Tool):
             return []
         rows: list[tuple[str, bool]] = []
         content = "".join(lines)
-        if "\n" in regex.pattern:
-            starts = [content.count("\n", 0, match.start()) for match in regex.finditer(content)]
-        else:
-            starts = [index for index, line in enumerate(lines) if regex.search(line)]
+        starts = [content.count("\n", 0, match.start()) for match in regex.finditer(content)] if "\n" in regex.pattern else [
+            index for index, line in enumerate(lines) if regex.search(line)
+        ]
         for index in starts:
             seen = set()
             start = max(0, index - context)
@@ -988,16 +984,17 @@ class SearchTool(Tool):
             pattern = pattern.rstrip("/")
             if not pattern:
                 continue
-            if "/" in pattern and fnmatch.fnmatch(rel, pattern):
-                return True
-            if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
+            if ("/" in pattern and fnmatch.fnmatch(rel, pattern)) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
                 return True
         return False
 
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
-    SYMBOLS: ClassVar[dict[str, str]] = {"ready": "ok", "synced": "ok", "stale": "!", "syncing": "~", "missing": "?", "error": "x"}
+    SYMBOLS: ClassVar[dict[str, str]] = {
+        "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~", "updating": "~", "missing": "?", "unavailable": "!", "error": "!",
+    }
+    LEGEND: ClassVar[str] = "legend: index✓ synced, index* stale, index~ syncing/updating, index? missing, index! error"
 
     def __init__(self, session: Session):
         self.session = session
@@ -1024,7 +1021,7 @@ class CodeIndex:
     @classmethod
     def status_line(cls, status: str, message: str = "") -> str:
         status = "synced" if status == "ready" else status
-        return " ".join(part for part in ("index", cls.label(status), status + ((": " + message) if message else "")) if part)
+        return f"index{cls.label(status)} {status}" + ((": " + message) if message else "")
 
     def notice(self, text: str = "", *, refreshing: bool = False) -> None:
         self.session.state.code_index_notice = text
@@ -1034,13 +1031,12 @@ class CodeIndex:
 
     def fail(self, error: Any) -> str:
         self.session.state.code_index_error = str(error).strip()
-        self.session.state.code_index_status = "error"
         self.notice("error")
         return self.session.state.code_index_error
 
     def finish(self, status: str = "synced") -> None:
-        self.session.state.code_index_error = ""
         self.notice("")
+        self.session.state.code_index_error = ""
         self.session.state.code_index_status = status
 
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
@@ -1806,12 +1802,10 @@ class ContextManager:
             return
         try:
             self.session.state.apply(model.compact(self.compaction_input(extra_messages)))
-            self.session.messages = self.session.messages[-6:]
-            self.latest_keys = []
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-            self.session.messages = self.session.messages[-6:]
-            self.latest_keys = []
+        self.session.messages = self.session.messages[-6:]
+        self.latest_keys = []
 
     def render(self, user_input: str = "", extra_messages: list[Json] | None = None) -> str:
         sections = [
@@ -1830,23 +1824,19 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
-        return "\n".join(
-            [
-                "- cwd: " + info.cwd,
-                "- os: " + info.os,
-                "- arch: " + info.arch,
-                "- shell_timeout: " + str(self.session.settings.shell_timeout) + "s",
-                "- detected_commands: " + (", ".join(info.commands) or "(none)"),
-            ]
-        )
+        return "\n".join([
+            f"- cwd: {info.cwd}",
+            f"- os: {info.os}",
+            f"- arch: {info.arch}",
+            f"- shell_timeout: {self.session.settings.shell_timeout}s",
+            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
+        ])
 
     def tool_index(self) -> str:
         return "\n".join(record.summary() for record in self.session.tool_records) or "(empty)"
 
     def error_feedback(self) -> str:
-        if not self.session.tool_errors:
-            return ""
-        return "\n".join(["Recent failed tool calls:"] + [record.summary() for record in self.session.tool_errors])
+        return "\n".join(["Recent failed tool calls:"] + [record.summary() for record in self.session.tool_errors]) if self.session.tool_errors else ""
 
     def latest_results(self) -> str:
         records = [record for record in self.session.tool_records if record.key in set(self.latest_keys)]
@@ -2159,7 +2149,7 @@ class ToolRunner:
         if not lines:
             return ""
         lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
-        return "\n".join(["  preview"] + ["  " + line for line in lines])
+        return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
@@ -2619,10 +2609,9 @@ Output: concise markdown, USER'S LANGUAGE.
                 turn_messages.append(message)
                 self.output_fn(message["content"])
             self.tools.run(tool_calls)
-        self.session.messages.extend(
-            [user_message, *turn_messages, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}]
-        )
-        return f"Stopped after max_agent_steps={self.session.settings.max_steps}"
+        stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
+        self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": stopped}])
+        return stopped
 
     def messages(self, user_input: str, turn_messages: list[Json] | None = None) -> list[Json]:
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input, turn_messages)
@@ -2681,7 +2670,7 @@ class CommandCompleter(Completer):
 
     @staticmethod
     def matches(values, prefix: str):
-        yield from (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
+        return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
 class UiPrinter:
@@ -2871,7 +2860,7 @@ class BashLivePreview:
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
-        return ["  output"] + ["  " + self.fit(line, width - 2) for line in body] if body else []
+        return ["  output", *("  " + self.fit(line, width - 2) for line in body)] if body else []
 
     @staticmethod
     def fit(text: str, width: int) -> str:
@@ -3022,7 +3011,7 @@ class StatusBar:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
         index_status = self.index_status()
         if index_status:
-            parts.append("index " + index_status)
+            parts.append("index" + index_status)
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
@@ -3075,10 +3064,8 @@ class StatusBar:
 
     @staticmethod
     def duration(seconds: float) -> str:
-        if seconds < 60:
-            return f"{seconds:.1f}s"
         minutes, rest = divmod(int(seconds), 60)
-        return f"{minutes}m{rest:02d}s"
+        return f"{seconds:.1f}s" if seconds < 60 else f"{minutes}m{rest:02d}s"
 
 
 class CommandLoop:
@@ -3444,10 +3431,7 @@ Tools:
 
         def clamp() -> None:
             options = enabled()
-            if not options:
-                state["selected"] = 0
-            else:
-                state["selected"] = min(max(int(state["selected"]), 0), len(options) - 1)
+            state["selected"] = min(max(int(state["selected"]), 0), len(options) - 1) if options else 0
 
         def move(event, delta: int) -> None:
             options = enabled()
@@ -3647,56 +3631,53 @@ Tools:
         provider = self.session.config.provider
         index_status, index_message = CodeIndex(self.session).status(check=True)
         if self.session.state.code_index_refreshing:
-            index_status, index_message = "syncing", self.session.state.code_index_notice
+            index_status, index_message = self.session.state.code_index_notice or "syncing", ""
         elif self.session.state.code_index_error:
             index_status, index_message = "error", self.session.state.code_index_error
         if index_status in {"missing", "unavailable", "error"} and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        return "\n".join(
-            [
-                f"cwd: {self.session.cwd}",
-                f"provider: {self.session.config.active_provider}",
-                f"model: {provider.model or '(empty)'}",
-                f"api: {provider.resolved_api()} ({provider.api})",
-                f"reasoning: {provider.reasoning} ({provider.resolved_chat_reasoning()})",
-                f"messages: {len(self.session.messages)}",
-                f"tool_results: {len(self.session.tool_results)}",
-                f"goal: {self.session.state.goal or '(empty)'}",
-                f"known: {len(self.session.state.known)}",
-                f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
-                f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
-                "code_" + CodeIndex.status_line(index_status, index_message),
-            ]
-        )
+        return "\n".join([
+            f"cwd: {self.session.cwd}",
+            f"provider: {self.session.config.active_provider}",
+            f"model: {provider.model or '(empty)'}",
+            f"api: {provider.resolved_api()} ({provider.api})",
+            f"reasoning: {provider.reasoning} ({provider.resolved_chat_reasoning()})",
+            f"messages: {len(self.session.messages)}",
+            f"tool_results: {len(self.session.tool_results)}",
+            f"goal: {self.session.state.goal or '(empty)'}",
+            f"known: {len(self.session.state.known)}",
+            f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
+            f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
+            CodeIndex.status_line(index_status, index_message),
+            CodeIndex.LEGEND,
+        ])
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
-        return "\n".join(
-            [
-                f"provider.active: {self.session.config.active_provider}",
-                f"provider.available: {', '.join(sorted(self.session.config.providers))}",
-                f"provider.url: {provider.url or '(empty)'}",
-                f"provider.key: {'(set)' if provider.key else '(empty)'}",
-                f"provider.model: {provider.model or '(empty)'}",
-                f"provider.api: {provider.api}",
-                f"provider.resolved_api: {provider.resolved_api()}",
-                f"provider.prompt_cache_key: {provider.prompt_cache_key}",
-                f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
-                f"provider.reasoning: {provider.reasoning}",
-                f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
-                f"provider.chat_reasoning: {provider.chat_reasoning}",
-                f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
-                f"provider.timeout: {provider.timeout}",
-                f"paths.data_dir: {self.session.data_path()}",
-                f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
-                f"runtime.max_agent_steps: {self.session.settings.max_steps}",
-                f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
-                f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
-                f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
-            ]
-        )
+        return "\n".join([
+            f"provider.active: {self.session.config.active_provider}",
+            f"provider.available: {', '.join(sorted(self.session.config.providers))}",
+            f"provider.url: {provider.url or '(empty)'}",
+            f"provider.key: {'(set)' if provider.key else '(empty)'}",
+            f"provider.model: {provider.model or '(empty)'}",
+            f"provider.api: {provider.api}",
+            f"provider.resolved_api: {provider.resolved_api()}",
+            f"provider.prompt_cache_key: {provider.prompt_cache_key}",
+            f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
+            f"provider.reasoning: {provider.reasoning}",
+            f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
+            f"provider.chat_reasoning: {provider.chat_reasoning}",
+            f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
+            f"provider.timeout: {provider.timeout}",
+            f"paths.data_dir: {self.session.data_path()}",
+            f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
+            f"runtime.max_agent_steps: {self.session.settings.max_steps}",
+            f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
+            f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
+            f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
+        ])
 
     def api(self, args: str) -> str:
         value = args.strip()
