@@ -735,14 +735,24 @@ class ListTool(Tool):
                     kind = "file"
                 else:
                     kind = "other"
-                rows.append((kind, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
+                label = kind + ((" " + self.file_type(entry.path)) if kind == "file" else "")
+                rows.append((kind, label, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
         order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
-        rows.sort(key=lambda item: (order[item[0]], item[1]))
-        return "\n".join(["<ListToolResult>"] + [f"* {kind}: {name}" for kind, name in rows] + ["</ListToolResult>"])
+        rows.sort(key=lambda item: (order[item[0]], item[2]))
+        return "\n".join(["<ListToolResult>"] + [f"* {label}: {name}" for _kind, label, name in rows] + ["</ListToolResult>"])
 
     def path(self) -> str:
         args = self.strings(max_count=2)
         return self.session.resolve_path(args[0] if args else ".")
+
+    @staticmethod
+    def file_type(path: str) -> str:
+        try:
+            chunk = open(path, "rb").read(4096)
+            chunk.decode("utf-8")
+            return "text" if b"\0" not in chunk else "binary"
+        except Exception:
+            return "binary"
 
 
 class SearchTool(Tool):
