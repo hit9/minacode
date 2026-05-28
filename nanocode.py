@@ -12,6 +12,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import platform
 import re
 import selectors
 import shutil
@@ -413,8 +414,55 @@ class ToolErrorRecord:
 
 
 @dataclass
+class SystemInfo:
+    COMMANDS: ClassVar[tuple[str, ...]] = (
+        "bash",
+        "git",
+        "rg",
+        "sed",
+        "grep",
+        "find",
+        "awk",
+        "python3",
+        "jq",
+        "xargs",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "make",
+        "cmake",
+        "gcc",
+        "g++",
+        "clang",
+        "clang++",
+        "node",
+        "npm",
+        "uv",
+        "pytest",
+    )
+
+    cwd: str
+    os: str
+    arch: str
+    commands: tuple[str, ...]
+
+    @classmethod
+    def detect(cls, cwd: str) -> "SystemInfo":
+        return cls(
+            cwd=cwd,
+            os=platform.system() or sys.platform,
+            arch=platform.machine() or "unknown",
+            commands=tuple(name for name in cls.COMMANDS if shutil.which(name)),
+        )
+
+
+@dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
+    system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
@@ -425,6 +473,10 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
+
+    def __post_init__(self) -> None:
+        if self.system_info is None:
+            self.system_info = SystemInfo.detect(self.cwd)
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False) -> "Session":
@@ -1761,12 +1813,14 @@ class ContextManager:
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
 
     def environment(self) -> str:
-        tools = [name for name in ("rg", "git", "python3", "sed", "awk", "grep", "jq") if shutil.which(name)]
+        info = self.session.system_info
         return "\n".join(
             [
-                "- cwd: " + self.session.cwd,
+                "- cwd: " + info.cwd,
+                "- os: " + info.os,
+                "- arch: " + info.arch,
                 "- shell_timeout: " + str(self.session.settings.shell_timeout) + "s",
-                "- shell_tools: " + (", ".join(tools) or "(none)"),
+                "- detected_commands: " + (", ".join(info.commands) or "(none)"),
             ]
         )
 

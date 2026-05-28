@@ -21,6 +21,8 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     assert messages[0]["content"] == "system"
 
     content = messages[1]["content"]
+    assert content.startswith("--- Environment ---")
+    assert "- cwd: " + str(tmp_path) in content
     sections = [
         "Environment",
         "State",
@@ -36,6 +38,31 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]
+
+
+def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_which(name):
+        calls.append(name)
+        return "/bin/" + name if name in {"bash", "rg", "sed"} else None
+
+    monkeypatch.setattr(n.platform, "system", lambda: "TestOS")
+    monkeypatch.setattr(n.platform, "machine", lambda: "test-arch")
+    monkeypatch.setattr(n.shutil, "which", fake_which)
+
+    s = session(tmp_path)
+    initial_calls = list(calls)
+    context = n.ContextManager(s)
+    first = context.environment()
+    second = context.render("request")
+
+    assert calls == initial_calls
+    assert "- cwd: " + str(tmp_path) in first
+    assert "- os: TestOS" in first
+    assert "- arch: test-arch" in first
+    assert "- detected_commands: bash, rg, sed" in first
+    assert "- detected_commands: bash, rg, sed" in second
 
 
 def test_session_tool_result_store_prunes_and_forget_removes_records(tmp_path):
