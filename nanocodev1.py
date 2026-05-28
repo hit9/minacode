@@ -50,7 +50,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import SearchToolbar
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
