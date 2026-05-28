@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode-cli"
-version = "0.4.9"
-description = "A lightweight terminal-based AI coding assistant"
+version = "0.5.0"
+description = "A small terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
@@ -27,9 +27,11 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
+    "anthropic>=0.64.0",
     "code-symbol-index>=0.1.13",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",
+    "rich>=13.0",
     "socksio>=1.0.0",
 ]
 
