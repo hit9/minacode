@@ -6,6 +6,15 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
+## Features
+
+- **Snapshot context**: Every turn starts from a clean workspace snapshot instead of a bloated chat replay.
+- **File memory**: Recent reads and edits stay available as focused, line-numbered file ranges.
+- **Anchored edits**: `line:hash` anchors catch stale edits before they touch the wrong code.
+- **Symbol index**: Jump from names to outlines, references, and changed files without searching blindly.
+- **Tool recall**: Big outputs are bounded in the prompt but still recallable later by `tr.N`.
+- **Terminal-native UI**: Model picking, history search, confirmations, live command output, and status all stay in the terminal.
+
 ## Install
 
 ```sh
