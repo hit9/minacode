@@ -1,34 +1,15 @@
 # nanocode
 
-A lightweight terminal-based AI coding assistant.
+A small terminal coding agent written in Python.
 
-nanocode is used to help building itself.
+nanocode is pre-1.0 software. Commands, configuration, and tool behavior may change before a stable release.
 
-Pre-1.0 note: nanocode is still evolving quickly. Functionality, commands, configuration, and behavior may change incompatibly before a 1.0 release.
-
-## Screenshots
-
-| | |
-|---|---|
-| ![Screenshot 1](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot1.png) | ![Screenshot 2](https://raw.githubusercontent.com/hit9/nanocode/master/snapshots/nanocode-snapshot2.png) |
-
-## Features
-
-- **Function Tools**: Route model decisions through auditable tools.
-- **Verified Edits**: Reject stale range edits before they touch files.
-- **Autonomous Loop**: Chain reading, editing, running, and checks.
-- **Live Telemetry**: Stream tool intent, token use, and status.
+![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
 ## Install
 
 ```sh
 uv tool install nanocode-cli
-```
-
-Upgrade an existing install:
-
-```sh
-uv tool upgrade nanocode-cli
 ```
 
 For local development:
@@ -40,76 +21,100 @@ uv run nanocode
 
 ## Usage
 
-Start nanocode:
+Start the CLI:
 
 ```sh
 nanocode
 ```
 
-Show available commands:
+Useful arguments:
 
-```text
-/help
-```
+- `--config <path>`: use a TOML config file.
+- `--init-config`: create a default config file.
+- `--yolo`: skip confirmations for mutating tools.
+- `-v`, `--version`: show the version.
 
-Ask a source-aware question about nanocode itself:
+## Commands
 
-```text
-/help how does compact work?
-```
+- `/help`: show commands and tools.
+- `/status`: show runtime status.
+- `/config`: show active config.
+- `/api [auto|chat|anthropic]`: show or set provider API format.
+- `/debug [on|off]`: toggle model I/O debug traces.
+- `/compact`: compact context now.
+- `/index [force]`: sync or rebuild the code symbol index.
+- `/provider [NAME]`: show or set provider.
+- `/model [MODEL]`: show or set model.
+- `/reason`: choose reasoning effort.
+- `/set KEY VALUE`: set provider/runtime values.
+- `/yolo`: toggle tool confirmations.
+- `/exit`, `/quit`: exit.
 
-CLI arguments:
-
-- `--yolo`: Skip tool execution confirmations.
-- `--debug`: Write request prompts to the current session directory under `~/.nanocode/sessions/`.
-- `--config <path>`: Path to config file (default: `~/.nanocode/config.toml`).
-- `--init-config`: Create a default config file.
-- `-v`, `--version`: Show program version.
-
-## Safety
-
-nanocode does NOT provide sandbox protection. It can run shell commands and edit files in the environment where you start it.
-
-If you do not fully trust the model, tools, prompts, or workspace, run nanocode inside your own sandbox, container, VM, or other isolated environment.
-
-USE AT YOUR OWN RISK.
-
-nanocode currently targets macOS and Linux. Windows is not supported.
+Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input supports history, completion, and `Ctrl-R` history search.
 
 ## Tools
 
 - File: `Read`, `LineCount`, `List`, `Search`.
-- Code navigation: `InspectCode` after `/index` builds the project index.
+- Code index: `InspectCode`.
 - Edit: `CreateFile`, `Edit`.
 - Shell: `Bash`, `Git`.
-- Memory: `Recall` reads stored tool results by key.
+- Tool results: `Recall`, `Forget`.
 
-`Search`, `Read`, and `InspectCode` mode=inspect return 0-based `line:hash|code` lines that can be used as edit anchors. For broad mechanical text replacement, shell text pipelines are acceptable when followed by a focused diff or test.
-
-## Commands
-
-- Info: `/help [question]`, `/status`, `/rules`, `/compact`.
-- Config: `/config`, `/set <key> <value>`, `/api [auto|chat|responses|anthropic]`, `/model [model_name]`, `/reason`, `/reason-payload [value]`, `/provider [name]`, `/yolo`.
-- Maintenance: `/index [force]`, `/clean`.
-- Exit: `/exit`, `/quit`.
-
-Selectors support `j`/`k`, arrows, `/keyword`, Enter, and Esc. `/api responses` switches the current provider to Responses format. `/reason` sets `provider.reasoning` to `off` or an effort value; `/reason-payload` controls the Chat-only reasoning payload shape. `/model` lists configured models before discovered ones, then prompts for reasoning.
-During a slow model request, press `Ctrl-G` to cancel that request and resend the same prompt.
+`Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
 ## Configuration
 
-Run `nanocode --init-config` to create `~/.nanocode/config.toml`.
+Run:
 
-- Provider config: `[provider] active = "<name>"` plus `[provider.<name>]` url, key, model, `available_models`, and model options. `api` selects `chat`, `responses`, `anthropic`, or `auto`; auto uses exact-host/model profiles. Responses uses standard `reasoning.effort`; Chat reasoning is mapped by provider/model profile when known.
-- Provider auto-detection covers common providers: OpenAI/OpenRouter prefer Responses API; OpenCode model-specific endpoints can resolve to Chat or Anthropic Messages; DeepSeek and DashScope models use their matching Chat reasoning payload shapes.
-- Path config: `[paths] data_dir = "~/.nanocode"`.
-- Runtime config: `[runtime]`.
-- `/context [low|medium|high]` shows or switches tool-result context budgets; lower budgets reduce token usage and observe overhead.
-- Session data: debug prompts and tool-result logs are stored under `~/.nanocode/sessions/<session_id>/`.
-- Old inactive session directories are auto-cleaned after `runtime.auto_clean_recent` (default `1d`; use `off` to disable). `/clean` removes inactive sessions immediately.
-- Project data: user rules and code indexes are stored under `~/.nanocode/projects/<project_key>/`.
+```sh
+nanocode --init-config
+```
 
-## Status
+Default config location is `~/.nanocode/config.toml`.
 
-- Status bar: active model, reasoning, active yolo mode, conversation context, current-turn tool calls, tokens, elapsed time, and active model-call time.
-- `/status`: active provider, model state, session id, runtime state, conversation/tool counters, per-model calls/tokens, goal, and checks.
+Main fields:
+
+- `[provider] active = "name"`
+- `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `timeout`
+- `[paths] data_dir`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `yolo`
+
+`api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
+
+## Context Design
+
+Each model request is built manually as one system message and one user message. The user message is a structured context snapshot, ordered from stable sections to volatile sections so provider prompt caching can reuse the prefix.
+
+```text
+model request
++--------------------------------------------------+
+| system                                           |
+|   concise agent contract and tool rules          |
++--------------------------------------------------+
+| user                                             |
+|   Environment                                   |
+|   State                                         |
+|   Summary                                       |
+|   Recent Conversation                           |
+|   Tool Result Index                             |
+|   File Context                                  |
+|   Discovery Context                             |
+|   Error Feedback                                |
+|   Latest Tool Results                           |
+|   Current User Request                          |
++--------------------------------------------------+
+```
+
+Core rules:
+
+- File Context is rebuilt dynamically from active `Read` and `Edit` results.
+- Newer file lines overwrite older lines; edit invalidations clear stale ranges.
+- File lines are checked against current file stat or line hash before being shown.
+- Discovery Context contains `Search` and `InspectCode` leads, not source truth.
+- Large tool outputs are bounded in context and can be recalled by `tr.N`.
+- Error Feedback keeps only recent failed tool calls.
+- `Forget` removes stale result keys from the active tool result store.
+
+## Safety
+
+nanocode can edit files and run shell commands in the environment where it is started. It does not provide sandbox protection. Run it inside your own sandbox, container, VM, or other isolated environment when needed.
