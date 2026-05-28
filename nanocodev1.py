@@ -659,7 +659,7 @@ class ReadTool(Tool):
 
 class LineCountTool(Tool):
     NAME = "LineCount"
-    DESCRIPTION = "Count total lines in UTF-8 files before choosing Read ranges."
+    DESCRIPTION = "Count lines in UTF-8 files; missing paths are reported."
     SIGNATURE = "LineCount(path[, path...])"
     EXAMPLE = ('Example args: ["nanocode.py", "pyproject.toml"]',)
 
@@ -671,16 +671,25 @@ class LineCountTool(Tool):
         return any(not self.session.in_cwd(path) for path in self.paths())
 
     def call(self) -> str:
-        paths = self.paths()
-        if wc := shutil.which("wc"):
-            proc = subprocess.run([wc, "-l", *paths], text=True, capture_output=True, timeout=10)
-            if proc.returncode == 0 and proc.stdout.strip():
-                return "<LineCountToolResult>" + proc.stdout.strip().splitlines()[-1].split()[0] + "</LineCountToolResult>"
+        rows = []
         total = 0
-        for path in paths:
-            with open(path, encoding="utf-8", errors="replace") as file:
-                total += sum(1 for _ in file)
-        return "<LineCountToolResult>" + str(total) + "</LineCountToolResult>"
+        for path in self.paths():
+            relpath = self.session.relpath(path)
+            if not os.path.exists(path):
+                rows.append(f"* missing: {relpath}")
+                continue
+            if not os.path.isfile(path):
+                rows.append(f"* not_file: {relpath}")
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as file:
+                    count = sum(1 for _ in file)
+            except OSError as error:
+                rows.append(f"* error: {relpath}: {error}")
+                continue
+            total += count
+            rows.append(f"* {relpath}: {count}")
+        return "\n".join(["<LineCountToolResult>", *rows, f"<total>{total}</total>", "</LineCountToolResult>"])
 
     def paths(self) -> list[str]:
         return [self.session.resolve_path(path) for path in self.strings(min_count=1)]
@@ -1343,7 +1352,7 @@ class BashTool(Tool):
     def args_schema(cls) -> Json:
         return {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
             "minItems": 1,
             "maxItems": 1,
         }
@@ -2577,10 +2586,14 @@ class UiPrinter:
         segments = []
         for line in text.splitlines() or [""]:
             if line.startswith("tool "):
-                parts = line.split(" ", 4)
-                name = parts[1] if len(parts) > 1 else ""
-                rest = line[len("tool " + name) :]
-                segments.extend([("ansibrightblack", "tool "), ("ansicyan", name), (self.tool_status_style(rest), rest)])
+                body = line[5:]
+                call, sep, tail = body.partition(" -> ")
+                failed = tail.endswith(" failed") or " failed" in body
+                call_style = "ansired" if failed else "ansigreen"
+                tail_style = "ansired" if failed else "ansibrightblack"
+                segments.extend([("ansibrightblack", "tool "), (call_style, call)])
+                if sep:
+                    segments.append((tail_style, sep + tail))
             elif line.startswith("  error "):
                 segments.extend([("ansibrightblack", "  error "), ("ansired", line[8:])])
             elif line.startswith("  "):
