@@ -42,12 +42,15 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor
 from prompt_toolkit.output import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import SearchToolbar
+from rich.console import Console
+from rich.markdown import Markdown
 
 __version__ = "0.5.0"
 
@@ -2019,6 +2022,7 @@ class ToolRunner:
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started = time.monotonic()
+        approved = False
         try:
             tool.short_args()
             needs_confirmation = tool.needs_confirmation()
@@ -2027,13 +2031,14 @@ class ToolRunner:
             elif needs_confirmation:
                 if not self.confirm(call, tool):
                     return self.finish(call, "Cancelled: user refused tool call", failed=True, elapsed=time.monotonic() - started)
+                approved = True
             output = tool.call()
         except ToolError as error:
             return self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
         except Exception as error:
             output = f"ToolError: {error}"
             return self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
-        return self.finish(call, output, elapsed=time.monotonic() - started)
+        return self.finish(call, output, elapsed=time.monotonic() - started, approved=approved)
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
         if self.session.settings.debug:
@@ -2041,13 +2046,13 @@ class ToolRunner:
         self.session.record_tool_error("-", call.name, call.args, call.intention, output)
         return output
 
-    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None) -> str:
+    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is not None and not tool_class.STORES_RESULT:
             if failed:
                 key = "-"
                 self.session.record_tool_error(key, call.name, call.args, call.intention, output)
-            self.output_fn(self.finish_display(call, "", output, failed=failed))
+            self.output_fn(self.finish_display(call, "", output, failed=failed, approved=approved))
             return output
         key = self.context.store_tool_result(call, output)
         if failed:
@@ -2055,7 +2060,7 @@ class ToolRunner:
         else:
             self.update_code_index(call, output)
         visible = self.context.bound_output(output, key)
-        self.output_fn(self.finish_display(call, key, output, failed=failed))
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved))
         return f"result_key: {key}\n{visible}"
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
@@ -2091,8 +2096,9 @@ class ToolRunner:
             lines.append("... preview truncated ...")
         return "\n".join(["  preview"] + ["  " + line for line in lines])
 
-    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool) -> str:
-        line = ("✗ " if failed else "✓ ") + "tool " + self.short_call(call) + ((" -> " + key) if key else "") + (" failed" if failed else "")
+    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
+        tag = " [refused]" if "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
+        line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + tag
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
@@ -2475,7 +2481,7 @@ class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
 Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Inspect/read before edits. Keep changes small; never overwrite user work.
-Final: plain text, no markdown, user's language.
+Final: concise markdown, user's language.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -2576,6 +2582,7 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
+        self.console = Console() if self.color else None
 
     def emit(self, text: str = "") -> None:
         if not self.color:
@@ -2583,8 +2590,15 @@ class UiPrinter:
             return
         print_formatted_text(FormattedText(self.segments(str(text))), end="", flush=True)
 
+    def emit_answer(self, text: str) -> None:
+        if not self.color or text.startswith(("Error:", "ConfigError:", "Unknown command:")):
+            self.emit(text)
+            return
+        assert self.console is not None
+        self.console.print(Markdown(text))
+
     def segments(self, text: str) -> list[tuple[str, str]]:
-        if text.startswith("tool ") or text.startswith(("✓ tool ", "✗ tool ")):
+        if text.startswith("tool "):
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
@@ -2599,17 +2613,12 @@ class UiPrinter:
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
-            prefix = ""
-            if line.startswith(("✓ ", "✗ ")):
-                prefix, line = line[:2], line[2:]
             if line.startswith("tool "):
                 body = line[5:]
                 call, sep, tail = body.partition(" -> ")
-                failed = tail.endswith(" failed") or " failed" in body
+                failed = body.endswith(" [failed]") or body.endswith(" [refused]")
                 call_style = "ansired" if failed else "ansigreen"
                 tail_style = "ansired" if failed else "ansibrightblack"
-                if prefix:
-                    segments.append((call_style, prefix))
                 segments.extend([("ansibrightblack", "tool "), (call_style, call)])
                 if sep:
                     segments.append((tail_style, sep + tail))
@@ -2950,7 +2959,7 @@ Tools:
                 CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
-            self.emit(answer)
+            self.ui.emit_answer(answer)
             self.emit(f"[done in {elapsed:.1f}s]")
 
     def style(self) -> Style:
@@ -2991,7 +3000,7 @@ Tools:
         buffer = Buffer(
             history=self.input_history,
             completer=self.input_completer,
-            complete_while_typing=True,
+            complete_while_typing=False,
             enable_history_search=True,
             multiline=False,
             accept_handler=accept,
@@ -3003,7 +3012,7 @@ Tools:
             search_buffer_control=search_toolbar.control,
             preview_search=True,
         )
-        input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
+        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
         bindings = KeyBindings()
 
         @bindings.add("c-c", eager=True)
@@ -3025,6 +3034,19 @@ Tools:
                 pt_search.do_incremental_search(direction, count=event.arg)
             else:
                 pt_search.start_search(direction=direction)
+
+        @bindings.add("tab")
+        def _tab(event):
+            buffer.complete_next() if buffer.complete_state else buffer.start_completion(select_first=False)
+
+        @bindings.add("s-tab")
+        def _shift_tab(event):
+            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+
+        @bindings.add(Keys.BracketedPaste)
+        def _paste(event):
+            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+            event.app.invalidate()
 
         root = HSplit([input_window, CompletionsMenu(max_height=12, scroll_offset=1), search_toolbar, self.status_window()])
         app = Application(
