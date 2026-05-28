@@ -383,6 +383,7 @@ class AgentState:
     debug_count: int = 0
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
+    model_retry_count: int = 0
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
@@ -2962,6 +2963,7 @@ class ModelRetryShortcut:
     def handle_signal(self, _signum: int, _frame: Any) -> None:
         if self.session.state.current_model_call_started_at > 0:
             self.session.state.manual_model_retry_requested = True
+            self.session.state.model_retry_count += 1
             raise KeyboardInterrupt
 
 
@@ -2975,6 +2977,8 @@ class StatusBar:
         self.thread: threading.Thread | None = None
         self.rendered = False
         self.output = create_output(sys.stderr)
+        self.seen_retry_count = session.state.model_retry_count
+        self.retry_notice_until = 0.0
 
     def start(self, *, reset: bool = True) -> None:
         if self.thread is not None or not sys.stderr.isatty():
@@ -2998,11 +3002,24 @@ class StatusBar:
 
     def run(self) -> None:
         while not self.stop_event.is_set():
+            self.refresh_retry_state()
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
             print_formatted_text(FormattedText(self.fragments(self.elapsed(), sweep=True, show_elapsed=True)), output=self.output, end="", flush=True)
             self.rendered = True
             self.stop_event.wait(self.INTERVAL)
+
+    def refresh_retry_state(self) -> None:
+        count = self.session.state.model_retry_count
+        if count == self.seen_retry_count:
+            return
+        self.seen_retry_count = count
+        now = time.monotonic()
+        self.retry_notice_until = now + 2.0
+
+    def model_elapsed(self) -> float:
+        started = self.session.state.current_model_call_started_at
+        return max(0.0, time.monotonic() - started) if started > 0 else 0.0
 
     def clear(self) -> None:
         if self.rendered:
@@ -3047,12 +3064,14 @@ class StatusBar:
             parts.extend(
                 ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
             )
-            if elapsed >= max(30, provider.timeout * 0.5):
-                parts.append("ctrl-g retry")
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed:
             parts.append(self.duration(elapsed))
+            if self.retry_notice_until > time.monotonic():
+                parts.append("retrying")
+            elif self.model_elapsed() >= self.stress_after():
+                parts.append("ctrl-g retry")
         return " | ".join(parts)
 
     def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
@@ -3060,7 +3079,8 @@ class StatusBar:
             return [("", "")]
         width = max(1, len(text) - 1)
         sweep = (time.monotonic() * 0.55) % 1.0
-        heat = min(1.0, elapsed / max(30, self.session.config.provider.timeout))
+        model_elapsed = self.model_elapsed()
+        heat = min(1.0, max(0.0, model_elapsed - self.stress_after()) / max(30.0, self.session.config.provider.timeout - self.stress_after()))
         fragments = []
         for index, char in enumerate(text):
             ratio = index / width
@@ -3076,6 +3096,9 @@ class StatusBar:
             blue = round(blue + (255 - blue) * intensity)
             fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
         return fragments
+
+    def stress_after(self) -> float:
+        return max(30.0, self.session.config.provider.timeout * 0.5)
 
     @staticmethod
     def duration(seconds: float) -> str:
@@ -3116,6 +3139,7 @@ Tools:
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
+        self.transient_tool_lines = 0
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.input_history = self.make_input_history() if self.interactive_input else None
         self.input_completer = self.make_completer()
@@ -3298,7 +3322,10 @@ Tools:
                 self.status_bar.start(reset=False)
 
     def tool_output(self, text: str = "") -> None:
-        self.with_status_paused(lambda: self.emit(text))
+        if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
+            self.with_status_paused(lambda: self.show_transient_tool_output(text))
+            return
+        self.with_status_paused(lambda: self.emit_tool_output(text))
 
     def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit(text))
@@ -3311,8 +3338,26 @@ Tools:
                 if self.interactive_input and sys.stdout.isatty():
                     sys.stdout.write("\x1b[1A\r\x1b[2K")
                     sys.stdout.flush()
+                    self.clear_transient_tool_output()
 
         return self.with_status_paused(read)
+
+    def show_transient_tool_output(self, text: str) -> None:
+        self.clear_transient_tool_output()
+        self.emit(text)
+        self.transient_tool_lines = len(text.splitlines() or [""])
+
+    def emit_tool_output(self, text: str) -> None:
+        self.clear_transient_tool_output()
+        self.emit(text)
+
+    def clear_transient_tool_output(self) -> None:
+        if not self.transient_tool_lines:
+            return
+        for _ in range(self.transient_tool_lines):
+            sys.stdout.write("\x1b[1A\r\x1b[2K")
+        sys.stdout.flush()
+        self.transient_tool_lines = 0
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
