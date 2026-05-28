@@ -1133,7 +1133,11 @@ class InspectCodeTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {"anyOf": [{"type": "string"}, {"type": "object"}]}
+        return {"description": "mode, target, optional options object"}
+
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 3}
 
     def call(self) -> str:
         if len(self.args) not in (2, 3):
@@ -1194,11 +1198,8 @@ class CreateFileTool(Tool):
     def args_schema(cls) -> Json:
         return {
             "type": "array",
-            "prefixItems": [
-                {"type": "string", "description": "path"},
-                {"type": "string", "description": "content"},
-            ],
-            "items": False,
+            "description": 'Exactly ["path","content"].',
+            "items": {"type": "string"},
             "minItems": 2,
             "maxItems": 2,
         }
@@ -1262,7 +1263,11 @@ class EditTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {"anyOf": [{"type": "string"}, {"type": "array"}]}
+        return {"description": 'Exactly ["path", edits].'}
+
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 2}
 
     def call(self) -> str:
         path, edits = self.parse()
@@ -1621,19 +1626,14 @@ class RecallTool(Tool):
     def arg_schema(cls) -> Json:
         range_schema = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
         return {
-            "anyOf": [
-                {"type": "string", "pattern": "^tr\\.\\d+$"},
-                {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
-                        "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
-                        "ranges": {"type": "array", "items": range_schema, "minItems": 1},
-                    },
-                    "anyOf": [{"required": ["key"]}, {"required": ["keys"]}],
-                    "additionalProperties": False,
-                },
-            ]
+            "type": "object",
+            "description": "Use key or keys, optionally with ranges.",
+            "properties": {
+                "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
+                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
+                "ranges": {"type": "array", "items": range_schema, "minItems": 1},
+            },
+            "additionalProperties": False,
         }
 
     @classmethod

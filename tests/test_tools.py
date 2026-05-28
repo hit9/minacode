@@ -165,15 +165,31 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     create_args = n.CreateFileTool.schema()["function"]["parameters"]["properties"]["args"]
     assert create_args["minItems"] == 2
     assert create_args["maxItems"] == 2
-    assert create_args["items"] is False
+    assert create_args["items"] == {"type": "string"}
+    assert "prefixItems" not in create_args
 
     recall_item = n.RecallTool.schema()["function"]["parameters"]["properties"]["args"]["items"]
-    object_schema = next(schema for schema in recall_item["anyOf"] if schema["type"] == "object")
-    assert object_schema["additionalProperties"] is False
-    assert object_schema["properties"]["keys"]["items"]["pattern"] == r"^tr\.\d+$"
+    assert recall_item["type"] == "object"
+    assert recall_item["additionalProperties"] is False
+    assert recall_item["properties"]["keys"]["items"]["pattern"] == r"^tr\.\d+$"
 
     forget_args = n.ForgetTool.schema()["function"]["parameters"]["properties"]["args"]
     assert forget_args["items"]["pattern"] == r"^tr\.\d+$"
+
+    def walk(value):
+        if isinstance(value, dict):
+            assert "anyOf" not in value
+            assert "prefixItems" not in value
+            if "items" in value:
+                assert isinstance(value["items"], dict)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for tool in n.TOOLS:
+        walk(tool.schema())
 
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
