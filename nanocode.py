@@ -429,32 +429,9 @@ class ToolErrorRecord:
 @dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
-        "bash",
-        "git",
-        "rg",
-        "sed",
-        "grep",
-        "find",
-        "awk",
-        "python3",
-        "jq",
-        "xargs",
-        "cat",
-        "head",
-        "tail",
-        "wc",
-        "sort",
-        "uniq",
-        "make",
-        "cmake",
-        "gcc",
-        "g++",
-        "clang",
-        "clang++",
-        "node",
-        "npm",
-        "uv",
-        "pytest",
+        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs",
+        "cat", "head", "tail", "wc", "sort", "uniq",
+        "make", "cmake", "gcc", "g++", "clang", "clang++", "node", "npm", "uv", "pytest",
     )
 
     cwd: str
@@ -1770,19 +1747,7 @@ class ForgetTool(Tool):
         return f"Forgot {count}/{len(keys)} tool results"
 
 
-TOOLS: tuple[type[Tool], ...] = (
-    ReadTool,
-    LineCountTool,
-    ListTool,
-    InspectCodeTool,
-    SearchTool,
-    CreateFileTool,
-    EditTool,
-    BashTool,
-    GitTool,
-    RecallTool,
-    ForgetTool,
-)
+TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool)
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -2657,20 +2622,9 @@ Output: concise markdown, USER'S LANGUAGE.
 class CommandCompleter(Completer):
     COMMANDS = ("/help", "/status", "/config", "/api", "/debug", "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit")
     SET_KEYS = (
-        "provider.model",
-        "provider.url",
-        "provider.key",
-        "provider.api",
-        "provider.prompt_cache_key",
-        "provider.reasoning",
-        "provider.chat_reasoning",
-        "provider.available_models",
-        "provider.temperature",
-        "provider.timeout",
-        "runtime.yolo",
-        "runtime.max_agent_steps",
-        "runtime.max_context_tokens",
-        "runtime.shell_timeout",
+        "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
+        "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature", "provider.timeout",
+        "runtime.yolo", "runtime.max_agent_steps", "runtime.max_context_tokens", "runtime.shell_timeout",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
