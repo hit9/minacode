@@ -171,28 +171,22 @@ class ProviderConfig:
         return (urlparse(self.base_url()).hostname or "").lower()
 
     def resolved_chat_reasoning(self) -> str:
-        if self.chat_reasoning != "auto":
-            return self.chat_reasoning
-        profile = PROVIDER_PROFILES.get(self.host())
-        if not profile:
-            return "off"
-        model = self.model.lower()
-        for rule in profile.chat_reasoning_rules:
-            if any(model.startswith(prefix) for prefix in rule.model_prefixes):
-                return rule.payload
-        return profile.chat_reasoning
+        return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
     def resolved_api(self) -> str:
-        if self.api != "auto":
-            return self.api
+        return self.profile_value(self.api, "chat", "api", "api_rules")
+
+    def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
+        if configured != "auto":
+            return configured
         profile = PROVIDER_PROFILES.get(self.host())
         if not profile:
-            return "chat"
+            return default
         model = self.model.lower()
-        for rule in profile.api_rules:
+        for rule in getattr(profile, rules_attr):
             if any(model.startswith(prefix) for prefix in rule.model_prefixes):
-                return rule.api
-        return profile.api
+                return str(getattr(rule, "payload", getattr(rule, "api", default)))
+        return str(getattr(profile, profile_attr))
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
@@ -251,13 +245,11 @@ class Config:
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
-        value = data.get(key)
-        return value if isinstance(value, dict) else {}
+        return value if isinstance((value := data.get(key)), dict) else {}
 
     @staticmethod
     def str(data: Json, key: str, default: str = "") -> str:
-        value = data.get(key)
-        return default if value is None else str(value)
+        return default if (value := data.get(key)) is None else str(value)
 
     @staticmethod
     def str_tuple(data: Json, key: str) -> tuple[str, ...]:
@@ -365,25 +357,22 @@ class ModelUsage:
     cached_prompt_tokens: int = 0
 
     def add(self, usage: Any) -> None:
-        def value(*keys: str) -> int:
-            for key in keys:
-                raw = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
-                if raw is not None:
+        def value(*paths: str) -> int:
+            for path in paths:
+                raw = usage
+                for key in path.split("."):
+                    raw = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+                    if raw is None:
+                        break
+                else:
                     return int(raw or 0)
             return 0
-
-        def nested(container: str, key: str) -> int:
-            raw = usage.get(container) if isinstance(usage, dict) else getattr(usage, container, None)
-            if raw is None:
-                return 0
-            value = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
-            return int(value or 0) if value is not None else 0
 
         self.calls += 1
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
-        cached_prompt_tokens = value("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens") or nested("prompt_tokens_details", "cached_tokens") or nested("input_tokens_details", "cached_tokens")
+        cached_prompt_tokens = value("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
@@ -976,6 +965,19 @@ class CodeIndex:
         self.session.state.code_index_notice = text
         self.session.state.code_index_refreshing = refreshing
 
+    def fail(self, error: Any) -> str:
+        self.session.state.code_index_error = str(error).strip()
+        self.notice("error")
+        return self.session.state.code_index_error
+
+    def finish(self, proc: subprocess.CompletedProcess[str]) -> bool:
+        if proc.returncode != 0:
+            self.fail((proc.stderr or proc.stdout).strip())
+            return False
+        self.session.state.code_index_error = ""
+        self.notice("")
+        return True
+
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
         if shutil.which("code-symbol-index") is None:
             return "unavailable", "code-symbol-index not found"
@@ -1009,15 +1011,9 @@ class CodeIndex:
         try:
             proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
         except Exception as error:
-            self.session.state.code_index_error = str(error)
-            self.notice("error")
-            return "code_index: error\n" + str(error)
-        if proc.returncode != 0:
-            self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
-            self.notice("error")
+            return "code_index: error\n" + self.fail(error)
+        if not self.finish(proc):
             return "code_index: error\n" + self.session.state.code_index_error
-        self.session.state.code_index_error = ""
-        self.notice("")
         status, message = self.status(check=True)
         lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + self.db_path()]
         if message:
@@ -1032,15 +1028,9 @@ class CodeIndex:
         try:
             proc = self.run(["update", *paths], timeout=max(30, self.session.settings.shell_timeout))
         except Exception as error:
-            self.session.state.code_index_error = str(error)
-            self.notice("error")
-            return str(error)
-        if proc.returncode != 0:
-            self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
-            self.notice("error")
+            return self.fail(error)
+        if not self.finish(proc):
             return self.session.state.code_index_error
-        self.session.state.code_index_error = ""
-        self.notice("")
         return proc.stdout.strip()
 
     def update_pending(self) -> str:
@@ -1071,15 +1061,9 @@ class CodeIndex:
         def refresh() -> None:
             try:
                 proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
-                if proc.returncode != 0:
-                    self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
-                    self.notice("error")
-                    return
-                self.session.state.code_index_error = ""
-                self.notice("")
+                self.finish(proc)
             except Exception as error:
-                self.session.state.code_index_error = str(error)
-                self.notice("error")
+                self.fail(error)
 
         threading.Thread(target=refresh, daemon=True).start()
         return True
@@ -2960,11 +2944,13 @@ Tools:
     def make_completer(self) -> CommandCompleter:
         return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
+    def status_window(self) -> Window:
+        return Window(FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"), style="class:bottom-toolbar", height=1, dont_extend_height=True)
+
     def read_input(self, prompt_text: str = "nano> ") -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
         prompt = FormattedText([("class:prompt", prompt_text)])
-        app = None
 
         def accept(buffer: Buffer) -> bool:
             app.exit(result=buffer.text)
@@ -3013,12 +2999,7 @@ Tools:
                 [
                     input_window,
                     search_toolbar,
-                    Window(
-                        FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
-                        style="class:bottom-toolbar",
-                        height=1,
-                        dont_extend_height=True,
-                    ),
+                    self.status_window(),
                 ]
             ),
             floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1))],
@@ -3255,7 +3236,6 @@ Tools:
             event.app.exit(exception=KeyboardInterrupt())
 
         for number in range(1, 10):
-
             @bindings.add(str(number), eager=True)
             def _digit(event, number=number):
                 if state["search"]:
@@ -3284,12 +3264,7 @@ Tools:
                 HSplit(
                     [
                         choice_window,
-                        Window(
-                            FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
-                            style="class:bottom-toolbar",
-                            height=1,
-                            dont_extend_height=True,
-                        ),
+                        self.status_window(),
                     ]
                 ),
                 focused_element=choice_window,
@@ -3345,8 +3320,7 @@ Tools:
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model
         labels = {label: label for label in self.MODEL_LABELS if label in choices}
-        if current in choices:
-            labels[current] = current + " (current)"
+        labels.update({current: current + " (current)"} if current in choices else {})
         return self.select_choice("Model", choices, labels=labels, current=current, disabled=self.MODEL_LABELS)
 
     def select_provider(self, choices: tuple[str, ...]) -> str | object | None:
@@ -3580,27 +3554,16 @@ Tools:
             return "Usage: /set KEY VALUE"
         provider = self.session.config.provider
         runtime = self.session.settings
+        choice_fields = {"provider.api": PROVIDER_API_CHOICES, "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES}
         try:
-            if key == "provider.model":
-                provider.model = value
-            elif key == "provider.url":
-                provider.url = value
-            elif key == "provider.key":
-                provider.key = value
-            elif key == "provider.api":
-                if value not in PROVIDER_API_CHOICES:
+            if key in {"provider.model", "provider.url", "provider.key"}:
+                setattr(provider, key.split(".", 1)[1], value)
+            elif key in choice_fields:
+                if value not in choice_fields[key]:
                     return "Invalid value for " + key
-                provider.api = value
+                setattr(provider, key.split(".", 1)[1], value)
             elif key == "provider.prompt_cache_key":
                 provider.prompt_cache_key = ProviderConfig.clean_prompt_cache_key(value)
-            elif key == "provider.reasoning":
-                if value not in REASONING_CHOICES:
-                    return "Invalid value for " + key
-                provider.reasoning = value
-            elif key == "provider.chat_reasoning":
-                if value not in CHAT_REASONING_CHOICES:
-                    return "Invalid value for " + key
-                provider.chat_reasoning = value
             elif key == "provider.available_models":
                 provider.available_models = tuple(item.strip() for item in value.split(",") if item.strip())
             elif key == "provider.temperature":
