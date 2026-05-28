@@ -142,12 +142,9 @@ class ProviderConfig:
         api = Config.str(data, "api", "auto")
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
-        if api not in PROVIDER_API_CHOICES:
-            raise ConfigError("provider.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
-        if reasoning not in REASONING_CHOICES:
-            raise ConfigError("provider.reasoning must be one of " + ", ".join(REASONING_CHOICES))
-        if chat_reasoning not in CHAT_REASONING_CHOICES:
-            raise ConfigError("provider.chat_reasoning must be one of " + ", ".join(CHAT_REASONING_CHOICES))
+        for key, value, choices in (("api", api, PROVIDER_API_CHOICES), ("reasoning", reasoning, REASONING_CHOICES), ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES)):
+            if value not in choices:
+                raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
         return cls(
             url=Config.str(data, "url"),
             key=Config.str(data, "key"),
@@ -265,10 +262,8 @@ class Config:
             return default
         if isinstance(value, bool):
             return value
-        if isinstance(value, str) and value.lower() in {"on", "true", "yes", "1"}:
-            return True
-        if isinstance(value, str) and value.lower() in {"off", "false", "no", "0"}:
-            return False
+        if isinstance(value, str) and value.lower() in {"on", "true", "yes", "1", "off", "false", "no", "0"}:
+            return value.lower() in {"on", "true", "yes", "1"}
         raise ConfigError(f"config value `{key}` must be boolean")
 
     @staticmethod
@@ -392,12 +387,9 @@ class AgentState:
                 setattr(self, attr, [str(item).strip() for item in value if str(item).strip()])
 
     def format(self) -> str:
-        lines = ["Goal: " + (self.goal or "(empty)")]
-        lines.append("Plan:")
-        lines.extend("- " + item for item in self.plan) if self.plan else lines.append("- (empty)")
-        lines.append("Known:")
-        lines.extend("- " + item for item in self.known) if self.known else lines.append("- (empty)")
-        return "\n".join(lines)
+        plan = ["- " + item for item in self.plan] or ["- (empty)"]
+        known = ["- " + item for item in self.known] or ["- (empty)"]
+        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *plan, "Known:", *known])
 
 
 @dataclass
@@ -409,8 +401,7 @@ class ToolResultRecord:
     output: str
 
     def summary(self) -> str:
-        args = ", ".join(Tool.compact(arg, 80) for arg in self.args)
-        text = f"- tool={self.name} key={self.key} args=[{args}]"
+        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}]"
         return text + (" why=" + self.intention if self.intention else "")
 
 
@@ -423,8 +414,7 @@ class ToolErrorRecord:
     error: str
 
     def summary(self) -> str:
-        args = ", ".join(Tool.compact(arg, 80) for arg in self.args)
-        text = f"- tool={self.name} key={self.key} args=[{args}] error={Tool.compact(self.error, 200)}"
+        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}] error={Tool.compact(self.error, 200)}"
         return text + (" why=" + self.intention if self.intention else "")
 
 
@@ -1027,12 +1017,8 @@ class CodeIndex:
         return self.update([self.session.resolve_path(path) for path in files])
 
     def update_paths(self, paths: list[str]) -> list[str]:
-        kept = []
-        for path in paths:
-            path = self.session.resolve_path(path)
-            if self.session.in_cwd(path) and os.path.isfile(path):
-                kept.append(path)
-        return list(dict.fromkeys(kept))
+        paths = [self.session.resolve_path(path) for path in paths]
+        return list(dict.fromkeys(path for path in paths if self.session.in_cwd(path) and os.path.isfile(path)))
 
     def run(self, args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
         command, rest = args[0], [arg for arg in args[1:] if arg]
@@ -2085,48 +2071,21 @@ class DebugTrace:
 
     @classmethod
     def model_request(cls, session: Session, *, activity: str, api: str, model: str, params: Json, tools: list[Json] | None) -> None:
-        cls.write(
-            session,
-            activity=activity,
-            label="model-request",
-            payload={
-                "api": api,
-                "model": model,
-                "tool_names": cls.tool_names(tools),
-                "param_keys": sorted(params),
-                "params": {key: value for key, value in params.items() if key not in {"messages", "tools"}},
-            },
-        )
+        payload = {"api": api, "model": model, "tool_names": cls.tool_names(tools), "param_keys": sorted(params), "params": cls.filtered_params(params)}
+        cls.write(session, activity=activity, label="model-request", payload=payload)
 
     @classmethod
     def model_response(cls, session: Session, *, activity: str, api: str, model: str, raw: Any, text: str, tool_names: list[str]) -> None:
-        cls.write(
-            session,
-            activity=activity,
-            label="model-response",
-            payload={
-                "api": api,
-                "model": model,
-                "assistant_text_len": len(text),
-                "tool_names": tool_names,
-                "raw": raw,
-            },
-        )
+        cls.write(session, activity=activity, label="model-response", payload={"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw})
 
     @classmethod
     def model_error(cls, session: Session, *, activity: str, api: str, model: str, params: Json, error: Exception | str) -> None:
-        cls.write(
-            session,
-            activity=activity,
-            label="model-error",
-            payload={
-                "api": api,
-                "model": model,
-                "error": str(error),
-                "param_keys": sorted(params),
-                "params": {key: value for key, value in params.items() if key not in {"messages", "tools"}},
-            },
-        )
+        payload = {"api": api, "model": model, "error": str(error), "param_keys": sorted(params), "params": cls.filtered_params(params)}
+        cls.write(session, activity=activity, label="model-error", payload=payload)
+
+    @staticmethod
+    def filtered_params(params: Json) -> Json:
+        return {key: value for key, value in params.items() if key not in {"messages", "tools"}}
 
     @staticmethod
     def tool_names(tools: list[Json] | None) -> list[str]:
@@ -2153,11 +2112,7 @@ class ModelClient:
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
-        params: Json = {
-            "model": provider.model,
-            "messages": messages,
-            "stream": False,
-        }
+        params: Json = {"model": provider.model, "messages": messages, "stream": False}
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -2175,15 +2130,7 @@ class ModelClient:
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(getattr(message, "content", None) or "")
-        DebugTrace.model_response(
-            self.session,
-            activity=activity,
-            api="chat",
-            model=provider.model,
-            raw=response,
-            text=content,
-            tool_names=[call.name for call in calls],
-        )
+        DebugTrace.model_response(self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
@@ -2192,11 +2139,7 @@ Compact the nanocode working context.
 Return exactly one JSON object with keys: summary, goal, plan, known.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
-        params: Json = {
-            "role": "system",
-            "content": prompt,
-        }
-        messages = [params, {"role": "user", "content": context}]
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": context}]
         _, _, content = (
             self.anthropic_request(messages, None, activity="compact")
             if self.session.config.provider.resolved_api() == "anthropic"
@@ -2254,26 +2197,12 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             raise ModelError("anthropic response was not JSON") from error
         self.session.usage.add(result.get("usage") if isinstance(result, dict) else None)
         assistant, calls, content = self.anthropic_result(result if isinstance(result, dict) else {})
-        DebugTrace.model_response(
-            self.session,
-            activity=activity,
-            api="anthropic",
-            model=provider.model,
-            raw=result,
-            text=content,
-            tool_names=[call.name for call in calls],
-        )
+        DebugTrace.model_response(self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
-        params: Json = {
-            "model": provider.model,
-            "system": self.anthropic_system(messages),
-            "messages": self.anthropic_messages(messages),
-            "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
-            "stream": False,
-        }
+        params: Json = {"model": provider.model, "system": self.anthropic_system(messages), "messages": self.anthropic_messages(messages), "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS, "stream": False}
         if provider.temperature is not None:
             params["temperature"] = provider.temperature
         if tools:
@@ -2301,11 +2230,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 if blocks:
                     self.append_anthropic_message(converted, "assistant", blocks)
             elif role == "tool":
-                block = {
-                    "type": "tool_result",
-                    "tool_use_id": str(message.get("tool_call_id") or ""),
-                    "content": str(message.get("content") or ""),
-                }
+                block = {"type": "tool_result", "tool_use_id": str(message.get("tool_call_id") or ""), "content": str(message.get("content") or "")}
                 self.append_anthropic_message(converted, "user", [block])
         return converted or [{"role": "user", "content": ""}]
 
@@ -2334,29 +2259,16 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 payload = json.loads(str(function.get("arguments") or "{}"))
             except json.JSONDecodeError:
                 payload = {}
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": str(raw.get("id") or uuid.uuid4().hex),
-                    "name": str(function.get("name") or ""),
-                    "input": payload if isinstance(payload, dict) else {"args": [payload]},
-                }
-            )
+            blocks.append({"type": "tool_use", "id": str(raw.get("id") or uuid.uuid4().hex), "name": str(function.get("name") or ""), "input": payload if isinstance(payload, dict) else {"args": [payload]}})
         return blocks
 
     @staticmethod
     def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
-        converted = []
-        for schema in tools:
+        def convert(schema: Json) -> Json:
             function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
-            converted.append(
-                {
-                    "name": str(function.get("name") or ""),
-                    "description": str(function.get("description") or ""),
-                    "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
-                }
-            )
-        return converted
+            return {"name": str(function.get("name") or ""), "description": str(function.get("description") or ""), "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {}}
+
+        return [convert(schema) for schema in tools]
 
     def anthropic_result(self, result: Json) -> tuple[Json, list[ToolCall], str]:
         text_parts: list[str] = []
@@ -2409,15 +2321,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         reasoning_content = self.message_field(message, "reasoning_content")
         if reasoning_content:
             data["reasoning_content"] = reasoning_content
-        tool_calls = []
-        for call in getattr(message, "tool_calls", None) or []:
-            tool_calls.append(
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"},
-                }
-            )
+        tool_calls = [{"id": call.id, "type": "function", "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"}} for call in getattr(message, "tool_calls", None) or []]
         if tool_calls:
             data["tool_calls"] = tool_calls
         return data
@@ -2554,9 +2458,7 @@ class CommandCompleter(Completer):
 
     @staticmethod
     def matches(values, prefix: str):
-        for value in values:
-            if value.startswith(prefix):
-                yield Completion(value, start_position=-len(prefix))
+        yield from (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
 class UiPrinter:
@@ -2622,18 +2524,6 @@ class UiPrinter:
             return segments
         segments.extend(("ansibrightblack", line + "\n") for line in lines[1:])
         return segments
-
-    @staticmethod
-    def tool_status_style(text: str) -> str:
-        if "failed" in text:
-            return "ansired"
-        if "approval required" in text:
-            return "ansiyellow"
-        if "auto approved" in text:
-            return "ansiblue"
-        if "done" in text:
-            return "ansigreen"
-        return "ansibrightblack"
 
     def diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
@@ -2828,12 +2718,7 @@ class StatusBar:
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
-            parts.extend(
-                [
-                    "step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps),
-                    "tools " + str(self.session.state.turn_tool_calls),
-                ]
-            )
+            parts.extend(["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)])
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed:
@@ -2893,7 +2778,6 @@ Tools:
         self.agent = agent
         self.session = agent.session
         self.input_fn = input_fn
-        self.output_fn = output_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
@@ -2960,10 +2844,7 @@ Tools:
         return FileHistory(history_path)
 
     def make_completer(self) -> CommandCompleter:
-        return CommandCompleter(
-            providers=lambda: tuple(sorted(self.session.config.providers)),
-            models=lambda: self.session.config.provider.available_models,
-        )
+        return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
     def read_input(self, prompt_text: str = "nano> ") -> str:
         if self.input_history is None:
@@ -3207,19 +3088,13 @@ Tools:
 
         bindings = KeyBindings()
 
-        @bindings.add("down", eager=True)
-        def _down(event):
-            move(event, 1)
-
         @bindings.add("j", filter=~searching, eager=True)
+        @bindings.add("down", eager=True)
         def _j(event):
             move(event, 1)
 
-        @bindings.add("up", eager=True)
-        def _up(event):
-            move(event, -1)
-
         @bindings.add("k", filter=~searching, eager=True)
+        @bindings.add("up", eager=True)
         def _k(event):
             move(event, -1)
 
@@ -3466,9 +3341,7 @@ Tools:
         messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, "")
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / MAX_PROMPT_TOKENS))
-        return (
-            "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
-        )
+        return "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
 
     def index(self, args: str) -> str:
         value = args.strip()
@@ -3490,11 +3363,7 @@ Tools:
         if len(choices) <= 1:
             return self.provider_summary()
         choice = self.select_provider(choices)
-        if isinstance(choice, str):
-            return self.set_provider(choice)
-        if choice is SELECTION_BACK:
-            return "No change"
-        return self.provider_summary()
+        return self.set_provider(choice) if isinstance(choice, str) else ("No change" if choice is SELECTION_BACK else self.provider_summary())
 
     def provider_summary(self) -> str:
         return "provider: " + self.session.config.active_provider + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
@@ -3554,9 +3423,7 @@ Tools:
             return ()
         names = []
         for item in getattr(page, "data", page) or []:
-            name = getattr(item, "id", None)
-            if not name and isinstance(item, dict):
-                name = item.get("id")
+            name = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
             if isinstance(name, str) and name:
                 names.append(name)
         return tuple(sorted(dict.fromkeys(names)))
