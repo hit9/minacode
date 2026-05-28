@@ -56,7 +56,7 @@ __version__ = "0.5.0"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
-MAX_PROMPT_TOKENS = 128_000
+DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
@@ -209,6 +209,7 @@ class ProviderConfig:
 class RuntimeSettings:
     shell_timeout: int = 60
     max_steps: int = 200
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     yolo: bool = False
     debug: bool = False
 
@@ -218,6 +219,7 @@ class RuntimeSettings:
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
+            max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
         )
 
@@ -319,6 +321,7 @@ data_dir = "~/.nanocode"
 [runtime]
 shell_timeout = 60
 max_agent_steps = 200
+max_context_tokens = 128000
 yolo = false
 """
 
@@ -1769,7 +1772,7 @@ class ContextManager:
         return [{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input)}]
 
     def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "") -> None:
-        if self.estimated_tokens(self.model_messages(base_system, user_input)) < MAX_PROMPT_TOKENS:
+        if self.estimated_tokens(self.model_messages(base_system, user_input)) < self.session.settings.max_context_tokens:
             return
         try:
             self.session.state.apply(model.compact(self.compaction_input()))
@@ -2552,7 +2555,7 @@ Final: concise markdown, user's language.
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input)
         tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / MAX_PROMPT_TOKENS))
+        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
 
 
@@ -2571,6 +2574,7 @@ class CommandCompleter(Completer):
         "provider.timeout",
         "runtime.yolo",
         "runtime.max_agent_steps",
+        "runtime.max_context_tokens",
         "runtime.shell_timeout",
     )
     SET_VALUES = {
@@ -2944,7 +2948,7 @@ class CommandLoop:
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
   /reason            Select reasoning effort.
-  /set KEY VALUE     Set provider.*, runtime.yolo, runtime.max_agent_steps, runtime.shell_timeout.
+  /set KEY VALUE     Set provider.*, runtime.yolo, runtime.max_agent_steps, runtime.max_context_tokens, runtime.shell_timeout.
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
@@ -3495,6 +3499,7 @@ Tools:
                 f"paths.data_dir: {self.session.data_path()}",
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
                 f"runtime.max_agent_steps: {self.session.settings.max_steps}",
+                f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
                 f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
             ]
@@ -3544,7 +3549,7 @@ Tools:
         self.agent.context.latest_keys = []
         messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, "")
         tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / MAX_PROMPT_TOKENS))
+        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
 
     def index(self, args: str) -> str:
@@ -3683,6 +3688,8 @@ Tools:
                 runtime.yolo = value.lower() in {"on", "true", "yes", "1"}
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
+            elif key == "runtime.max_context_tokens":
+                runtime.max_context_tokens = max(1, int(value))
             elif key == "runtime.shell_timeout":
                 runtime.shell_timeout = max(1, int(value))
             else:
