@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+import code_symbol_index as csi
 from anthropic import Anthropic
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
@@ -374,6 +375,7 @@ class AgentState:
     plan: list[str] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     summary: str = ""
+    code_index_status: str = ""
     code_index_error: str = ""
     code_index_notice: str = ""
     code_index_refreshing: bool = False
@@ -995,6 +997,7 @@ class SearchTool(Tool):
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
+    SYMBOLS: ClassVar[dict[str, str]] = {"ready": "ok", "synced": "ok", "stale": "!", "syncing": "~", "missing": "?", "error": "x"}
 
     def __init__(self, session: Session):
         self.session = session
@@ -1010,59 +1013,65 @@ class CodeIndex:
         self.session.state.code_index_error = message if status == "error" else ""
         return status in {"ready", "stale"}
 
+    def set_status(self, status: str, message: str = "") -> None:
+        self.session.state.code_index_status = "synced" if status == "ready" else status
+        self.session.state.code_index_error = message if status == "error" else ""
+
+    @classmethod
+    def label(cls, status: str) -> str:
+        return cls.SYMBOLS.get(status, status)
+
+    @classmethod
+    def status_line(cls, status: str, message: str = "") -> str:
+        status = "synced" if status == "ready" else status
+        return " ".join(part for part in ("index", cls.label(status), status + ((": " + message) if message else "")) if part)
+
     def notice(self, text: str = "", *, refreshing: bool = False) -> None:
         self.session.state.code_index_notice = text
         self.session.state.code_index_refreshing = refreshing
+        if text:
+            self.session.state.code_index_status = "syncing" if text in {"syncing", "updating"} else text
 
     def fail(self, error: Any) -> str:
         self.session.state.code_index_error = str(error).strip()
+        self.session.state.code_index_status = "error"
         self.notice("error")
         return self.session.state.code_index_error
 
-    def finish(self, proc: subprocess.CompletedProcess[str]) -> bool:
-        if proc.returncode != 0:
-            self.fail((proc.stderr or proc.stdout).strip())
-            return False
+    def finish(self, status: str = "synced") -> None:
         self.session.state.code_index_error = ""
         self.notice("")
-        return True
+        self.session.state.code_index_status = status
 
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
-        if shutil.which("code-symbol-index") is None:
-            return "unavailable", "code-symbol-index not found"
         try:
-            proc = self.run(["status", "--check" if check else "", "--max-pending-files", str(max_pending_files), "--json"], timeout=20)
+            data = csi.status(self.session.cwd, check=check, max_pending_files=max_pending_files)
         except Exception as error:
+            self.set_status("error", str(error))
             return "error", str(error)
-        if proc.returncode != 0:
-            return "error", (proc.stderr or proc.stdout).strip()
-        try:
-            data = json.loads(proc.stdout or "{}")
-        except json.JSONDecodeError as error:
-            return "error", str(error)
-        status = str(data.get("status") or "error")
-        message = str(data.get("message") or data.get("reason") or "")
-        pending = data.get("pending_changes")
-        files = data.get("pending_files")
-        if pending:
+        status = str(getattr(data, "status", "") or "error")
+        message = str(getattr(data, "message", None) or getattr(data, "reason", None) or "")
+        pending = getattr(data, "pending_changes", None)
+        files = getattr(data, "pending_files", ()) or ()
+        if pending and pending != "unknown":
             sample = ", ".join(str(path) for path in (files or [])[:3])
             message = (message + "; " if message else "") + "pending " + str(pending) + ((" (" + sample + ")") if sample else "")
+        preserves_stale = status == "ready" and pending == "unknown" and self.session.state.code_index_status == "stale"
+        if not self.session.state.code_index_refreshing and not preserves_stale:
+            self.set_status(status, message)
         return status, message
 
     def sync(self, *, force: bool = False) -> str:
-        if shutil.which("code-symbol-index") is None:
-            return "code_index: error\ncode-symbol-index not found"
         if self.session.state.code_index_refreshing:
             return "code_index: syncing"
         if force:
-            shutil.rmtree(self.db_dir(), ignore_errors=True)
+            csi.clean(self.session.cwd)
         self.notice("syncing", refreshing=True)
         try:
-            proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
+            csi.index(self.session.cwd)
         except Exception as error:
             return "code_index: error\n" + self.fail(error)
-        if not self.finish(proc):
-            return "code_index: error\n" + self.session.state.code_index_error
+        self.finish()
         status, message = self.status(check=True)
         lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + self.db_path()]
         if message:
@@ -1075,26 +1084,24 @@ class CodeIndex:
             return ""
         self.notice("updating", refreshing=True)
         try:
-            proc = self.run(["update", *paths], timeout=max(30, self.session.settings.shell_timeout))
+            csi.update(paths, root=self.session.cwd)
         except Exception as error:
             return self.fail(error)
-        if not self.finish(proc):
-            return self.session.state.code_index_error
-        return proc.stdout.strip()
+        self.finish()
+        return "updated " + str(len(paths)) + " file(s)"
 
     def update_pending(self) -> str:
         if self.session.state.code_index_refreshing:
             return ""
-        status, _message = self.status(check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1)
-        if status != "stale":
-            return ""
         try:
-            proc = self.run(["status", "--check", "--max-pending-files", str(self.AUTO_UPDATE_LIMIT + 1), "--json"], timeout=20)
-            data = json.loads(proc.stdout or "{}") if proc.returncode == 0 else {}
+            data = csi.status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1)
         except Exception:
             return ""
-        pending = data.get("pending_changes")
-        files = [str(path) for path in data.get("pending_files") or [] if path]
+        self.set_status(str(getattr(data, "status", "") or "error"), str(getattr(data, "message", None) or getattr(data, "reason", None) or ""))
+        if getattr(data, "status", "") != "stale":
+            return ""
+        pending = getattr(data, "pending_changes", None)
+        files = [str(path) for path in getattr(data, "pending_files", ()) or () if path]
         if not files or len(files) > self.AUTO_UPDATE_LIMIT or (isinstance(pending, int) and pending > self.AUTO_UPDATE_LIMIT):
             return ""
         return self.update([self.session.resolve_path(path) for path in files])
@@ -1109,8 +1116,8 @@ class CodeIndex:
 
         def refresh() -> None:
             try:
-                proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
-                self.finish(proc)
+                csi.index(self.session.cwd)
+                self.finish()
             except Exception as error:
                 self.fail(error)
 
@@ -1120,11 +1127,6 @@ class CodeIndex:
     def update_paths(self, paths: list[str]) -> list[str]:
         paths = [self.session.resolve_path(path) for path in paths]
         return list(dict.fromkeys(path for path in paths if self.session.in_cwd(path) and os.path.isfile(path)))
-
-    def run(self, args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
-        command, rest = args[0], [arg for arg in args[1:] if arg]
-        cmd = ["code-symbol-index", command, "--root", self.session.cwd, *rest]
-        return subprocess.run(cmd, cwd=self.session.cwd, text=True, capture_output=True, timeout=timeout)
 
 
 class InspectCodeTool(Tool):
@@ -1173,17 +1175,28 @@ class InspectCodeTool(Tool):
         index = CodeIndex(self.session)
         if not index.available():
             raise ToolError("code index is not available; run /index")
-        cmd = ["search" if mode == "find" else mode, target]
+        try:
+            output = self.inspect_text(mode, target, options, limit)
+        except csi.CodeSymbolIndexError as error:
+            return self.process_result("InspectCodeToolResult", 1, "", str(error))
+        return self.process_result("InspectCodeToolResult", 0, str(output), "")
+
+    def inspect_text(self, mode: str, target: str, options: Json, limit: int | None) -> str:
+        common = {
+            "root": self.session.cwd,
+            "kind": options.get("kind") or None,
+            "path": options.get("path") or None,
+            "exact_only": bool(options.get("exact_only")),
+            "format": "text",
+        }
+        if mode == "find":
+            return csi.search(target, limit=limit or csi.DEFAULT_SEARCH_LIMIT, **common)
         if mode == "inspect":
-            cmd.append("--anchors")
-        for key, flag in (("limit", "--limit"), ("kind", "--kind"), ("path", "--path"), ("symbol", "--symbol")):
-            value = options.get(key)
-            if value not in (None, "", False):
-                cmd.extend([flag, str(value)])
-        if options.get("exact_only"):
-            cmd.append("--exact-only")
-        proc = index.run(cmd, timeout=self.session.settings.shell_timeout)
-        return self.process_result("InspectCodeToolResult", proc.returncode, proc.stdout, proc.stderr)
+            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, **common)
+        symbol = options.get("symbol") or None
+        return csi.outline(
+            target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"
+        )
 
 
 class CreateFileTool(Tool):
@@ -3007,11 +3020,9 @@ class StatusBar:
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
-        if self.session.settings.debug:
-            if self.session.state.code_index_error:
-                parts.append("idx error")
-            elif self.session.state.code_index_refreshing:
-                parts.append("idx " + (self.session.state.code_index_notice or "syncing"))
+        index_status = self.index_status()
+        if index_status:
+            parts.append("index " + index_status)
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
@@ -3050,6 +3061,14 @@ class StatusBar:
             blue = round(blue + (255 - blue) * intensity)
             fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
         return fragments
+
+    def index_status(self) -> str:
+        if self.session.state.code_index_error:
+            return CodeIndex.label("error")
+        if self.session.state.code_index_refreshing:
+            notice = self.session.state.code_index_notice or "syncing"
+            return CodeIndex.label("syncing") if notice in {"syncing", "updating"} else notice
+        return CodeIndex.label(self.session.state.code_index_status)
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
@@ -3648,7 +3667,7 @@ Tools:
                 f"known: {len(self.session.state.known)}",
                 f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
                 f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
-                f"code_index: {index_status}" + ((": " + index_message) if index_message else ""),
+                "code_" + CodeIndex.status_line(index_status, index_message),
             ]
         )
 

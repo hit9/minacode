@@ -109,31 +109,51 @@ def test_bash_and_git_behaviors(tmp_path):
     assert n.GitTool(s, ["commit"]).needs_confirmation()
 
 
-def test_inspect_code_modes_build_expected_cli(tmp_path, monkeypatch):
+def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("class Example:\n    pass\n", encoding="utf-8")
     calls = []
 
     monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(("search", query, kwargs)) or "search ok")
+    monkeypatch.setattr(n.csi, "inspect", lambda query, **kwargs: calls.append(("inspect", query, kwargs)) or "inspect ok")
+    monkeypatch.setattr(n.csi, "outline", lambda path, **kwargs: calls.append(("outline", path, kwargs)) or "outline ok")
 
-    def fake_run(self, args, *, timeout):
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, "ok\n", "")
+    assert "search ok" in n.InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
+    assert "inspect ok" in n.InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
+    assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py"]).call()
 
-    monkeypatch.setattr(n.CodeIndex, "run", fake_run)
-
-    n.InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
-    n.InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
-    n.InspectCodeTool(s, ["outline", "sample.py"]).call()
-
-    assert calls[0] == ["search", "Example", "--limit", "10", "--kind", "class,function", "--exact-only"]
-    assert calls[1] == ["inspect", "Example", "--anchors", "--path", "sample.py"]
-    assert calls[2] == ["outline", "sample.py"]
+    assert calls[0] == (
+        "search",
+        "Example",
+        {"root": str(tmp_path), "kind": "class,function", "path": None, "exact_only": True, "format": "text", "limit": 10},
+    )
+    assert calls[1] == (
+        "inspect",
+        "Example",
+        {"root": str(tmp_path), "kind": None, "path": "sample.py", "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_PAGE_LIMIT, "anchors": True},
+    )
+    assert calls[2] == (
+        "outline",
+        "sample.py",
+        {"root": str(tmp_path), "symbol": None, "max_symbols": n.csi.DEFAULT_MAX_OUTLINE_SYMBOLS, "format": "text"},
+    )
 
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["outline", "missing.py"]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["inspect", "sample.py"]).call()
+
+
+def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(n.csi, "search", lambda *args, **kwargs: (_ for _ in ()).throw(n.csi.CodeSymbolIndexError("bad query")))
+
+    result = n.InspectCodeTool(s, ["find", "Missing"]).call()
+
+    assert "* exit_code: 1" in result
+    assert "bad query" in result
 
 
 def test_recall_and_forget_behaviors(tmp_path):

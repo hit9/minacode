@@ -1,5 +1,4 @@
 import json
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -120,28 +119,48 @@ def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
 
 def test_code_index_update_pending_updates_small_batches_and_skips_large_batches(tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    monkeypatch.setattr(n.shutil, "which", lambda name: "code-symbol-index")
+    updates = []
+
+    def status(root, *, check=False, max_pending_files=20):
+        if check:
+            return SimpleNamespace(status="stale", message="", reason="changed", pending_changes=1, pending_files=("a.py",))
+        return SimpleNamespace(status="ready", message="", reason="", pending_changes="unknown", pending_files=())
+
+    monkeypatch.setattr(n.csi, "status", status)
+    monkeypatch.setattr(n.csi, "update", lambda paths, *, root: updates.append((root, list(paths))))
+
+    assert n.CodeIndex(session(tmp_path)).update_pending() == "updated 1 file(s)"
+    assert updates == [(str(tmp_path), [str(tmp_path / "a.py")])]
+
+    updates.clear()
+    monkeypatch.setattr(
+        n.csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(
+            status="stale", message="", reason="changed", pending_changes=n.CodeIndex.AUTO_UPDATE_LIMIT + 1, pending_files=("a.py",) * 21
+        ),
+    )
+    assert n.CodeIndex(session(tmp_path)).update_pending() == ""
+    assert updates == []
+
+
+def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatch):
     calls = []
 
-    def small_run(self, args, *, timeout):
-        if args[0] == "status":
-            return subprocess.CompletedProcess(args, 0, json.dumps({"status": "stale", "pending_changes": 1, "pending_files": ["a.py"]}), "")
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, "updated", "")
+    monkeypatch.setattr(n.csi, "clean", lambda root: calls.append(("clean", root)))
+    monkeypatch.setattr(n.csi, "index", lambda root: calls.append(("index", root)))
+    monkeypatch.setattr(
+        n.csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+    )
 
-    monkeypatch.setattr(n.CodeIndex, "run", small_run)
-    assert n.CodeIndex(session(tmp_path)).update_pending() == "updated"
-    assert calls == [["update", str(tmp_path / "a.py")]]
+    s = session(tmp_path)
+    result = n.CodeIndex(s).sync(force=True)
 
-    calls.clear()
-
-    def large_run(self, args, *, timeout):
-        data = {"status": "stale", "pending_changes": n.CodeIndex.AUTO_UPDATE_LIMIT + 1, "pending_files": ["a.py"] * 21}
-        return subprocess.CompletedProcess(args, 0, json.dumps(data), "")
-
-    monkeypatch.setattr(n.CodeIndex, "run", large_run)
-    assert n.CodeIndex(session(tmp_path)).update_pending() == ""
-    assert calls == []
+    assert calls == [("clean", str(tmp_path)), ("index", str(tmp_path))]
+    assert "code_index: rebuilt" in result
+    assert s.state.code_index_status == "synced"
 
 
 def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
