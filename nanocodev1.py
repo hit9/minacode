@@ -41,7 +41,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import Float, FloatContainer, HSplit, Window
+from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor
@@ -2094,7 +2094,7 @@ class ToolRunner:
         return "\n".join(["  preview"] + ["  " + line for line in lines])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool) -> str:
-        line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + (" failed" if failed else "")
+        line = ("✗ " if failed else "✓ ") + "tool " + self.short_call(call) + ((" -> " + key) if key else "") + (" failed" if failed else "")
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
@@ -2590,7 +2590,7 @@ class UiPrinter:
         print_formatted_text(FormattedText(self.segments(str(text))), end="", flush=True)
 
     def segments(self, text: str) -> list[tuple[str, str]]:
-        if text.startswith("tool "):
+        if text.startswith("tool ") or text.startswith(("✓ tool ", "✗ tool ")):
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
@@ -2605,12 +2605,17 @@ class UiPrinter:
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
+            prefix = ""
+            if line.startswith(("✓ ", "✗ ")):
+                prefix, line = line[:2], line[2:]
             if line.startswith("tool "):
                 body = line[5:]
                 call, sep, tail = body.partition(" -> ")
                 failed = tail.endswith(" failed") or " failed" in body
                 call_style = "ansired" if failed else "ansigreen"
                 tail_style = "ansired" if failed else "ansibrightblack"
+                if prefix:
+                    segments.append((call_style, prefix))
                 segments.extend([("ansibrightblack", "tool "), (call_style, call)])
                 if sep:
                     segments.append((tail_style, sep + tail))
@@ -3027,16 +3032,7 @@ Tools:
             else:
                 pt_search.start_search(direction=direction)
 
-        root = FloatContainer(
-            HSplit(
-                [
-                    input_window,
-                    search_toolbar,
-                    self.status_window(),
-                ]
-            ),
-            floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1))],
-        )
+        root = HSplit([input_window, CompletionsMenu(max_height=12, scroll_offset=1), search_toolbar, self.status_window()])
         app = Application(
             layout=Layout(root, focused_element=input_window),
             key_bindings=bindings,
@@ -3067,7 +3063,15 @@ Tools:
         self.with_status_paused(lambda: self.emit(text))
 
     def tool_input(self, prompt: str = "") -> str:
-        return self.with_status_paused(lambda: self.input_fn(prompt))
+        def read() -> str:
+            try:
+                return self.input_fn(prompt)
+            finally:
+                if self.interactive_input and sys.stdout.isatty():
+                    sys.stdout.write("\x1b[1A\r\x1b[2K")
+                    sys.stdout.flush()
+
+        return self.with_status_paused(read)
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
