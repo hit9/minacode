@@ -156,6 +156,27 @@ def test_recall_and_forget_behaviors(tmp_path):
     assert second in s.tool_results
 
 
+def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    search = runner.short_call(
+        n.ToolCall(
+            "s",
+            "Search",
+            [
+                {"pattern": "done in", "glob": "*.py"},
+                {"pattern": "elapsed.*s]", "path": "tests", "context": 2},
+            ],
+            "",
+        )
+    )
+    assert search == 'Search "done in" glob=*.py; "elapsed.*s]" path=tests C=2'
+
+    recall = runner.short_call(n.ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}], ""))
+    assert recall == "Recall tr.4 0:80; tr.5 0:80"
+
+
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_args = n.BashTool.schema()["function"]["parameters"]["properties"]["args"]
     assert bash_args["minItems"] == 1

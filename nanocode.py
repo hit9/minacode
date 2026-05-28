@@ -120,7 +120,11 @@ class ProviderConfig:
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
-        for key, value, choices in (("api", api, PROVIDER_API_CHOICES), ("reasoning", reasoning, REASONING_CHOICES), ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES)):
+        for key, value, choices in (
+            ("api", api, PROVIDER_API_CHOICES),
+            ("reasoning", reasoning, REASONING_CHOICES),
+            ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
+        ):
             if value not in choices:
                 raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
         return cls(
@@ -351,7 +355,9 @@ class ModelUsage:
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
-        cached_prompt_tokens = value("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
+        cached_prompt_tokens = value(
+            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+        )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
@@ -816,6 +822,19 @@ class SearchTool(Tool):
     def call(self) -> str:
         sections = [self.search(request) for request in self.requests()]
         return "\n\n".join(sections)
+
+    def short_args(self) -> list[str]:
+        rows = []
+        for request in self.requests():
+            parts = [json.dumps(request["pattern"], ensure_ascii=False)]
+            if self.session.relpath(str(request["path"])) != ".":
+                parts.append("path=" + self.session.relpath(str(request["path"])))
+            if request["glob"]:
+                parts.append("glob=" + str(request["glob"]))
+            if request["context"]:
+                parts.append("C=" + str(request["context"]))
+            rows.append(" ".join(parts))
+        return ["; ".join(rows)]
 
     def requests(self) -> list[Json]:
         if not self.args:
@@ -1656,6 +1675,15 @@ class RecallTool(Tool):
         chunks.append("</RecallToolResult>")
         return "\n".join(chunks)
 
+    def short_args(self) -> list[str]:
+        rows = []
+        for key, ranges in self.requests():
+            row = key
+            if ranges:
+                row += " " + ",".join(f"{start}:{end}" for start, end in ranges)
+            rows.append(row)
+        return ["; ".join(rows)]
+
     def requests(self) -> list[tuple[str, tuple[tuple[int, int], ...]]]:
         requests: list[tuple[str, tuple[tuple[int, int], ...]]] = []
         common_ranges: list[tuple[int, int]] = []
@@ -1782,14 +1810,14 @@ class ContextManager:
         self.latest_keys.append(key)
         return key
 
-    def model_messages(self, base_system: str, user_input: str = "") -> list[Json]:
-        return [{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input)}]
+    def model_messages(self, base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> list[Json]:
+        return [{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input, extra_messages)}]
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "") -> None:
-        if self.estimated_tokens(self.model_messages(base_system, user_input)) < self.session.settings.max_context_tokens:
+    def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> None:
+        if self.estimated_tokens(self.model_messages(base_system, user_input, extra_messages)) < self.session.settings.max_context_tokens:
             return
         try:
-            self.session.state.apply(model.compact(self.compaction_input()))
+            self.session.state.apply(model.compact(self.compaction_input(extra_messages)))
             self.session.messages = self.session.messages[-6:]
             self.latest_keys = []
         except Exception:
@@ -1797,12 +1825,12 @@ class ContextManager:
             self.session.messages = self.session.messages[-6:]
             self.latest_keys = []
 
-    def render(self, user_input: str = "") -> str:
+    def render(self, user_input: str = "", extra_messages: list[Json] | None = None) -> str:
         sections = [
             ("Environment", self.environment()),
             ("State", self.session.state.format()),
             ("Summary", self.session.state.summary or "(empty)"),
-            ("Recent Conversation", self.recent_conversation()),
+            ("Recent Conversation", self.recent_conversation(extra_messages)),
             ("Tool Result Index", self.tool_index()),
             ("File Context", self.file_context()),
             ("Discovery Context", self.discovery_context()),
@@ -1960,15 +1988,16 @@ class ContextManager:
         segments.append((start, previous + 1, source, lines))
         return segments
 
-    def recent_conversation(self) -> str:
-        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in self.session.messages) or "(empty)"
+    def recent_conversation(self, extra_messages: list[Json] | None = None) -> str:
+        messages = [*self.session.messages, *(extra_messages or [])]
+        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
 
-    def compaction_input(self) -> str:
+    def compaction_input(self, extra_messages: list[Json] | None = None) -> str:
         return "\n\n".join(
             [
                 "State:\n" + self.session.state.format(),
                 "Summary:\n" + (self.session.state.summary or "(empty)"),
-                "Conversation:\n" + self.recent_conversation(),
+                "Conversation:\n" + self.recent_conversation(extra_messages),
                 "Tool Result Index:\n" + self.tool_index(),
                 "Latest Tool Results:\n" + self.latest_results(),
             ]
@@ -2214,7 +2243,12 @@ class DebugTrace:
 
     @classmethod
     def model_response(cls, session: Session, *, activity: str, api: str, model: str, raw: Any, text: str, tool_names: list[str]) -> None:
-        cls.write(session, activity=activity, label="model-response", payload={"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw})
+        cls.write(
+            session,
+            activity=activity,
+            label="model-response",
+            payload={"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw},
+        )
 
     @classmethod
     def model_error(cls, session: Session, *, activity: str, api: str, model: str, params: Json, error: Exception | str) -> None:
@@ -2227,7 +2261,10 @@ class DebugTrace:
 
     @staticmethod
     def tool_names(tools: list[Json] | None) -> list[str]:
-        return [str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)")) for schema in tools or []]
+        return [
+            str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)"))
+            for schema in tools or []
+        ]
 
 
 class ModelClient:
@@ -2266,7 +2303,9 @@ class ModelClient:
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(getattr(message, "content", None) or "")
-        DebugTrace.model_response(self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls])
+        DebugTrace.model_response(
+            self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls]
+        )
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
@@ -2335,7 +2374,15 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     @staticmethod
     def tool_schema_names(tools: list[Json] | None) -> str:
-        names = [name for schema in tools or [] if (name := str((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or schema.get("type") or ""))]
+        names = [
+            name
+            for schema in tools or []
+            if (
+                name := str(
+                    (schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or schema.get("type") or ""
+                )
+            )
+        ]
         return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
@@ -2350,12 +2397,19 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             raise ModelError(str(error)) from error
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
-        DebugTrace.model_response(self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls])
+        DebugTrace.model_response(
+            self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls]
+        )
         return assistant, calls, content
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
-        params: Json = {"model": provider.model, "system": self.anthropic_system(messages), "messages": self.anthropic_messages(messages), "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS}
+        params: Json = {
+            "model": provider.model,
+            "system": self.anthropic_system(messages),
+            "messages": self.anthropic_messages(messages),
+            "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
+        }
         if provider.temperature is not None:
             params["temperature"] = provider.temperature
         if tools:
@@ -2412,14 +2466,25 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 payload = json.loads(str(function.get("arguments") or "{}"))
             except json.JSONDecodeError:
                 payload = {}
-            blocks.append({"type": "tool_use", "id": str(raw.get("id") or uuid.uuid4().hex), "name": str(function.get("name") or ""), "input": payload if isinstance(payload, dict) else {"args": [payload]}})
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": str(raw.get("id") or uuid.uuid4().hex),
+                    "name": str(function.get("name") or ""),
+                    "input": payload if isinstance(payload, dict) else {"args": [payload]},
+                }
+            )
         return blocks
 
     @staticmethod
     def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
         def convert(schema: Json) -> Json:
             function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
-            return {"name": str(function.get("name") or ""), "description": str(function.get("description") or ""), "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {}}
+            return {
+                "name": str(function.get("name") or ""),
+                "description": str(function.get("description") or ""),
+                "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
+            }
 
         return [convert(schema) for schema in tools]
 
@@ -2474,7 +2539,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         reasoning_content = self.message_field(message, "reasoning_content")
         if reasoning_content:
             data["reasoning_content"] = reasoning_content
-        tool_calls = [{"id": call.id, "type": "function", "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"}} for call in getattr(message, "tool_calls", None) or []]
+        tool_calls = [
+            {"id": call.id, "type": "function", "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"}}
+            for call in getattr(message, "tool_calls", None) or []
+        ]
         if tool_calls:
             data["tool_calls"] = tool_calls
         return data
@@ -2519,6 +2587,7 @@ class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
 Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
+For multi-step tasks, use concise plan/known as working memory.
 Final: concise markdown, user's language.
 """
 
@@ -2535,20 +2604,25 @@ Final: concise markdown, user's language.
         self.session.state.turn_tool_calls = 0
         self.context.start_tool_batch()
         user_message = {"role": "user", "content": user_input}
+        turn_messages: list[Json] = []
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
-            _assistant, tool_calls, content = self.model.request(self.messages(user_input))
+            _assistant, tool_calls, content = self.model.request(self.messages(user_input, turn_messages))
             if not tool_calls:
                 answer = content.strip() or "(empty response)"
-                self.session.messages.extend([user_message, {"role": "assistant", "content": answer}])
+                self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": answer}])
                 return answer
+            if content.strip():
+                message = {"role": "assistant", "content": content.strip()}
+                turn_messages.append(message)
+                self.output_fn(message["content"])
             self.tools.run(tool_calls)
-        self.session.messages.extend([user_message, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}])
+        self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}])
         return f"Stopped after max_agent_steps={self.session.settings.max_steps}"
 
-    def messages(self, user_input: str) -> list[Json]:
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input)
+    def messages(self, user_input: str, turn_messages: list[Json] | None = None) -> list[Json]:
+        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input, turn_messages)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input, turn_messages)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
@@ -2891,7 +2965,9 @@ class StatusBar:
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
-            parts.extend(["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)])
+            parts.extend(
+                ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
+            )
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed:
@@ -2958,6 +3034,7 @@ Tools:
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.input_history = self.make_input_history() if self.interactive_input else None
         self.input_completer = self.make_completer()
+        self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_output = self.tool_live_output
@@ -2996,7 +3073,8 @@ Tools:
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
-            self.emit(f"[done in {elapsed:.1f}s]")
+            m, s = divmod(elapsed, 60)
+            self.emit(f"[done in {int(m)}m{s:.0f}s]")
 
     def style(self) -> Style:
         return Style.from_dict(
@@ -3027,7 +3105,12 @@ Tools:
         return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
     def status_window(self) -> Window:
-        return Window(FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"), style="class:bottom-toolbar", height=1, dont_extend_height=True)
+        return Window(
+            FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=1,
+            dont_extend_height=True,
+        )
 
     def read_input(self, prompt_text: str = "nano> ") -> str:
         if self.input_history is None:
@@ -3128,6 +3211,9 @@ Tools:
                 self.status_bar.start(reset=False)
 
     def tool_output(self, text: str = "") -> None:
+        self.with_status_paused(lambda: self.emit(text))
+
+    def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit(text))
 
     def tool_input(self, prompt: str = "") -> str:
@@ -3341,6 +3427,7 @@ Tools:
             event.app.exit(exception=KeyboardInterrupt())
 
         for number in range(1, 10):
+
             @bindings.add(str(number), eager=True)
             def _digit(event, number=number):
                 if state["search"]:
@@ -3542,7 +3629,9 @@ Tools:
         messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, "")
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
-        return "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+        return (
+            "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+        )
 
     def index(self, args: str) -> str:
         value = args.strip()

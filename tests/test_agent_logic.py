@@ -242,6 +242,34 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.messages[-1]["content"] == answer
 
 
+def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    output = []
+    agent = n.Agent(s, output_fn=output.append)
+
+    class TalkingModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read")], "I'll inspect that first."
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = TalkingModel()
+    assert agent.run("read file") == "done"
+    assert output[0] == "I'll inspect that first."
+    assert any(line.startswith("tool Read") for line in output)
+    assert s.messages == [
+        {"role": "user", "content": "read file"},
+        {"role": "assistant", "content": "I'll inspect that first."},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert "I'll inspect that first." in agent.model.messages[1][1]["content"]
+
+
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
