@@ -207,7 +207,7 @@ class ProviderConfig:
 @dataclass
 class RuntimeSettings:
     shell_timeout: int = 60
-    max_steps: int = 100
+    max_steps: int = 200
     yolo: bool = False
     debug: bool = False
 
@@ -216,7 +216,7 @@ class RuntimeSettings:
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
-            max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 100))),
+            max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             yolo=yolo or Config.bool(runtime, "yolo", False),
         )
 
@@ -317,7 +317,7 @@ data_dir = "~/.nanocode"
 
 [runtime]
 shell_timeout = 60
-max_agent_steps = 100
+max_agent_steps = 200
 yolo = false
 """
 
