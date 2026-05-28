@@ -3328,7 +3328,7 @@ Tools:
         self.with_status_paused(lambda: self.emit_tool_output(text))
 
     def agent_output(self, text: str = "") -> None:
-        self.with_status_paused(lambda: self.emit(text))
+        self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
@@ -3349,6 +3349,15 @@ Tools:
 
     def emit_tool_output(self, text: str) -> None:
         self.clear_transient_tool_output()
+        self.emit(text)
+
+    def emit_agent_output(self, text: str) -> None:
+        self.clear_transient_tool_output()
+        if self.ui.color and text.strip():
+            self.emit()
+            self.emit(text)
+            self.emit()
+            return
         self.emit(text)
 
     def clear_transient_tool_output(self) -> None:
