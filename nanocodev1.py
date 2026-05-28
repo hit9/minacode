@@ -2127,7 +2127,7 @@ class ToolRunner:
         return "\n".join(["  preview"] + ["  " + line for line in lines])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
-        tag = " [refused]" if "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
+        tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
         line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + tag
         lines = [line]
         if failed:
