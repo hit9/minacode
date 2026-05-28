@@ -372,10 +372,9 @@ class AgentState:
     debug_count: int = 0
 
     def apply(self, data: Json) -> None:
-        if isinstance(data.get("goal"), str):
-            self.goal = str(data["goal"]).strip()
-        if isinstance(data.get("summary"), str):
-            self.summary = str(data["summary"]).strip()
+        for attr in ("goal", "summary"):
+            if isinstance(data.get(attr), str):
+                setattr(self, attr, str(data[attr]).strip())
         for attr in ("plan", "known"):
             value = data.get(attr)
             if isinstance(value, list):
@@ -610,11 +609,7 @@ class ReadTool(Tool):
         return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
 
     def short_args(self) -> list[str]:
-        out = []
-        for path, ranges in self.targets():
-            range_text = ",".join(f"{start}:{end}" for start, end in ranges)
-            out.append(self.session.relpath(path) + ((" " + range_text) if range_text else ""))
-        return out
+        return [self.session.relpath(path) + " " + ",".join(f"{start}:{end}" for start, end in ranges) for path, ranges in self.targets()]
 
     def targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
         if not self.args:
@@ -1633,13 +1628,7 @@ class RecallTool(Tool):
         if common_ranges:
             common = tuple(common_ranges)
             requests = [(key, ranges or common) for key, ranges in requests]
-        seen = set()
-        unique = []
-        for request in requests:
-            if request not in seen:
-                seen.add(request)
-                unique.append(request)
-        return unique
+        return list(dict.fromkeys(requests))
 
     def parse_ranges(self, payload: Json) -> tuple[tuple[int, int], ...]:
         ranges = []
@@ -2017,8 +2006,7 @@ class ToolRunner:
     def run(self, calls: list[ToolCall]) -> list[Json]:
         self.session.state.turn_tool_calls += len(calls)
         for call in calls:
-            status, _output = self.run_one(call)
-            if status == "refused":
+            if self.run_one(call)[0] == "refused":
                 break
         return []
 
@@ -2059,20 +2047,13 @@ class ToolRunner:
 
     def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is not None and not tool_class.STORES_RESULT:
-            if failed:
-                key = "-"
-                self.session.record_tool_error(key, call.name, call.args, call.intention, output)
-            self.output_fn(self.finish_display(call, "", output, failed=failed, approved=approved))
-            return output
-        key = self.context.store_tool_result(call, output)
+        key = self.context.store_tool_result(call, output) if tool_class is None or tool_class.STORES_RESULT else ""
         if failed:
-            self.session.record_tool_error(key, call.name, call.args, call.intention, output)
-        else:
+            self.session.record_tool_error(key or "-", call.name, call.args, call.intention, output)
+        elif key:
             self.update_code_index(call, output)
-        visible = self.context.bound_output(output, key)
         self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved))
-        return f"result_key: {key}\n{visible}"
+        return f"result_key: {key}\n{self.context.bound_output(output, key)}" if key else output
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
         if call.name not in {"CreateFile", "Edit"}:
@@ -2106,10 +2087,7 @@ class ToolRunner:
         lines = preview.rstrip().splitlines()
         if not lines:
             return ""
-        truncated = len(lines) > max_lines
-        lines = lines[:max_lines]
-        if truncated:
-            lines.append("... preview truncated ...")
+        lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
         return "\n".join(["  preview"] + ["  " + line for line in lines])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
@@ -2195,12 +2173,7 @@ class DebugTrace:
 
     @staticmethod
     def tool_names(tools: list[Json] | None) -> list[str]:
-        names = []
-        for schema in tools or []:
-            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
-            name = function.get("name") or schema.get("name")
-            names.append(str(name or "(unknown)"))
-        return names
+        return [str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)")) for schema in tools or []]
 
 
 class ModelClient:
@@ -2308,12 +2281,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     @staticmethod
     def tool_schema_names(tools: list[Json] | None) -> str:
-        names = []
-        for schema in tools or []:
-            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
-            name = str(function.get("name") or schema.get("name") or schema.get("type") or "")
-            if name:
-                names.append(name)
+        names = [name for schema in tools or [] if (name := str((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or schema.get("type") or ""))]
         return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
@@ -2745,9 +2713,7 @@ class BashLivePreview:
     def start(self) -> None:
         if not sys.stderr.isatty():
             return
-        self.active = True
-        self.rendered_lines = 0
-        self.text = ""
+        self.active, self.rendered_lines, self.text = True, 0, ""
 
     def update(self, text: str) -> None:
         if not self.active:
@@ -2758,8 +2724,7 @@ class BashLivePreview:
     def finish(self) -> None:
         if not self.active:
             return
-        self.active = False
-        self.rendered_lines = 0
+        self.active, self.rendered_lines = False, 0
 
     def render(self) -> None:
         if not self.active:
