@@ -33,7 +33,7 @@ from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.filters import Condition, has_completions, is_done
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
@@ -3072,7 +3072,14 @@ Tools:
 
         @bindings.add("tab")
         def _tab(event):
-            buffer.complete_next() if buffer.complete_state else buffer.start_completion(select_first=False)
+            if buffer.complete_state:
+                buffer.complete_next()
+                return
+            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
+            if len(completions) == 1:
+                buffer.apply_completion(completions[0])
+            else:
+                buffer.start_completion(select_first=False)
 
         @bindings.add("s-tab")
         def _shift_tab(event):
