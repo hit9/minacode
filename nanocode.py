@@ -2591,7 +2591,7 @@ class Agent:
 Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
-Output: concise markdown, user's language.
+Output: concise markdown, USER'S LANGUAGE.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
