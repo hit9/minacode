@@ -397,6 +397,8 @@ class AgentState:
     known: list[str] = field(default_factory=list)
     summary: str = ""
     code_index_error: str = ""
+    code_index_notice: str = ""
+    code_index_refreshing: bool = False
     context_percent: int = 0
     turn_step: int = 0
     turn_tool_calls: int = 0
@@ -970,6 +972,10 @@ class CodeIndex:
         self.session.state.code_index_error = message if status == "error" else ""
         return status in {"ready", "stale"}
 
+    def notice(self, text: str = "", *, refreshing: bool = False) -> None:
+        self.session.state.code_index_notice = text
+        self.session.state.code_index_refreshing = refreshing
+
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
         if shutil.which("code-symbol-index") is None:
             return "unavailable", "code-symbol-index not found"
@@ -995,17 +1001,23 @@ class CodeIndex:
     def sync(self, *, force: bool = False) -> str:
         if shutil.which("code-symbol-index") is None:
             return "code_index: error\ncode-symbol-index not found"
+        if self.session.state.code_index_refreshing:
+            return "code_index: syncing"
         if force:
             shutil.rmtree(self.db_dir(), ignore_errors=True)
+        self.notice("syncing", refreshing=True)
         try:
             proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
         except Exception as error:
             self.session.state.code_index_error = str(error)
+            self.notice("error")
             return "code_index: error\n" + str(error)
         if proc.returncode != 0:
             self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
+            self.notice("error")
             return "code_index: error\n" + self.session.state.code_index_error
         self.session.state.code_index_error = ""
+        self.notice("")
         status, message = self.status(check=True)
         lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + self.db_path()]
         if message:
@@ -1014,20 +1026,26 @@ class CodeIndex:
 
     def update(self, paths: list[str]) -> str:
         paths = self.update_paths(paths)
-        if not paths or not self.available():
+        if not paths or self.session.state.code_index_refreshing or not self.available():
             return ""
+        self.notice("updating", refreshing=True)
         try:
             proc = self.run(["update", *paths], timeout=max(30, self.session.settings.shell_timeout))
         except Exception as error:
             self.session.state.code_index_error = str(error)
+            self.notice("error")
             return str(error)
         if proc.returncode != 0:
             self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
+            self.notice("error")
             return self.session.state.code_index_error
         self.session.state.code_index_error = ""
+        self.notice("")
         return proc.stdout.strip()
 
     def update_pending(self) -> str:
+        if self.session.state.code_index_refreshing:
+            return ""
         status, _message = self.status(check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1)
         if status != "stale":
             return ""
@@ -1041,6 +1059,30 @@ class CodeIndex:
         if not files or len(files) > self.AUTO_UPDATE_LIMIT or (isinstance(pending, int) and pending > self.AUTO_UPDATE_LIMIT):
             return ""
         return self.update([self.session.resolve_path(path) for path in files])
+
+    def refresh_existing_async(self) -> bool:
+        if self.session.state.code_index_refreshing:
+            return False
+        status, _message = self.status()
+        if status not in {"ready", "stale"}:
+            return False
+        self.notice("syncing", refreshing=True)
+
+        def refresh() -> None:
+            try:
+                proc = self.run(["index"], timeout=max(60, self.session.settings.shell_timeout))
+                if proc.returncode != 0:
+                    self.session.state.code_index_error = (proc.stderr or proc.stdout).strip()
+                    self.notice("error")
+                    return
+                self.session.state.code_index_error = ""
+                self.notice("")
+            except Exception as error:
+                self.session.state.code_index_error = str(error)
+                self.notice("error")
+
+        threading.Thread(target=refresh, daemon=True).start()
+        return True
 
     def update_paths(self, paths: list[str]) -> list[str]:
         paths = [self.session.resolve_path(path) for path in paths]
@@ -2780,6 +2822,11 @@ class StatusBar:
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
+        if self.session.settings.debug:
+            if self.session.state.code_index_error:
+                parts.append("idx error")
+            elif self.session.state.code_index_refreshing:
+                parts.append("idx " + (self.session.state.code_index_notice or "syncing"))
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
@@ -2856,6 +2903,7 @@ Tools:
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        CodeIndex(self.session).refresh_existing_async()
         while True:
             try:
                 user_input = self.read_input()
@@ -2883,6 +2931,7 @@ Tools:
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
+                CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
             self.emit(answer)
@@ -3317,8 +3366,14 @@ Tools:
         usage = self.session.usage
         provider = self.session.config.provider
         index_status, index_message = CodeIndex(self.session).status(check=True)
-        if self.session.state.code_index_error:
+        if self.session.state.code_index_refreshing:
+            index_status, index_message = "syncing", self.session.state.code_index_notice
+        elif self.session.state.code_index_error:
             index_status, index_message = "error", self.session.state.code_index_error
+        if index_status in {"missing", "unavailable", "error"} and "run /index" not in index_message:
+            index_message = (index_message + "; " if index_message else "") + "run /index"
+        elif index_status == "stale" and "run /index" not in index_message:
+            index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         return "\n".join(
             [
                 f"cwd: {self.session.cwd}",
