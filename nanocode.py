@@ -798,7 +798,10 @@ class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = "Search files with case-insensitive regex and optional context lines."
     SIGNATURE = "Search({pattern, path?, glob?, context?}[, ...])"
-    EXAMPLE = ('Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',)
+    EXAMPLE = (
+        'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',
+        'Regex alternation. Args: [{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]',
+    )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
 
@@ -2588,7 +2591,7 @@ class Agent:
 Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
-Final: concise markdown, user's language.
+Output: concise markdown, user's language.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -2617,7 +2620,9 @@ Final: concise markdown, user's language.
                 turn_messages.append(message)
                 self.output_fn(message["content"])
             self.tools.run(tool_calls)
-        self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}])
+        self.session.messages.extend(
+            [user_message, *turn_messages, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}]
+        )
         return f"Stopped after max_agent_steps={self.session.settings.max_steps}"
 
     def messages(self, user_input: str, turn_messages: list[Json] | None = None) -> list[Json]:
