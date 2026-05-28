@@ -1,6 +1,6 @@
 """
-nanocodev1
-~~~~~~~~~~
+nanocode
+~~~~~~~~
 A compact, single-file rewrite of nanocode's core CLI loop.
 """
 
@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import shutil
 import signal
 import subprocess
@@ -199,7 +200,7 @@ class ProviderConfig:
 @dataclass
 class RuntimeSettings:
     shell_timeout: int = 60
-    max_steps: int = 30
+    max_steps: int = 100
     yolo: bool = False
     debug: bool = False
 
@@ -208,7 +209,7 @@ class RuntimeSettings:
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
-            max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 30))),
+            max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 100))),
             yolo=yolo or Config.bool(runtime, "yolo", False),
         )
 
@@ -227,11 +228,7 @@ class Config:
     def from_dict(cls, data: Json) -> "Config":
         provider_root = cls.table(data, "provider")
         active = cls.str(provider_root, "active", "default")
-        providers = {
-            name: ProviderConfig.from_dict(value)
-            for name, value in provider_root.items()
-            if name != "active" and isinstance(value, dict)
-        }
+        providers = {name: ProviderConfig.from_dict(value) for name, value in provider_root.items() if name != "active" and isinstance(value, dict)}
         if not providers:
             providers = {active: ProviderConfig.from_dict(provider_root)}
         if active not in providers:
@@ -295,7 +292,7 @@ class Config:
 
 
 class ConfigFile:
-    DEFAULT_TEXT: ClassVar[str] = """# nanocodev1 configuration
+    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
 
 [provider]
 active = "default"
@@ -316,7 +313,7 @@ data_dir = "~/.nanocode"
 
 [runtime]
 shell_timeout = 60
-max_agent_steps = 30
+max_agent_steps = 100
 yolo = false
 """
 
@@ -536,6 +533,9 @@ class Tool:
     def display_args(self) -> list[str]:
         return [self.compact(arg) for arg in self.args]
 
+    def short_args(self) -> list[str]:
+        return self.display_args()
+
     def call(self) -> str:
         raise NotImplementedError
 
@@ -580,9 +580,9 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read UTF-8 files with line:hash anchors."
-    SIGNATURE = "Read({path, ranges:[[start,end], ...]}[, ...])"
-    EXAMPLE = ('Example args: [{"path":"nanocodev1.py","ranges":[[0,80],[120,160]]}]',)
+    DESCRIPTION = "Read exact UTF-8 file ranges. Output includes line:hash anchors for safe Edit."
+    SIGNATURE = "Read({path, ranges:[[start,end], ...]}[, ...]); end=0 means EOF"
+    EXAMPLE = ('Example args: [{"path":"nanocode.py","ranges":[[0,80],[120,0]]}]',)
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -609,6 +609,13 @@ class ReadTool(Tool):
 
     def call(self) -> str:
         return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
+
+    def short_args(self) -> list[str]:
+        out = []
+        for path, ranges in self.targets():
+            range_text = ",".join(f"{start}:{end}" for start, end in ranges)
+            out.append(self.session.relpath(path) + ((" " + range_text) if range_text else ""))
+        return out
 
     def targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
         if not self.args:
@@ -647,9 +654,9 @@ class ReadTool(Tool):
 
 class LineCountTool(Tool):
     NAME = "LineCount"
-    DESCRIPTION = "Count total lines in one or more UTF-8 files. Args: path strings."
-    SIGNATURE = "LineCount(path[, path...]) -> total lines"
-    EXAMPLE = ('Example args: ["nanocodev1.py", "pyproject.toml"]',)
+    DESCRIPTION = "Count total lines in UTF-8 files before choosing Read ranges."
+    SIGNATURE = "LineCount(path[, path...])"
+    EXAMPLE = ('Example args: ["nanocode.py", "pyproject.toml"]',)
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -676,9 +683,9 @@ class LineCountTool(Tool):
 
 class ListTool(Tool):
     NAME = "List"
-    DESCRIPTION = "List one directory. Args: optional path, optional glob."
+    DESCRIPTION = "List one directory, optionally filtered by a glob. Use for navigation, not source truth."
     SIGNATURE = "List([path][, glob])"
-    EXAMPLE = ('Example args: [".", "*.py"]',)
+    EXAMPLE = ('Example args: ["."]', 'Example args: ["tests", "test_*.py"]')
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -718,9 +725,9 @@ class ListTool(Tool):
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Case-insensitive regex search across files; use before Read when location is unknown."
+    DESCRIPTION = "Search files with case-insensitive regex and optional context lines."
     SIGNATURE = "Search({pattern, path?, glob?, context?}[, ...])"
-    EXAMPLE = ('Example args: [{"pattern":"class .*Tool","path":"nanocodev1.py"},{"pattern":"TODO","glob":"*.py"}]',)
+    EXAMPLE = ('Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',)
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
 
@@ -798,7 +805,9 @@ class SearchTool(Tool):
         cmd.extend([str(request["pattern"]), str(request["path"])])
         proc = subprocess.run(cmd, cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
         if proc.returncode == 2:
-            proc = subprocess.run([*cmd[:1], "--pcre2", *cmd[1:]], cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
+            proc = subprocess.run(
+                [*cmd[:1], "--pcre2", *cmd[1:]], cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout
+            )
         if proc.returncode not in (0, 1):
             return None
         rows = []
@@ -829,7 +838,10 @@ class SearchTool(Tool):
             dirnames[:] = [
                 name
                 for name in dirnames
-                if name not in skip_dirs and not name.startswith(".") and not name.startswith(".venv") and not self.ignored(os.path.join(dirpath, name), gitignore)
+                if name not in skip_dirs
+                and not name.startswith(".")
+                and not name.startswith(".venv")
+                and not self.ignored(os.path.join(dirpath, name), gitignore)
             ]
             for filename in filenames:
                 if filename.startswith("."):
@@ -1015,9 +1027,13 @@ class CodeIndex:
 
 class InspectCodeTool(Tool):
     NAME = "InspectCode"
-    DESCRIPTION = "Use code-symbol-index. Args: mode, target, optional options. Modes: find, inspect, outline."
+    DESCRIPTION = "Find symbols, inspect one symbol, or outline one file using the code index."
     SIGNATURE = "InspectCode(mode, target[, options])"
-    EXAMPLE = ('Example args: ["find", "Tool", {"limit": 20}]', 'Example args: ["outline", "nanocodev1.py"]')
+    EXAMPLE = (
+        'Find symbols, returns kind/file/range/signature. kind: class|function|variable|constant|enum|struct|dict_key; comma-ok. Args: ["find","Tool",{"kind":"class","limit":20}]',
+        'Inspect one symbol, returns source anchors/members/references. Args: ["inspect","Tool",{"path":"nanocode.py"}]',
+        'Outline one file, returns symbol tree and ranges. Args: ["outline","nanocode.py"]',
+    )
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -1066,9 +1082,12 @@ class InspectCodeTool(Tool):
 
 class CreateFileTool(Tool):
     NAME = "CreateFile"
-    DESCRIPTION = "Create a new UTF-8 file. Args: path, content."
+    DESCRIPTION = "Create a new UTF-8 file; fails if the file already exists."
     SIGNATURE = "CreateFile(path, content)"
-    EXAMPLE = ('Example args: ["notes.txt", "hello\\n"]',)
+    EXAMPLE = (
+        'Create a file, returns path/created/chars. Args: ["notes.txt","hello\\n"]',
+        'Create parent dirs inside workspace if needed. Args: ["demo/main.cpp","int main() {}\\n"]',
+    )
     MUTATES = True
 
     @classmethod
@@ -1093,6 +1112,10 @@ class CreateFileTool(Tool):
             file.write(content)
         return f"<CreateFileToolResult path={json.dumps(self.session.relpath(path))} created=true chars={len(content)} />"
 
+    def short_args(self) -> list[str]:
+        path, _content = self.payload()
+        return [self.session.relpath(path)]
+
     def payload(self) -> tuple[str, str]:
         if len(self.args) != 2:
             raise ToolError("CreateFile requires path and content")
@@ -1115,9 +1138,15 @@ class Edit:
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Edit a UTF-8 file. Args: path, edits. Edits support replace/delete/insert_before/insert_after with line:hash anchors, or replace_all."
+    DESCRIPTION = "Patch an existing UTF-8 file with anchored edits or exact text replacement."
     SIGNATURE = "Edit(path, edits)"
-    EXAMPLE = ('Example args: ["code.py", [{"op":"replace","start":"10:abc123","end":"12:def456","content":"..."}]]',)
+    EXAMPLE = (
+        'replace: ["code.py",[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new text\\n"}]]',
+        'delete: ["code.py",[{"op":"delete","start":"10:abc123","end":"12:def456"}]]',
+        'insert_before: ["code.py",[{"op":"insert_before","start":"10:abc123","content":"new line\\n"}]]',
+        'insert_after: ["code.py",[{"op":"insert_after","start":"10:abc123","content":"new line\\n"}]]',
+        'replace_all: ["code.py",[{"op":"replace_all","old":"OldName","new":"NewName"}]]',
+    )
     MUTATES = True
 
     @classmethod
@@ -1133,8 +1162,14 @@ class EditTool(Tool):
             raise ToolError("edit produced no changes")
         with open(path, "w", encoding="utf-8") as file:
             file.write(new_content)
-        diff = "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path)))
-        return "\n".join([f"<Edit path={json.dumps(self.session.relpath(path))}>", self.file_stat(path), diff.rstrip(), self.edit_context(new_content, changes), "</Edit>"])
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path)
+            )
+        )
+        return "\n".join(
+            [f"<Edit path={json.dumps(self.session.relpath(path))}>", self.file_stat(path), diff.rstrip(), self.edit_context(new_content, changes), "</Edit>"]
+        )
 
     def preview(self) -> str:
         path, edits = self.parse()
@@ -1143,7 +1178,18 @@ class EditTool(Tool):
         new_content, _changes = self.apply(original, edits)
         if new_content == original:
             raise ToolError("edit produced no changes")
-        return "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path))) or f"Edit({path})"
+        return (
+            "".join(
+                difflib.unified_diff(
+                    original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path)
+                )
+            )
+            or f"Edit({path})"
+        )
+
+    def short_args(self) -> list[str]:
+        path, _edits = self.parse()
+        return [self.session.relpath(path)]
 
     def parse(self) -> tuple[str, list[Edit]]:
         if len(self.args) != 2:
@@ -1266,10 +1312,14 @@ class EditTool(Tool):
 
 class BashTool(Tool):
     NAME = "Bash"
-    DESCRIPTION = "Run one shell command through bash -lc. Args: command string."
+    DESCRIPTION = "Run one bash command in the workspace."
     SIGNATURE = "Bash(command)"
-    EXAMPLE = ('Example args: ["python3 -m py_compile nanocodev1.py"]',)
+    EXAMPLE = (
+        'Check environment, returns exit/stdout/stderr. Args: ["python3 --version"]',
+        'Run a project command. Args: ["python3 -m py_compile nanocode.py"]',
+    )
     MUTATES = True
+    live_output: Callable[[str, str], None] | None = None
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -1283,38 +1333,111 @@ class BashTool(Tool):
             proc = subprocess.Popen(
                 [bash, "-lc", command],
                 cwd=self.session.cwd,
-                text=True,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
-            stdout, stderr = proc.communicate(timeout=self.session.settings.shell_timeout)
-            return self.process_result("BashToolResult", proc.returncode, stdout, stderr)
-        except subprocess.TimeoutExpired:
-            stdout, stderr = self.kill_and_collect(proc)
-            return self.process_result("BashToolResult", -1, stdout, stderr + ("\n" if stderr else "") + "timeout")
+            assert proc.stdout is not None and proc.stderr is not None
+            return self.stream_process(proc)
         except KeyboardInterrupt:
             stdout, stderr = self.kill_and_collect(proc)
             return self.process_result("BashToolResult", -1, stdout, stderr + ("\n" if stderr else "") + "interrupted")
+        finally:
+            if self.live_output is not None:
+                self.live_output("", "")
+
+    def stream_process(self, proc: subprocess.Popen[bytes]) -> str:
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+        timed_out = False
+        deadline = time.monotonic() + self.session.settings.shell_timeout
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    self.kill_process_group(proc)
+                    proc.wait()
+                    self.drain_selector(selector, stdout_parts, stderr_parts)
+                    break
+                for key, _ in selector.select(min(0.2, remaining)):
+                    self.read_stream_chunk(selector, key, stdout_parts, stderr_parts)
+            if proc.returncode is None:
+                proc.wait()
+        finally:
+            selector.close()
+        stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
+        if timed_out:
+            stderr += ("\n" if stderr else "") + "timeout"
+            return self.process_result("BashToolResult", -1, stdout, stderr)
+        return self.process_result("BashToolResult", proc.returncode or 0, stdout, stderr)
+
+    def drain_selector(self, selector: selectors.BaseSelector, stdout_parts: list[str], stderr_parts: list[str]) -> None:
+        for key in list(selector.get_map().values()):
+            while self.read_stream_chunk(selector, key, stdout_parts, stderr_parts):
+                pass
+
+    def read_stream_chunk(
+        self,
+        selector: selectors.BaseSelector,
+        key: selectors.SelectorKey,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+    ) -> bool:
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        if not data:
+            try:
+                selector.unregister(key.fileobj)
+            except Exception:
+                pass
+            try:
+                key.fileobj.close()
+            except Exception:
+                pass
+            return False
+        text = data.decode("utf-8", errors="replace")
+        (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
+        if self.live_output is not None:
+            self.live_output(str(key.data), text)
+        return True
 
     @staticmethod
-    def kill_and_collect(proc: subprocess.Popen[str] | None) -> tuple[str, str]:
-        if proc is None:
-            return "", ""
+    def kill_process_group(proc: subprocess.Popen[Any]) -> None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             proc.kill()
+
+    @classmethod
+    def kill_and_collect(cls, proc: subprocess.Popen[Any] | None) -> tuple[str, str]:
+        if proc is None:
+            return "", ""
+        cls.kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        return stdout or "", stderr or ""
+        return cls.pipe_text(stdout), cls.pipe_text(stderr)
+
+    @staticmethod
+    def pipe_text(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value or ""
 
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = "Run git without a shell. Args: git arguments as strings; optional first arg cwd=path."
+    DESCRIPTION = "Run git with argv args; cwd=path may be the first arg."
     SIGNATURE = "Git([cwd=path,] git_arg...)"
-    EXAMPLE = ('Example args: ["status", "--short"]', 'Example args: ["cwd=src", "diff", "--", "app.py"]')
+    EXAMPLE = (
+        'Read repo status, returns exit/stdout/stderr. Args: ["status","--short"]',
+        'Diff inside a subdir. Args: ["cwd=src","diff","--","app.py"]',
+    )
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
 
     @classmethod
@@ -1357,9 +1480,12 @@ class GitTool(Tool):
 
 class RecallTool(Tool):
     NAME = "Recall"
-    DESCRIPTION = "Retrieve stored tool results by tr.N key. Args: keys or {key, range:[start,end]}."
-    SIGNATURE = "Recall(key[, key...][, range]) or Recall({key|result_key|keys, range?|ranges?})"
-    EXAMPLE = ('Example args: ["tr.1"]', 'Example args: [{"keys":["tr.1","tr.2"],"ranges":[[0,80]]}]')
+    DESCRIPTION = "Recall stored tool results by tr.N key, optionally sliced by output lines."
+    SIGNATURE = "Recall(key...) or Recall({key|keys, ranges?})"
+    EXAMPLE = (
+        'Recall full result. Args: ["tr.1"]',
+        'Recall output line ranges, 0-based end-exclusive. Args: [{"keys":["tr.1","tr.2"],"ranges":[[0,80]]}]',
+    )
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -1492,12 +1618,11 @@ class ContextManager:
         self.latest_keys.append(key)
         return key
 
-    def model_messages(self, base_system: str, turn_messages: list[Json]) -> list[Json]:
-        system = {"role": "system", "content": base_system.strip() + "\n\n" + self.render()}
-        return [system, *turn_messages]
+    def model_messages(self, base_system: str, user_input: str = "") -> list[Json]:
+        return [{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input)}]
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json]) -> None:
-        if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < MAX_PROMPT_TOKENS:
+    def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "") -> None:
+        if self.estimated_tokens(self.model_messages(base_system, user_input)) < MAX_PROMPT_TOKENS:
             return
         try:
             self.session.state.apply(model.compact(self.compaction_input()))
@@ -1508,23 +1633,30 @@ class ContextManager:
             self.session.messages = self.session.messages[-6:]
             self.latest_keys = []
 
-    def render(self) -> str:
+    def render(self, user_input: str = "") -> str:
         sections = [
             ("Environment", self.environment()),
             ("State", self.session.state.format()),
             ("Summary", self.session.state.summary or "(empty)"),
-            ("Error Feedback", self.error_feedback()),
-            ("Tool Result Index", self.tool_index()),
-            ("Discovery Context", self.discovery_context()),
-            ("File Context", self.file_context()),
-            ("Latest Tool Results", self.latest_results()),
             ("Recent Conversation", self.recent_conversation()),
+            ("Tool Result Index", self.tool_index()),
+            ("File Context", self.file_context()),
+            ("Discovery Context", self.discovery_context()),
+            ("Error Feedback", self.error_feedback()),
+            ("Latest Tool Results", self.latest_results()),
+            ("Current User Request", user_input.strip() or "(empty)"),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
 
     def environment(self) -> str:
         tools = [name for name in ("rg", "git", "python3", "sed", "awk", "grep", "jq") if shutil.which(name)]
-        return "\n".join(["- cwd: " + self.session.cwd, "- shell_timeout: " + str(self.session.settings.shell_timeout) + "s", "- shell_tools: " + (", ".join(tools) or "(none)")])
+        return "\n".join(
+            [
+                "- cwd: " + self.session.cwd,
+                "- shell_timeout: " + str(self.session.settings.shell_timeout) + "s",
+                "- shell_tools: " + (", ".join(tools) or "(none)"),
+            ]
+        )
 
     def tool_index(self) -> str:
         return "\n".join(record.summary() for record in self.session.tool_records) or "(empty)"
@@ -1680,14 +1812,31 @@ class ContextManager:
         return "\n".join([record.summary(), "output:", self.bound_output(record.output, record.key).rstrip()])
 
     def bound_output(self, text: str, key: str = "") -> str:
-        if self.estimated_text_tokens(text) <= MAX_TOOL_OUTPUT_TOKENS:
+        estimated = self.estimated_text_tokens(text)
+        if estimated <= MAX_TOOL_OUTPUT_TOKENS:
             return text
         limit = MAX_TOOL_OUTPUT_TOKENS * 4
-        head = text[:limit].rsplit("\n", 1)[0] or text[:limit]
-        note = f'<bounded_output max_tokens="{MAX_TOOL_OUTPUT_TOKENS}" estimated_tokens="{self.estimated_text_tokens(text)}"'
+        head_limit = max(1, limit * 2 // 5)
+        tail_limit = max(1, limit - head_limit)
+        head = self.head_excerpt(text, head_limit)
+        tail = self.tail_excerpt(text, tail_limit)
+        omitted_tokens = max(0, estimated - self.estimated_text_tokens(head) - self.estimated_text_tokens(tail))
+        note = f'<bounded_output omitted="middle" max_tokens="{MAX_TOOL_OUTPUT_TOKENS}" estimated_tokens="{estimated}" omitted_tokens="{omitted_tokens}"'
         note += f' recall="{key}"' if key else ""
         note += "/>"
-        return head.rstrip() + "\n" + note
+        return "\n".join(part for part in (head.rstrip(), note, tail.lstrip()) if part)
+
+    @staticmethod
+    def head_excerpt(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit].rsplit("\n", 1)[0] or text[:limit]
+
+    @staticmethod
+    def tail_excerpt(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[-limit:].split("\n", 1)[-1] or text[-limit:]
 
     def output_path(self, output: str, tool_name: str) -> str:
         match = re.search(r"<" + re.escape(tool_name) + r'\s+path=(".*?")', output)
@@ -1740,31 +1889,29 @@ class ToolRunner:
         self.context = context
         self.input_fn = input_fn
         self.output_fn = output_fn
+        self.live_output: Callable[[str, str], None] | None = None
 
     def run(self, calls: list[ToolCall]) -> list[Json]:
-        messages = []
-        self.context.start_tool_batch()
         self.session.state.turn_tool_calls += len(calls)
         for call in calls:
-            content = self.run_one(call)
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-        return messages
+            self.run_one(call)
+        return []
 
     def run_one(self, call: ToolCall) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return self.finish(call, f"ToolError: unknown tool {call.name}", failed=True)
         tool = tool_class(self.session, call.args)
+        if isinstance(tool, BashTool):
+            tool.live_output = self.live_output
         started = time.monotonic()
         try:
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                self.output_fn(self.display(call, tool, "auto approved"))
+                self.output_fn(self.approval_display(call, tool, "auto"))
             elif needs_confirmation:
                 if not self.confirm(call, tool):
                     return self.finish(call, "Cancelled: user refused tool call", failed=True, elapsed=time.monotonic() - started)
-            else:
-                self.output_fn(self.display(call, tool, "running"))
             output = tool.call()
         except Exception as error:
             output = f"ToolError: {error}"
@@ -1778,8 +1925,7 @@ class ToolRunner:
         else:
             self.update_code_index(call, output)
         visible = self.context.bound_output(output, key)
-        status = "failed" if failed else "done"
-        self.output_fn(self.finish_display(call.name, key, status, output, elapsed))
+        self.output_fn(self.finish_display(call, key, output, failed=failed))
         return f"result_key: {key}\n{visible}"
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
@@ -1794,27 +1940,42 @@ class ToolRunner:
         CodeIndex(self.session).update(paths)
 
     def confirm(self, call: ToolCall, tool: Tool) -> bool:
-        self.output_fn(self.display(call, tool, "approval required"))
-        answer = self.input_fn("Approve " + tool.NAME + "? [y/N] ").strip().lower()
-        return answer in {"y", "yes"}
+        self.output_fn(self.approval_display(call, tool, "confirm"))
+        answer = self.input_fn("Approve " + tool.NAME + "? [Y/n] ").strip().lower()
+        return answer not in {"n", "no"}
 
-    def display(self, call: ToolCall, tool: Tool, status: str) -> str:
-        lines = ["tool " + tool.NAME + "  " + status]
-        if call.intention:
-            lines.append("  why   " + self.oneline(call.intention, 220))
-        preview = tool.preview().rstrip()
-        if preview:
-            lines.append("  call  " + self.oneline(preview, 260))
-        return "\n".join(lines)
+    def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
+        header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
+        if tool.NAME not in {"Edit", "CreateFile"}:
+            return header
+        preview = self.preview_block(tool.preview())
+        return header + (("\n" + preview) if preview else "")
 
-    def finish_display(self, name: str, key: str, status: str, output: str, elapsed: float | None) -> str:
-        tail = [key, status]
-        if elapsed is not None:
-            tail.append(StatusBar.duration(elapsed))
-        lines = ["tool " + name + "  " + "  ".join(tail)]
-        if status == "failed":
+    def preview_block(self, preview: str, *, max_lines: int = 80) -> str:
+        lines = preview.rstrip().splitlines()
+        if not lines:
+            return ""
+        truncated = len(lines) > max_lines
+        lines = lines[:max_lines]
+        if truncated:
+            lines.append("... preview truncated ...")
+        return "\n".join(["  preview"] + ["  " + line for line in lines])
+
+    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool) -> str:
+        line = "tool " + self.short_call(call) + " -> " + key + (" failed" if failed else "")
+        lines = [line]
+        if failed:
             lines.append("  error " + self.oneline(output, 220))
         return "\n".join(lines)
+
+    def short_call(self, call: ToolCall) -> str:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        try:
+            args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
+        except Exception:
+            args = [Tool.compact(arg) for arg in call.args]
+        text = " ".join([call.name, *args]).strip()
+        return self.oneline(text, 200)
 
     @staticmethod
     def oneline(text: str, limit: int) -> str:
@@ -1967,7 +2128,7 @@ class ModelClient:
 
     def compact(self, context: str) -> Json:
         prompt = """
-Compact the nanocodev1 working context.
+Compact the nanocode working context.
 Return exactly one JSON object with keys: summary, goal, plan, known.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
@@ -2184,7 +2345,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             params["extra_body"] = extra
 
     def assistant_message(self, message: Any) -> Json:
-        data: Json = {"role": "assistant", "content": getattr(message, "content", None)}
+        data: Json = {"role": "assistant", "content": self.message_field(message, "content")}
+        reasoning_content = self.message_field(message, "reasoning_content")
+        if reasoning_content:
+            data["reasoning_content"] = reasoning_content
         tool_calls = []
         for call in getattr(message, "tool_calls", None) or []:
             tool_calls.append(
@@ -2197,6 +2361,22 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         if tool_calls:
             data["tool_calls"] = tool_calls
         return data
+
+    @staticmethod
+    def message_field(message: Any, key: str) -> Any:
+        if isinstance(message, dict):
+            return message.get(key)
+        value = getattr(message, key, None)
+        if value is not None:
+            return value
+        extra = getattr(message, "model_extra", None)
+        if isinstance(extra, dict) and key in extra:
+            return extra[key]
+        if hasattr(message, "model_dump"):
+            dumped = message.model_dump(mode="json")
+            if isinstance(dumped, dict):
+                return dumped.get(key)
+        return None
 
     def tool_calls(self, message: Any) -> list[ToolCall]:
         calls = []
@@ -2219,15 +2399,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 
 class Agent:
-    SYSTEM_PROMPT = """You are nanocodev1, a compact terminal coding agent.
-
-Available tools: Read, LineCount, List, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall.
-Call tools with {"intention":"...","args":[...]}.
-Use File Context as current source truth when present. Treat Discovery Context as leads; Read before editing exact code.
-Use Recall when a tr.N result is relevant but no longer visible in full.
-Inspect before editing. Keep changes small. Do not overwrite unrelated user changes.
-For final answers, respond with normal assistant text and no tool call.
-Reply in the user's language, directly and concisely.
+    SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
+Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall. Call as {"intention":"why","args":[...]}.
+Trust File Context; Discovery is leads. Recall tr.N when needed. Inspect/read before edits. Keep changes small; never overwrite user work.
+Final: text only, user's language.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -2241,23 +2416,22 @@ Reply in the user's language, directly and concisely.
         self.session.state.goal = user_input.strip()
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
+        self.context.start_tool_batch()
         user_message = {"role": "user", "content": user_input}
-        turn_messages = [user_message]
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
-            assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
+            _assistant, tool_calls, content = self.model.request(self.messages(user_input))
             if not tool_calls:
                 answer = content.strip() or "(empty response)"
                 self.session.messages.extend([user_message, {"role": "assistant", "content": answer}])
                 return answer
-            turn_messages.append(assistant)
-            turn_messages.extend(self.tools.run(tool_calls))
+            self.tools.run(tool_calls)
         self.session.messages.extend([user_message, {"role": "assistant", "content": f"Stopped after max_agent_steps={self.session.settings.max_steps}"}])
         return f"Stopped after max_agent_steps={self.session.settings.max_steps}"
 
-    def messages(self, turn_messages: list[Json]) -> list[Json]:
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
+    def messages(self, user_input: str) -> list[Json]:
+        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / MAX_PROMPT_TOKENS))
         return messages
@@ -2339,9 +2513,11 @@ class UiPrinter:
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith("tool "):
             return self.tool_segments(text)
+        if text.startswith("approve ") or text.startswith("auto "):
+            return self.approval_segments(text)
         if text.startswith("[done in "):
             return [("ansibrightblack", text + "\n")]
-        if text.startswith("nanocodev1 "):
+        if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
@@ -2351,10 +2527,10 @@ class UiPrinter:
         segments = []
         for line in text.splitlines() or [""]:
             if line.startswith("tool "):
-                head, sep, tail = line.partition("  ")
-                segments.extend([("ansibrightblack", "tool "), ("ansicyan", head[5:])])
-                if sep:
-                    segments.extend([("ansibrightblack", sep), (self.tool_status_style(tail), tail)])
+                parts = line.split(" ", 4)
+                name = parts[1] if len(parts) > 1 else ""
+                rest = line[len("tool " + name) :]
+                segments.extend([("ansibrightblack", "tool "), ("ansicyan", name), (self.tool_status_style(rest), rest)])
             elif line.startswith("  error "):
                 segments.extend([("ansibrightblack", "  error "), ("ansired", line[8:])])
             elif line.startswith("  "):
@@ -2363,6 +2539,24 @@ class UiPrinter:
             else:
                 segments.append(("ansiwhite", line))
             segments.append(("", "\n"))
+        return segments
+
+    def approval_segments(self, text: str) -> list[tuple[str, str]]:
+        lines = text.splitlines() or [text]
+        head, _, rest = lines[0].partition(" ")
+        style = "ansiyellow" if head == "approve" else "ansiblue"
+        segments = [(style, head), ("ansibrightblack", " " + rest + "\n")]
+        if len(lines) <= 1:
+            return segments
+        if lines[1].strip() == "preview":
+            segments.append(("ansibrightblack", "  preview\n"))
+            preview = "\n".join(line[2:] if line.startswith("  ") else line for line in lines[2:])
+            preview_segments = self.indent_segments(self.diff_segments(preview), "  ")
+            segments.extend(preview_segments)
+            if preview_segments and not preview_segments[-1][1].endswith("\n"):
+                segments.append(("", "\n"))
+            return segments
+        segments.extend(("ansibrightblack", line + "\n") for line in lines[1:])
         return segments
 
     @staticmethod
@@ -2377,6 +2571,67 @@ class UiPrinter:
             return "ansigreen"
         return "ansibrightblack"
 
+    def diff_segments(self, text: str) -> list[tuple[str, str]]:
+        segments: list[tuple[str, str]] = []
+        old_line: int | None = None
+        new_line: int | None = None
+        lines = text.splitlines()
+
+        def hunk_start(part: str, prefix: str) -> int | None:
+            if not part.startswith(prefix):
+                return None
+            try:
+                return int(part[1:].split(",", 1)[0])
+            except ValueError:
+                return None
+
+        def number(old: int | None, new: int | None) -> None:
+            old_text = "" if old is None else str(old)
+            new_text = "" if new is None else str(new)
+            segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} | "))
+
+        for index, line in enumerate(lines):
+            suffix = "\n" if index < len(lines) - 1 else ""
+            if line.startswith("@@"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    old_line = hunk_start(parts[1], "-")
+                    new_line = hunk_start(parts[2], "+")
+                number(None, None)
+                segments.append(("ansicyan", line + suffix))
+            elif line.startswith(("---", "+++")):
+                number(None, None)
+                segments.append(("ansibrightblack", line + suffix))
+            elif line.startswith("+"):
+                number(None, new_line)
+                segments.append(("ansigreen", line + suffix))
+                new_line = None if new_line is None else new_line + 1
+            elif line.startswith("-"):
+                number(old_line, None)
+                segments.append(("ansired", line + suffix))
+                old_line = None if old_line is None else old_line + 1
+            elif line.startswith(" "):
+                number(old_line, new_line)
+                segments.append(("ansiwhite", line + suffix))
+                old_line = None if old_line is None else old_line + 1
+                new_line = None if new_line is None else new_line + 1
+            else:
+                number(None, None)
+                segments.append(("ansiwhite", line + suffix))
+        return segments
+
+    @staticmethod
+    def indent_segments(segments: list[tuple[str, str]], indent: str) -> list[tuple[str, str]]:
+        indented: list[tuple[str, str]] = []
+        at_start = True
+        for style, text in segments:
+            for part in text.splitlines(keepends=True):
+                if at_start:
+                    indented.append(("ansibrightblack", indent))
+                indented.append((style, part))
+                at_start = part.endswith("\n")
+        return indented
+
     def text_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
@@ -2389,6 +2644,62 @@ class UiPrinter:
                 style = "ansicyan"
             segments.append((style, line + "\n"))
         return segments
+
+
+class BashLivePreview:
+    HEIGHT: ClassVar[int] = 6
+    MAX_CHARS: ClassVar[int] = 8000
+
+    def __init__(self):
+        self.output = create_output(sys.stderr)
+        self.active = False
+        self.rendered_lines = 0
+        self.text = ""
+
+    def start(self) -> None:
+        if not sys.stderr.isatty():
+            return
+        self.active = True
+        self.rendered_lines = 0
+        self.text = ""
+        self.render()
+
+    def update(self, text: str) -> None:
+        if not self.active:
+            return
+        self.text = (self.text + text)[-self.MAX_CHARS :]
+        self.render()
+
+    def finish(self) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self.rendered_lines = 0
+
+    def render(self) -> None:
+        if not self.active:
+            return
+        lines = self.frame_lines()
+        if self.rendered_lines:
+            self.output.write_raw(f"\x1b[{self.rendered_lines}A")
+        for line in lines:
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            print_formatted_text(FormattedText([("ansibrightblack", line)]), output=self.output, end="", flush=True)
+            self.output.write_raw("\n")
+        self.output.flush()
+        self.rendered_lines = len(lines)
+
+    def frame_lines(self) -> list[str]:
+        width = max(20, shutil.get_terminal_size((120, 20)).columns)
+        body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
+        body = body + [""] * (self.HEIGHT - len(body))
+        return ["  output"] + ["  " + self.fit(line, width - 2) for line in body]
+
+    @staticmethod
+    def fit(text: str, width: int) -> str:
+        text = text.expandtabs(4)
+        return text if len(text) <= width else text[: max(0, width - 3)] + "..."
 
 
 class StatusBar:
@@ -2531,14 +2842,17 @@ Tools:
         self.output_fn = output_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
+        self.live_preview = BashLivePreview()
+        self.live_status_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.input_history = self.make_input_history() if self.interactive_input else None
         self.input_completer = self.make_completer()
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
+        self.agent.tools.live_output = self.tool_live_output
 
     def run(self) -> int:
-        self.emit(f"nanocodev1 {__version__}. /help for commands.")
+        self.emit(f"nanocode {__version__}. /help for commands.")
         while True:
             try:
                 user_input = self.read_input()
@@ -2673,6 +2987,23 @@ Tools:
 
     def tool_input(self, prompt: str = "") -> str:
         return self.with_status_paused(lambda: self.input_fn(prompt))
+
+    def tool_live_output(self, _stream: str, text: str) -> None:
+        if not self.ui.color:
+            return
+        if text:
+            if not self.live_preview.active:
+                self.live_status_paused = self.status_bar.is_running()
+                if self.live_status_paused:
+                    self.status_bar.stop()
+                self.live_preview.start()
+            self.live_preview.update(text)
+            return
+        if self.live_preview.active:
+            self.live_preview.finish()
+        if self.live_status_paused:
+            self.status_bar.start(reset=False)
+            self.live_status_paused = False
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
@@ -2863,6 +3194,7 @@ Tools:
             event.app.exit(exception=KeyboardInterrupt())
 
         for number in range(1, 10):
+
             @bindings.add(str(number), eager=True)
             def _digit(event, number=number):
                 if state["search"]:
@@ -3059,10 +3391,12 @@ Tools:
         self.session.state.apply(data)
         self.session.messages = self.session.messages[-6:]
         self.agent.context.latest_keys = []
-        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, [])
+        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, "")
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / MAX_PROMPT_TOKENS))
-        return "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+        return (
+            "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+        )
 
     def index(self, args: str) -> str:
         value = args.strip()
@@ -3225,7 +3559,7 @@ Tools:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="nanocodev1")
+    parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
