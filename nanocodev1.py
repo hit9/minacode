@@ -1402,8 +1402,17 @@ class BashTool(Tool):
             "maxItems": 1,
         }
 
-    def call(self) -> str:
+    def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
+        if not command.strip():
+            raise ToolError("Bash command must be non-empty")
+        return command
+
+    def short_args(self) -> list[str]:
+        return [self.command()]
+
+    def call(self) -> str:
+        command = self.command()
         bash = shutil.which("bash") or "bash"
         proc = None
         try:
@@ -1997,12 +2006,13 @@ class ToolRunner:
     def run_one(self, call: ToolCall) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return self.finish(call, f"ToolError: unknown tool {call.name}", failed=True)
+            return self.reject(call, f"ToolError: unknown tool {call.name}")
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started = time.monotonic()
         try:
+            tool.short_args()
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
                 self.output_fn(self.approval_display(call, tool, "auto"))
@@ -2010,10 +2020,18 @@ class ToolRunner:
                 if not self.confirm(call, tool):
                     return self.finish(call, "Cancelled: user refused tool call", failed=True, elapsed=time.monotonic() - started)
             output = tool.call()
+        except ToolError as error:
+            return self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
         except Exception as error:
             output = f"ToolError: {error}"
             return self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
         return self.finish(call, output, elapsed=time.monotonic() - started)
+
+    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
+        if self.session.settings.debug:
+            return self.finish(call, output, failed=True, elapsed=elapsed)
+        self.session.record_tool_error("-", call.name, call.args, call.intention, output)
+        return output
 
     def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
@@ -2695,7 +2713,6 @@ class BashLivePreview:
         self.active = True
         self.rendered_lines = 0
         self.text = ""
-        self.render()
 
     def update(self, text: str) -> None:
         if not self.active:
@@ -2713,6 +2730,7 @@ class BashLivePreview:
         if not self.active:
             return
         lines = self.frame_lines()
+        previous = self.rendered_lines
         if self.rendered_lines:
             self.output.write_raw(f"\x1b[{self.rendered_lines}A")
         for line in lines:
@@ -2720,14 +2738,19 @@ class BashLivePreview:
             self.output.erase_end_of_line()
             print_formatted_text(FormattedText([("ansibrightblack", line)]), output=self.output, end="", flush=True)
             self.output.write_raw("\n")
+        for _ in range(max(0, previous - len(lines))):
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            self.output.write_raw("\n")
+        if previous > len(lines):
+            self.output.write_raw(f"\x1b[{previous - len(lines)}A")
         self.output.flush()
         self.rendered_lines = len(lines)
 
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
-        body = body + [""] * (self.HEIGHT - len(body))
-        return ["  output"] + ["  " + self.fit(line, width - 2) for line in body]
+        return ["  output"] + ["  " + self.fit(line, width - 2) for line in body] if body else []
 
     @staticmethod
     def fit(text: str, width: int) -> str:
