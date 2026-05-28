@@ -31,7 +31,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from openai import OpenAI
-from prompt_toolkit import print_formatted_text
+from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
@@ -44,10 +44,11 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import Float, FloatContainer, HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor
 from prompt_toolkit.output import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import SearchToolbar
 
 __version__ = "0.1.0"
 
@@ -2957,6 +2958,9 @@ Tools:
                 "choice.disabled": "ansibrightblack",
                 "bottom-toolbar": "noreverse bg:default fg:default",
                 "bottom-toolbar.text": "noreverse bg:default fg:default",
+                "search-toolbar": "noreverse bg:default fg:default",
+                "search-toolbar.prompt": "ansicyan",
+                "search-toolbar.text": "ansiwhite",
             }
         )
 
@@ -2989,7 +2993,13 @@ Tools:
             multiline=False,
             accept_handler=accept,
         )
-        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt)])
+        search_toolbar = SearchToolbar()
+        control = BufferControl(
+            buffer=buffer,
+            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(prompt)],
+            search_buffer_control=search_toolbar.control,
+            preview_search=True,
+        )
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
 
@@ -3005,10 +3015,19 @@ Tools:
             else:
                 event.app.exit(exception=EOFError())
 
+        @bindings.add("c-r", eager=True)
+        def _ctrl_r(event):
+            direction = pt_search.SearchDirection.BACKWARD
+            if event.app.layout.current_control is search_toolbar.control:
+                pt_search.do_incremental_search(direction, count=event.arg)
+            else:
+                pt_search.start_search(direction=direction)
+
         root = FloatContainer(
             HSplit(
                 [
                     input_window,
+                    search_toolbar,
                     Window(
                         FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
                         style="class:bottom-toolbar",
