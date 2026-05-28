@@ -3355,7 +3355,7 @@ Tools:
         self.clear_transient_tool_output()
         if self.ui.color and text.strip():
             self.emit()
-            self.emit(text)
+            self.ui.emit_answer(text)
             self.emit()
             return
         self.emit(text)
