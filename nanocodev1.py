@@ -495,6 +495,7 @@ class Tool:
     SIGNATURE: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     MUTATES: ClassVar[bool] = False
+    STORES_RESULT: ClassVar[bool] = True
 
     def __init__(self, session: Session, args: list[Any]):
         self.session = session
@@ -512,7 +513,7 @@ class Tool:
                     "type": "object",
                     "properties": {
                         "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
-                        "args": {"type": "array", "items": cls.arg_schema()},
+                        "args": cls.args_schema(),
                     },
                     "required": ["intention", "args"],
                     "additionalProperties": False,
@@ -523,6 +524,10 @@ class Tool:
     @classmethod
     def arg_schema(cls) -> Json:
         return {"anyOf": [{"type": "object"}, {"type": "array"}, {"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]}
+
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {"type": "array", "items": cls.arg_schema()}
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
@@ -1094,6 +1099,15 @@ class CreateFileTool(Tool):
     def arg_schema(cls) -> Json:
         return {"type": "string"}
 
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+        }
+
     def preview(self) -> str:
         path, content = self.payload()
         lines = content.splitlines(True)
@@ -1325,6 +1339,15 @@ class BashTool(Tool):
     def arg_schema(cls) -> Json:
         return {"type": "string"}
 
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 1,
+        }
+
     def call(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
         bash = shutil.which("bash") or "bash"
@@ -1486,10 +1509,30 @@ class RecallTool(Tool):
         'Recall full result. Args: ["tr.1"]',
         'Recall output line ranges, 0-based end-exclusive. Args: [{"keys":["tr.1","tr.2"],"ranges":[[0,80]]}]',
     )
+    STORES_RESULT = False
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {"anyOf": [{"type": "string"}, {"type": "object"}]}
+        range_schema = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
+        return {
+            "anyOf": [
+                {"type": "string", "pattern": "^tr\\.\\d+$"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
+                        "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
+                        "ranges": {"type": "array", "items": range_schema, "minItems": 1},
+                    },
+                    "anyOf": [{"required": ["key"]}, {"required": ["keys"]}],
+                    "additionalProperties": False,
+                },
+            ]
+        }
+
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
 
     def call(self) -> str:
         requests = self.requests()
@@ -1919,6 +1962,13 @@ class ToolRunner:
         return self.finish(call, output, elapsed=time.monotonic() - started)
 
     def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None) -> str:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is not None and not tool_class.STORES_RESULT:
+            if failed:
+                key = "-"
+                self.session.record_tool_error(key, call.name, call.args, call.intention, output)
+            self.output_fn(self.finish_display(call, "", output, failed=failed))
+            return output
         key = self.context.store_tool_result(call, output)
         if failed:
             self.session.record_tool_error(key, call.name, call.args, call.intention, output)
@@ -1962,7 +2012,7 @@ class ToolRunner:
         return "\n".join(["  preview"] + ["  " + line for line in lines])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool) -> str:
-        line = "tool " + self.short_call(call) + " -> " + key + (" failed" if failed else "")
+        line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + (" failed" if failed else "")
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
