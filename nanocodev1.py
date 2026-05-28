@@ -493,6 +493,14 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
+    def forget_tool_results(self, keys: list[str]) -> int:
+        wanted = set(keys)
+        count = sum(1 for key in wanted if key in self.tool_results)
+        for key in wanted:
+            self.tool_results.pop(key, None)
+        self.tool_records = [record for record in self.tool_records if record.key not in wanted]
+        return count
+
     def record_tool_error(self, key: str, name: str, args: list[Any], intention: str, error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, list(args), intention, " ".join(error.split())))
         self.tool_errors = self.tool_errors[-5:]
@@ -1685,6 +1693,27 @@ class RecallTool(Tool):
         return "\n".join("\n".join(lines[start:end]) for start, end in ranges if end > start)
 
 
+class ForgetTool(Tool):
+    NAME = "Forget"
+    DESCRIPTION = "Forget stored tool result keys that are no longer useful."
+    SIGNATURE = "Forget(key...)"
+    EXAMPLE = ('Args: ["tr.1","tr.2"]',)
+    STORES_RESULT = False
+
+    @classmethod
+    def arg_schema(cls) -> Json:
+        return {"type": "string", "pattern": "^tr\\.\\d+$"}
+
+    @classmethod
+    def args_schema(cls) -> Json:
+        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+
+    def call(self) -> str:
+        keys = list(dict.fromkeys(self.strings(min_count=1)))
+        count = self.session.forget_tool_results(keys)
+        return f"Forgot {count}/{len(keys)} tool results"
+
+
 TOOLS: tuple[type[Tool], ...] = (
     ReadTool,
     LineCountTool,
@@ -1696,6 +1725,7 @@ TOOLS: tuple[type[Tool], ...] = (
     BashTool,
     GitTool,
     RecallTool,
+    ForgetTool,
 )
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
@@ -2479,8 +2509,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall. Call as {"intention":"why","args":[...]}.
-Trust File Context; Discovery is leads. Recall tr.N when needed. Inspect/read before edits. Keep changes small; never overwrite user work.
+Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
+Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 Final: concise markdown, user's language.
 """
 
@@ -2908,7 +2938,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall.
+  Read, LineCount, List, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
