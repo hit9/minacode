@@ -83,6 +83,10 @@ class ModelError(NanocodeError):
     pass
 
 
+class ModelRequestRetry(NanocodeError):
+    pass
+
+
 class ToolError(NanocodeError):
     pass
 
@@ -377,6 +381,8 @@ class AgentState:
     turn_step: int = 0
     turn_tool_calls: int = 0
     debug_count: int = 0
+    current_model_call_started_at: float = 0.0
+    manual_model_retry_requested: bool = False
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
@@ -2279,9 +2285,18 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
-        if provider.resolved_api() == "anthropic":
-            return self.anthropic_request(messages, tools)
-        return self.chat_request(messages, tools)
+        self.session.state.current_model_call_started_at = time.monotonic()
+        try:
+            if provider.resolved_api() == "anthropic":
+                return self.anthropic_request(messages, tools)
+            return self.chat_request(messages, tools)
+        except KeyboardInterrupt:
+            if self.session.state.manual_model_retry_requested:
+                self.session.state.manual_model_retry_requested = False
+                raise ModelRequestRetry() from None
+            raise
+        finally:
+            self.session.state.current_model_call_started_at = 0.0
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
@@ -2610,7 +2625,12 @@ Output: concise markdown, USER'S LANGUAGE.
         turn_messages: list[Json] = []
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
-            _assistant, tool_calls, content = self.model.request(self.messages(user_input, turn_messages))
+            while True:
+                try:
+                    _assistant, tool_calls, content = self.model.request(self.messages(user_input, turn_messages))
+                    break
+                except ModelRequestRetry:
+                    continue
             if not tool_calls:
                 answer = content.strip() or "(empty response)"
                 self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": answer}])
@@ -2891,6 +2911,60 @@ class BashLivePreview:
         return text if len(text) <= width else text[: max(0, width - 3)] + "..."
 
 
+class ModelRetryShortcut:
+    CTRL_G = 0x07
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.fd: int | None = None
+        self.original_attrs = None
+        self.previous_handler = None
+
+    def __enter__(self):
+        if not sys.stdin.isatty() or not hasattr(signal, "SIGQUIT"):
+            return self
+        try:
+            import termios
+
+            self.fd = sys.stdin.fileno()
+            self.original_attrs = termios.tcgetattr(self.fd)
+            attrs = list(self.original_attrs)
+            attrs[6] = list(attrs[6])
+            attrs[6][termios.VQUIT] = self.control_char(attrs[6], self.CTRL_G)
+            if hasattr(termios, "VREPRINT"):
+                attrs[6][termios.VREPRINT] = self.control_char(attrs[6], os.fpathconf(self.fd, "PC_VDISABLE"))
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
+            self.previous_handler = signal.getsignal(signal.SIGQUIT)
+            signal.signal(signal.SIGQUIT, self.handle_signal)
+        except Exception:
+            self.fd = None
+            self.original_attrs = None
+        return self
+
+    def __exit__(self, *args) -> None:
+        try:
+            import termios
+
+            if self.previous_handler is not None:
+                signal.signal(signal.SIGQUIT, self.previous_handler)
+            if self.fd is not None and self.original_attrs is not None:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_attrs)
+        except Exception:
+            pass
+        self.fd = None
+        self.original_attrs = None
+        self.previous_handler = None
+
+    @staticmethod
+    def control_char(chars: list[Any], value: int) -> int | bytes:
+        return bytes([value]) if chars and isinstance(chars[0], bytes) else value
+
+    def handle_signal(self, _signum: int, _frame: Any) -> None:
+        if self.session.state.current_model_call_started_at > 0:
+            self.session.state.manual_model_retry_requested = True
+            raise KeyboardInterrupt
+
+
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
 
@@ -2948,7 +3022,7 @@ class StatusBar:
         columns = shutil.get_terminal_size((120, 20)).columns
         if len(text) >= columns:
             text = text[: max(0, columns - 4)] + "..."
-        return self.sweep_fragments(text) if sweep else [("ansicyan", text)]
+        return self.sweep_fragments(text, elapsed) if sweep else [("ansicyan", text)]
 
     def text(self, elapsed: float, *, show_elapsed: bool) -> str:
         provider = self.session.config.provider
@@ -2973,23 +3047,29 @@ class StatusBar:
             parts.extend(
                 ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
             )
+            if elapsed >= max(30, provider.timeout * 0.5):
+                parts.append("ctrl-g retry")
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed:
             parts.append(self.duration(elapsed))
         return " | ".join(parts)
 
-    def sweep_fragments(self, text: str) -> list[tuple[str, str]]:
+    def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
         if not text:
             return [("", "")]
         width = max(1, len(text) - 1)
         sweep = (time.monotonic() * 0.55) % 1.0
+        heat = min(1.0, elapsed / max(30, self.session.config.provider.timeout))
         fragments = []
         for index, char in enumerate(text):
             ratio = index / width
             red = round(75 + (180 - 75) * ratio)
             green = round(180 + (130 - 180) * ratio)
             blue = 235
+            red = round(red + (240 - red) * heat)
+            green = round(green * (1 - 0.65 * heat))
+            blue = round(blue * (1 - 0.75 * heat))
             intensity = max(0.0, 1.0 - abs(ratio - sweep) * 5.0) ** 2
             red = round(red + (230 - red) * intensity)
             green = round(green + (245 - green) * intensity)
@@ -3067,13 +3147,15 @@ Tools:
             try:
                 self.status_bar.start()
                 try:
-                    answer = self.agent.run(user_input)
+                    with ModelRetryShortcut(self.session):
+                        answer = self.agent.run(user_input)
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
+                self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
