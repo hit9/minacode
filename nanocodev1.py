@@ -1083,11 +1083,11 @@ class InspectCodeTool(Tool):
 
 class CreateFileTool(Tool):
     NAME = "CreateFile"
-    DESCRIPTION = "Create a new UTF-8 file; fails if the file already exists."
+    DESCRIPTION = "Create one new UTF-8 file; fails if it already exists."
     SIGNATURE = "CreateFile(path, content)"
     EXAMPLE = (
-        'Create a file, returns path/created/chars. Args: ["notes.txt","hello\\n"]',
-        'Create parent dirs inside workspace if needed. Args: ["demo/main.cpp","int main() {}\\n"]',
+        'Create one file only; returns path/created/chars. Args: ["notes.txt","hello\\n"]',
+        'Call separately for each file. Args: ["demo/main.cpp","int main() {}\\n"]',
     )
     MUTATES = True
 
@@ -1099,7 +1099,11 @@ class CreateFileTool(Tool):
     def args_schema(cls) -> Json:
         return {
             "type": "array",
-            "items": {"type": "string"},
+            "prefixItems": [
+                {"type": "string", "description": "path"},
+                {"type": "string", "description": "content"},
+            ],
+            "items": False,
             "minItems": 2,
             "maxItems": 2,
         }
@@ -1127,10 +1131,12 @@ class CreateFileTool(Tool):
         return [self.session.relpath(path)]
 
     def payload(self) -> tuple[str, str]:
+        if self.args and all(isinstance(arg, list) and len(arg) == 2 for arg in self.args):
+            raise ToolError('CreateFile creates one file per call; call it separately for each file. Args must be ["path","content"].')
         if len(self.args) != 2:
-            raise ToolError("CreateFile requires path and content")
+            raise ToolError('CreateFile requires exactly ["path","content"]')
         if not isinstance(self.args[0], str):
-            raise ToolError("CreateFile path must be a string")
+            raise ToolError('CreateFile path must be a string; args must be ["path","content"]')
         path = self.session.resolve_path(str(self.args[0]))
         content = str(self.args[1])
         return path, content
