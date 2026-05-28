@@ -1,7 +1,7 @@
 """
 nanocode
 ~~~~~~~~
-A compact, single-file rewrite of nanocode's core CLI loop.
+A small terminal coding agent written in Python.
 """
 
 from __future__ import annotations

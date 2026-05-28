@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 - 2026-05-28
+
+### Added
+- Added cached system information to the top of model context: cwd, OS, arch, shell timeout, and detected commands.
+- Added configurable `runtime.max_context_tokens`.
+- Added key behavior tests for tools, agent loop, context management, provider adaptation, and code index integration.
+
+### Changed
+- Replaced the legacy implementation with the smaller v1 core in `nanocode.py`.
+- Rebuilt README around the current command set, context design, and screenshot.
+- Simplified tool schemas for broader OpenAI-compatible provider support.
+- Improved tool-call display for Search and Recall, and surfaced intermediate assistant progress before tool calls.
+
+### Fixed
+- Fixed Moonshot/Kimi-compatible tool schemas by avoiding unsupported schema forms.
+- Fixed repeated command probing in context rendering by caching system command detection per session.
 
 ## 0.4.11 - 2026-05-24
 

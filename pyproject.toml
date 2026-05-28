@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nanocode-cli"
 version = "0.5.0"
-description = "A lightweight terminal-based AI coding assistant"
+description = "A small terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
