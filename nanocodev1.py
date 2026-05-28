@@ -131,6 +131,7 @@ class ProviderConfig:
     key: str = ""
     model: str = ""
     api: str = "auto"
+    prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
     reasoning: str = "medium"
@@ -140,6 +141,7 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json) -> "ProviderConfig":
         api = Config.str(data, "api", "auto")
+        prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
         for key, value, choices in (("api", api, PROVIDER_API_CHOICES), ("reasoning", reasoning, REASONING_CHOICES), ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES)):
@@ -150,6 +152,7 @@ class ProviderConfig:
             key=Config.str(data, "key"),
             model=Config.str(data, "model"),
             api=api,
+            prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
             reasoning=reasoning,
@@ -193,6 +196,18 @@ class ProviderConfig:
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+
+    @staticmethod
+    def clean_prompt_cache_key(value: str) -> str:
+        value = value.strip()
+        if not value:
+            return "auto"
+        lower = value.lower()
+        if lower in {"auto", "off"}:
+            return lower
+        if len(value) > 64 or any(char.isspace() for char in value):
+            raise ConfigError("provider.prompt_cache_key must be auto, off, or a stable key up to 64 chars without whitespace")
+        return value
 
 
 @dataclass
@@ -298,6 +313,7 @@ url = ""
 key = ""
 model = ""
 api = "auto"
+prompt_cache_key = "auto"
 # available_models = ["gpt-5", "gpt-5-mini"]
 # temperature = 0.2
 reasoning = "medium"
@@ -346,6 +362,7 @@ class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_prompt_tokens: int = 0
 
     def add(self, usage: Any) -> None:
         def value(*keys: str) -> int:
@@ -355,13 +372,22 @@ class ModelUsage:
                     return int(raw or 0)
             return 0
 
+        def nested(container: str, key: str) -> int:
+            raw = usage.get(container) if isinstance(usage, dict) else getattr(usage, container, None)
+            if raw is None:
+                return 0
+            value = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+            return int(value or 0) if value is not None else 0
+
         self.calls += 1
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
+        cached_prompt_tokens = value("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens") or nested("prompt_tokens_details", "cached_tokens") or nested("input_tokens_details", "cached_tokens")
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
+        self.cached_prompt_tokens += cached_prompt_tokens
 
 
 @dataclass
@@ -470,7 +496,7 @@ class Session:
         key = f"tr.{self.tool_counter}"
         self.tool_results[key] = output
         self.tool_records.append(ToolResultRecord(key, name, list(args), intention, output))
-        if len(self.tool_results) > 80:
+        if len(self.tool_results) > 400:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
         return key
@@ -2123,6 +2149,9 @@ class ModelClient:
             params["tools"] = tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
+        prompt_cache_key = self.prompt_cache_key(provider, tools)
+        if prompt_cache_key:
+            params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api="chat", model=provider.model, params=params, tools=tools)
@@ -2169,6 +2198,32 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             max_retries=0,
             default_headers={"User-Agent": HTTP_USER_AGENT},
         )
+
+    def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
+        configured = provider.prompt_cache_key
+        if configured == "off":
+            return ""
+        if configured != "auto":
+            return configured
+        payload = {
+            "api": provider.resolved_api(),
+            "cwd": self.session.cwd,
+            "host": provider.host(),
+            "model": provider.model,
+            "tools": self.tool_schema_names(tools),
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return "nanocode-" + digest[:24]
+
+    @staticmethod
+    def tool_schema_names(tools: list[Json] | None) -> str:
+        names = []
+        for schema in tools or []:
+            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
+            name = str(function.get("name") or schema.get("name") or schema.get("type") or "")
+            if name:
+                names.append(name)
+        return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
@@ -2414,6 +2469,7 @@ class CommandCompleter(Completer):
         "provider.url",
         "provider.key",
         "provider.api",
+        "provider.prompt_cache_key",
         "provider.reasoning",
         "provider.chat_reasoning",
         "provider.available_models",
@@ -2425,6 +2481,7 @@ class CommandCompleter(Completer):
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
+        "provider.prompt_cache_key": ("auto", "off"),
         "provider.reasoning": REASONING_CHOICES,
         "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",),
@@ -2721,6 +2778,8 @@ class StatusBar:
         if self.session.settings.debug:
             parts.append("api " + provider.resolved_api())
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
+        if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
+            parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
         if self.session.settings.yolo:
             parts.append("yolo")
         if show_elapsed:
@@ -3271,7 +3330,7 @@ Tools:
                 f"tool_results: {len(self.session.tool_results)}",
                 f"goal: {self.session.state.goal or '(empty)'}",
                 f"known: {len(self.session.state.known)}",
-                f"tokens: calls={usage.calls} total={usage.total_tokens}",
+                f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
                 f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
                 f"code_index: {index_status}" + ((": " + index_message) if index_message else ""),
             ]
@@ -3288,6 +3347,7 @@ Tools:
                 f"provider.model: {provider.model or '(empty)'}",
                 f"provider.api: {provider.api}",
                 f"provider.resolved_api: {provider.resolved_api()}",
+                f"provider.prompt_cache_key: {provider.prompt_cache_key}",
                 f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
                 f"provider.reasoning: {provider.reasoning}",
                 f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
@@ -3476,6 +3536,8 @@ Tools:
                 if value not in PROVIDER_API_CHOICES:
                     return "Invalid value for " + key
                 provider.api = value
+            elif key == "provider.prompt_cache_key":
+                provider.prompt_cache_key = ProviderConfig.clean_prompt_cache_key(value)
             elif key == "provider.reasoning":
                 if value not in REASONING_CHOICES:
                     return "Invalid value for " + key
@@ -3498,7 +3560,7 @@ Tools:
                 runtime.shell_timeout = max(1, int(value))
             else:
                 return "Unknown config key: " + key
-        except ValueError:
+        except (ConfigError, ValueError):
             return "Invalid value for " + key
         return "Set " + key
 
