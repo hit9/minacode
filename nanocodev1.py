@@ -2462,7 +2462,7 @@ class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
 Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Inspect/read before edits. Keep changes small; never overwrite user work.
-Final: text only, user's language.
+Final: plain text, no markdown, user's language.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -2697,17 +2697,7 @@ class UiPrinter:
         return indented
 
     def text_segments(self, text: str) -> list[tuple[str, str]]:
-        segments = []
-        for line in text.splitlines() or [""]:
-            style = "ansiwhite"
-            if line.startswith("+") and not line.startswith("+++"):
-                style = "ansigreen"
-            elif line.startswith("-") and not line.startswith("---"):
-                style = "ansired"
-            elif line.startswith("@@"):
-                style = "ansicyan"
-            segments.append((style, line + "\n"))
-        return segments
+        return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
 
 
 class BashLivePreview:
