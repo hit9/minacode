@@ -2041,13 +2041,15 @@ class ToolRunner:
     def run(self, calls: list[ToolCall]) -> list[Json]:
         self.session.state.turn_tool_calls += len(calls)
         for call in calls:
-            self.run_one(call)
+            status, _output = self.run_one(call)
+            if status == "refused":
+                break
         return []
 
-    def run_one(self, call: ToolCall) -> str:
+    def run_one(self, call: ToolCall) -> tuple[str, str]:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return self.reject(call, f"ToolError: unknown tool {call.name}")
+            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}")
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
@@ -2059,16 +2061,19 @@ class ToolRunner:
             if needs_confirmation and self.session.settings.yolo:
                 self.output_fn(self.approval_display(call, tool, "auto"))
             elif needs_confirmation:
-                if not self.confirm(call, tool):
-                    return self.finish(call, "Cancelled: user refused tool call", failed=True, elapsed=time.monotonic() - started)
+                confirmed, reason = self.confirm(call, tool)
+                if not confirmed:
+                    output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
+                    self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
+                    return "refused", output
                 approved = True
             output = tool.call()
         except ToolError as error:
-            return self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
+            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
         except Exception as error:
             output = f"ToolError: {error}"
-            return self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
-        return self.finish(call, output, elapsed=time.monotonic() - started, approved=approved)
+            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved)
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
         if self.session.settings.debug:
@@ -2104,10 +2109,12 @@ class ToolRunner:
                 pass
         CodeIndex(self.session).update(paths)
 
-    def confirm(self, call: ToolCall, tool: Tool) -> bool:
+    def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm"))
         answer = self.input_fn("Approve " + tool.NAME + "? [Y/n] ").strip().lower()
-        return answer not in {"n", "no"}
+        if answer not in {"n", "no"}:
+            return True, ""
+        return False, self.input_fn("Reason? [optional] ").strip()
 
     def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
@@ -2666,7 +2673,7 @@ class UiPrinter:
         lines = text.splitlines() or [text]
         head, _, rest = lines[0].partition(" ")
         style = "ansiyellow" if head == "approve" else "ansiblue"
-        segments = [(style, head), ("ansibrightblack", " " + rest + "\n")]
+        segments = [(style, head + ((" " + rest) if rest else "") + "\n")]
         if len(lines) <= 1:
             return segments
         if lines[1].strip() == "preview":
