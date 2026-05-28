@@ -27,6 +27,7 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
+    "anthropic>=0.64.0",
     "code-symbol-index>=0.1.13",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",

@@ -21,8 +21,6 @@ import sys
 import threading
 import time
 import tomllib
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +28,7 @@ from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+from anthropic import Anthropic
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application
@@ -60,7 +59,6 @@ PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
-ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
     "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"},
@@ -2253,6 +2251,23 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             default_headers={"User-Agent": HTTP_USER_AGENT},
         )
 
+    def anthropic_client(self) -> Anthropic:
+        provider = self.session.config.provider
+        if missing := self.session.missing_config():
+            raise ModelError("missing config: " + ", ".join(missing))
+        return Anthropic(
+            api_key=provider.key,
+            base_url=self.anthropic_base_url(provider),
+            timeout=provider.timeout,
+            max_retries=0,
+            default_headers={"User-Agent": HTTP_USER_AGENT},
+        )
+
+    @staticmethod
+    def anthropic_base_url(provider: ProviderConfig) -> str:
+        url = provider.base_url().rstrip("/")
+        return url[: -len("/v1")] if url.endswith("/v1") else url
+
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
         if configured == "off":
@@ -2281,43 +2296,22 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
-        if missing := self.session.missing_config():
-            raise ModelError("missing config: " + ", ".join(missing))
         params = self.anthropic_params(messages, tools)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api="anthropic", model=provider.model, params=params, tools=tools)
-        request = urllib.request.Request(
-            provider.base_url().rstrip("/") + "/messages",
-            data=json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": HTTP_USER_AGENT,
-                "x-api-key": provider.key,
-                "anthropic-version": ANTHROPIC_VERSION,
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=provider.timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            DebugTrace.model_error(self.session, activity=activity, api="anthropic", model=provider.model, params=params, error=f"HTTP {error.code}: {body}")
-            raise ModelError(f"HTTP {error.code}: {Tool.compact(body, 800)}") from error
-        except urllib.error.URLError as error:
+            result = self.anthropic_client().messages.create(**params)
+        except Exception as error:
             DebugTrace.model_error(self.session, activity=activity, api="anthropic", model=provider.model, params=params, error=error)
-            raise ModelError(str(error.reason or error)) from error
-        except json.JSONDecodeError as error:
-            DebugTrace.model_error(self.session, activity=activity, api="anthropic", model=provider.model, params=params, error=error)
-            raise ModelError("anthropic response was not JSON") from error
-        self.session.usage.add(result.get("usage") if isinstance(result, dict) else None)
-        assistant, calls, content = self.anthropic_result(result if isinstance(result, dict) else {})
+            raise ModelError(str(error)) from error
+        self.session.usage.add(self.message_field(result, "usage"))
+        assistant, calls, content = self.anthropic_result(result)
         DebugTrace.model_response(self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
-        params: Json = {"model": provider.model, "system": self.anthropic_system(messages), "messages": self.anthropic_messages(messages), "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS, "stream": False}
+        params: Json = {"model": provider.model, "system": self.anthropic_system(messages), "messages": self.anthropic_messages(messages), "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS}
         if provider.temperature is not None:
             params["temperature"] = provider.temperature
         if tools:
@@ -2385,19 +2379,19 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
         return [convert(schema) for schema in tools]
 
-    def anthropic_result(self, result: Json) -> tuple[Json, list[ToolCall], str]:
+    def anthropic_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
         text_parts: list[str] = []
         tool_calls: list[Json] = []
         calls: list[ToolCall] = []
-        for block in result.get("content") or []:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text":
-                text_parts.append(str(block.get("text") or ""))
-            elif block.get("type") == "tool_use":
-                payload = block.get("input") if isinstance(block.get("input"), dict) else {}
-                name = str(block.get("name") or "")
-                call_id = str(block.get("id") or uuid.uuid4().hex)
+        for block in self.message_field(result, "content") or []:
+            block_type = self.message_field(block, "type")
+            if block_type == "text":
+                text_parts.append(str(self.message_field(block, "text") or ""))
+            elif block_type == "tool_use":
+                raw_input = self.message_field(block, "input")
+                payload = raw_input if isinstance(raw_input, dict) else {}
+                name = str(self.message_field(block, "name") or "")
+                call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
                 arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 args, intention = self.tool_payload(payload)
