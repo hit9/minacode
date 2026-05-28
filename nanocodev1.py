@@ -34,13 +34,13 @@ from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, has_completions, is_done
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -2969,6 +2969,11 @@ Tools:
                 "choice.title": "ansicyan bold",
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
+                "completion-menu": "noreverse bg:default",
+                "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
+                "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
+                "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
+                "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
                 "bottom-toolbar": "noreverse bg:default fg:default",
                 "bottom-toolbar.text": "noreverse bg:default fg:default",
                 "search-toolbar": "noreverse bg:default fg:default",
@@ -3048,7 +3053,11 @@ Tools:
             buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
             event.app.invalidate()
 
-        root = HSplit([input_window, CompletionsMenu(max_height=12, scroll_offset=1), search_toolbar, self.status_window()])
+        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        root = FloatContainer(
+            HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
+            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
+        )
         app = Application(
             layout=Layout(root, focused_element=input_window),
             key_bindings=bindings,
