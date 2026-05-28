@@ -381,36 +381,6 @@ class ModelUsage:
 
 
 @dataclass
-class StreamResult:
-    content: list[str] = field(default_factory=list)
-    thinking: list[str] = field(default_factory=list)
-    tool_calls: dict[int, Json] = field(default_factory=dict)
-    usage: Any = None
-    raw: Any = None
-
-    def text(self) -> str:
-        return "".join(self.content)
-
-    def reasoning(self) -> str:
-        return "".join(self.thinking)
-
-    def add_content(self, value: Any) -> None:
-        if isinstance(value, str) and value:
-            self.content.append(value)
-
-    def add_thinking(self, value: Any, callback: Callable[[str], None] | None) -> bool:
-        if not isinstance(value, str) or not value:
-            return False
-        self.thinking.append(value)
-        if callback:
-            callback(value)
-        return True
-
-    def raw_payload(self, assistant: Json) -> Json:
-        return {"assistant": assistant, "usage": self.usage, "raw": self.raw}
-
-
-@dataclass
 class AgentState:
     goal: str = ""
     plan: list[str] = field(default_factory=list)
@@ -2221,32 +2191,22 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
 
-    def request(self, messages: list[Json], *, on_thinking_delta: Callable[[str], None] | None = None) -> tuple[Json, list[ToolCall], str]:
+    def request(self, messages: list[Json]) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
         if provider.resolved_api() == "anthropic":
-            return self.anthropic_request(messages, tools, on_thinking_delta=on_thinking_delta)
-        return self.chat_request(messages, tools, on_thinking_delta=on_thinking_delta)
+            return self.anthropic_request(messages, tools)
+        return self.chat_request(messages, tools)
 
-    def chat_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None = None,
-        *,
-        activity: str = "agent",
-        on_thinking_delta: Callable[[str], None] | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
+    def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
-        streaming = self.should_stream(activity, on_thinking_delta)
-        params: Json = {"model": provider.model, "messages": messages, "stream": streaming}
+        params: Json = {"model": provider.model, "messages": messages, "stream": False}
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
-        if streaming:
-            params["stream_options"] = {"include_usage": True}
         prompt_cache_key = self.prompt_cache_key(provider, tools)
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
@@ -2255,11 +2215,6 @@ class ModelClient:
         DebugTrace.model_request(self.session, activity=activity, api="chat", model=provider.model, params=params, tools=tools)
         try:
             response = self.client().chat.completions.create(**params)
-            if streaming:
-                assistant, calls, content, raw = self.chat_stream_result(response, on_thinking_delta)
-                self.session.usage.add(raw.get("usage"))
-                DebugTrace.model_response(self.session, activity=activity, api="chat", model=provider.model, raw=raw, text=content, tool_names=[call.name for call in calls])
-                return assistant, calls, content
         except Exception as error:
             DebugTrace.model_error(self.session, activity=activity, api="chat", model=provider.model, params=params, error=error)
             raise ModelError(str(error)) from error
@@ -2270,74 +2225,6 @@ class ModelClient:
         content = str(getattr(message, "content", None) or "")
         DebugTrace.model_response(self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
-
-    def chat_stream_result(self, response: Any, on_thinking_delta: Callable[[str], None] | None) -> tuple[Json, list[ToolCall], str, Json]:
-        stream = StreamResult()
-        for chunk in response:
-            stream.usage = self.message_field(chunk, "usage") or stream.usage
-            choices = self.message_field(chunk, "choices") or []
-            if not choices:
-                continue
-            delta = self.message_field(choices[0], "delta")
-            if not delta:
-                continue
-            stream.add_content(self.message_field(delta, "content"))
-            for key in ("reasoning_content", "reasoning"):
-                if stream.add_thinking(self.message_field(delta, key), on_thinking_delta):
-                    break
-            self.accumulate_chat_stream_tools(stream.tool_calls, delta)
-        return self.stream_response(stream)
-
-    def stream_response(self, stream: StreamResult) -> tuple[Json, list[ToolCall], str, Json]:
-        content = stream.text()
-        assistant, calls = self.stream_assistant(content, stream.tool_calls, stream.reasoning())
-        return assistant, calls, content, stream.raw_payload(assistant)
-
-    def accumulate_chat_stream_tools(self, tool_calls: dict[int, Json], delta: Any) -> None:
-        for raw in self.message_field(delta, "tool_calls") or []:
-            index = self.stream_index(self.message_field(raw, "index"), len(tool_calls))
-            item = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-            if call_id := self.message_field(raw, "id"):
-                item["id"] = str(call_id)
-            function = self.message_field(raw, "function") or {}
-            if name := self.message_field(function, "name"):
-                item["function"]["name"] += str(name)
-            if arguments := self.message_field(function, "arguments"):
-                item["function"]["arguments"] += str(arguments)
-        if function_call := self.message_field(delta, "function_call"):
-            item = tool_calls.setdefault(0, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-            if name := self.message_field(function_call, "name"):
-                item["function"]["name"] += str(name)
-            if arguments := self.message_field(function_call, "arguments"):
-                item["function"]["arguments"] += str(arguments)
-
-    def stream_assistant(self, content: str, raw_calls: dict[int, Json], reasoning_content: str = "") -> tuple[Json, list[ToolCall]]:
-        tool_calls: list[Json] = []
-        calls: list[ToolCall] = []
-        for index in sorted(raw_calls):
-            raw = raw_calls[index]
-            function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
-            call_id = str(raw.get("id") or uuid.uuid4().hex)
-            name = str(function.get("name") or "")
-            arguments = str(function.get("arguments") or "{}")
-            tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-            try:
-                payload = json.loads(arguments)
-            except json.JSONDecodeError as error:
-                calls.append(ToolCall(id=call_id, name=name, args=[], intention=f"invalid JSON arguments: {error}"))
-                continue
-            args, intention = self.tool_payload(payload)
-            calls.append(ToolCall(id=call_id, name=name, args=args, intention=intention))
-        assistant: Json = {"role": "assistant", "content": content or None}
-        if reasoning_content:
-            assistant["reasoning_content"] = reasoning_content
-        if tool_calls:
-            assistant["tool_calls"] = tool_calls
-        return assistant, calls
-
-    @staticmethod
-    def stream_index(value: Any, default: int) -> int:
-        return value if isinstance(value, int) and value >= 0 else default
 
     def compact(self, context: str) -> Json:
         prompt = """
@@ -2413,21 +2300,13 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 names.append(name)
         return ",".join(sorted(names)) or "(none)"
 
-    def anthropic_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        *,
-        activity: str = "agent",
-        on_thinking_delta: Callable[[str], None] | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
+    def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         params = self.anthropic_params(messages, tools)
-        streaming = self.should_stream(activity, on_thinking_delta)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
         DebugTrace.model_request(self.session, activity=activity, api="anthropic", model=provider.model, params=params, tools=tools)
         try:
-            result = self.anthropic_stream_result(params, on_thinking_delta).raw if streaming else self.anthropic_client().messages.create(**params)
+            result = self.anthropic_client().messages.create(**params)
         except Exception as error:
             DebugTrace.model_error(self.session, activity=activity, api="anthropic", model=provider.model, params=params, error=error)
             raise ModelError(str(error)) from error
@@ -2435,22 +2314,6 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         assistant, calls, content = self.anthropic_result(result)
         DebugTrace.model_response(self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
-
-    def anthropic_stream_result(self, params: Json, on_thinking_delta: Callable[[str], None] | None) -> StreamResult:
-        result = StreamResult()
-        with self.anthropic_client().messages.stream(**params) as stream:
-            for event in stream:
-                event_type = self.message_field(event, "type")
-                if event_type == "text":
-                    result.add_content(self.message_field(event, "text"))
-                elif event_type == "thinking":
-                    result.add_thinking(self.message_field(event, "thinking"), on_thinking_delta)
-            result.raw = stream.get_final_message()
-        return result
-
-    @staticmethod
-    def should_stream(activity: str, callback: Callable[[str], None] | None) -> bool:
-        return activity == "agent" and callback is not None
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
@@ -2627,7 +2490,6 @@ Final: concise markdown, user's language.
         self.model = ModelClient(session)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
-        self.thinking_output: Callable[[str], None] | None = None
 
     def run(self, user_input: str) -> str:
         self.session.state.goal = user_input.strip()
@@ -2637,11 +2499,7 @@ Final: concise markdown, user's language.
         user_message = {"role": "user", "content": user_input}
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
-            try:
-                _assistant, tool_calls, content = self.model.request(self.messages(user_input), on_thinking_delta=self.thinking_output)
-            finally:
-                if self.thinking_output:
-                    self.thinking_output("")
+            _assistant, tool_calls, content = self.model.request(self.messages(user_input))
             if not tool_calls:
                 answer = content.strip() or "(empty response)"
                 self.session.messages.extend([user_message, {"role": "assistant", "content": answer}])
@@ -2860,18 +2718,12 @@ class UiPrinter:
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
     MAX_CHARS: ClassVar[int] = 8000
-    TITLE: ClassVar[str] = "output"
-    CLEAR_ON_FINISH: ClassVar[bool] = False
 
     def __init__(self):
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
         self.text = ""
-        self.last_rendered_text = ""
-        self.last_render_at = 0.0
-        self.started_at = 0.0
-        self.seen_text = False
 
     def start(self) -> None:
         if not sys.stderr.isatty():
@@ -2879,57 +2731,24 @@ class BashLivePreview:
         self.active = True
         self.rendered_lines = 0
         self.text = ""
-        self.last_rendered_text = ""
-        self.last_render_at = 0.0
-        self.started_at = time.monotonic()
-        self.seen_text = False
 
     def update(self, text: str) -> None:
         if not self.active:
             return
         self.text = (self.text + text)[-self.MAX_CHARS :]
-        if text:
-            self.seen_text = True
-        self.render_if_needed()
-
-    def finish(self) -> str:
-        if not self.active:
-            return ""
-        summary = self.summary()
-        if self.CLEAR_ON_FINISH:
-            self.clear()
-        self.active = False
-        self.rendered_lines = 0
-        self.text = ""
-        self.last_rendered_text = ""
-        self.last_render_at = 0.0
-        self.started_at = 0.0
-        self.seen_text = False
-        return summary
-
-    def summary(self) -> str:
-        if not self.seen_text:
-            return ""
-        return self.TITLE + " " + StatusBar.duration(time.monotonic() - self.started_at)
-
-    def render_if_needed(self) -> None:
         self.render()
 
-    def clear(self) -> None:
-        if not self.rendered_lines:
+    def finish(self) -> None:
+        if not self.active:
             return
-        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        self.output.write_raw(f"\x1b[{self.rendered_lines}M")
-        self.output.flush()
+        self.active = False
+        self.rendered_lines = 0
 
     def render(self) -> None:
         if not self.active:
             return
         lines = self.frame_lines()
         previous = self.rendered_lines
-        if previous and previous == len(lines):
-            self.redraw(lines)
-            return
         if self.rendered_lines:
             self.output.write_raw(f"\x1b[{self.rendered_lines}A")
         for line in lines:
@@ -2946,66 +2765,15 @@ class BashLivePreview:
         self.output.flush()
         self.rendered_lines = len(lines)
 
-    def redraw(self, lines: list[str]) -> None:
-        self.output.write_raw("\x1b7")
-        self.output.write_raw(f"\x1b[{len(lines)}A")
-        for index, line in enumerate(lines):
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            print_formatted_text(FormattedText([("ansibrightblack", line)]), output=self.output, end="", flush=True)
-            if index < len(lines) - 1:
-                self.output.write_raw("\x1b[1B")
-        self.output.write_raw("\x1b8")
-        self.output.flush()
-
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
-        return ["  " + self.TITLE] + ["  " + self.fit(line, width - 2) for line in body] if body else []
+        return ["  output"] + ["  " + self.fit(line, width - 2) for line in body] if body else []
 
     @staticmethod
     def fit(text: str, width: int) -> str:
         text = text.expandtabs(4)
         return text if len(text) <= width else text[: max(0, width - 3)] + "..."
-
-
-class ThinkingPreview(BashLivePreview):
-    HEIGHT: ClassVar[int] = 3
-    MAX_CHARS: ClassVar[int] = 2000
-    TITLE: ClassVar[str] = "thinking"
-    CLEAR_ON_FINISH: ClassVar[bool] = True
-    INTERVAL: ClassVar[float] = 0.18
-    WIDTH: ClassVar[int] = 88
-
-    def summary(self) -> str:
-        return ""
-
-    def render_if_needed(self) -> None:
-        preview = self.preview_text()
-        now = time.monotonic()
-        if preview == self.last_rendered_text or (self.rendered_lines and now - self.last_render_at < self.INTERVAL):
-            return
-        self.last_rendered_text = preview
-        self.last_render_at = now
-        self.render()
-
-    def frame_lines(self) -> list[str]:
-        lines = self.preview_lines()
-        return ["  " + self.TITLE] + ["  " + line for line in lines] if lines else []
-
-    def preview_lines(self) -> list[str]:
-        width = min(self.WIDTH, max(20, shutil.get_terminal_size((120, 20)).columns - 2))
-        lines: list[str] = []
-        for line in self.text.replace("\r", "\n").splitlines():
-            line = line.expandtabs(4)
-            if not line:
-                lines.append("")
-                continue
-            lines.extend(line[index : index + width] for index in range(0, len(line), width))
-        return lines[-self.HEIGHT :]
-
-    def preview_text(self) -> str:
-        return "\n".join(self.preview_lines())
 
 
 class StatusBar:
@@ -3150,7 +2918,6 @@ Tools:
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
-        self.thinking_preview = ThinkingPreview()
         self.live_status_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.input_history = self.make_input_history() if self.interactive_input else None
@@ -3158,7 +2925,6 @@ Tools:
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_output = self.tool_live_output
-        self.agent.thinking_output = self.thinking_output if self.ui.color else None
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -3310,12 +3076,9 @@ Tools:
                 self.status_bar.start(reset=False)
 
     def tool_output(self, text: str = "") -> None:
-        self.thinking_output("")
         self.with_status_paused(lambda: self.emit(text))
 
     def tool_input(self, prompt: str = "") -> str:
-        self.thinking_output("")
-
         def read() -> str:
             try:
                 return self.input_fn(prompt)
@@ -3342,18 +3105,6 @@ Tools:
         if self.live_status_paused:
             self.status_bar.start(reset=False)
             self.live_status_paused = False
-
-    def thinking_output(self, text: str) -> None:
-        if not self.ui.color:
-            return
-        if text:
-            if not self.thinking_preview.active:
-                self.thinking_preview.start()
-            self.thinking_preview.update(text)
-            return
-        if self.thinking_preview.active:
-            if summary := self.thinking_preview.finish():
-                self.with_status_paused(lambda: self.emit(summary))
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
