@@ -2111,10 +2111,13 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm"))
-        answer = self.input_fn("Approve " + tool.NAME + "? [Y/n] ").strip().lower()
-        if answer not in {"n", "no"}:
-            return True, ""
-        return False, self.input_fn("Reason? [optional] ").strip()
+        while True:
+            answer = self.input_fn("Approve " + tool.NAME + "? [Y/n] ").strip().lower()
+            if answer in {"", "y", "yes"}:
+                return True, ""
+            if answer in {"n", "no"}:
+                return False, self.input_fn("Reason? [optional] ").strip()
+            self.output_fn("Please answer y or n.")
 
     def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
