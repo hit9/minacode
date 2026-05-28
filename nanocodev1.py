@@ -70,46 +70,6 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
 SELECTION_BACK = object()
 
 
-@dataclass(frozen=True)
-class ChatReasoningRule:
-    payload: str
-    model_prefixes: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ModelApiRule:
-    api: str
-    model_prefixes: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ProviderProfile:
-    api: str = "chat"
-    api_rules: tuple[ModelApiRule, ...] = ()
-    chat_reasoning: str = "off"
-    chat_reasoning_rules: tuple[ChatReasoningRule, ...] = ()
-
-
-ALIYUN_CHAT_PROFILE = ProviderProfile(
-    chat_reasoning_rules=(
-        ChatReasoningRule("enable_thinking", ("qwen", "qwq", "qvq")),
-        ChatReasoningRule("thinking", ("deepseek-v4",)),
-    )
-)
-PROVIDER_PROFILES: dict[str, ProviderProfile] = {
-    "api.openai.com": ProviderProfile(chat_reasoning_rules=(ChatReasoningRule("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)),
-    "openrouter.ai": ProviderProfile(chat_reasoning="reasoning"),
-    "opencode.ai": ProviderProfile(
-        api_rules=(ModelApiRule("anthropic", ("claude-", "qwen3.")),),
-        chat_reasoning_rules=(ChatReasoningRule("reasoning", ("deepseek-v4",)),),
-    ),
-    "api.deepseek.com": ProviderProfile(chat_reasoning="thinking"),
-    "dashscope.aliyuncs.com": ALIYUN_CHAT_PROFILE,
-    "dashscope-intl.aliyuncs.com": ALIYUN_CHAT_PROFILE,
-    "dashscope-us.aliyuncs.com": ALIYUN_CHAT_PROFILE,
-}
-
-
 class NanocodeError(Exception):
     pass
 
@@ -128,6 +88,20 @@ class ToolError(NanocodeError):
 
 @dataclass
 class ProviderConfig:
+    ALIYUN_CHAT_REASONING_RULES: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
+        ("enable_thinking", ("qwen", "qwq", "qvq")),
+        ("thinking", ("deepseek-v4",)),
+    )
+    PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
+        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)},
+        "openrouter.ai": {"chat_reasoning": "reasoning"},
+        "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
+        "api.deepseek.com": {"chat_reasoning": "thinking"},
+        "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
+        "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
+        "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
+    }
+
     url: str = ""
     key: str = ""
     model: str = ""
@@ -180,14 +154,14 @@ class ProviderConfig:
     def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
         if configured != "auto":
             return configured
-        profile = PROVIDER_PROFILES.get(self.host())
+        profile = self.PROFILES.get(self.host())
         if not profile:
             return default
         model = self.model.lower()
-        for rule in getattr(profile, rules_attr):
-            if any(model.startswith(prefix) for prefix in rule.model_prefixes):
-                return str(getattr(rule, "payload", getattr(rule, "api", default)))
-        return str(getattr(profile, profile_attr))
+        for value, prefixes in profile.get(rules_attr, ()):
+            if any(model.startswith(prefix) for prefix in prefixes):
+                return str(value)
+        return str(profile.get(profile_attr, default))
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
@@ -1741,21 +1715,20 @@ class ToolCall:
     intention: str = ""
 
 
-@dataclass
-class FileContextItem:
-    order: int
-    phase: int
-    kind: str
-    source: str
-    path: str
-    start: int
-    end: int
-    line: str
-    mtime_ns: int
-    size: int
-
-
 class ContextManager:
+    @dataclass
+    class FileContextItem:
+        order: int
+        phase: int
+        kind: str
+        source: str
+        path: str
+        start: int
+        end: int
+        line: str
+        mtime_ns: int
+        size: int
+
     def __init__(self, session: Session):
         self.session = session
         self.latest_keys: list[str] = []
@@ -1858,8 +1831,8 @@ class ContextManager:
                 omitted[item.path][item.source] += 1
         return self.bound_output(self.render_file_lines(lines_by_path, omitted))
 
-    def file_items(self) -> list[FileContextItem]:
-        items: list[FileContextItem] = []
+    def file_items(self) -> list[ContextManager.FileContextItem]:
+        items: list[ContextManager.FileContextItem] = []
         for order, record in enumerate(self.session.tool_records, start=1):
             if record.name not in {"Read", "Edit"}:
                 continue
@@ -1871,17 +1844,17 @@ class ContextManager:
                 body = block.group(3)
                 stat = self.output_stat(body)
                 for match in re.finditer(r"<invalidate>(\d+):(\d+)</invalidate>", body):
-                    items.append(FileContextItem(order, 0, "clear", record.key, path, int(match.group(1)), int(match.group(2)), "", *stat))
+                    items.append(self.FileContextItem(order, 0, "clear", record.key, path, int(match.group(1)), int(match.group(2)), "", *stat))
                 for match in re.finditer(r"(?s)<content hashline-numbered>\n(.*?)\n</content>", body):
                     for line in match.group(1).splitlines():
                         line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
                         if line_match:
-                            items.append(FileContextItem(order, 1, "line", record.key, path, int(line_match.group(1)), 0, line, *stat))
+                            items.append(self.FileContextItem(order, 1, "line", record.key, path, int(line_match.group(1)), 0, line, *stat))
         return items
 
     def item_current(
         self,
-        item: FileContextItem,
+        item: ContextManager.FileContextItem,
         wanted: dict[str, set[int]],
         current_stats: dict[str, tuple[int, int] | None],
         current_lines: dict[str, dict[int, str] | None],
