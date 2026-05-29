@@ -645,14 +645,6 @@ class Tool:
         args = payload.get("args")
         return args if isinstance(args, list) else [payload]
 
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {"anyOf": [{"type": "object"}, {"type": "array"}, {"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema()}
-
     def needs_confirmation(self) -> bool:
         return self.MUTATES
 
@@ -827,10 +819,6 @@ class LineCountTool(Tool):
     EXAMPLE = ('Count several files. Example: {"paths":["src/app.py","pyproject.toml"]}',)
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
-
-    @classmethod
     def params_schema(cls) -> Json:
         return {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["paths"], "additionalProperties": False}
 
@@ -871,10 +859,6 @@ class ListTool(Tool):
     DESCRIPTION = "List one directory, not recursive; returns dirs/files/symlinks and text/binary labels; use Read for content."
     SIGNATURE = "List(path, glob?)"
     EXAMPLE = ('List a directory. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1350,14 +1334,6 @@ class InspectCodeTool(Tool):
     )
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"description": "mode, target, optional options object"}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 3}
-
-    @classmethod
     def params_schema(cls) -> Json:
         return {"type": "object", "properties": {
             "mode": {"type": "string", "enum": ["find", "inspect", "outline"]}, "target": {"type": "string"},
@@ -1432,14 +1408,6 @@ class CreateFileTool(Tool):
     MUTATES = True
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "description": 'Exactly ["path","content"].', "items": {"type": "string"}, "minItems": 2, "maxItems": 2}
-
-    @classmethod
     def params_schema(cls) -> Json:
         return {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}
 
@@ -1509,14 +1477,6 @@ class EditTool(Tool):
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     MUTATES = True
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {"description": 'Exactly ["path", edits].'}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 2}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1691,14 +1651,6 @@ class BashTool(Tool):
     live_output: Callable[[str, str], None] | None = None
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}, "minItems": 1, "maxItems": 1}
-
-    @classmethod
     def params_schema(cls) -> Json:
         return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}}, "required": ["command"], "additionalProperties": False}
 
@@ -1832,10 +1784,6 @@ class GitTool(Tool):
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
-
-    @classmethod
     def params_schema(cls) -> Json:
         return {"type": "object", "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["argv"], "additionalProperties": False}
 
@@ -1888,23 +1836,6 @@ class RecallTool(Tool):
         'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
     )
     STORES_RESULT = False
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "description": "Use key or keys, optionally with ranges.",
-            "properties": {
-                "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
-                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
-            },
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2001,16 +1932,8 @@ class ForgetTool(Tool):
     STORES_RESULT = False
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string", "pattern": "^tr\\.\\d+$"}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
-
-    @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"keys": {"type": "array", "items": cls.arg_schema(), "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
+        return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2839,10 +2762,11 @@ Output: concise markdown, USER'S LANGUAGE.
                 except ModelRequestRetry:
                     continue
                 except ModelError as error:
-                    if parser_retry_used or not self.tool_parse_error(error):
+                    text = str(error)
+                    if parser_retry_used or "Failed to parse input" not in text or "<tool_call>" not in text:
                         raise
                     parser_retry_used = True
-                    parser_feedback = self.tool_parse_feedback(error)
+                    parser_feedback = "Previous model request failed before execution: provider parser rejected the tool_call format. Retry once using only valid JSON named parameters from the tool schema; do not emit XML-style tool calls or ad-hoc parameter text."
                     continue
             if not tool_calls:
                 if not content.strip():
@@ -2867,15 +2791,6 @@ Output: concise markdown, USER'S LANGUAGE.
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
-
-    @staticmethod
-    def tool_parse_error(error: Exception) -> bool:
-        text = str(error)
-        return "Failed to parse input" in text and "<tool_call>" in text
-
-    @staticmethod
-    def tool_parse_feedback(error: Exception) -> str:
-        return "Previous model request failed before execution: provider parser rejected the tool_call format. Retry once using only valid JSON named parameters from the tool schema; do not emit XML-style tool calls or ad-hoc parameter text."
 
 
 class CommandCompleter(Completer):
