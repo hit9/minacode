@@ -82,7 +82,8 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     client = n.ModelClient(session(tmp_path))
     message = SimpleNamespace(
         tool_calls=[
-            SimpleNamespace(id="ok", function=SimpleNamespace(name="Bash", arguments=json.dumps({"args": ["pwd"], "intention": "cwd"}))),
+            SimpleNamespace(id="ok", function=SimpleNamespace(name="Bash", arguments=json.dumps({"command": "pwd"}))),
+            SimpleNamespace(id="legacy", function=SimpleNamespace(name="Bash", arguments=json.dumps({"args": ["whoami"]}))),
             SimpleNamespace(id="bad-json", function=SimpleNamespace(name="Read", arguments="{")),
             SimpleNamespace(id="list-payload", function=SimpleNamespace(name="Recall", arguments=json.dumps(["tr.1"]))),
         ]
@@ -90,11 +91,12 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
 
     calls = client.tool_calls(message)
 
-    assert calls[0] == n.ToolCall(id="ok", name="Bash", args=["pwd"], intention="cwd")
-    assert calls[1].id == "bad-json"
-    assert calls[1].name == "Read"
-    assert calls[1].args == []
-    assert calls[2] == n.ToolCall(id="list-payload", name="Recall", args=[["tr.1"]], intention="")
+    assert calls[0] == n.ToolCall(id="ok", name="Bash", args=["pwd"])
+    assert calls[1] == n.ToolCall(id="legacy", name="Bash", args=["whoami"])
+    assert calls[2].id == "bad-json"
+    assert calls[2].name == "Read"
+    assert calls[2].args == []
+    assert calls[3] == n.ToolCall(id="list-payload", name="Recall", args=[["tr.1"]])
 
 
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():
@@ -113,8 +115,8 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
 def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
     s = session(tmp_path)
-    s.store_tool_result("Bash", [bad], bad, bad)
-    s.record_tool_error("tr.1", "Bash", [bad], bad, bad)
+    s.store_tool_result("Bash", [bad], bad)
+    s.record_tool_error("tr.1", "Bash", [bad], bad)
 
     messages = n.ContextManager(s).model_messages("sys", [{"role": "user", "content": bad}])
     debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
@@ -302,13 +304,13 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
 
 def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
     off = session(tmp_path)
-    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [], "missing")])
+    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
     assert off.tool_records == []
     assert len(off.tool_errors) == 1
 
     debug = session(tmp_path)
     debug.settings.debug = True
-    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [], "missing")])
+    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
     assert len(debug.tool_records) == 1
     assert len(debug.tool_results) == 1
     assert len(debug.tool_errors) == 1
@@ -319,7 +321,7 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s.settings.yolo = True
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("bad", "Bash", [], "bad args"), n.ToolCall("create", "CreateFile", ["ok.txt", "ok\n"], "create")])
+    runner.run([n.ToolCall("bad", "Bash", []), n.ToolCall("create", "CreateFile", ["ok.txt", "ok\n"])])
 
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
@@ -333,7 +335,7 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     context = n.ContextManager(s)
 
     first_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call()
-    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", first_output)
+    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], first_output)
     assert "|first" in context.file_context()
 
     path.unlink()
@@ -344,9 +346,9 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     path.write_text("first\n", encoding="utf-8")
     s = session(tmp_path)
     context = n.ContextManager(s)
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
+    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
     path.write_text("second\n", encoding="utf-8")
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
+    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
 
     rendered = context.file_context()
     assert "|second" in rendered

@@ -95,7 +95,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
 
     with pytest.raises(n.ToolError):
-        n.ReadTool(s, [{"path": "sample.py"}]).call()
+        n.ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
     with pytest.raises(n.ToolError):
         n.CreateFileTool(s, [["a.txt", "a"], ["b.txt", "b"]]).call()
     with pytest.raises(n.ToolError):
@@ -228,8 +228,8 @@ def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
 
 def test_recall_and_forget_behaviors(tmp_path):
     s = session(tmp_path)
-    first = s.store_tool_result("Read", ["a.txt"], "read", "a0\na1\na2\n")
-    second = s.store_tool_result("Search", [{"pattern": "b"}], "search", "b0\nb1\n")
+    first = s.store_tool_result("Read", ["a.txt"], "a0\na1\na2\n")
+    second = s.store_tool_result("Search", [{"pattern": "b"}], "b0\nb1\n")
 
     sliced = n.RecallTool(s, [{"keys": [first, second], "ranges": [[1, 2]]}]).call()
     assert "a1" in sliced and "a0" not in sliced
@@ -258,37 +258,39 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
                 {"pattern": "done in", "glob": "*.py"},
                 {"pattern": "elapsed.*s]", "path": "tests", "context": 2},
             ],
-            "",
         )
     )
     assert search == 'Search "done in" glob=*.py; "elapsed.*s]" path=tests C=2'
 
-    recall = runner.short_call(n.ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}], ""))
+    recall = runner.short_call(n.ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
-    bash_args = n.BashTool.schema()["function"]["parameters"]["properties"]["args"]
-    assert bash_args["minItems"] == 1
-    assert bash_args["maxItems"] == 1
-    assert bash_args["items"]["pattern"] == r"^.*\S.*$"
+    bash_params = n.BashTool.schema()["function"]["parameters"]
+    assert bash_params["required"] == ["command"]
+    assert bash_params["properties"]["command"]["pattern"] == r"^.*\S.*$"
 
-    create_args = n.CreateFileTool.schema()["function"]["parameters"]["properties"]["args"]
-    assert create_args["minItems"] == 2
-    assert create_args["maxItems"] == 2
-    assert create_args["items"] == {"type": "string"}
-    assert "prefixItems" not in create_args
+    create_params = n.CreateFileTool.schema()["function"]["parameters"]
+    assert create_params["required"] == ["path", "content"]
+    assert set(create_params["properties"]) == {"path", "content"}
 
-    recall_item = n.RecallTool.schema()["function"]["parameters"]["properties"]["args"]["items"]
-    assert recall_item["type"] == "object"
-    assert recall_item["additionalProperties"] is False
-    assert recall_item["properties"]["keys"]["items"]["pattern"] == r"^tr\.\d+$"
+    recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
+    assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
 
-    forget_args = n.ForgetTool.schema()["function"]["parameters"]["properties"]["args"]
-    assert forget_args["items"]["pattern"] == r"^tr\.\d+$"
+    forget_keys = n.ForgetTool.schema()["function"]["parameters"]["properties"]["keys"]
+    assert forget_keys["items"]["pattern"] == r"^tr\.\d+$"
 
-    find_item = n.FindTool.schema()["function"]["parameters"]["properties"]["args"]["items"]
+    read_params = n.ReadTool.schema()["function"]["parameters"]
+    assert {"path", "ranges", "files"} <= set(read_params["properties"])
+
+    find_params = n.FindTool.schema()["function"]["parameters"]
+    assert {"name", "queries"} <= set(find_params["properties"])
+    find_item = find_params["properties"]["queries"]["items"]
     assert find_item["properties"]["type"]["enum"] == ["file", "dir", "any"]
+
+    search_params = n.SearchTool.schema()["function"]["parameters"]
+    assert {"pattern", "queries"} <= set(search_params["properties"])
 
     def walk(value):
         if isinstance(value, dict):
@@ -306,7 +308,18 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
                 walk(item)
 
     for tool in n.TOOLS:
+        params = tool.schema()["function"]["parameters"]
+        assert "args" not in params.get("properties", {})
         walk(tool.schema())
+
+
+def test_single_and_batch_payload_shapes_are_supported():
+    assert n.ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
+    assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
+    assert n.ModelClient.tool_payload("Find", {"name": "*.py"}) == [{"name": "*.py"}]
+    assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
+    assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
+    assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
 
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
@@ -374,7 +387,7 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([n.ToolCall("bash", "Bash", ["printf live"], "run")])
+    runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
     assert events[0] == ("start", "")
     assert ("stdout", "live") in events
@@ -388,8 +401,8 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("create", "CreateFile", ["made.py", "print(1)\n"], "create file")])
-    runner.run([n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "1", "new": "2"}]], "edit file")])
+    runner.run([n.ToolCall("create", "CreateFile", ["made.py", "print(1)\n"])])
+    runner.run([n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "1", "new": "2"}]])])
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
     assert updated == ["made.py", "made.py"]
@@ -401,7 +414,7 @@ def test_createfile_index_update_uses_call_path_when_output_path_is_unparseable(
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
 
     n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).update_code_index(
-        n.ToolCall("create", "CreateFile", ["made.py", "x\n"], "create"),
+        n.ToolCall("create", "CreateFile", ["made.py", "x\n"]),
         "<CreateFileToolResult path=bad created=true />",
     )
 
@@ -413,7 +426,7 @@ def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
     s.settings.yolo = True
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("create", "CreateFile", ["auto.txt", "ok\n"], "create file")])
+    runner.run([n.ToolCall("create", "CreateFile", ["auto.txt", "ok\n"])])
 
     assert (tmp_path / "auto.txt").read_text(encoding="utf-8") == "ok\n"
     assert len(s.tool_records) == 1

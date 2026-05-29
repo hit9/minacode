@@ -431,12 +431,10 @@ class ToolResultRecord:
     key: str
     name: str
     args: list[Any]
-    intention: str
     output: str
 
     def summary(self) -> str:
-        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}]"
-        return text + (" why=" + self.intention if self.intention else "")
+        return f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}]"
 
 
 @dataclass
@@ -444,12 +442,10 @@ class ToolErrorRecord:
     key: str
     name: str
     args: list[Any]
-    intention: str
     error: str
 
     def summary(self) -> str:
-        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}] error={Tool.compact(self.error, 200)}"
-        return text + (" why=" + self.intention if self.intention else "")
+        return f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}] error={Tool.compact(self.error, 200)}"
 
 
 @dataclass
@@ -527,12 +523,12 @@ class Session:
         provider = self.config.provider
         return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
 
-    def store_tool_result(self, name: str, args: list[Any], intention: str, output: str) -> str:
+    def store_tool_result(self, name: str, args: list[Any], output: str) -> str:
         self.tool_counter += 1
         key = f"tr.{self.tool_counter}"
-        args, intention, output = Text.value(list(args)), Text.clean(intention), Text.clean(output)
+        args, output = Text.value(list(args)), Text.clean(output)
         self.tool_results[key] = output
-        self.tool_records.append(ToolResultRecord(key, name, args, intention, output))
+        self.tool_records.append(ToolResultRecord(key, name, args, output))
         if len(self.tool_results) > 400:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
@@ -546,8 +542,8 @@ class Session:
         self.tool_records = [record for record in self.tool_records if record.key not in wanted]
         return count
 
-    def record_tool_error(self, key: str, name: str, args: list[Any], intention: str, error: str) -> None:
-        self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), Text.clean(intention), " ".join(Text.clean(error).split())))
+    def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
+        self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 
 
@@ -638,22 +634,16 @@ class Tool:
     @classmethod
     def schema(cls) -> Json:
         description = " ".join(part for part in (cls.DESCRIPTION, cls.SIGNATURE, *cls.EXAMPLE) if part)
-        return {
-            "type": "function",
-            "function": {
-                "name": cls.NAME,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
-                        "args": cls.args_schema(),
-                    },
-                    "required": ["intention", "args"],
-                    "additionalProperties": False,
-                },
-            },
-        }
+        return {"type": "function", "function": {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {}, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        args = payload.get("args")
+        return args if isinstance(args, list) else [payload]
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -750,9 +740,12 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read exact UTF-8 file ranges. Output includes line:hash anchors for safe Edit."
-    SIGNATURE = "Read({path, ranges:[[start,end], ...]}[, ...]); end=0 means EOF"
-    EXAMPLE = ('Example args: [{"path":"nanocode.py","ranges":[[0,80],[120,0]]}]',)
+    DESCRIPTION = "Read exact UTF-8 line ranges; returns file stat, total lines, and line:hash anchors for Edit."
+    SIGNATURE = "Read(path,ranges?) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive, end=0 reads to EOF"
+    EXAMPLE = (
+        'Read one file. Example: {"path":"src/app.py","ranges":[[0,80],[120,0]]}',
+        'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
+    )
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -769,6 +762,16 @@ class ReadTool(Tool):
             "required": ["path", "ranges"],
             "additionalProperties": False,
         }
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1}, "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1}}, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        if isinstance(payload.get("args"), list): return payload["args"]
+        if isinstance(payload.get("files"), list) or isinstance(payload.get("requests"), list): return payload.get("files") or payload.get("requests")
+        return [{"path": payload.get("path", ""), "ranges": payload.get("ranges") or [[0, 0]]}]
 
     @staticmethod
     def line_hash(line: str) -> str:
@@ -819,13 +822,21 @@ class ReadTool(Tool):
 
 class LineCountTool(Tool):
     NAME = "LineCount"
-    DESCRIPTION = "Count lines in UTF-8 files; missing paths are reported."
-    SIGNATURE = "LineCount(path[, path...])"
-    EXAMPLE = ('Example args: ["nanocode.py", "pyproject.toml"]',)
+    DESCRIPTION = "Count UTF-8 file lines; returns per-file counts, missing/not_file rows, and total."
+    SIGNATURE = "LineCount(paths=[path,...])"
+    EXAMPLE = ('Count several files. Example: {"paths":["src/app.py","pyproject.toml"]}',)
 
     @classmethod
     def arg_schema(cls) -> Json:
         return {"type": "string"}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["paths"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("paths") or [])
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path in self.paths())
@@ -857,13 +868,22 @@ class LineCountTool(Tool):
 
 class ListTool(Tool):
     NAME = "List"
-    DESCRIPTION = "List one directory, optionally filtered by a glob. Use for navigation, not source truth."
-    SIGNATURE = "List([path][, glob])"
-    EXAMPLE = ('Example args: ["."]', 'Example args: ["tests", "test_*.py"]')
+    DESCRIPTION = "List one directory, not recursive; returns dirs/files/symlinks and text/binary labels; use Read for content."
+    SIGNATURE = "List(path, glob?)"
+    EXAMPLE = ('List a directory. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
 
     @classmethod
     def arg_schema(cls) -> Json:
         return {"type": "string"}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        if isinstance(payload.get("args"), list): return payload["args"]
+        return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
 
     def needs_confirmation(self) -> bool:
         return not self.session.in_cwd(self.path())
@@ -902,9 +922,13 @@ class ListTool(Tool):
 
 class FindTool(Tool):
     NAME = "Find"
-    DESCRIPTION = "Find files or directories by path/name glob; use Search for file contents."
-    SIGNATURE = "Find({name, path?, type?, limit?}[, ...])"
-    EXAMPLE = ('Example args: [{"name":"*.py"},{"name":"test_*","path":"tests","type":"file","limit":50}]',)
+    DESCRIPTION = "Find paths by name or relative-path glob; skips hidden/gitignored entries and returns file/dir paths."
+    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any, default type=file, default limit=100"
+    EXAMPLE = (
+        'Find files. Example: {"name":"*.py","type":"file","limit":100}',
+        'Find directories. Example: {"queries":[{"name":"migrations","type":"dir","limit":20}]}',
+        'Find dirs or files below a path. Example: {"queries":[{"name":"test_*","path":"tests","type":"any","limit":50}]}',
+    )
     MAX_LIMIT = 500
 
     @classmethod
@@ -920,6 +944,16 @@ class FindTool(Tool):
             "required": ["name"],
             "additionalProperties": False,
         }
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        props = dict(cls.arg_schema()["properties"])
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        return {"type": "object", "properties": props, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(request["path"]) for request in self.requests())
@@ -988,11 +1022,12 @@ class FindTool(Tool):
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Search files with case-insensitive regex; batch related terms with A|B|C."
-    SIGNATURE = "Search({pattern, path?, glob?, context?}[, ...])"
+    DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path:line:hash matches."
+    SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
     EXAMPLE = (
-        'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',
-        'Batch regex terms. Args: [{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]',
+        'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
+        'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
+        'Batch regex terms. Example: {"queries":[{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]}',
     )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
@@ -1010,6 +1045,16 @@ class SearchTool(Tool):
             "required": ["pattern"],
             "additionalProperties": False,
         }
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        props = dict(cls.arg_schema()["properties"])
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        return {"type": "object", "properties": props, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(request["path"]) for request in self.requests())
@@ -1295,12 +1340,13 @@ class InspectCodeTool(Tool):
     NAME = "InspectCode"
     MAX_LIMIT: ClassVar[int] = 80
     MAX_OUTLINE_LIMIT: ClassVar[int] = 1000
-    DESCRIPTION = "Find symbols, inspect one symbol, or outline one file using the code index."
-    SIGNATURE = "InspectCode(mode, target[, options])"
+    DESCRIPTION = "Use the code index: find returns symbols, inspect returns anchors/members/references, outline returns a file symbol tree."
+    SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?)"
     EXAMPLE = (
-        'Find symbols, returns kind/file/range/signature. kind: class|function|variable|constant|enum|struct|dict_key; comma-ok. Args: ["find","Tool",{"kind":"class","limit":20}]',
-        'Inspect one symbol, returns source anchors/members/references. Args: ["inspect","Tool",{"path":"nanocode.py"}]',
-        'Outline one file, returns symbol tree and ranges. Args: ["outline","nanocode.py"]',
+        'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
+        'Find exact symbol in a path. Example: {"mode":"find","target":"Session","path":"src","exact_only":true,"limit":10}',
+        'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
+        'Outline one file; symbol narrows subtree. Example: {"mode":"outline","target":"src/app.py","symbol":"App","limit":300}',
     )
 
     @classmethod
@@ -1310,6 +1356,20 @@ class InspectCodeTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 3}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {
+            "mode": {"type": "string", "enum": ["find", "inspect", "outline"]}, "target": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT},
+            "kind": {"type": "string"}, "path": {"type": "string"}, "symbol": {"type": "string"}, "exact_only": {"type": "boolean"},
+        }, "required": ["mode", "target"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        if isinstance(payload.get("args"), list): return payload["args"]
+        options = {key: payload[key] for key in ("limit", "kind", "path", "symbol", "exact_only") if key in payload}
+        return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
     def call(self) -> str:
         if len(self.args) not in (2, 3):
@@ -1363,11 +1423,11 @@ class InspectCodeTool(Tool):
 
 class CreateFileTool(Tool):
     NAME = "CreateFile"
-    DESCRIPTION = "Create one new UTF-8 file; fails if it already exists."
-    SIGNATURE = "CreateFile(path, content)"
+    DESCRIPTION = "Create exactly one new UTF-8 file; creates parent dirs inside workspace, returns path/chars, fails if file exists."
+    SIGNATURE = "CreateFile(path, content); one file per call"
     EXAMPLE = (
-        'Create one file only; returns path/created/chars. Args: ["notes.txt","hello\\n"]',
-        'Call separately for each file. Args: ["demo/main.cpp","int main() {}\\n"]',
+        'Create text. Example: {"path":"notes.txt","content":"hello\\n"}',
+        'Create code; content may contain real newlines or escaped \\n. Example: {"path":"src/main.cpp","content":"#include <iostream>\\nint main() { return 0; }\\n"}',
     )
     MUTATES = True
 
@@ -1378,6 +1438,14 @@ class CreateFileTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "description": 'Exactly ["path","content"].', "items": {"type": "string"}, "minItems": 2, "maxItems": 2}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("content", "")]
 
     def preview(self) -> str:
         path, content = self.payload()
@@ -1431,14 +1499,14 @@ class Edit:
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Patch an existing UTF-8 file with anchored edits or exact text replacement."
-    SIGNATURE = "Edit(path, edits)"
+    DESCRIPTION = "Patch one existing UTF-8 file; anchored ops verify hashes, replace_all is exact text, result returns diff and refreshed lines."
+    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
-        'replace: ["code.py",[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new text\\n"}]]',
-        'delete: ["code.py",[{"op":"delete","start":"10:abc123","end":"12:def456"}]]',
-        'insert_before: ["code.py",[{"op":"insert_before","start":"10:abc123","content":"new line\\n"}]]',
-        'insert_after: ["code.py",[{"op":"insert_after","start":"10:abc123","content":"new line\\n"}]]',
-        'replace_all: ["code.py",[{"op":"replace_all","old":"OldName","new":"NewName"}]]',
+        'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new_value = 1\\n"}]}',
+        'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:aaa111","end":"22:bbb222"}]}',
+        'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:ccc333","content":"setup()\\n"}]}',
+        'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:ddd444","content":"cleanup()\\n"}]}',
+        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     MUTATES = True
 
@@ -1449,6 +1517,15 @@ class EditTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 2}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        edit = {"type": "object", "properties": {key: {"type": "string"} for key in ("op", "start", "end", "content", "old", "new")}, "required": ["op"], "additionalProperties": False}
+        return {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}}, "required": ["path", "edits"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
         path, edits = self.parse()
@@ -1604,11 +1681,11 @@ class EditTool(Tool):
 
 class BashTool(Tool):
     NAME = "Bash"
-    DESCRIPTION = "Run one bash command in the workspace."
+    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output."
     SIGNATURE = "Bash(command)"
     EXAMPLE = (
-        'Check environment, returns exit/stdout/stderr. Args: ["python3 --version"]',
-        'Run a project command. Args: ["python3 -m py_compile nanocode.py"]',
+        'Check environment. Example: {"command":"python3 --version"}',
+        'Run a project command. Example: {"command":"python3 -m py_compile nanocode.py"}',
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
@@ -1620,6 +1697,14 @@ class BashTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}, "minItems": 1, "maxItems": 1}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}}, "required": ["command"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("command", "")]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -1737,17 +1822,28 @@ class BashTool(Tool):
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = "Run git with argv args; cwd=path may be the first arg."
-    SIGNATURE = "Git([cwd=path,] git_arg...)"
+    DESCRIPTION = "Run git argv in the workspace; returns exit/stdout/stderr, with approval for mutating commands."
+    SIGNATURE = "Git(argv=[...], cwd?)"
     EXAMPLE = (
-        'Read repo status, returns exit/stdout/stderr. Args: ["status","--short"]',
-        'Diff inside a subdir. Args: ["cwd=src","diff","--","app.py"]',
+        'Read repo status. Example: {"argv":["status","--short"]}',
+        'Diff inside a subdir. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
+        'Read history/object. Example: {"argv":["show","--stat","HEAD"]}',
     )
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
 
     @classmethod
     def arg_schema(cls) -> Json:
         return {"type": "string"}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["argv"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        if isinstance(payload.get("args"), list): return payload["args"]
+        argv = list(payload.get("argv") or [])
+        return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
     def needs_confirmation(self) -> bool:
         args, _ = self.git_args()
@@ -1785,11 +1881,11 @@ class GitTool(Tool):
 
 class RecallTool(Tool):
     NAME = "Recall"
-    DESCRIPTION = "Recall stored tool results by tr.N key, optionally sliced by output lines."
-    SIGNATURE = "Recall(key...) or Recall({key|keys, ranges?})"
+    DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
+    SIGNATURE = "Recall(keys=[tr.N,...], ranges?); ranges are 0-based [start,end] output lines"
     EXAMPLE = (
-        'Recall full result. Args: ["tr.1"]',
-        'Recall output line ranges, 0-based end-exclusive. Args: [{"keys":["tr.1","tr.2"],"ranges":[[0,80]]}]',
+        'Recall full result. Example: {"keys":["tr.1"]}',
+        'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
     )
     STORES_RESULT = False
 
@@ -1809,6 +1905,14 @@ class RecallTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else [{"keys": payload.get("keys", []), **({"ranges": payload["ranges"]} if "ranges" in payload else {})}]
 
     def call(self) -> str:
         requests = self.requests()
@@ -1891,9 +1995,9 @@ class RecallTool(Tool):
 
 class ForgetTool(Tool):
     NAME = "Forget"
-    DESCRIPTION = "Forget stored tool result keys that are no longer useful."
-    SIGNATURE = "Forget(key...)"
-    EXAMPLE = ('Args: ["tr.1","tr.2"]',)
+    DESCRIPTION = "Forget stored tool result keys from future context; does not touch files."
+    SIGNATURE = "Forget(keys=[tr.N,...])"
+    EXAMPLE = ('Forget old outputs. Example: {"keys":["tr.1","tr.2"]}',)
     STORES_RESULT = False
 
     @classmethod
@@ -1903,6 +2007,14 @@ class ForgetTool(Tool):
     @classmethod
     def args_schema(cls) -> Json:
         return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"keys": {"type": "array", "items": cls.arg_schema(), "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("keys") or [])
 
     def call(self) -> str:
         keys = list(dict.fromkeys(self.strings(min_count=1)))
@@ -1919,7 +2031,6 @@ class ToolCall:
     id: str
     name: str
     args: list[Any]
-    intention: str = ""
 
 
 class ContextManager:
@@ -1944,15 +2055,15 @@ class ContextManager:
         self.latest_keys = []
 
     def store_tool_result(self, call: ToolCall, output: str) -> str:
-        key = self.session.store_tool_result(call.name, call.args, call.intention, output)
+        key = self.session.store_tool_result(call.name, call.args, output)
         self.latest_keys.append(key)
         return key
 
-    def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
-        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages)}])
+    def model_messages(self, base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[Json]:
+        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages, error_feedback)}])
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
-        if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
+    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> None:
+        if self.estimated_tokens(self.model_messages(base_system, turn_messages, error_feedback)) < self.session.settings.max_context_tokens:
             return
         try:
             self.session.state.apply(model.compact(self.compaction_input(turn_messages)))
@@ -1961,7 +2072,7 @@ class ContextManager:
         self.session.messages = self.session.messages[-6:]
         self.latest_keys = []
 
-    def render(self, turn_messages: list[Json] | None = None) -> str:
+    def render(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> str:
         sections = [
             ("Environment", self.environment()),
             ("State", self.session.state.format()),
@@ -1970,7 +2081,7 @@ class ContextManager:
             ("Tool Result Index", self.tool_index()),
             ("File Context", self.file_context()),
             ("Discovery Context", self.discovery_context()),
-            ("Error Feedback", self.error_feedback()),
+            ("Error Feedback", self.error_feedback(error_feedback)),
             ("Latest Tool Results", self.latest_results()),
             ("Current Date", self.current_date()),
             ("Current Turn Conversation", self.turn_conversation(turn_messages)),
@@ -1990,8 +2101,11 @@ class ContextManager:
     def tool_index(self) -> str:
         return "\n".join(record.summary() for record in self.session.tool_records) or "(empty)"
 
-    def error_feedback(self) -> str:
-        return "\n".join(["Recent failed tool calls:"] + [record.summary() for record in self.session.tool_errors]) if self.session.tool_errors else ""
+    def error_feedback(self, extra: str = "") -> str:
+        rows = ["Recent failed tool calls:", *[record.summary() for record in self.session.tool_errors]] if self.session.tool_errors else []
+        if extra.strip():
+            rows.extend([*([""] if rows else []), extra.strip()])
+        return "\n".join(rows)
 
     def latest_results(self) -> str:
         records = [record for record in self.session.tool_records if record.key in set(self.latest_keys)]
@@ -2243,7 +2357,7 @@ class ToolRunner:
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
         if self.session.settings.debug:
             return self.finish(call, output, failed=True, elapsed=elapsed)
-        self.session.record_tool_error("-", call.name, call.args, call.intention, output)
+        self.session.record_tool_error("-", call.name, call.args, output)
         self.output_fn(self.finish_display(call, "", output, failed=True))
         return output
 
@@ -2251,7 +2365,7 @@ class ToolRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = self.context.store_tool_result(call, output) if tool_class is None or tool_class.STORES_RESULT else ""
         if failed:
-            self.session.record_tool_error(key or "-", call.name, call.args, call.intention, output)
+            self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
         self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved))
@@ -2613,8 +2727,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
                 arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-                args, intention = self.tool_payload(payload)
-                calls.append(ToolCall(id=call_id, name=name, args=args, intention=intention))
+                calls.append(ToolCall(id=call_id, name=name, args=self.tool_payload(name, payload)))
         text = "".join(text_parts)
         assistant: Json = {"role": "assistant", "content": text or None}
         if tool_calls:
@@ -2679,23 +2792,21 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             try:
                 payload = json.loads(raw.function.arguments or "{}")
             except json.JSONDecodeError as error:
-                calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[], intention=f"invalid JSON arguments: {error}"))
+                calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
                 continue
-            args, intention = self.tool_payload(payload)
-            calls.append(ToolCall(id=raw.id, name=raw.function.name, args=args, intention=intention))
+            calls.append(ToolCall(id=raw.id, name=raw.function.name, args=self.tool_payload(raw.function.name, payload)))
         return calls
 
     @staticmethod
-    def tool_payload(payload: Any) -> tuple[list[Any], str]:
-        if isinstance(payload, dict):
-            args = payload.get("args")
-            return (args if isinstance(args, list) else [payload], str(payload.get("intention") or ""))
-        return [payload], ""
+    def tool_payload(name: str, payload: Any) -> list[Any]:
+        if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
+            return tool.payload_args(payload)
+        return [payload]
 
 
 class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
+Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Use each tool's named parameters.
 Batch independent read-only tool calls when useful.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
@@ -2716,13 +2827,22 @@ Output: concise markdown, USER'S LANGUAGE.
         self.session.state.turn_tool_calls = 0
         self.context.start_tool_batch()
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
+        parser_retry_used = False
+        parser_feedback = ""
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    _assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
+                    _assistant, tool_calls, content = self.model.request(self.messages(turn_messages, parser_feedback))
+                    parser_feedback = ""
                     break
                 except ModelRequestRetry:
+                    continue
+                except ModelError as error:
+                    if parser_retry_used or not self.tool_parse_error(error):
+                        raise
+                    parser_retry_used = True
+                    parser_feedback = self.tool_parse_feedback(error)
                     continue
             if not tool_calls:
                 if not content.strip():
@@ -2739,14 +2859,23 @@ Output: concise markdown, USER'S LANGUAGE.
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
         return stopped
 
-    def messages(self, turn_messages: list[Json]) -> list[Json]:
+    def messages(self, turn_messages: list[Json], error_feedback: str = "") -> list[Json]:
         turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
+
+    @staticmethod
+    def tool_parse_error(error: Exception) -> bool:
+        text = str(error)
+        return "Failed to parse input" in text and "<tool_call>" in text
+
+    @staticmethod
+    def tool_parse_feedback(error: Exception) -> str:
+        return "Previous model request failed before execution: provider parser rejected the tool_call format. Retry once using only valid JSON named parameters from the tool schema; do not emit XML-style tool calls or ad-hoc parameter text."
 
 
 class CommandCompleter(Completer):
