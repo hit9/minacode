@@ -17,7 +17,7 @@ def call(name, args):
     return n.ToolCall(name + "-id", name, args)
 
 
-def test_model_messages_are_sectioned_context_snapshots(tmp_path):
+def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     turn = [
@@ -27,18 +27,14 @@ def test_model_messages_are_sectioned_context_snapshots(tmp_path):
     ]
     messages = n.ContextManager(s).model_messages(" system ", turn)
 
-    assert [message["role"] for message in messages] == ["system", "user", "user", "user", "user"]
+    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user", "user"]
     assert messages[0]["content"] == "system"
-
     assert messages[1]["content"].startswith("--- Environment ---")
     assert "- cwd: " + str(tmp_path) in messages[1]["content"]
-    assert messages[2]["content"].startswith("--- Earlier Conversation ---")
-    assert messages[3]["content"].startswith("--- Tool Result Index ---")
-    assert messages[4]["content"].startswith("--- Working Context ---")
-    assert "Current Turn Conversation:" in messages[4]["content"]
-    assert "user:\ncurrent request" in messages[4]["content"]
-    assert "user:\nextra one" in messages[4]["content"]
-    assert "user:\nextra two" in messages[4]["content"]
+    assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
+    assert messages[-2]["content"].startswith("--- Memory ---")
+    assert "Date:" in messages[-2]["content"]
+    assert messages[-1]["content"].startswith("--- CURRENT WORKING CONTEXT ---")
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -56,7 +52,7 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     initial_calls = list(calls)
     context = n.ContextManager(s)
     first = context.environment()
-    second = context.render([{"role": "user", "content": "request"}])
+    second = context.model_messages("sys", [{"role": "user", "content": "request"}])[1]["content"]
 
     assert calls == initial_calls
     assert "- cwd: " + str(tmp_path) in first
@@ -83,20 +79,12 @@ def test_session_tool_result_store_prunes_and_forget_removes_records(tmp_path):
     assert all(record.key not in {"tr.6", "tr.405"} for record in s.tool_records)
 
 
-def test_latest_results_and_bounded_output_are_context_managed(tmp_path):
+def test_bounded_output_marks_recall_key(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
-    previous = s.store_tool_result("Search", [], "previous result")
-
-    context.start_tool_batch()
-    current = context.store_tool_result(call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}]), "current result")
-    latest = context.latest_results()
-    assert previous not in latest
-    assert current in latest
-    assert "current result" in latest
-
     large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
     bounded = context.bound_output(large, "tr.large")
+
     assert "head" in bounded
     assert "tail" in bounded
     assert "<bounded_output" in bounded
@@ -127,32 +115,34 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
 
     rendered = context.file_context()
     assert edit_key in rendered
+    assert f"source={edit_key} tool=Edit" in rendered
+    assert "Available:\n- a.txt 0:2" in rendered
+    assert "**ALREADY READ FILE RANGES ARE BELOW" in rendered
+    assert f"Recent file actions:\n- {read_key} Read" in rendered
+    assert f"@@ a.txt 0:1 source={edit_key} tool=Edit" in rendered
+    assert rendered.endswith("OUTPUT IN USER LANGUAGE")
     assert "|new" in rendered
     assert "|old" not in rendered
 
 
-def test_discovery_and_error_context_are_separate_from_file_context(tmp_path):
+def test_file_context_marks_full_file_reads(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("one\ntwo\n", encoding="utf-8")
     s = session(tmp_path)
-    context = n.ContextManager(s)
-    s.store_tool_result("List", ["."], "list output")
-    search_key = s.store_tool_result("Search", [{"pattern": "x"}], "search output")
-    inspect_key = s.store_tool_result("InspectCode", ["find", "X"], "inspect output")
-    s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read output")
+    output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call()
+    s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], output, n.ToolRunner(s, n.ContextManager(s)).tool_note(call("Read", []), output))
 
-    discovery = context.discovery_context()
-    assert search_key in discovery
-    assert inspect_key in discovery
-    assert "search output" in discovery
-    assert "inspect output" in discovery
-    assert "list output" not in discovery
-    assert "read output" not in discovery
+    rendered = n.ContextManager(s).file_context()
+    assert "- a.txt 0:2 (FULL FILE, from Read 0:0)" in rendered
+    assert "Read a.txt 0:2 FULL FILE" in rendered
 
+
+def test_tool_error_records_keep_recent_failures(tmp_path):
+    s = session(tmp_path)
     for index in range(7):
         s.record_tool_error(f"tr.{index}", "Bash", [str(index)], f"error {index}")
+
     assert [record.key for record in s.tool_errors] == ["tr.2", "tr.3", "tr.4", "tr.5", "tr.6"]
-    feedback = context.error_feedback()
-    assert "error 1" not in feedback
-    assert "error 6" in feedback
 
 
 def test_compaction_uses_configured_context_budget(tmp_path):
@@ -160,7 +150,6 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     s.settings.max_context_tokens = 1
     s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
     context = n.ContextManager(s)
-    context.latest_keys = ["tr.1"]
 
     class FakeModel:
         def __init__(self):
@@ -177,7 +166,6 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert s.state.plan == ["next"]
     assert s.state.known == ["fact"]
     assert len(s.messages) == 6
-    assert context.latest_keys == []
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -245,7 +233,9 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert all(len(messages) == 5 for messages in agent.model.messages)
+    assert [len(messages) for messages in agent.model.messages] == [5, 6]
+    assert any("tool tr.1 Read a.txt 0:1" in message["content"] for message in agent.model.messages[1])
+    assert any("READ COMPLETED. CONTENT IS NOW IN CURRENT WORKING CONTEXT" in message["content"] for message in agent.model.messages[1])
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -296,17 +286,18 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     agent.model = FakeModel()
     assert agent.run("initial request") == "done"
 
-    first = agent.model.messages[0][4]["content"]
-    second = agent.model.messages[1][4]["content"]
-    assert "user:\nextra instruction" in first
-    assert "user:\nextra instruction" in second
-    assert "assistant:\n" in second
-    assert "user:\nsecond instruction" in second
+    first = "\n\n".join(message.get("content") or "" for message in agent.model.messages[0])
+    second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
+    assert "extra instruction" in first
+    assert "extra instruction" in second
+    assert "checking" in second
+    assert "second instruction" in second
     assert s.messages[0]["content"] == "initial request"
     assert s.messages[1]["content"] == "extra instruction"
     assert s.messages[2]["content"] == "checking"
-    assert s.messages[3]["content"] == "second instruction"
-    assert s.messages[4]["role"] == "assistant"
+    assert s.messages[3]["content"].startswith("tool tr.1 LineCount")
+    assert s.messages[4]["content"] == "second instruction"
+    assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
 
 
@@ -406,12 +397,13 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
     assert any(line.startswith("tool Read") for line in output)
-    assert s.messages == [
-        {"role": "user", "content": "read file"},
-        {"role": "assistant", "content": "I'll inspect that first."},
-        {"role": "assistant", "content": "done"},
-    ]
-    assert "I'll inspect that first." in agent.model.messages[1][4]["content"]
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "user", "assistant"]
+    assert s.messages[0]["content"] == "read file"
+    assert s.messages[1]["content"] == "I'll inspect that first."
+    assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
+    assert s.messages[2]["content"].endswith("DO NOT READ THIS FILE/RANGE AGAIN UNLESS IT CHANGED.")
+    assert s.messages[3]["content"] == "done"
+    assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
@@ -420,7 +412,6 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s.state.summary = "existing"
     s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
     context = n.ContextManager(s)
-    context.latest_keys = ["tr.1"]
 
     class FailingModel:
         def compact(self, text):
@@ -429,7 +420,6 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 6
-    assert context.latest_keys == []
 
 
 def test_manual_compact_clears_conversation_messages(tmp_path):
@@ -469,9 +459,9 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     assert agent.run("run bad tool") == "done"
     assert len(s.tool_errors) == 1
     assert s.tool_records == []
-    second_context = agent.model.messages[1][4]["content"]
-    assert "--- Working Context ---" in second_context
-    assert "Recent failed tool calls:" in second_context
+    second_context = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
+    assert "tool - Bash" in second_context
+    assert "status: failed" in second_context
     assert "Bash" in second_context
 
 

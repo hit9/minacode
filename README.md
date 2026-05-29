@@ -92,7 +92,7 @@ Main fields:
 
 ## Context Design
 
-Each model request is built manually as one system message and one user message. The user message is a structured context snapshot, ordered from stable sections to volatile sections so provider prompt caching can reuse the prefix.
+Each model request is built manually from explicit messages. Stable context comes first, the live conversation stays as messages, and current file content is appended at the end.
 
 ```text
 model request
@@ -102,26 +102,25 @@ model request
 +--------------------------------------------------+
 | user                                             |
 |   Environment                                   |
-|   State                                         |
-|   Summary                                       |
-|   Recent Conversation                           |
-|   Tool Result Index                             |
-|   File Context                                  |
-|   Discovery Context                             |
-|   Error Feedback                                |
-|   Latest Tool Results                           |
-|   Current Turn Conversation                     |
++--------------------------------------------------+
+| user/assistant                                  |
+|   conversation and bounded tool results         |
++--------------------------------------------------+
+| user                                             |
+|   Memory: goal, summary, plan, known, date       |
++--------------------------------------------------+
+| user                                             |
+|   CURRENT WORKING CONTEXT                       |
 +--------------------------------------------------+
 ```
 
 Core rules:
 
-- File Context is rebuilt dynamically from active `Read` and `Edit` results.
+- CURRENT WORKING CONTEXT includes the latest active `Read` and `Edit` file ranges.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
-- Discovery Context contains `Find`, `Search`, and `InspectCode` leads, not source truth.
-- Large tool outputs are bounded in context and can be recalled by `tr.N`.
-- Error Feedback keeps only recent failed tool calls.
+- Successful `Read`, `Edit`, and `CreateFile` tool messages point to CURRENT WORKING CONTEXT instead of repeating file bodies.
+- Other tool outputs are bounded in conversation messages.
 - `Forget` removes stale result keys from the active tool result store.
 
 ## Safety
