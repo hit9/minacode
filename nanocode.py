@@ -3456,8 +3456,6 @@ Tools:
                 return self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval") if self.interactive_input else self.input_fn(prompt)
             finally:
                 if self.interactive_input and sys.stdout.isatty():
-                    sys.stdout.write("\x1b[1A\r\x1b[2K")
-                    sys.stdout.flush()
                     self.clear_transient_tool_output()
 
         return self.with_status_paused(read)
