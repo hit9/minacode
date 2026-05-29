@@ -200,6 +200,17 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     assert len(bad.tool_errors) == 1
 
 
+def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
+
+    runner.run([call("Bash", ["printf first"])])
+
+    assert len(s.tool_records) == 1
+    assert len(s.tool_errors) == 1
+    assert "not now" in s.tool_errors[0].error
+
+
 def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     s = session(tmp_path)
     key = s.store_tool_result("Read", ["a.txt"], "read", "result")

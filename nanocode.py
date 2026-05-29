@@ -2184,13 +2184,13 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm"))
-        while True:
-            answer = self.input_fn("Approve " + tool.NAME + "? [Y/n] ").strip().lower()
-            if answer in {"", "y", "yes"}:
-                return True, ""
-            if answer in {"n", "no"}:
-                return False, self.input_fn("Reason? [optional] ").strip()
-            self.output_fn("Please answer y or n.")
+        answer = self.input_fn("Approve " + tool.NAME + "? [Y/n or reason] ").strip()
+        lower = answer.lower()
+        if lower in {"", "y", "yes"}:
+            return True, ""
+        if lower in {"n", "no"}:
+            return False, self.input_fn("Reason? [optional] ").strip()
+        return False, answer
 
     def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
@@ -3375,7 +3375,7 @@ Tools:
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
             try:
-                return self.input_fn(prompt)
+                return self.read_input(prompt) if self.interactive_input else self.input_fn(prompt)
             finally:
                 if self.interactive_input and sys.stdout.isatty():
                     sys.stdout.write("\x1b[1A\r\x1b[2K")
