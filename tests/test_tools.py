@@ -42,6 +42,29 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert "sample.py:0:" in multiline
 
 
+def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(n.shutil, "which", lambda name: None)
+    (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
+    (tmp_path / "visible.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / ".hidden.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / ".hidden_dir").mkdir()
+    (tmp_path / ".hidden_dir" / "inside.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "ignored_dir").mkdir()
+    (tmp_path / "ignored_dir" / "inside.txt").write_text("needle\n", encoding="utf-8")
+    s = session(tmp_path)
+
+    found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    direct_hidden = n.SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
+    direct_ignored = n.SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
+
+    assert "visible.txt:0:" in found
+    assert ".hidden" not in found
+    assert "ignored" not in found
+    assert ".hidden.txt:0:" not in direct_hidden
+    assert "ignored_dir/inside.txt:0:" not in direct_ignored
+
+
 def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 - 2026-05-29
+
+### Added
+- Added the current date to context immediately before the current user request.
+
+### Fixed
+- Sanitized context/debug/model-request text so surrogate characters from terminal input cannot break UTF-8 encoding.
+- Made Search ignore hidden paths and `.gitignore` paths consistently across ripgrep and Python fallback paths.
+
 ## 0.5.0 - 2026-05-28
 
 ### Added

@@ -103,6 +103,21 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.cached_prompt_tokens == 6
 
 
+def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
+    bad = "bad \udce5 text"
+    s = session(tmp_path)
+    s.store_tool_result("Bash", [bad], bad, bad)
+    s.record_tool_error("tr.1", "Bash", [bad], bad, bad)
+
+    messages = n.ContextManager(s).model_messages("sys", bad)
+    debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
+
+    json.dumps(messages, ensure_ascii=False).encode("utf-8")
+    json.dumps(debug_payload, ensure_ascii=False).encode("utf-8")
+    assert "\udce5" not in str(messages)
+    assert "\udce5" not in str(debug_payload)
+
+
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
     s = session(tmp_path)
     inside = tmp_path / "inside.py"

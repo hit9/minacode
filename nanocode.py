@@ -54,7 +54,7 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -90,6 +90,22 @@ class ModelRequestRetry(NanocodeError):
 
 class ToolError(NanocodeError):
     pass
+
+
+class Text:
+    @staticmethod
+    def clean(text: str) -> str:
+        return text.encode("utf-8", errors="replace").decode("utf-8")
+
+    @classmethod
+    def value(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return cls.clean(value)
+        if isinstance(value, dict):
+            return {cls.clean(str(key)): cls.value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls.value(item) for item in value]
+        return value
 
 
 @dataclass
@@ -505,8 +521,9 @@ class Session:
     def store_tool_result(self, name: str, args: list[Any], intention: str, output: str) -> str:
         self.tool_counter += 1
         key = f"tr.{self.tool_counter}"
+        args, intention, output = Text.value(list(args)), Text.clean(intention), Text.clean(output)
         self.tool_results[key] = output
-        self.tool_records.append(ToolResultRecord(key, name, list(args), intention, output))
+        self.tool_records.append(ToolResultRecord(key, name, args, intention, output))
         if len(self.tool_results) > 400:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
@@ -521,7 +538,7 @@ class Session:
         return count
 
     def record_tool_error(self, key: str, name: str, args: list[Any], intention: str, error: str) -> None:
-        self.tool_errors.append(ToolErrorRecord(key, name, list(args), intention, " ".join(error.split())))
+        self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), Text.clean(intention), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 
 
@@ -849,7 +866,9 @@ class SearchTool(Tool):
         return requests
 
     def search(self, request: Json) -> str:
-        rows = None if "\n" in str(request["pattern"]) else self.rg_matches(request)
+        patterns = self.gitignore_patterns(str(request["path"]))
+        rows = [] if self.default_ignored(str(request["path"]), patterns) else None
+        rows = rows if rows is not None or "\n" in str(request["pattern"]) else self.rg_matches(request)
         rows = rows if rows is not None else self.python_matches(request)
         header = f"<SearchToolResult pattern={json.dumps(request['pattern'])} matches={len(rows)}>"
         return "\n".join([header, *rows, "</SearchToolResult>"])
@@ -899,10 +918,12 @@ class SearchTool(Tool):
         return rows
 
     def files(self, root: str, glob_pattern: str) -> list[str]:
+        gitignore = self.gitignore_patterns(root)
+        if self.default_ignored(root, gitignore):
+            return []
         if os.path.isfile(root):
             return [root]
         found = []
-        gitignore = self.gitignore_patterns(root)
         skip_dirs = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
@@ -980,13 +1001,24 @@ class SearchTool(Tool):
     def ignored(self, path: str, patterns: list[str]) -> bool:
         rel = self.session.relpath(path).replace(os.sep, "/")
         name = os.path.basename(path)
-        for pattern in patterns:
-            pattern = pattern.rstrip("/")
+        parts = [part for part in rel.split("/") if part and part != "."]
+        for raw in patterns:
+            directory = raw.endswith("/")
+            pattern = raw.rstrip("/")
             if not pattern:
                 continue
-            if ("/" in pattern and fnmatch.fnmatch(rel, pattern)) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
+            if "/" in pattern:
+                matched = fnmatch.fnmatch(rel, pattern) or (directory and (rel == pattern or rel.startswith(pattern + "/")))
+            else:
+                matched = any(fnmatch.fnmatch(part, pattern) for part in parts) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern)
+            if matched:
                 return True
         return False
+
+    def default_ignored(self, path: str, patterns: list[str]) -> bool:
+        rel = self.session.relpath(path).replace(os.sep, "/")
+        hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
+        return hidden or self.ignored(path, patterns)
 
 
 class CodeIndex:
@@ -1795,7 +1827,7 @@ class ContextManager:
         return key
 
     def model_messages(self, base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> list[Json]:
-        return [{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input, extra_messages)}]
+        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input, extra_messages)}])
 
     def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> None:
         if self.estimated_tokens(self.model_messages(base_system, user_input, extra_messages)) < self.session.settings.max_context_tokens:
@@ -1818,9 +1850,13 @@ class ContextManager:
             ("Discovery Context", self.discovery_context()),
             ("Error Feedback", self.error_feedback()),
             ("Latest Tool Results", self.latest_results()),
+            ("Current Date", self.current_date()),
             ("Current User Request", user_input.strip() or "(empty)"),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
+
+    def current_date(self) -> str:
+        return "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -2205,10 +2241,11 @@ class DebugTrace:
         if isinstance(value, (list, tuple)):
             return [cls.value(item) for item in value]
         if isinstance(value, str):
+            value = Text.clean(value)
             return value if len(value) <= cls.STRING_LIMIT else value[: cls.STRING_LIMIT] + "...<truncated>"
         if value is None or isinstance(value, (int, float, bool)):
             return value
-        return str(value)
+        return Text.clean(str(value))
 
     @classmethod
     def prompt(cls, session: Session, *, activity: str, messages: list[Json]) -> None:
@@ -2268,6 +2305,7 @@ class ModelClient:
             self.session.state.current_model_call_started_at = 0.0
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
+        messages = Text.value(messages)
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
         if tools:
@@ -2301,7 +2339,7 @@ Compact the nanocode working context.
 Return exactly one JSON object with keys: summary, goal, plan, known.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
-        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": context}]
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
         _, _, content = (
             self.anthropic_request(messages, None, activity="compact")
             if self.session.config.provider.resolved_api() == "anthropic"
@@ -2373,6 +2411,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
+        messages = Text.value(messages)
         provider = self.session.config.provider
         params = self.anthropic_params(messages, tools)
         DebugTrace.prompt(self.session, activity=activity, messages=messages)
