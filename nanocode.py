@@ -10,7 +10,6 @@ import json
 import os
 import platform
 import re
-import select
 import selectors
 import shutil
 import signal
@@ -30,9 +29,10 @@ import code_symbol_index as csi
 from anthropic import Anthropic
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
@@ -2718,6 +2718,8 @@ class UiPrinter:
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
+        if text.startswith("+ "):
+            return [("ansibrightblack", "+ "), ("ansiwhite", text[2:] + "\n")]
         if text.startswith("[done in "):
             return [("ansibrightblack", text + "\n")]
         if text.startswith("nanocode "):
@@ -2961,11 +2963,14 @@ class StatusBar:
     def start(self, *, reset: bool = True) -> None:
         if self.thread is not None or not sys.stderr.isatty():
             return
-        if reset or not self.started_at:
-            self.started_at = time.monotonic()
+        self.begin(reset=reset)
         self.stop_event.clear()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
+
+    def begin(self, *, reset: bool = True) -> None:
+        if reset or not self.started_at:
+            self.started_at = time.monotonic()
 
     def stop(self) -> None:
         if self.thread is None:
@@ -2980,10 +2985,9 @@ class StatusBar:
 
     def run(self) -> None:
         while not self.stop_event.is_set():
-            self.refresh_retry_state()
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
-            print_formatted_text(FormattedText(self.fragments(self.elapsed(), sweep=True, show_elapsed=True)), output=self.output, end="", flush=True)
+            print_formatted_text(FormattedText(self.active_fragments()), output=self.output, end="", flush=True)
             self.rendered = True
             self.stop_event.wait(self.INTERVAL)
 
@@ -3011,6 +3015,10 @@ class StatusBar:
 
     def idle_fragments(self) -> list[tuple[str, str]]:
         return self.fragments(0.0, sweep=False, show_elapsed=False)
+
+    def active_fragments(self) -> list[tuple[str, str]]:
+        self.refresh_retry_state()
+        return self.fragments(self.elapsed(), sweep=True, show_elapsed=True)
 
     def fragments(self, elapsed: float, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         text = self.text(elapsed, show_elapsed=show_elapsed)
@@ -3043,7 +3051,7 @@ class StatusBar:
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed and self.session.pending_user_inputs:
-            parts.append("input " + str(len(self.session.pending_user_inputs)))
+            parts.append("+" + str(len(self.session.pending_user_inputs)))
         if show_elapsed:
             parts.append(self.duration(elapsed))
             if self.retry_notice_until > time.monotonic():
@@ -3126,9 +3134,13 @@ Tools:
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
+        self.live_queue_paused = False
         self.transient_tool_lines = 0
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
+        self.queue_input_active = threading.Event()
+        self.queue_input_app: Application | None = None
+        self.queue_input_text = ""
         self.input_history = self.make_input_history() if self.interactive_input else None
         self.input_completer = self.make_completer()
         self.agent.output_fn = self.agent_output
@@ -3136,25 +3148,107 @@ Tools:
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_output = self.tool_live_output
 
+    @staticmethod
+    def exit_app(app: Application) -> None:
+        def close() -> None:
+            try:
+                app.exit(result=None)
+            except Exception:
+                pass
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(close)
+        else:
+            close()
+
     def queue_input_until(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
             if self.queue_input_paused.is_set():
                 stop_event.wait(0.05)
                 continue
-            try:
-                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
-            except (OSError, ValueError):
+            self.run_queue_input_app(stop_event)
+
+    def run_queue_input_app(self, stop_event: threading.Event) -> None:
+        prompt = FormattedText([("class:prompt", "+> ")])
+
+        def changed(buffer: Buffer) -> None:
+            self.queue_input_text = buffer.text
+
+        buffer = Buffer(document=Document(self.queue_input_text), multiline=False, on_text_changed=changed)
+        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt)])
+        input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
+        bindings = KeyBindings()
+
+        def record(event, texts: list[str]) -> None:
+            texts = [Text.clean(text.strip()) for text in texts if text.strip()]
+            if not texts:
                 return
-            if not ready or self.queue_input_paused.is_set():
-                continue
-            try:
-                line = sys.stdin.readline()
-            except Exception:
+            self.session.pending_user_inputs.extend(texts)
+            def show() -> None:
+                for text in texts:
+                    self.emit("+ " + text)
+            run_in_terminal(show)
+
+        @bindings.add("enter", eager=True)
+        def _enter(event):
+            record(event, [buffer.text])
+            self.queue_input_text = ""
+            buffer.reset(Document(""))
+
+        @bindings.add("c-c", eager=True)
+        def _ctrl_c(event):
+            os.kill(os.getpid(), signal.SIGINT)
+
+        @bindings.add("c-g", eager=True)
+        def _ctrl_g(event):
+            if self.session.state.current_model_call_started_at > 0:
+                self.session.state.manual_model_retry_requested = True
+                self.session.state.model_retry_count += 1
+                os.kill(os.getpid(), signal.SIGINT)
+
+        @bindings.add(Keys.BracketedPaste)
+        def _paste(event):
+            parts = event.data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            if len(parts) == 1:
+                buffer.insert_text(parts[0])
                 return
-            if not line:
-                return
-            if text := line.strip():
-                self.session.pending_user_inputs.append(text)
+            record(event, [buffer.text + parts[0], *parts[1:-1]])
+            self.queue_input_text = parts[-1]
+            buffer.reset(Document(self.queue_input_text))
+
+        app = Application(
+            layout=Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window),
+            key_bindings=bindings, full_screen=False, style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
+        )
+        self.queue_input_app = app
+        self.queue_input_active.set()
+
+        def stop_when_needed() -> None:
+            while not stop_event.is_set() and not self.queue_input_paused.is_set():
+                stop_event.wait(0.05)
+            self.exit_app(app)
+
+        threading.Thread(target=stop_when_needed, daemon=True).start()
+        try:
+            with patch_stdout():
+                app.run()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        finally:
+            if not stop_event.is_set():
+                self.queue_input_text = buffer.text
+            self.queue_input_active.clear()
+            if self.queue_input_app is app:
+                self.queue_input_app = None
+
+    def pause_queue_input(self) -> None:
+        self.queue_input_paused.set()
+        if self.queue_input_app is not None:
+            self.exit_app(self.queue_input_app)
+        deadline = time.monotonic() + 1.0
+        while self.queue_input_active.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -3179,9 +3273,11 @@ Tools:
             stop_input = threading.Event()
             watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
             try:
-                self.status_bar.start()
                 if watcher:
+                    self.status_bar.begin()
                     watcher.start()
+                else:
+                    self.status_bar.start()
                 try:
                     with ModelRetryShortcut(self.session):
                         answer = self.agent.run(user_input)
@@ -3192,6 +3288,11 @@ Tools:
                     answer = f"Error: {error}"
             finally:
                 stop_input.set()
+                self.pause_queue_input()
+                if watcher:
+                    watcher.join(timeout=1.0)
+                self.queue_input_paused.clear()
+                self.queue_input_text = ""
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
@@ -3221,16 +3322,16 @@ Tools:
     def make_completer(self) -> CommandCompleter:
         return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
-    def status_window(self) -> Window:
+    def status_window(self, *, active: bool = False) -> Window:
         return Window(
-            FormattedTextControl(self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
+            FormattedTextControl(self.status_bar.active_fragments if active else self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
         )
 
     def run_input_app(self, app: Application) -> Any:
-        self.queue_input_paused.set()
+        self.pause_queue_input()
         try:
             with patch_stdout():
                 return app.run()
@@ -3325,6 +3426,9 @@ Tools:
         self.ui.emit(str(text))
 
     def with_status_paused(self, action):
+        had_queue = self.queue_input_active.is_set()
+        if had_queue:
+            self.pause_queue_input()
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()
@@ -3333,6 +3437,8 @@ Tools:
         finally:
             if was_running:
                 self.status_bar.start(reset=False)
+            if had_queue:
+                self.queue_input_paused.clear()
 
     def tool_output(self, text: str = "") -> None:
         if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
@@ -3386,6 +3492,9 @@ Tools:
             return
         if text:
             if not self.live_preview.active:
+                self.live_queue_paused = self.queue_input_active.is_set()
+                if self.live_queue_paused:
+                    self.pause_queue_input()
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
@@ -3397,6 +3506,9 @@ Tools:
         if self.live_status_paused:
             self.status_bar.start(reset=False)
             self.live_status_paused = False
+        if self.live_queue_paused:
+            self.queue_input_paused.clear()
+            self.live_queue_paused = False
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
