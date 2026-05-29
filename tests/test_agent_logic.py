@@ -15,6 +15,7 @@ def call(name, args, intention=""):
 def test_model_messages_are_two_message_context_snapshots(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
+    s.pending_user_inputs.extend(["extra one", "extra two"])
     messages = n.ContextManager(s).model_messages(" system ", "current request")
 
     assert [message["role"] for message in messages] == ["system", "user"]
@@ -38,6 +39,9 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]
+    assert "[initial]\ncurrent request" in content
+    assert "[additional 1]\nextra one" in content
+    assert "[additional 2]\nextra two" in content
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -240,6 +244,33 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.state.turn_step == 2
     assert len(limited.tool_records) == 2
     assert limited.messages[-1]["content"] == answer
+
+
+def test_agent_injects_pending_user_input_once(tmp_path):
+    s = session(tmp_path)
+    s.pending_user_inputs.append("extra instruction")
+    agent = n.Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                s.pending_user_inputs.append("second instruction")
+                return {}, [call("LineCount", ["missing.txt"], "count")], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+    assert agent.run("initial request") == "done"
+
+    first = agent.model.messages[0][1]["content"]
+    second = agent.model.messages[1][1]["content"]
+    assert "[additional 1]\nextra instruction" in first
+    assert "extra instruction" not in second
+    assert "[additional 1]\nsecond instruction" in second
+    assert s.pending_user_inputs == []
 
 
 def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):

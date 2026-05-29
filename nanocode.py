@@ -478,6 +478,7 @@ class Session:
     tool_results: dict[str, str] = field(default_factory=dict)
     tool_records: list[ToolResultRecord] = field(default_factory=list)
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
+    pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
 
@@ -1864,12 +1865,17 @@ class ContextManager:
             ("Error Feedback", self.error_feedback()),
             ("Latest Tool Results", self.latest_results()),
             ("Current Date", self.current_date()),
-            ("Current User Request", user_input.strip() or "(empty)"),
+            ("Current User Request", self.current_user_request(user_input)),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
 
     def current_date(self) -> str:
         return "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")
+
+    def current_user_request(self, user_input: str) -> str:
+        parts = [("[initial]", user_input.strip())]
+        parts.extend((f"[additional {index}]", text.strip()) for index, text in enumerate(self.session.pending_user_inputs, 1) if text.strip())
+        return "\n\n".join(label + "\n" + (text or "(empty)") for label, text in parts)
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -2668,6 +2674,7 @@ Output: concise markdown, USER'S LANGUAGE.
     def messages(self, user_input: str, turn_messages: list[Json] | None = None) -> list[Json]:
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input, turn_messages)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input, turn_messages)
+        self.session.pending_user_inputs.clear()
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
@@ -3073,6 +3080,8 @@ class StatusBar:
             )
         if self.session.settings.debug:
             parts.append("dbg " + str(self.session.state.debug_count))
+        if show_elapsed and self.session.pending_user_inputs:
+            parts.append("input " + str(len(self.session.pending_user_inputs)))
         if show_elapsed:
             parts.append(self.duration(elapsed))
             if self.retry_notice_until > time.monotonic():
@@ -3164,6 +3173,18 @@ Tools:
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_output = self.tool_live_output
 
+    def queue_input_until(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                return
+            if not line:
+                return
+            text = line.strip()
+            if text:
+                self.session.pending_user_inputs.append(text)
+
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
@@ -3184,8 +3205,12 @@ Tools:
             if handled:
                 continue
             started = time.monotonic()
+            stop_input = threading.Event()
+            watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
             try:
                 self.status_bar.start()
+                if watcher:
+                    watcher.start()
                 try:
                     with ModelRetryShortcut(self.session):
                         answer = self.agent.run(user_input)
@@ -3195,6 +3220,7 @@ Tools:
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
+                stop_input.set()
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
