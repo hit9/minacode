@@ -145,6 +145,19 @@ def test_tool_error_records_keep_recent_failures(tmp_path):
     assert [record.key for record in s.tool_errors] == ["tr.2", "tr.3", "tr.4", "tr.5", "tr.6"]
 
 
+def test_working_context_includes_recent_tool_errors(tmp_path):
+    s = session(tmp_path)
+    for index in range(6):
+        s.record_tool_error(f"tr.{index}", "Bash", [f"cmd {index}"], f"error {index}")
+
+    context = n.ContextManager(s).model_messages("sys")[-1]["content"]
+
+    assert "Recent tool errors:" in context
+    assert "tr.0" not in context
+    assert "tr.5 Bash cmd 5" in context
+    assert "error 5" in context
+
+
 def test_compaction_uses_configured_context_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1

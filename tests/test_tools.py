@@ -20,12 +20,15 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     s = session(tmp_path)
 
     read = n.ReadTool(s, [{"path": "sample.py", "ranges": [[0, 2], [2, 0]]}]).call()
+    single_range = n.ReadTool(s, [{"path": "sample.py", "ranges": [0, 2]}]).call()
     alpha_hash = n.ReadTool.line_hash("alpha\n")
     needle_hash = n.ReadTool.line_hash("Needle\n")
     omega_hash = n.ReadTool.line_hash("omega\n")
     assert f"0:{alpha_hash}|alpha" in read
     assert f"1:{needle_hash}|Needle" in read
     assert f"2:{omega_hash}|omega" in read
+    assert f"0:{alpha_hash}|alpha" in single_range
+    assert f"1:{needle_hash}|Needle" in single_range
 
     counts = n.LineCountTool(s, ["sample.py", "missing.py"]).call()
     assert "<total>3</total>" in counts
@@ -319,6 +322,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
 def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
+    assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
     assert n.ModelClient.tool_payload("Find", {"name": "*.py"}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]

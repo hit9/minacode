@@ -753,7 +753,11 @@ class ReadTool(Tool):
             return payload["args"]
         if isinstance(payload.get("files"), list) or isinstance(payload.get("requests"), list):
             return payload.get("files") or payload.get("requests")
-        return [{"path": payload.get("path", ""), "ranges": payload.get("ranges") or [[0, 0]]}]
+        return [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
+
+    @classmethod
+    def ranges_arg(cls, value: Any) -> Any:
+        return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
 
     @staticmethod
     def line_hash(line: str) -> str:
@@ -778,7 +782,7 @@ class ReadTool(Tool):
             if unexpected := sorted(set(spec) - {"path", "ranges"}):
                 raise ToolError("Read unexpected field: " + ", ".join(unexpected))
             path = str(spec.get("path") or "").strip()
-            raw_ranges = spec.get("ranges")
+            raw_ranges = self.ranges_arg(spec.get("ranges"))
             if not path:
                 raise ToolError("Read requires non-empty path")
             if not isinstance(raw_ranges, list) or not raw_ranges:
@@ -2179,6 +2183,8 @@ class ContextManager:
             chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
         if actions := self.recent_file_actions():
             chunks.extend(["", "Recent file actions:", *actions])
+        if errors := self.recent_tool_errors():
+            chunks.extend(["", "Recent tool errors:", *errors])
         chunks.extend(["", "Content:"])
         for path in sorted(lines_by_path):
             segments = self.segments(lines_by_path[path])
@@ -2202,6 +2208,13 @@ class ContextManager:
                 detail = record.note or " ".join(Tool.compact(arg, 80) for arg in record.args)
                 actions.append(f"- {record.key} {record.name} {detail}".strip())
         return actions[-10:]
+
+    def recent_tool_errors(self) -> list[str]:
+        rows = []
+        for record in self.session.tool_errors[-5:]:
+            args = " ".join(Tool.compact(arg, 80) for arg in record.args)
+            rows.append(f"- {' '.join(part for part in (record.key, record.name, args) if part)}: {Tool.compact(record.error, 160)}")
+        return rows
 
     def coverage_note(self, path: str, start: int, end: int) -> str:
         notes = [record.note for record in self.session.tool_records if record.name == "Read" and record.note and f"{path} {start}:{end}" in record.note]
