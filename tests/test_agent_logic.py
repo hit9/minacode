@@ -202,10 +202,12 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     assert "skip it" in s.tool_errors[0].error
     assert not (tmp_path / "second.txt").exists()
 
+    outputs = []
     bad = session(tmp_path)
-    n.ToolRunner(bad, n.ContextManager(bad), output_fn=lambda text: None).run([call("Bash", [])])
+    n.ToolRunner(bad, n.ContextManager(bad), output_fn=outputs.append).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
+    assert outputs and "[failed]" in outputs[0]
 
 
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):

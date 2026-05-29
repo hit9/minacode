@@ -1293,6 +1293,8 @@ class CodeIndex:
 
 class InspectCodeTool(Tool):
     NAME = "InspectCode"
+    MAX_LIMIT: ClassVar[int] = 80
+    MAX_OUTLINE_LIMIT: ClassVar[int] = 1000
     DESCRIPTION = "Find symbols, inspect one symbol, or outline one file using the code index."
     SIGNATURE = "InspectCode(mode, target[, options])"
     EXAMPLE = (
@@ -1331,8 +1333,9 @@ class InspectCodeTool(Tool):
         if mode == "outline" and not os.path.isfile(self.session.resolve_path(target)):
             raise ToolError("InspectCode outline target must be an existing file")
         limit = options.get("limit")
-        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 80):
-            raise ToolError("InspectCode limit must be 1..80")
+        max_limit = self.MAX_OUTLINE_LIMIT if mode == "outline" else self.MAX_LIMIT
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > max_limit):
+            raise ToolError(f"InspectCode {mode} limit must be 1..{max_limit}")
         index = CodeIndex(self.session)
         if not index.available():
             raise ToolError("code index is not available; run /index")
@@ -2241,6 +2244,7 @@ class ToolRunner:
         if self.session.settings.debug:
             return self.finish(call, output, failed=True, elapsed=elapsed)
         self.session.record_tool_error("-", call.name, call.args, call.intention, output)
+        self.output_fn(self.finish_display(call, "", output, failed=True))
         return output
 
     def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False) -> str:

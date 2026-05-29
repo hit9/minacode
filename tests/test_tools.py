@@ -184,6 +184,7 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     assert "search ok" in n.InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
     assert "inspect ok" in n.InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
     assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py"]).call()
+    assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
 
     assert calls[0] == (
         "search",
@@ -200,11 +201,18 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         "sample.py",
         {"root": str(tmp_path), "symbol": None, "max_symbols": n.csi.DEFAULT_MAX_OUTLINE_SYMBOLS, "format": "text"},
     )
+    assert calls[3] == (
+        "outline",
+        "sample.py",
+        {"root": str(tmp_path), "symbol": None, "max_symbols": 300, "format": "text"},
+    )
 
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["outline", "missing.py"]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["inspect", "sample.py"]).call()
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 1001}]).call()
 
 
 def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
