@@ -3265,7 +3265,7 @@ Tools:
             dont_extend_height=True,
         )
 
-    def read_input(self, prompt_text: str = "nano> ") -> str:
+    def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False) -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
         prompt = FormattedText([("class:prompt", prompt_text)])
@@ -3279,7 +3279,7 @@ Tools:
             completer=self.input_completer,
             complete_while_typing=False,
             enable_history_search=True,
-            multiline=False,
+            multiline=multiline,
             accept_handler=accept,
         )
         search_toolbar = SearchToolbar()
@@ -3299,10 +3299,16 @@ Tools:
 
         @bindings.add("c-d", eager=True)
         def _ctrl_d(event):
-            if buffer.text:
+            if multiline:
+                event.app.exit(result=buffer.text)
+            elif buffer.text:
                 buffer.delete()
             else:
                 event.app.exit(exception=EOFError())
+
+        @bindings.add("escape", "enter", filter=Condition(lambda: multiline), eager=True)
+        def _escape_enter(event):
+            event.app.exit(result=buffer.text)
 
         @bindings.add("c-r", eager=True)
         def _ctrl_r(event):
@@ -3375,7 +3381,7 @@ Tools:
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
             try:
-                return self.read_input(prompt) if self.interactive_input else self.input_fn(prompt)
+                return self.read_input(prompt, multiline=True) if self.interactive_input else self.input_fn(prompt)
             finally:
                 if self.interactive_input and sys.stdout.isatty():
                     sys.stdout.write("\x1b[1A\r\x1b[2K")
