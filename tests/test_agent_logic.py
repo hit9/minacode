@@ -33,7 +33,7 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     content = messages[1]["content"]
     assert content.startswith("--- Static ---")
     assert "- cwd: " + str(tmp_path) in content
-    sections = ["Static", "Memory", "Source", "Runtime", "Current Turn Conversation"]
+    sections = ["Static", "Source", "Memory", "Runtime", "Current Turn Conversation"]
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]

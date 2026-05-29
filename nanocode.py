@@ -1955,8 +1955,8 @@ class ContextManager:
     def render(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> str:
         sections = [
             ("Static", self.static_context()),
-            ("Memory", "\n\n".join(["Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
             ("Source", "\n\n".join(["File Context:\n" + (self.file_context() or "(empty)"), "Discovery Context:\n" + (self.discovery_context() or "(empty)")])),
+            ("Memory", "\n\n".join(["Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
             ("Runtime", "\n\n".join(part for part in (self.error_feedback(error_feedback), "Latest Tool Results:\n" + (self.latest_results() or "(empty)"), "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")) if part)),
             ("Current Turn Conversation", self.turn_conversation(turn_messages)),
         ]
