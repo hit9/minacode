@@ -31,9 +31,9 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     assert messages[0]["content"] == "system"
 
     content = messages[1]["content"]
-    assert content.startswith("--- Static ---")
+    assert content.startswith("--- Stable ---")
     assert "- cwd: " + str(tmp_path) in content
-    sections = ["Static", "Source", "Memory", "Runtime", "Current Turn Conversation"]
+    sections = ["Stable", "Source", "Memory", "Runtime", "Current Turn Conversation"]
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]
@@ -249,6 +249,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert all(len(messages) == 2 for messages in agent.model.messages)
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
+    assert s.state.goal == ""
 
     limited = session(tmp_path)
     limited.settings.max_steps = 2
@@ -353,6 +354,22 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     loop.tool_input("[Y/n or reason] ")
 
     assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
+
+
+def test_memory_command_shows_durable_memory(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "ship"
+    s.state.summary = "summary"
+    s.state.plan = ["inspect"]
+    s.state.known = ["pytest"]
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    output = loop.memory("")
+
+    assert "goal: ship" in output
+    assert "summary" in output
+    assert "- inspect" in output
+    assert "- pytest" in output
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):

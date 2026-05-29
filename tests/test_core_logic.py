@@ -110,6 +110,8 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.completion_tokens == 8
     assert usage.total_tokens == 30
     assert usage.cached_prompt_tokens == 6
+    assert usage.last_total_tokens == 10
+    assert usage.last_cached_prompt_tokens == 2
 
 
 def test_context_and_debug_trace_clean_surrogate_text(tmp_path):

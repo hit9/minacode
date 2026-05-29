@@ -350,6 +350,8 @@ class ModelUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
+    last_total_tokens: int = 0
+    last_cached_prompt_tokens: int = 0
 
     def add(self, usage: Any) -> None:
         def value(*paths: str) -> int:
@@ -367,12 +369,15 @@ class ModelUsage:
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
+        cached_tokens = value(
+            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+        )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
-        self.cached_prompt_tokens += value(
-            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
-        )
+        self.cached_prompt_tokens += cached_tokens
+        self.last_total_tokens = total_tokens
+        self.last_cached_prompt_tokens = cached_tokens
 
 
 @dataclass
@@ -1897,7 +1902,52 @@ class ForgetTool(Tool):
         return f"Forgot {count}/{len(keys)} tool results"
 
 
-TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, FindTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool)
+class RememberTool(Tool):
+    NAME = "Remember"
+    DESCRIPTION = "Maintain durable working memory; goal and plan replace current values, known appends unique facts."
+    SIGNATURE = "Remember(goal?, plan?, known?)"
+    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"]}',)
+    STORES_RESULT = False
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings}, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def call(self) -> str:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Remember requires named fields")
+        data = self.args[0]
+        if unexpected := sorted(set(data) - {"goal", "plan", "known"}):
+            raise ToolError("Remember unexpected field: " + ", ".join(unexpected))
+        changed = []
+        if "goal" in data:
+            self.session.state.goal = str(data["goal"]).strip()
+            changed.append("goal")
+        if "plan" in data:
+            if not isinstance(data["plan"], list):
+                raise ToolError("Remember plan must be an array")
+            self.session.state.plan = [str(item).strip() for item in data["plan"] if str(item).strip()]
+            changed.append("plan")
+        if "known" in data:
+            if not isinstance(data["known"], list):
+                raise ToolError("Remember known must be an array")
+            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
+            changed.append("known")
+        if not changed:
+            raise ToolError("Remember requires goal, plan, or known")
+        return "Updated memory: " + ", ".join(changed)
+
+    def short_args(self) -> list[str]:
+        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        return [", ".join(key for key in ("goal", "plan", "known") if key in data) or "{}"]
+
+
+TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, FindTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool, RememberTool)
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -1954,16 +2004,16 @@ class ContextManager:
 
     def render(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> str:
         sections = [
-            ("Static", self.static_context()),
+            ("Stable", "Environment:\n" + self.environment()),
             ("Source", "\n\n".join(["File Context:\n" + (self.file_context() or "(empty)"), "Discovery Context:\n" + (self.discovery_context() or "(empty)")])),
-            ("Memory", "\n\n".join(["Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
+            ("Memory", "\n\n".join([self.memory_context(), "Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
             ("Runtime", "\n\n".join(part for part in (self.error_feedback(error_feedback), "Latest Tool Results:\n" + (self.latest_results() or "(empty)"), "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")) if part)),
             ("Current Turn Conversation", self.turn_conversation(turn_messages)),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
 
-    def static_context(self) -> str:
-        return "\n\n".join(["Environment:\n" + self.environment(), "Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join("- " + item for item in self.session.state.plan or ["(empty)"]), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])])
+    def memory_context(self) -> str:
+        return "\n\n".join(["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join("- " + item for item in self.session.state.plan or ["(empty)"]), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])])
 
     def turn_conversation(self, turn_messages: list[Json] | None = None) -> str:
         return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in (turn_messages or [])) or "(empty)"
@@ -2672,10 +2722,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Use each tool's named parameters.
+Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget Remember. Use each tool's named parameters.
 Batch independent read-only tool calls when useful.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
-For multi-step tasks, use concise plan/known as working memory.
+Use Remember to keep durable goal, plan, and known facts for multi-step work.
 Use tool calls to continue. No tool call means final answer; do not send an empty final answer.
 Output: concise markdown, USER'S LANGUAGE.
 """
@@ -2688,7 +2738,6 @@ Output: concise markdown, USER'S LANGUAGE.
         self.output_fn = output_fn
 
     def run(self, user_input: str) -> str:
-        self.session.state.goal = user_input.strip()
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
         self.context.start_tool_batch()
@@ -2736,7 +2785,7 @@ Output: concise markdown, USER'S LANGUAGE.
 
 
 class CommandCompleter(Completer):
-    COMMANDS = ("/help", "/status", "/config", "/api", "/debug", "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit")
+    COMMANDS = ("/help", "/status", "/memory", "/config", "/api", "/debug", "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit")
     SET_KEYS = (
         "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
         "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature", "provider.timeout",
@@ -3206,6 +3255,7 @@ class CommandLoop:
     HELP = """Commands:
   /help              Show this help.
   /status            Show runtime status.
+  /memory            Show durable agent memory.
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
   /debug [on|off]    Toggle model I/O debug traces.
@@ -3218,7 +3268,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget.
+  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget, Remember.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -3625,6 +3675,7 @@ Tools:
         handlers = {
             "/help": self.help,
             "/status": self.status,
+            "/memory": self.memory,
             "/config": self.config,
             "/api": self.api,
             "/debug": self.debug,
@@ -3900,18 +3951,25 @@ Tools:
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
+        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`)"),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
         cell = lambda value: Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
         return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {cell(value)} |" for name, value in rows)])
+
+    def memory(self, args: str) -> str:
+        state = self.session.state
+        plan = ["- " + item for item in state.plan] or ["- (empty)"]
+        known = ["- " + item for item in state.known] or ["- (empty)"]
+        return "\n".join(["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *plan, "known:", *known])
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider

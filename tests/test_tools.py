@@ -320,6 +320,20 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
+    assert n.ModelClient.tool_payload("Remember", {"goal": "ship"}) == [{"goal": "ship"}]
+
+
+def test_remember_tool_updates_durable_memory_without_result_key(tmp_path):
+    s = session(tmp_path)
+    s.state.known = ["existing"]
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("remember", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
+
+    assert s.state.goal == "ship"
+    assert s.state.plan == ["inspect", "patch"]
+    assert s.state.known == ["existing", "pytest"]
+    assert s.tool_records == []
 
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
