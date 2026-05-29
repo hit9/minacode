@@ -400,6 +400,24 @@ class AgentState:
     cache_section_hashes: dict[str, str] = field(default_factory=dict)
     cache_section_changes: dict[str, str] = field(default_factory=dict)
 
+    @staticmethod
+    def plan_text(item: str) -> str:
+        return re.sub(r"^\[(?: |x|X|~|-)\]\s+", "", item.strip()).strip()
+
+    @classmethod
+    def plan_rows_for(cls, items: list[str], *, status: bool = False) -> list[str]:
+        rows = []
+        for item in (cls.plan_text(str(item)) for item in items):
+            if item:
+                rows.append(f"- [{'~' if not rows else ' '}] {item}" if status else "- " + item)
+        return rows or ["- (empty)"]
+
+    def plan_rows(self, *, status: bool = False) -> list[str]:
+        return self.plan_rows_for(self.plan, status=status)
+
+    def current_focus(self) -> str:
+        return next((self.plan_text(item) for item in self.plan if self.plan_text(item)), "")
+
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
             if isinstance(data.get(attr), str):
@@ -407,12 +425,12 @@ class AgentState:
         for attr in ("plan", "known"):
             value = data.get(attr)
             if isinstance(value, list):
-                setattr(self, attr, [str(item).strip() for item in value if str(item).strip()])
+                items = [str(item).strip() for item in value if str(item).strip()]
+                setattr(self, attr, [self.plan_text(item) for item in items] if attr == "plan" else items)
 
     def format(self) -> str:
-        plan = ["- " + item for item in self.plan] or ["- (empty)"]
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *plan, "Known:", *known])
+        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows(), "Known:", *known])
 
 
 @dataclass
@@ -741,7 +759,7 @@ class ReadTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {"type": "object", "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}}, "required": ["path", "ranges"], "additionalProperties": False}
+        return {"type": "object", "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}}, "required": ["path"], "additionalProperties": False}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -782,7 +800,7 @@ class ReadTool(Tool):
             if unexpected := sorted(set(spec) - {"path", "ranges"}):
                 raise ToolError("Read unexpected field: " + ", ".join(unexpected))
             path = str(spec.get("path") or "").strip()
-            raw_ranges = self.ranges_arg(spec.get("ranges"))
+            raw_ranges = self.ranges_arg(spec.get("ranges") if "ranges" in spec else [[0, 0]])
             if not path:
                 raise ToolError("Read requires non-empty path")
             if not isinstance(raw_ranges, list) or not raw_ranges:
@@ -1987,7 +2005,7 @@ class RememberTool(Tool):
         if "plan" in data:
             if not isinstance(data["plan"], list):
                 raise ToolError("Remember plan must be an array")
-            self.session.state.plan = [str(item).strip() for item in data["plan"] if str(item).strip()]
+            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["plan"] if AgentState.plan_text(str(item))]
             changed.append("plan")
         if "known" in data:
             if not isinstance(data["known"], list):
@@ -2004,11 +2022,11 @@ class RememberTool(Tool):
         if goal := str(data.get("goal") or "").strip():
             lines.append("goal -> " + Tool.compact(goal, 120))
         if isinstance(data.get("plan"), list):
-            lines.extend(["plan:", *(f"  - {Tool.compact(item, 120)}" for item in data["plan"] if str(item).strip())])
+            lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["plan"], status=True) if row != "- (empty)")])
         if isinstance(data.get("known"), list):
             known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
-                lines.extend(["known:", *(f"  - {item}" for item in known)])
+                lines.extend(["known:", *(f"  + {item}" for item in known)])
         return ["\n".join(lines) or "{}"]
 
 
@@ -2099,7 +2117,7 @@ class ContextManager:
         self.session.state.cache_section_hashes = hashes
 
     def memory_context(self, *, with_date: bool = False) -> str:
-        rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join("- " + item for item in self.session.state.plan or ["(empty)"]), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
+        rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join(self.session.state.plan_rows()), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
         return "\n\n".join(rows)
@@ -2178,7 +2196,10 @@ class ContextManager:
         return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
 
     def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
-        chunks = ["**ALREADY READ FILE RANGES ARE BELOW. DO NOT READ THEM AGAIN UNLESS THE FILE CHANGED.**", "", "Available:"]
+        chunks = ["**ALREADY READ FILE RANGES ARE BELOW. DO NOT READ THEM AGAIN UNLESS THE FILE CHANGED.**"]
+        if focus := self.session.state.current_focus():
+            chunks.extend(["", "Current focus: " + focus])
+        chunks.extend(["", "Available:"])
         for path in sorted(lines_by_path):
             chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
         if actions := self.recent_file_actions():
@@ -2348,10 +2369,9 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started = time.monotonic()
-        approved = False
+        started, approved, display = time.monotonic(), False, None
         try:
-            tool.short_args()
+            display = self.short_call(call, tool.short_args())
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
                 self.output_fn(self.approval_display(call, tool, "auto"))
@@ -2359,37 +2379,37 @@ class ToolRunner:
                 confirmed, reason = self.confirm(call, tool)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
+                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
             output = tool.call()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
+            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display)
         except Exception as error:
             output = f"ToolError: {error}"
-            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved)
+            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, display=display)
 
-    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
+    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None) -> str:
         if self.session.settings.debug:
-            return self.finish(call, output, failed=True, elapsed=elapsed)
+            return self.finish(call, output, failed=True, elapsed=elapsed, display=display)
         self.session.record_tool_error("-", call.name, call.args, output)
-        self.output_fn(self.finish_display(call, "", output, failed=True))
-        return self.tool_message(call, "", output, failed=True)
+        self.output_fn(self.finish_display(call, "", output, failed=True, display=display))
+        return self.tool_message(call, "", output, failed=True, display=display)
 
-    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False) -> str:
+    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False, display: str | None = None) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output)) if tool_class is None or tool_class.STORES_RESULT else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved))
-        return self.tool_message(call, key, output, failed=failed)
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display))
+        return self.tool_message(call, key, output, failed=failed, display=display)
 
-    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False) -> str:
-        rows = ["tool " + (key or "-") + " " + self.short_call(call)]
+    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
+        rows = ["tool " + (key or "-") + " " + (display or self.short_call(call))]
         if failed:
             rows.append("status: failed")
         rows.extend(["output:", self.project_output(call, key, output, failed)])
@@ -2448,20 +2468,23 @@ class ToolRunner:
         lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
-    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
+    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None) -> str:
+        if call.name == "Remember" and not failed and display:
+            return display.removeprefix("Remember ").strip()
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
-        line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + tag
+        line = "tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
         return "\n".join(lines)
 
-    def short_call(self, call: ToolCall) -> str:
+    def short_call(self, call: ToolCall, args: list[str] | None = None) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        try:
-            args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
-        except Exception:
-            args = [Tool.compact(arg) for arg in call.args]
+        if args is None:
+            try:
+                args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
+            except Exception:
+                args = [Tool.compact(arg) for arg in call.args]
         text = " ".join([call.name, *args]).strip()
         return text if "\n" in text else self.oneline(text, 200)
 
@@ -2833,7 +2856,7 @@ RULES:
 * Tool results may be BOUNDED; Recall tr.N when needed, Forget stale tr.N.
 * INSPECT/READ before edits.
 * Keep changes SMALL and LOCAL; NEVER overwrite user work.
-* For MULTI-STEP work, Remember goal/plan, update plan when it changes, and store durable facts in known.
+* For MULTI-STEP work, Remember goal/plan/known; keep plan short and current.
 * CONTINUE with tool calls until done.
 
 NO TOOL CALL means FINAL ANSWER.
@@ -2957,6 +2980,8 @@ class UiPrinter:
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
+        if text.startswith(("goal ->", "goal:", "plan:", "known:")):
+            return self.memory_segments(text)
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("ansiwhite", text[2:] + "\n")]
         if text.startswith("[done in "):
@@ -2984,6 +3009,20 @@ class UiPrinter:
             elif line.startswith("  "):
                 label, value = line[:8], line[8:]
                 segments.extend([("ansibrightblack", label), ("ansiwhite", value)])
+            else:
+                segments.append(("ansiwhite", line))
+            segments.append(("", "\n"))
+        return segments
+
+    def memory_segments(self, text: str) -> list[tuple[str, str]]:
+        segments = []
+        for line in text.splitlines() or [""]:
+            if line.startswith(("goal ->", "goal:")):
+                segments.append(("ansimagenta", line))
+            elif line in {"summary:", "plan:", "known:"}:
+                segments.append(("ansicyan", line))
+            elif line.lstrip().startswith("+ "):
+                segments.append(("ansigreen", line))
             else:
                 segments.append(("ansiwhite", line))
             segments.append(("", "\n"))
@@ -4084,9 +4123,8 @@ Tools:
 
     def memory(self, args: str) -> str:
         state = self.session.state
-        plan = ["- " + item for item in state.plan] or ["- (empty)"]
         known = ["- " + item for item in state.known] or ["- (empty)"]
-        return "\n".join(["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *plan, "known:", *known])
+        return "\n".join(["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *state.plan_rows(status=True), "known:", *known])
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider

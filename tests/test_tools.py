@@ -21,6 +21,7 @@ def test_read_linecount_list_search_success_paths(tmp_path):
 
     read = n.ReadTool(s, [{"path": "sample.py", "ranges": [[0, 2], [2, 0]]}]).call()
     single_range = n.ReadTool(s, [{"path": "sample.py", "ranges": [0, 2]}]).call()
+    full_default = n.ReadTool(s, [{"path": "sample.py"}]).call()
     alpha_hash = n.ReadTool.line_hash("alpha\n")
     needle_hash = n.ReadTool.line_hash("Needle\n")
     omega_hash = n.ReadTool.line_hash("omega\n")
@@ -29,6 +30,7 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert f"2:{omega_hash}|omega" in read
     assert f"0:{alpha_hash}|alpha" in single_range
     assert f"1:{needle_hash}|Needle" in single_range
+    assert f"2:{omega_hash}|omega" in full_default
 
     counts = n.LineCountTool(s, ["sample.py", "missing.py"]).call()
     assert "<total>3</total>" in counts
@@ -270,7 +272,7 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
 
     s.state.known = ["existing"]
     remember = runner.short_call(n.ToolCall("m", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
-    assert remember == "Remember goal -> ship\nplan:\n  - inspect\n  - patch\nknown:\n  - new fact"
+    assert remember == "Remember goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -324,6 +326,7 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
     assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
+    assert n.ReadTool(n.Session(cwd="."), [{"path": "nanocode.py"}]).targets()[0][1] == [(0, 0)]
     assert n.ModelClient.tool_payload("Find", {"name": "*.py"}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
@@ -336,12 +339,15 @@ def test_remember_tool_updates_durable_memory_without_result_key(tmp_path):
     s.state.known = ["existing"]
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
+    output = []
+    runner.output_fn = output.append
     runner.run([n.ToolCall("remember", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
 
     assert s.state.goal == "ship"
     assert s.state.plan == ["inspect", "patch"]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
+    assert output == ["goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
 
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):

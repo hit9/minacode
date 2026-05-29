@@ -96,6 +96,7 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     path.write_text("old\nkeep\n", encoding="utf-8")
     s = session(tmp_path)
     context = n.ContextManager(s)
+    s.state.plan = ["inspect", "patch"]
 
     read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
     read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
@@ -115,6 +116,7 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
 
     rendered = context.file_context()
     assert edit_key in rendered
+    assert "Current focus: inspect" in rendered
     assert f"source={edit_key} tool=Edit" in rendered
     assert "Available:\n- a.txt 0:2" in rendered
     assert "**ALREADY READ FILE RANGES ARE BELOW" in rendered
@@ -371,8 +373,12 @@ def test_memory_command_shows_durable_memory(tmp_path):
 
     assert "goal: ship" in output
     assert "summary" in output
-    assert "- inspect" in output
+    assert "- [~] inspect" in output
     assert "- pytest" in output
+
+    prompt_memory = n.ContextManager(s).memory_context()
+    assert "- inspect" in prompt_memory
+    assert "[~]" not in prompt_memory
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
