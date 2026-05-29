@@ -54,7 +54,7 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -1141,15 +1141,22 @@ class CodeIndex:
         if status not in {"ready", "stale"}:
             return False
         self.notice("syncing", refreshing=True)
+        try:
+            worker = csi.refresh_async(self.session.cwd)
+        except Exception as error:
+            self.fail(error)
+            return False
 
-        def refresh() -> None:
+        def finish() -> None:
+            worker.join()
             try:
-                csi.index(self.session.cwd)
-                self.finish()
+                self.session.state.code_index_refreshing = False
+                self.session.state.code_index_notice = ""
+                self.status(check=True)
             except Exception as error:
                 self.fail(error)
 
-        threading.Thread(target=refresh, daemon=True).start()
+        threading.Thread(target=finish, daemon=True).start()
         return True
 
     def update_paths(self, paths: list[str]) -> list[str]:
@@ -2964,6 +2971,7 @@ class ModelRetryShortcut:
 
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
+    INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
 
     def __init__(self, session: Session):
         self.session = session
@@ -3095,8 +3103,11 @@ class StatusBar:
             return CodeIndex.label("error")
         if self.session.state.code_index_refreshing:
             notice = self.session.state.code_index_notice or "syncing"
-            return CodeIndex.label("syncing") if notice in {"syncing", "updating"} else notice
+            return self.index_spinner() if notice in {"syncing", "updating"} else notice
         return CodeIndex.label(self.session.state.code_index_status)
+
+    def index_spinner(self) -> str:
+        return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)

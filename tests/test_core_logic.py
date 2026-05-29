@@ -1,4 +1,5 @@
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -176,6 +177,51 @@ def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatc
     assert calls == [("clean", str(tmp_path)), ("index", str(tmp_path))]
     assert "code_index: rebuilt" in result
     assert s.state.code_index_status == "synced"
+
+
+def test_code_index_refresh_existing_uses_library_async_refresh(tmp_path, monkeypatch):
+    calls = []
+
+    class Worker:
+        def join(self):
+            calls.append(("join",))
+
+    monkeypatch.setattr(
+        n.csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: calls.append(("status", check))
+        or SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+    )
+    monkeypatch.setattr(n.csi, "refresh_async", lambda root: calls.append(("refresh_async", root)) or Worker())
+
+    s = session(tmp_path)
+    assert n.CodeIndex(s).refresh_existing_async() is True
+    for _ in range(50):
+        if ("join",) in calls and not s.state.code_index_refreshing:
+            break
+        time.sleep(0.01)
+
+    assert ("refresh_async", str(tmp_path)) in calls
+    assert ("join",) in calls
+    assert ("status", True) in calls
+    assert s.state.code_index_refreshing is False
+    assert s.state.code_index_status == "synced"
+
+
+def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.state.code_index_refreshing = True
+    s.state.code_index_notice = "syncing"
+    bar = n.StatusBar(s)
+
+    monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
+    first = bar.index_status()
+    monkeypatch.setattr(n.time, "monotonic", lambda: n.StatusBar.INTERVAL)
+    second = bar.index_status()
+
+    assert first != second
+    assert first in n.StatusBar.INDEX_SPINNER
+    assert second in n.StatusBar.INDEX_SPINNER
 
 
 def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):

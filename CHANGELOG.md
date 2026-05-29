@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2 - 2026-05-29
+
+### Changed
+- Animated the statusbar code-index refresh indicator while keeping `/status` semantic.
+
+### Fixed
+- Switched startup code-index refresh to the `code-symbol-index` async refresh API to avoid parser thread ownership errors.
+
 ## 0.5.1 - 2026-05-29
 
 ### Added
