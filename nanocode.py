@@ -1288,8 +1288,14 @@ class CreateFileTool(Tool):
         if not isinstance(self.args[0], str):
             raise ToolError('CreateFile path must be a string; args must be ["path","content"]')
         path = self.session.resolve_path(str(self.args[0]))
-        content = str(self.args[1])
+        content = self.content_text(str(self.args[1]))
         return path, content
+
+    @staticmethod
+    def content_text(text: str) -> str:
+        if "\n" not in text and "\\n" in text:
+            return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+        return text
 
 
 @dataclass
@@ -2162,13 +2168,13 @@ class ToolRunner:
     def update_code_index(self, call: ToolCall, output: str) -> None:
         if call.name not in {"CreateFile", "Edit"}:
             return
-        paths = []
+        paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
         for match in re.finditer(r'<(?:CreateFileToolResult|Edit)\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
                 pass
-        CodeIndex(self.session).update(paths)
+        CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm"))

@@ -115,6 +115,18 @@ def test_createfile_and_edit_operations(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
+def test_createfile_decodes_escaped_newlines_for_preview_and_write(tmp_path):
+    s = session(tmp_path)
+    tool = n.CreateFileTool(s, ["script.py", "print(1)\\nprint(2)\\n"])
+
+    preview = tool.preview()
+    output = tool.call()
+
+    assert "+print(1)\n+print(2)\n" in preview
+    assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\nprint(2)\n"
+    assert "chars=18" in output
+
+
 def test_bash_and_git_behaviors(tmp_path):
     s = session(tmp_path)
     bash = n.BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
@@ -325,6 +337,19 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
     assert updated == ["made.py", "made.py"]
+
+
+def test_createfile_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    updated = []
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
+
+    n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).update_code_index(
+        n.ToolCall("create", "CreateFile", ["made.py", "x\n"], "create"),
+        "<CreateFileToolResult path=bad created=true />",
+    )
+
+    assert updated == ["made.py"]
 
 
 def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
