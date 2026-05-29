@@ -557,13 +557,10 @@ class UpdateChecker:
 
     def start(self) -> None:
         self.load_cache()
-        if not self.session.settings.check_updates or self.session.update.checking or not self.due():
+        if not self.session.settings.check_updates or self.session.update.checking or time.time() - self.session.update.checked_at < self.session.settings.update_check_interval_hours * 3600:
             return
         self.session.update.checking = True
         threading.Thread(target=self.check, daemon=True).start()
-
-    def due(self) -> bool:
-        return time.time() - self.session.update.checked_at >= self.session.settings.update_check_interval_hours * 3600
 
     def check(self) -> None:
         try:
@@ -649,13 +646,10 @@ class Tool:
         return self.MUTATES
 
     def preview(self) -> str:
-        return f"{self.NAME}({', '.join(self.display_args())})"
-
-    def display_args(self) -> list[str]:
-        return [self.compact(arg) for arg in self.args]
+        return f"{self.NAME}({', '.join(self.short_args())})"
 
     def short_args(self) -> list[str]:
-        return self.display_args()
+        return [self.compact(arg) for arg in self.args]
 
     def call(self) -> str:
         raise NotImplementedError
@@ -741,19 +735,7 @@ class ReadTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "ranges": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": cls.RANGE_SCHEMA,
-                },
-            },
-            "required": ["path", "ranges"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}}, "required": ["path", "ranges"], "additionalProperties": False}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -917,17 +899,7 @@ class FindTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "path": {"type": "string"},
-                "type": {"type": "string", "enum": ["file", "dir", "any"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"name": {"type": "string"}, "path": {"type": "string"}, "type": {"type": "string", "enum": ["file", "dir", "any"]}, "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT}}, "required": ["name"], "additionalProperties": False}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1018,17 +990,7 @@ class SearchTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string"},
-                "glob": {"type": "string"},
-                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT},
-            },
-            "required": ["pattern"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}, "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT}}, "required": ["pattern"], "additionalProperties": False}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1187,11 +1149,8 @@ class CodeIndex:
     def __init__(self, session: Session):
         self.session = session
 
-    def db_dir(self) -> str:
-        return os.path.join(self.session.cwd, ".code-symbol-index")
-
     def db_path(self) -> str:
-        return os.path.join(self.db_dir(), "index.sqlite")
+        return os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
 
     def available(self) -> bool:
         status, message = self.status()
@@ -1763,13 +1722,7 @@ class BashTool(Tool):
             return "", ""
         cls.kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        return cls.pipe_text(stdout), cls.pipe_text(stderr)
-
-    @staticmethod
-    def pipe_text(value: Any) -> str:
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return value or ""
+        return tuple(value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or "" for value in (stdout, stderr))
 
 
 class GitTool(Tool):
@@ -1985,8 +1938,8 @@ class ContextManager:
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[Json]:
         return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages, error_feedback)}])
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> None:
-        if self.estimated_tokens(self.model_messages(base_system, turn_messages, error_feedback)) < self.session.settings.max_context_tokens:
+    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
+        if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
         try:
             self.session.state.apply(model.compact(self.compaction_input(turn_messages)))
@@ -2006,13 +1959,10 @@ class ContextManager:
             ("Discovery Context", self.discovery_context()),
             ("Error Feedback", self.error_feedback(error_feedback)),
             ("Latest Tool Results", self.latest_results()),
-            ("Current Date", self.current_date()),
+            ("Current Date", "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")),
             ("Current Turn Conversation", self.turn_conversation(turn_messages)),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
-
-    def current_date(self) -> str:
-        return "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")
 
     def turn_conversation(self, turn_messages: list[Json] | None = None) -> str:
         return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in (turn_messages or [])) or "(empty)"
@@ -2495,12 +2445,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return Anthropic(api_key=provider.key, base_url=self.anthropic_base_url(provider), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
-
-    @staticmethod
-    def anthropic_base_url(provider: ProviderConfig) -> str:
         url = provider.base_url().rstrip("/")
-        return url[: -len("/v1")] if url.endswith("/v1") else url
+        return Anthropic(api_key=provider.key, base_url=url[: -len("/v1")] if url.endswith("/v1") else url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
@@ -2553,7 +2499,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         params: Json = {
             "model": provider.model,
-            "system": self.anthropic_system(messages),
+            "system": "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip(),
             "messages": self.anthropic_messages(messages),
             "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
         }
@@ -2566,10 +2512,6 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             budget = CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096)
             params["thinking"] = {"type": "enabled", "budget_tokens": min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, int(budget))}
         return params
-
-    @staticmethod
-    def anthropic_system(messages: list[Json]) -> str:
-        return "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
 
     def anthropic_messages(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
@@ -3031,13 +2973,9 @@ class BashLivePreview:
 
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
-        body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
-        return ["  output", *("  " + self.fit(line, width - 2) for line in body)] if body else []
-
-    @staticmethod
-    def fit(text: str, width: int) -> str:
-        text = text.expandtabs(4)
-        return text if len(text) <= width else text[: max(0, width - 3)] + "..."
+        body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
+        limit = width - 2
+        return ["  output", *("  " + (line if len(line) <= limit else line[: max(0, limit - 3)] + "...") for line in body)] if body else []
 
 
 class ModelRetryShortcut:
@@ -3240,7 +3178,7 @@ class StatusBar:
             return CodeIndex.label("error")
         if self.session.state.code_index_refreshing:
             notice = self.session.state.code_index_notice or "syncing"
-            return self.index_spinner() if notice in {"syncing", "updating"} else notice
+            return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)] if notice in {"syncing", "updating"} else notice
         return CodeIndex.label(self.session.state.code_index_status)
 
     def update_status(self) -> str:
@@ -3250,9 +3188,6 @@ class StatusBar:
         if update.checking:
             return "update..."
         return "update " + update.latest if update.newer_than(__version__) else ""
-
-    def index_spinner(self) -> str:
-        return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
