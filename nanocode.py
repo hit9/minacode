@@ -2599,6 +2599,7 @@ Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Reca
 Batch independent read-only tool calls when useful.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
+Use tool calls to continue. No tool call means final answer; do not send an empty final answer.
 Output: concise markdown, USER'S LANGUAGE.
 """
 
@@ -2624,7 +2625,9 @@ Output: concise markdown, USER'S LANGUAGE.
                 except ModelRequestRetry:
                     continue
             if not tool_calls:
-                answer = content.strip() or "(empty response)"
+                if not content.strip():
+                    raise ModelError("empty final response")
+                answer = content.strip()
                 self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
                 return answer
             if content.strip():

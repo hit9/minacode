@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 import nanocode as n
 
 
@@ -270,6 +272,18 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.state.turn_step == 2
     assert len(limited.tool_records) == 2
     assert limited.messages[-1]["content"] == answer
+
+
+def test_agent_rejects_empty_final_response(tmp_path):
+    agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
+
+    class EmptyModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": ""}, [], ""
+
+    agent.model = EmptyModel()
+    with pytest.raises(n.ModelError, match="empty final response"):
+        agent.run("answer me")
 
 
 def test_agent_injects_pending_user_input_once(tmp_path):
