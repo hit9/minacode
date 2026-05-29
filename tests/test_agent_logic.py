@@ -411,6 +411,25 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert context.latest_keys == []
 
 
+def test_manual_compact_clears_conversation_messages(tmp_path):
+    s = session(tmp_path)
+    s.messages = [{"role": "user", "content": str(index)} for index in range(5)]
+    s.state.context_percent = 80
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
+
+    loop.agent.model = FakeModel()
+    result = loop.compact("")
+
+    assert s.messages == []
+    assert s.state.summary == "summary"
+    assert "messages 5 -> 0" in result
+    assert "summary updated" in result
+
+
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     s = session(tmp_path)
     agent = n.Agent(s, output_fn=lambda text: None)

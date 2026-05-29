@@ -3882,13 +3882,13 @@ Tools:
         finally:
             self.status_bar.stop()
         self.session.state.apply(data)
-        self.session.messages = self.session.messages[-6:]
+        self.session.messages.clear()
         self.agent.context.latest_keys = []
         messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return (
-            "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+            "Compacted context: messages " + str(before) + " -> 0, summary updated, ctx " + str(self.session.state.context_percent) + "%"
         )
 
     def index(self, args: str) -> str:
