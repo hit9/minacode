@@ -1938,6 +1938,11 @@ class ContextManager:
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[Json]:
         return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages, error_feedback)}])
 
+    def update_percent(self, messages: list[Json]) -> int:
+        tokens = self.estimated_tokens(messages)
+        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        return self.session.state.context_percent
+
     def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
         if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
@@ -1950,19 +1955,16 @@ class ContextManager:
 
     def render(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> str:
         sections = [
-            ("Environment", self.environment()),
-            ("State", self.session.state.format()),
-            ("Summary", self.session.state.summary or "(empty)"),
-            ("Recent Conversation", self.recent_conversation()),
-            ("Tool Result Index", self.tool_index()),
-            ("File Context", self.file_context()),
-            ("Discovery Context", self.discovery_context()),
-            ("Error Feedback", self.error_feedback(error_feedback)),
-            ("Latest Tool Results", self.latest_results()),
-            ("Current Date", "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")),
+            ("Static", self.static_context()),
+            ("Memory", "\n\n".join(["Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
+            ("Source", "\n\n".join(["File Context:\n" + (self.file_context() or "(empty)"), "Discovery Context:\n" + (self.discovery_context() or "(empty)")])),
+            ("Runtime", "\n\n".join(part for part in (self.error_feedback(error_feedback), "Latest Tool Results:\n" + (self.latest_results() or "(empty)"), "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")) if part)),
             ("Current Turn Conversation", self.turn_conversation(turn_messages)),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
+
+    def static_context(self) -> str:
+        return "\n\n".join(["Environment:\n" + self.environment(), "Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join("- " + item for item in self.session.state.plan or ["(empty)"]), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])])
 
     def turn_conversation(self, turn_messages: list[Json] | None = None) -> str:
         return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in (turn_messages or [])) or "(empty)"
@@ -2730,8 +2732,7 @@ Output: concise markdown, USER'S LANGUAGE.
         self.session.pending_user_inputs.clear()
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
-        tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        self.context.update_percent(messages)
         return messages
 
 
@@ -3637,7 +3638,8 @@ Tools:
             "/yolo": self.yolo,
         }
         handler = handlers.get(name)
-        self.emit(handler(args.strip()) if handler else f"Unknown command: {name}")
+        output = handler(args.strip()) if handler else f"Unknown command: {name}"
+        (self.ui.emit_answer if name == "/status" else self.emit)(output)
         return True, False
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
@@ -3888,6 +3890,7 @@ Tools:
     def status(self, args: str) -> str:
         usage = self.session.usage
         provider = self.session.config.provider
+        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         index_status, index_message = CodeIndex(self.session).status(check=True)
         if self.session.state.code_index_refreshing:
             index_status, index_message = self.session.state.code_index_notice or "syncing", ""
@@ -3897,22 +3900,18 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        return "\n".join([
-            f"cwd: {self.session.cwd}",
-            f"provider: {self.session.config.active_provider}",
-            f"model: {provider.model or '(empty)'}",
-            f"api: {provider.resolved_api()} ({provider.api})",
-            f"reasoning: {provider.reasoning} ({provider.resolved_chat_reasoning()})",
-            f"messages: {len(self.session.messages)}",
-            f"tool_results: {len(self.session.tool_results)}",
-            f"goal: {self.session.state.goal or '(empty)'}",
-            f"known: {len(self.session.state.known)}",
-            f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
-            UpdateChecker(self.session).status_line(),
-            f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
-            CodeIndex.status_line(index_status, index_message),
-            CodeIndex.LEGEND,
-        ])
+        rows = [
+            ("workspace", "`" + self.session.cwd + "`"),
+            ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
+            ("goal", self.session.state.goal or "(empty)"),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}`"),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
+            ("index", CodeIndex.status_line(index_status, index_message)),
+            ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
+        ]
+        cell = lambda value: Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
+        return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {cell(value)} |" for name, value in rows), "", "`" + CodeIndex.LEGEND.removeprefix("legend: ") + "`"])
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
@@ -3983,9 +3982,7 @@ Tools:
         self.session.state.apply(data)
         self.session.messages.clear()
         self.agent.context.latest_keys = []
-        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT)
-        tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         return (
             "Compacted context: messages " + str(before) + " -> 0, summary updated, ctx " + str(self.session.state.context_percent) + "%"
         )

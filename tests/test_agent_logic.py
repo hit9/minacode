@@ -31,20 +31,9 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     assert messages[0]["content"] == "system"
 
     content = messages[1]["content"]
-    assert content.startswith("--- Environment ---")
+    assert content.startswith("--- Static ---")
     assert "- cwd: " + str(tmp_path) in content
-    sections = [
-        "Environment",
-        "State",
-        "Summary",
-        "Recent Conversation",
-        "Tool Result Index",
-        "File Context",
-        "Discovery Context",
-        "Error Feedback",
-        "Latest Tool Results",
-        "Current Turn Conversation",
-    ]
+    sections = ["Static", "Memory", "Source", "Runtime", "Current Turn Conversation"]
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]
@@ -465,7 +454,8 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     assert len(s.tool_errors) == 1
     assert s.tool_records == []
     second_context = agent.model.messages[1][1]["content"]
-    assert "--- Error Feedback ---" in second_context
+    assert "--- Runtime ---" in second_context
+    assert "Recent failed tool calls:" in second_context
     assert "Bash" in second_context
 
 
