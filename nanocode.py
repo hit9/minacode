@@ -1144,7 +1144,6 @@ class SearchTool(Tool):
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
     SYMBOLS: ClassVar[dict[str, str]] = {"ready": "✓", "synced": "✓", "stale": "*", "syncing": "~", "updating": "~", "missing": "?", "unavailable": "!", "error": "!"}
-    LEGEND: ClassVar[str] = "legend: index✓ synced, index* stale, index~ syncing/updating, index? missing, index! error"
 
     def __init__(self, session: Session):
         self.session = session
@@ -3900,18 +3899,19 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
+        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}`"),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`)"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
         cell = lambda value: Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
-        return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {cell(value)} |" for name, value in rows), "", "`" + CodeIndex.LEGEND.removeprefix("legend: ") + "`"])
+        return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {cell(value)} |" for name, value in rows)])
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
