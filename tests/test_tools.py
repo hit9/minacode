@@ -65,6 +65,31 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     assert "ignored_dir/inside.txt:0:" not in direct_ignored
 
 
+def test_find_files_dirs_limits_and_ignores(tmp_path):
+    (tmp_path / ".gitignore").write_text("ignored.py\nignored_dir/\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text("", encoding="utf-8")
+    (tmp_path / ".hidden.py").write_text("", encoding="utf-8")
+    (tmp_path / "ignored.py").write_text("", encoding="utf-8")
+    (tmp_path / "ignored_dir").mkdir()
+    (tmp_path / "ignored_dir" / "keep.py").write_text("", encoding="utf-8")
+    s = session(tmp_path)
+
+    found = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 10}]).call()
+    limited = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 1}]).call()
+    dirs = n.FindTool(s, [{"name": "test*", "path": ".", "type": "dir"}]).call()
+
+    assert "* file: app.py" in found
+    assert "* file: tests/test_app.py" in found
+    assert ".hidden" not in found
+    assert "ignored" not in found
+    assert 'matches=2' in limited
+    assert "* omitted: 1" in limited
+    assert "* dir: tests/" in dirs
+    assert n.FindTool(s, [{"name": "*", "path": str(tmp_path.parent)}]).needs_confirmation()
+
+
 def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
@@ -77,6 +102,8 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
         n.BashTool(s, []).call()
     with pytest.raises(n.ToolError):
         n.SearchTool(s, [{"pattern": "["}]).call()
+    with pytest.raises(n.ToolError):
+        n.FindTool(s, [{"name": "*.py", "type": "bad"}]).call()
     with pytest.raises(n.ToolError):
         n.GitTool(s, ["cwd=..", "status"]).call()
     with pytest.raises(n.ToolError):
@@ -251,6 +278,9 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     forget_args = n.ForgetTool.schema()["function"]["parameters"]["properties"]["args"]
     assert forget_args["items"]["pattern"] == r"^tr\.\d+$"
+
+    find_item = n.FindTool.schema()["function"]["parameters"]["properties"]["args"]["items"]
+    assert find_item["properties"]["type"]["enum"] == ["file", "dir", "any"]
 
     def walk(value):
         if isinstance(value, dict):

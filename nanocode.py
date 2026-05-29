@@ -531,6 +531,7 @@ class Tool:
     SIGNATURE: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     RANGE_SCHEMA: ClassVar[Json] = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
+    SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
     MUTATES: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
 
@@ -617,6 +618,41 @@ class Tool:
     def file_stat(path: str) -> str:
         stat = os.stat(path)
         return f'<file_stat mtime_ns="{stat.st_mtime_ns}" size="{stat.st_size}"/>'
+
+    def gitignore_patterns(self, root: str) -> list[str]:
+        paths = [os.path.join(self.session.cwd, ".gitignore")]
+        if os.path.isdir(root):
+            paths.append(os.path.join(root, ".gitignore"))
+        patterns = []
+        for path in dict.fromkeys(paths):
+            try:
+                with open(path, encoding="utf-8") as file:
+                    patterns.extend(line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!"))
+            except OSError:
+                pass
+        return patterns
+
+    def ignored(self, path: str, patterns: list[str]) -> bool:
+        rel = self.session.relpath(path).replace(os.sep, "/")
+        name = os.path.basename(path)
+        parts = [part for part in rel.split("/") if part and part != "."]
+        for raw in patterns:
+            directory = raw.endswith("/")
+            pattern = raw.rstrip("/")
+            if not pattern:
+                continue
+            if "/" in pattern:
+                matched = fnmatch.fnmatch(rel, pattern) or (directory and (rel == pattern or rel.startswith(pattern + "/")))
+            else:
+                matched = any(fnmatch.fnmatch(part, pattern) for part in parts) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern)
+            if matched:
+                return True
+        return False
+
+    def default_ignored(self, path: str, patterns: list[str]) -> bool:
+        rel = self.session.relpath(path).replace(os.sep, "/")
+        hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
+        return hidden or self.ignored(path, patterns)
 
 
 class ReadTool(Tool):
@@ -779,6 +815,101 @@ class ListTool(Tool):
             return "binary"
 
 
+class FindTool(Tool):
+    NAME = "Find"
+    DESCRIPTION = "Find files or directories by path/name glob; use Search for file contents."
+    SIGNATURE = "Find({name, path?, type?, limit?}[, ...])"
+    EXAMPLE = ('Example args: [{"name":"*.py"},{"name":"test_*","path":"tests","type":"file","limit":50}]',)
+    MAX_LIMIT = 500
+
+    @classmethod
+    def arg_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "path": {"type": "string"},
+                "type": {"type": "string", "enum": ["file", "dir", "any"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        }
+
+    def needs_confirmation(self) -> bool:
+        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
+
+    def call(self) -> str:
+        return "\n\n".join(self.find(request) for request in self.requests())
+
+    def short_args(self) -> list[str]:
+        rows = []
+        for request in self.requests():
+            parts = [str(request["name"])]
+            if self.session.relpath(str(request["path"])) != ".":
+                parts.append("path=" + self.session.relpath(str(request["path"])))
+            if request["type"] != "file":
+                parts.append("type=" + str(request["type"]))
+            if request["limit"] != 100:
+                parts.append("limit=" + str(request["limit"]))
+            rows.append(" ".join(parts))
+        return ["; ".join(rows)]
+
+    def requests(self) -> list[Json]:
+        if not self.args:
+            raise ToolError("Find requires at least one query object")
+        requests = []
+        for item in self.args:
+            if not isinstance(item, dict):
+                raise ToolError("Find args must be query objects")
+            unexpected = sorted(set(item) - {"name", "path", "type", "limit"})
+            if unexpected:
+                raise ToolError("Find unexpected field: " + ", ".join(unexpected))
+            name = str(item.get("name") or "").strip()
+            kind = str(item.get("type") or "file")
+            limit = item.get("limit", 100)
+            if not name:
+                raise ToolError("Find requires name")
+            if kind not in {"file", "dir", "any"}:
+                raise ToolError("Find type must be file, dir, or any")
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > self.MAX_LIMIT:
+                raise ToolError(f"Find limit must be 1..{self.MAX_LIMIT}")
+            requests.append({"name": name, "path": self.session.resolve_path(str(item.get("path") or ".")), "type": kind, "limit": limit})
+        return requests
+
+    def find(self, request: Json) -> str:
+        rows = self.matches(str(request["path"]), str(request["name"]), str(request["type"]))
+        limit = int(request["limit"])
+        shown = rows[:limit]
+        if len(rows) > limit:
+            shown.append(f"* omitted: {len(rows) - limit}")
+        header = f"<FindToolResult pattern={json.dumps(request['name'])} matches={len(rows)}>"
+        return "\n".join([header, *shown, "</FindToolResult>"])
+
+    def matches(self, root: str, pattern: str, kind: str) -> list[str]:
+        patterns = self.gitignore_patterns(root)
+        if self.default_ignored(root, patterns):
+            return []
+        rows: list[str] = []
+        if os.path.isfile(root):
+            return [self.row("file", root)] if kind in {"file", "any"} and self.match_path(root, pattern) else []
+        if not os.path.isdir(root):
+            raise ToolError("Find path is not a file or directory")
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [name for name in dirnames if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns)]
+            if kind in {"dir", "any"}:
+                rows.extend(self.row("dir", os.path.join(dirpath, name)) for name in dirnames if self.match_path(os.path.join(dirpath, name), pattern))
+            if kind in {"file", "any"}:
+                rows.extend(self.row("file", os.path.join(dirpath, name)) for name in filenames if not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns) and self.match_path(os.path.join(dirpath, name), pattern))
+        return sorted(rows)
+
+    def match_path(self, path: str, pattern: str) -> bool:
+        return fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(self.session.relpath(path).replace(os.sep, "/"), pattern)
+
+    def row(self, kind: str, path: str) -> str:
+        return f"* {kind}: {self.session.relpath(path)}" + ("/" if kind == "dir" else "")
+
+
 class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = "Search files with case-insensitive regex and optional context lines."
@@ -899,12 +1030,11 @@ class SearchTool(Tool):
         if os.path.isfile(root):
             return [root]
         found = []
-        skip_dirs = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
                 name
                 for name in dirnames
-                if name not in skip_dirs and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), gitignore)
+                if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), gitignore)
             ]
             for filename in filenames:
                 if filename.startswith("."):
@@ -956,41 +1086,6 @@ class SearchTool(Tool):
 
     def match_line(self, prefix: str, path: str, line_index: int, line: str) -> str:
         return f"{prefix} {self.session.relpath(path)}:{line_index}:{ReadTool.line_hash(line)}|{line.rstrip()}"
-
-    def gitignore_patterns(self, root: str) -> list[str]:
-        paths = [os.path.join(self.session.cwd, ".gitignore")]
-        if os.path.isdir(root):
-            paths.append(os.path.join(root, ".gitignore"))
-        patterns = []
-        for path in dict.fromkeys(paths):
-            try:
-                with open(path, encoding="utf-8") as file:
-                    patterns.extend(line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!"))
-            except OSError:
-                pass
-        return patterns
-
-    def ignored(self, path: str, patterns: list[str]) -> bool:
-        rel = self.session.relpath(path).replace(os.sep, "/")
-        name = os.path.basename(path)
-        parts = [part for part in rel.split("/") if part and part != "."]
-        for raw in patterns:
-            directory = raw.endswith("/")
-            pattern = raw.rstrip("/")
-            if not pattern:
-                continue
-            if "/" in pattern:
-                matched = fnmatch.fnmatch(rel, pattern) or (directory and (rel == pattern or rel.startswith(pattern + "/")))
-            else:
-                matched = any(fnmatch.fnmatch(part, pattern) for part in parts) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern)
-            if matched:
-                return True
-        return False
-
-    def default_ignored(self, path: str, patterns: list[str]) -> bool:
-        rel = self.session.relpath(path).replace(os.sep, "/")
-        hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
-        return hidden or self.ignored(path, patterns)
 
 
 class CodeIndex:
@@ -1764,7 +1859,7 @@ class ForgetTool(Tool):
         return f"Forgot {count}/{len(keys)} tool results"
 
 
-TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool)
+TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, FindTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool)
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -1860,12 +1955,12 @@ class ContextManager:
         return "\n\n".join(self.block(record) for record in records)
 
     def discovery_context(self) -> str:
-        records = [record for record in self.session.tool_records if record.name in {"Search", "InspectCode"}]
+        records = [record for record in self.session.tool_records if record.name in {"Find", "Search", "InspectCode"}]
         if not records:
             return ""
         lines = [
             "Source Policy:",
-            "- Search and InspectCode are discovery leads, not current source truth.",
+            "- Find, Search, and InspectCode are discovery leads, not current source truth.",
             "- Use Read before editing exact code.",
             "",
         ]
@@ -2564,7 +2659,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
+Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
 Output: concise markdown, USER'S LANGUAGE.
@@ -3083,7 +3178,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget.
+  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):

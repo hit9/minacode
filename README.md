@@ -63,7 +63,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 
 ## Tools
 
-- File: `Read`, `LineCount`, `List`, `Search`.
+- File: `Read`, `LineCount`, `List`, `Find`, `Search`.
 - Code index: `InspectCode`.
 - Edit: `CreateFile`, `Edit`.
 - Shell: `Bash`, `Git`.
@@ -119,7 +119,7 @@ Core rules:
 - File Context is rebuilt dynamically from active `Read` and `Edit` results.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
-- Discovery Context contains `Search` and `InspectCode` leads, not source truth.
+- Discovery Context contains `Find`, `Search`, and `InspectCode` leads, not source truth.
 - Large tool outputs are bounded in context and can be recalled by `tr.N`.
 - Error Feedback keeps only recent failed tool calls.
 - `Forget` removes stale result keys from the active tool result store.
