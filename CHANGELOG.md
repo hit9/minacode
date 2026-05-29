@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3 - 2026-05-29
+
+### Added
+- Added support for additional user input during running agent turns.
+- Added multiline approval input for pasted refusal reasons.
+
+### Changed
+- Simplified approval handling so direct non-yes input is treated as a refusal reason.
+
+### Fixed
+- Fixed CreateFile escaped-newline handling so preview and written content stay multiline.
+- Made CreateFile/Edit code-index updates use the tool call path as a fallback.
+
 ## 0.5.2 - 2026-05-29
 
 ### Changed
