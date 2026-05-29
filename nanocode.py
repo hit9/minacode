@@ -2978,7 +2978,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         for raw in getattr(message, "tool_calls", None) or []:
             try:
                 payload = json.loads(raw.function.arguments or "{}")
-            except json.JSONDecodeError as error:
+            except json.JSONDecodeError:
                 calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
                 continue
             calls.append(ToolCall(id=raw.id, name=raw.function.name, args=self.tool_payload(raw.function.name, payload)))
@@ -3002,6 +3002,7 @@ RULES:
 
 * ACT when the next useful step is clear.
 * USE LATEST FILE READS first; do NOT re-read files unless stale, incomplete, or needed for verification.
+* PREFER built-in tools over Bash when they cover the task.
 * BATCH independent read-only calls when useful.
 * AVOID repeated or unnecessary tool calls.
 * Tool results may be BOUNDED; Recall tr.N when needed, Forget stale tr.N.
@@ -4321,8 +4322,11 @@ Tools:
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
-        cell = lambda value: Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
-        return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {cell(value)} |" for name, value in rows)])
+        return "\n".join(["| status | value |", "| --- | --- |", *(f"| {name} | {self.status_cell(value)} |" for name, value in rows)])
+
+    @staticmethod
+    def status_cell(value: Any) -> str:
+        return Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
 
     def memory(self, args: str) -> str:
         state = self.session.state
