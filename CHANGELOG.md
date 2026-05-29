@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.4 - 2026-05-29
+
+### Changed
+- Reworked running-turn context as a current turn conversation, preserving mid-turn assistant text and appended user input.
+- Made running-turn appended input visible through a `+>` prompt and compact `+N` status indicator.
+
+### Fixed
+- Started Bash live preview before command output so the `+>` prompt cannot cover it.
+- Avoided extra approval prompt line clearing after confirmation.
+
 ## 0.5.3 - 2026-05-29
 
 ### Added
