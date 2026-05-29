@@ -265,6 +265,10 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     recall = runner.short_call(n.ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
+    s.state.known = ["existing"]
+    remember = runner.short_call(n.ToolCall("m", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
+    assert remember == "Remember goal -> ship\nplan:\n  - inspect\n  - patch\nknown:\n  - new fact"
+
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = n.BashTool.schema()["function"]["parameters"]

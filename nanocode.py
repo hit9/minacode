@@ -1946,7 +1946,16 @@ class RememberTool(Tool):
 
     def short_args(self) -> list[str]:
         data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
-        return [", ".join(key for key in ("goal", "plan", "known") if key in data) or "{}"]
+        lines = []
+        if goal := str(data.get("goal") or "").strip():
+            lines.append("goal -> " + Tool.compact(goal, 120))
+        if isinstance(data.get("plan"), list):
+            lines.extend(["plan:", *(f"  - {Tool.compact(item, 120)}" for item in data["plan"] if str(item).strip())])
+        if isinstance(data.get("known"), list):
+            known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
+            if known:
+                lines.extend(["known:", *(f"  - {item}" for item in known)])
+        return ["\n".join(lines) or "{}"]
 
 
 TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, FindTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool, RememberTool)
@@ -2363,7 +2372,7 @@ class ToolRunner:
         except Exception:
             args = [Tool.compact(arg) for arg in call.args]
         text = " ".join([call.name, *args]).strip()
-        return self.oneline(text, 200)
+        return text if "\n" in text else self.oneline(text, 200)
 
     @staticmethod
     def oneline(text: str, limit: int) -> str:
@@ -2746,7 +2755,7 @@ class Agent:
 Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget Remember. Use each tool's named parameters.
 Batch independent read-only tool calls when useful.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
-Use Remember to keep durable goal, plan, and known facts for multi-step work.
+For multi-step work, use Remember to set goal/plan, update plan as it changes, and store durable facts in known.
 Use tool calls to continue. No tool call means final answer; do not send an empty final answer.
 Output: concise markdown, USER'S LANGUAGE.
 """
