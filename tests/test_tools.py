@@ -355,6 +355,21 @@ def test_bash_timeout_and_live_output(tmp_path):
     assert events[-1] == ("", "")
 
 
+def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    events = []
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
+    runner.live_start = lambda: events.append(("start", ""))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+
+    runner.run([n.ToolCall("bash", "Bash", ["printf live"], "run")])
+
+    assert events[0] == ("start", "")
+    assert ("stdout", "live") in events
+    assert events[-1] == ("", "")
+
+
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True

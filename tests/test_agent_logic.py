@@ -350,6 +350,21 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
 
 
+def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.ui.color = True
+    loop.interactive_input = True
+    loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
+
+    loop.tool_live_start()
+    assert loop.queue_input_paused.is_set()
+    assert loop.live_queue_paused is True
+
+    loop.tool_live_output("", "")
+    assert not loop.queue_input_paused.is_set()
+    assert loop.live_queue_paused is False
+
+
 def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)

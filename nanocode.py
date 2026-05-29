@@ -2101,6 +2101,7 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
+        self.live_start: Callable[[], None] | None = None
 
     def run(self, calls: list[ToolCall]) -> list[Json]:
         self.session.state.turn_tool_calls += len(calls)
@@ -2130,6 +2131,8 @@ class ToolRunner:
                     self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
                     return "refused", output
                 approved = True
+            if isinstance(tool, BashTool) and self.live_start is not None:
+                self.live_start()
             output = tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
@@ -3143,6 +3146,7 @@ Tools:
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
+        self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
 
     @staticmethod
@@ -3484,13 +3488,24 @@ Tools:
         sys.stdout.flush()
         self.transient_tool_lines = 0
 
+    def tool_live_start(self) -> None:
+        if not self.ui.color:
+            return
+        self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
+        if self.live_queue_paused or self.queue_input_active.is_set():
+            self.pause_queue_input()
+        self.live_status_paused = self.status_bar.is_running()
+        if self.live_status_paused:
+            self.status_bar.stop()
+        self.live_preview.start()
+
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
             return
         if text:
             if not self.live_preview.active:
-                self.live_queue_paused = self.queue_input_active.is_set()
-                if self.live_queue_paused:
+                self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
+                if self.live_queue_paused or self.queue_input_active.is_set():
                     self.pause_queue_input()
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
