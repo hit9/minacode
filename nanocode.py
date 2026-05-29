@@ -397,6 +397,8 @@ class AgentState:
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
+    cache_section_hashes: dict[str, str] = field(default_factory=dict)
+    cache_section_changes: dict[str, str] = field(default_factory=dict)
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
@@ -1985,7 +1987,7 @@ class ContextManager:
         return key
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[Json]:
-        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages, error_feedback)}])
+        return Text.value([{"role": "system", "content": base_system.strip()}, *({"role": "user", "content": self.render_section(name, body)} for name, body in self.sections(turn_messages, error_feedback))])
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
@@ -2003,14 +2005,33 @@ class ContextManager:
         self.latest_keys = []
 
     def render(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> str:
-        sections = [
-            ("Stable", "Environment:\n" + self.environment()),
-            ("Source", "\n\n".join(["File Context:\n" + (self.file_context() or "(empty)"), "Discovery Context:\n" + (self.discovery_context() or "(empty)")])),
-            ("Memory", "\n\n".join([self.memory_context(), "Recent Conversation:\n" + self.recent_conversation(), "Tool Result Index:\n" + self.tool_index()])),
-            ("Runtime", "\n\n".join(part for part in (self.error_feedback(error_feedback), "Latest Tool Results:\n" + (self.latest_results() or "(empty)"), "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")) if part)),
-            ("Current Turn Conversation", self.turn_conversation(turn_messages)),
+        return "\n\n".join(self.render_section(name, body) for name, body in self.sections(turn_messages, error_feedback))
+
+    def sections(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[tuple[str, str]]:
+        return [
+            ("Environment", self.environment()),
+            ("Earlier Conversation", self.recent_conversation()),
+            ("Tool Result Index", self.tool_index()),
+            ("Working Context", "\n\n".join(part for part in (
+                "Durable Memory:\n" + self.memory_context(),
+                "File Context:\n" + (self.file_context() or "(empty)"),
+                "Discovery Context:\n" + (self.discovery_context() or "(empty)"),
+                self.error_feedback(error_feedback),
+                "Latest Tool Results:\n" + (self.latest_results() or "(empty)"),
+                "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d"),
+                "Current Turn Conversation:\n" + self.turn_conversation(turn_messages),
+            ) if part)),
         ]
-        return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
+
+    @staticmethod
+    def render_section(name: str, body: str) -> str:
+        return f"--- {name} ---\n{body or '(empty)'}"
+
+    def record_cache_sections(self, turn_messages: list[Json] | None = None, error_feedback: str = "") -> None:
+        hashes = {name: hashlib.sha256(Text.clean(body).encode("utf-8")).hexdigest()[:8] for name, body in self.sections(turn_messages, error_feedback)}
+        old = self.session.state.cache_section_hashes
+        self.session.state.cache_section_changes = {name: ("new" if name not in old else "same" if old[name] == digest else "changed") for name, digest in hashes.items()}
+        self.session.state.cache_section_hashes = hashes
 
     def memory_context(self) -> str:
         return "\n\n".join(["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join("- " + item for item in self.session.state.plan or ["(empty)"]), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])])
@@ -2779,6 +2800,7 @@ Output: concise markdown, USER'S LANGUAGE.
         turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
+        self.context.record_cache_sections(turn_messages, error_feedback)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
         self.context.update_percent(messages)
         return messages
@@ -3952,12 +3974,14 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
+        section_status = "; ".join(f"{name.lower()} `{status}`" for name, status in self.session.state.cache_section_changes.items()) or "(none)"
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)"),
+            ("cache sections", section_status),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),

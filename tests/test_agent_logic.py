@@ -17,7 +17,7 @@ def call(name, args):
     return n.ToolCall(name + "-id", name, args)
 
 
-def test_model_messages_are_two_message_context_snapshots(tmp_path):
+def test_model_messages_are_sectioned_context_snapshots(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     turn = [
@@ -27,19 +27,18 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
     ]
     messages = n.ContextManager(s).model_messages(" system ", turn)
 
-    assert [message["role"] for message in messages] == ["system", "user"]
+    assert [message["role"] for message in messages] == ["system", "user", "user", "user", "user"]
     assert messages[0]["content"] == "system"
 
-    content = messages[1]["content"]
-    assert content.startswith("--- Stable ---")
-    assert "- cwd: " + str(tmp_path) in content
-    sections = ["Stable", "Source", "Memory", "Runtime", "Current Turn Conversation"]
-    positions = [content.index(f"--- {section} ---") for section in sections]
-    assert positions == sorted(positions)
-    assert content.rfind("current request") > positions[-1]
-    assert "user:\ncurrent request" in content
-    assert "user:\nextra one" in content
-    assert "user:\nextra two" in content
+    assert messages[1]["content"].startswith("--- Environment ---")
+    assert "- cwd: " + str(tmp_path) in messages[1]["content"]
+    assert messages[2]["content"].startswith("--- Earlier Conversation ---")
+    assert messages[3]["content"].startswith("--- Tool Result Index ---")
+    assert messages[4]["content"].startswith("--- Working Context ---")
+    assert "Current Turn Conversation:" in messages[4]["content"]
+    assert "user:\ncurrent request" in messages[4]["content"]
+    assert "user:\nextra one" in messages[4]["content"]
+    assert "user:\nextra two" in messages[4]["content"]
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -246,7 +245,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert all(len(messages) == 2 for messages in agent.model.messages)
+    assert all(len(messages) == 5 for messages in agent.model.messages)
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -297,8 +296,8 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     agent.model = FakeModel()
     assert agent.run("initial request") == "done"
 
-    first = agent.model.messages[0][1]["content"]
-    second = agent.model.messages[1][1]["content"]
+    first = agent.model.messages[0][4]["content"]
+    second = agent.model.messages[1][4]["content"]
     assert "user:\nextra instruction" in first
     assert "user:\nextra instruction" in second
     assert "assistant:\n" in second
@@ -412,7 +411,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
         {"role": "assistant", "content": "I'll inspect that first."},
         {"role": "assistant", "content": "done"},
     ]
-    assert "I'll inspect that first." in agent.model.messages[1][1]["content"]
+    assert "I'll inspect that first." in agent.model.messages[1][4]["content"]
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
@@ -470,8 +469,8 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     assert agent.run("run bad tool") == "done"
     assert len(s.tool_errors) == 1
     assert s.tool_records == []
-    second_context = agent.model.messages[1][1]["content"]
-    assert "--- Runtime ---" in second_context
+    second_context = agent.model.messages[1][4]["content"]
+    assert "--- Working Context ---" in second_context
     assert "Recent failed tool calls:" in second_context
     assert "Bash" in second_context
 
