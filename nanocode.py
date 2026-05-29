@@ -1,8 +1,4 @@
-"""
-nanocode
-~~~~~~~~
-A small terminal coding agent written in Python.
-"""
+"""nanocode: A small terminal coding agent written in Python."""
 
 from __future__ import annotations
 
@@ -72,24 +68,11 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
 SELECTION_BACK = object()
 
 
-class NanocodeError(Exception):
-    pass
-
-
-class ConfigError(NanocodeError):
-    pass
-
-
-class ModelError(NanocodeError):
-    pass
-
-
-class ModelRequestRetry(NanocodeError):
-    pass
-
-
-class ToolError(NanocodeError):
-    pass
+class NanocodeError(Exception): pass
+class ConfigError(NanocodeError): pass
+class ModelError(NanocodeError): pass
+class ModelRequestRetry(NanocodeError): pass
+class ToolError(NanocodeError): pass
 
 
 class Text:
@@ -446,8 +429,7 @@ class ToolErrorRecord:
 @dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
-        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs",
-        "cat", "head", "tail", "wc", "sort", "uniq",
+        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs", "cat", "head", "tail", "wc", "sort", "uniq",
         "make", "cmake", "gcc", "g++", "clang", "clang++", "node", "npm", "uv", "pytest",
     )
 
@@ -548,6 +530,7 @@ class Tool:
     DESCRIPTION: ClassVar[str] = ""
     SIGNATURE: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
+    RANGE_SCHEMA: ClassVar[Json] = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
     MUTATES: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
 
@@ -651,7 +634,7 @@ class ReadTool(Tool):
                 "ranges": {
                     "type": "array",
                     "minItems": 1,
-                    "items": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2},
+                    "items": cls.RANGE_SCHEMA,
                 },
             },
             "required": ["path", "ranges"],
@@ -878,16 +861,7 @@ class SearchTool(Tool):
         rg = shutil.which("rg")
         if not rg:
             return None
-        cmd = [
-            rg,
-            "--json",
-            "--line-number",
-            "--with-filename",
-            "--color=never",
-            "--ignore-case",
-            "--max-filesize",
-            "2M",
-        ]
+        cmd = [rg, "--json", "--line-number", "--with-filename", "--color=never", "--ignore-case", "--max-filesize", "2M"]
         if request["context"]:
             cmd.extend(["-C", str(request["context"])])
         if request["glob"]:
@@ -930,10 +904,7 @@ class SearchTool(Tool):
             dirnames[:] = [
                 name
                 for name in dirnames
-                if name not in skip_dirs
-                and not name.startswith(".")
-                and not name.startswith(".venv")
-                and not self.ignored(os.path.join(dirpath, name), gitignore)
+                if name not in skip_dirs and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), gitignore)
             ]
             for filename in filenames:
                 if filename.startswith("."):
@@ -1024,9 +995,7 @@ class SearchTool(Tool):
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
-    SYMBOLS: ClassVar[dict[str, str]] = {
-        "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~", "updating": "~", "missing": "?", "unavailable": "!", "error": "!",
-    }
+    SYMBOLS: ClassVar[dict[str, str]] = {"ready": "✓", "synced": "✓", "stale": "*", "syncing": "~", "updating": "~", "missing": "?", "unavailable": "!", "error": "!"}
     LEGEND: ClassVar[str] = "legend: index✓ synced, index* stale, index~ syncing/updating, index? missing, index! error"
 
     def __init__(self, session: Session):
@@ -1230,9 +1199,7 @@ class InspectCodeTool(Tool):
         if mode == "inspect":
             return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, **common)
         symbol = options.get("symbol") or None
-        return csi.outline(
-            target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"
-        )
+        return csi.outline(target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text")
 
 
 class CreateFileTool(Tool):
@@ -1339,14 +1306,13 @@ class EditTool(Tool):
             raise ToolError("edit produced no changes")
         with open(path, "w", encoding="utf-8") as file:
             file.write(new_content)
-        diff = "".join(
-            difflib.unified_diff(
-                original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path)
-            )
-        )
-        return "\n".join(
-            [f"<Edit path={json.dumps(self.session.relpath(path))}>", self.file_stat(path), diff.rstrip(), self.edit_context(new_content, changes), "</Edit>"]
-        )
+        return "\n".join([
+            f"<Edit path={json.dumps(self.session.relpath(path))}>",
+            self.file_stat(path),
+            self.diff(path, original, new_content).rstrip(),
+            self.edit_context(new_content, changes),
+            "</Edit>",
+        ])
 
     def preview(self) -> str:
         path, edits = self.parse()
@@ -1355,18 +1321,15 @@ class EditTool(Tool):
         new_content, _changes = self.apply(original, edits)
         if new_content == original:
             raise ToolError("edit produced no changes")
-        return (
-            "".join(
-                difflib.unified_diff(
-                    original.splitlines(True), new_content.splitlines(True), fromfile=self.session.relpath(path), tofile=self.session.relpath(path)
-                )
-            )
-            or f"Edit({path})"
-        )
+        return self.diff(path, original, new_content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
         path, _edits = self.parse()
         return [self.session.relpath(path)]
+
+    def diff(self, path: str, original: str, new_content: str) -> str:
+        relpath = self.session.relpath(path)
+        return "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile=relpath, tofile=relpath))
 
     def parse(self) -> tuple[str, list[Edit]]:
         if len(self.args) != 2:
@@ -1685,14 +1648,13 @@ class RecallTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        range_schema = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
         return {
             "type": "object",
             "description": "Use key or keys, optionally with ranges.",
             "properties": {
                 "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
                 "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
-                "ranges": {"type": "array", "items": range_schema, "minItems": 1},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
             },
             "additionalProperties": False,
         }
@@ -2066,15 +2028,6 @@ class ContextManager:
             return text
         return text[-limit:].split("\n", 1)[-1] or text[-limit:]
 
-    def output_path(self, output: str, tool_name: str) -> str:
-        match = re.search(r"<" + re.escape(tool_name) + r'\s+path=(".*?")', output)
-        if not match:
-            return ""
-        try:
-            return str(json.loads(match.group(1)))
-        except json.JSONDecodeError:
-            return ""
-
     def output_stat(self, output: str) -> tuple[int, int]:
         match = re.search(r'<file_stat mtime_ns="(\d+)" size="(\d+)"\s*/>', output)
         return (int(match.group(1)), int(match.group(2))) if match else (0, -1)
@@ -2196,8 +2149,7 @@ class ToolRunner:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
         if tool.NAME not in {"Edit", "CreateFile"}:
             return header
-        preview = self.preview_block(tool.preview())
-        return header + (("\n" + preview) if preview else "")
+        return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
 
     def preview_block(self, preview: str, *, max_lines: int = 80) -> str:
         lines = preview.rstrip().splitlines()
@@ -2277,12 +2229,8 @@ class DebugTrace:
 
     @classmethod
     def model_response(cls, session: Session, *, activity: str, api: str, model: str, raw: Any, text: str, tool_names: list[str]) -> None:
-        cls.write(
-            session,
-            activity=activity,
-            label="model-response",
-            payload={"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw},
-        )
+        payload = {"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw}
+        cls.write(session, activity=activity, label="model-response", payload=payload)
 
     @classmethod
     def model_error(cls, session: Session, *, activity: str, api: str, model: str, params: Json, error: Exception | str) -> None:
@@ -2312,9 +2260,7 @@ class ModelClient:
         tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
         self.session.state.current_model_call_started_at = time.monotonic()
         try:
-            if provider.resolved_api() == "anthropic":
-                return self.anthropic_request(messages, tools)
-            return self.chat_request(messages, tools)
+            return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
         except KeyboardInterrupt:
             if self.session.state.manual_model_retry_requested:
                 self.session.state.manual_model_retry_requested = False
@@ -2375,25 +2321,13 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return OpenAI(
-            api_key=provider.key,
-            base_url=provider.base_url(),
-            timeout=provider.timeout,
-            max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
-        )
+        return OpenAI(api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
 
     def anthropic_client(self) -> Anthropic:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return Anthropic(
-            api_key=provider.key,
-            base_url=self.anthropic_base_url(provider),
-            timeout=provider.timeout,
-            max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
-        )
+        return Anthropic(api_key=provider.key, base_url=self.anthropic_base_url(provider), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
 
     @staticmethod
     def anthropic_base_url(provider: ProviderConfig) -> str:
@@ -2696,11 +2630,7 @@ class CommandCompleter(Completer):
         "runtime.yolo": ("on", "off", "true", "false"),
     }
 
-    def __init__(
-        self,
-        providers: Callable[[], tuple[str, ...]] = tuple,
-        models: Callable[[], tuple[str, ...]] = tuple,
-    ):
+    def __init__(self, providers: Callable[[], tuple[str, ...]] = tuple, models: Callable[[], tuple[str, ...]] = tuple):
         self.providers = providers
         self.models = models
 
@@ -3181,8 +3111,7 @@ Tools:
                 return
             if not line:
                 return
-            text = line.strip()
-            if text:
+            if text := line.strip():
                 self.session.pending_user_inputs.append(text)
 
     def run(self) -> int:
@@ -3226,8 +3155,7 @@ Tools:
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
-            m, s = divmod(elapsed, 60)
-            self.emit(f"[done in {int(m)}m{s:.0f}s]")
+            self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
 
     def style(self) -> Style:
         return Style.from_dict(
@@ -3275,19 +3203,13 @@ Tools:
             return True
 
         buffer = Buffer(
-            history=self.input_history,
-            completer=self.input_completer,
-            complete_while_typing=False,
-            enable_history_search=True,
-            multiline=multiline,
-            accept_handler=accept,
+            history=self.input_history, completer=self.input_completer, complete_while_typing=False,
+            enable_history_search=True, multiline=multiline, accept_handler=accept,
         )
         search_toolbar = SearchToolbar()
         control = BufferControl(
-            buffer=buffer,
-            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(prompt)],
-            search_buffer_control=search_toolbar.control,
-            preview_search=True,
+            buffer=buffer, input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(prompt)],
+            search_buffer_control=search_toolbar.control, preview_search=True,
         )
         input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
         bindings = KeyBindings()
@@ -3344,12 +3266,8 @@ Tools:
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = Application(
-            layout=Layout(root, focused_element=input_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
+            layout=Layout(root, focused_element=input_window), key_bindings=bindings, full_screen=False,
+            style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
         )
         with patch_stdout():
             text = app.run()
@@ -3638,20 +3556,8 @@ Tools:
         content = FormattedTextControl(fragments, focusable=True)
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = Application(
-            layout=Layout(
-                HSplit(
-                    [
-                        choice_window,
-                        self.status_window(),
-                    ]
-                ),
-                focused_element=choice_window,
-            ),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
+            layout=Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window),
+            key_bindings=bindings, full_screen=False, style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
         )
         return app.run()
 
