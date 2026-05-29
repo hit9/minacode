@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import select
 import selectors
 import shutil
 import signal
@@ -2232,13 +2233,11 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm"))
-        answer = self.input_fn("Approve " + tool.NAME + "? [Y/n or reason] ").strip()
+        answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
-        if lower in {"n", "no"}:
-            return False, self.input_fn("Reason? [optional] ").strip()
-        return False, answer
+        return False, "" if lower in {"n", "no"} else answer
 
     def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
@@ -3191,6 +3190,7 @@ Tools:
         self.live_status_paused = False
         self.transient_tool_lines = 0
         self.interactive_input = input_fn is input and sys.stdin.isatty()
+        self.queue_input_paused = threading.Event()
         self.input_history = self.make_input_history() if self.interactive_input else None
         self.input_completer = self.make_completer()
         self.agent.output_fn = self.agent_output
@@ -3200,6 +3200,15 @@ Tools:
 
     def queue_input_until(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
+            if self.queue_input_paused.is_set():
+                stop_event.wait(0.05)
+                continue
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+            except (OSError, ValueError):
+                return
+            if not ready or self.queue_input_paused.is_set():
+                continue
             try:
                 line = sys.stdin.readline()
             except Exception:
@@ -3256,6 +3265,7 @@ Tools:
         return Style.from_dict(
             {
                 "prompt": "ansicyan bold",
+                "approval": "ansiyellow",
                 "choice.title": "ansicyan bold",
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
@@ -3288,10 +3298,18 @@ Tools:
             dont_extend_height=True,
         )
 
-    def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False) -> str:
+    def run_input_app(self, app: Application) -> Any:
+        self.queue_input_paused.set()
+        try:
+            with patch_stdout():
+                return app.run()
+        finally:
+            self.queue_input_paused.clear()
+
+    def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False, submit_on_enter: bool = False, prompt_style: str = "class:prompt") -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
-        prompt = FormattedText([("class:prompt", prompt_text)])
+        prompt = FormattedText([(prompt_style, prompt_text)])
 
         def accept(buffer: Buffer) -> bool:
             app.exit(result=buffer.text)
@@ -3325,6 +3343,10 @@ Tools:
 
         @bindings.add("escape", "enter", filter=Condition(lambda: multiline), eager=True)
         def _escape_enter(event):
+            event.app.exit(result=buffer.text)
+
+        @bindings.add("enter", filter=Condition(lambda: submit_on_enter), eager=True)
+        def _enter(event):
             event.app.exit(result=buffer.text)
 
         @bindings.add("c-r", eager=True)
@@ -3364,9 +3386,8 @@ Tools:
             layout=Layout(root, focused_element=input_window), key_bindings=bindings, full_screen=False,
             style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
         )
-        with patch_stdout():
-            text = app.run()
-        print_formatted_text(FormattedText([("class:prompt", prompt_text), ("", text)]), style=self.style())
+        text = self.run_input_app(app)
+        print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
         return text
 
     def emit(self, text: str = "") -> None:
@@ -3394,7 +3415,7 @@ Tools:
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
             try:
-                return self.read_input(prompt, multiline=True) if self.interactive_input else self.input_fn(prompt)
+                return self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval") if self.interactive_input else self.input_fn(prompt)
             finally:
                 if self.interactive_input and sys.stdout.isatty():
                     sys.stdout.write("\x1b[1A\r\x1b[2K")
@@ -3654,7 +3675,7 @@ Tools:
             layout=Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window),
             key_bindings=bindings, full_screen=False, style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
         )
-        return app.run()
+        return self.run_input_app(app)
 
     def choice_prompt(
         self,

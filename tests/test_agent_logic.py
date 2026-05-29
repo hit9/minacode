@@ -1,4 +1,7 @@
 import json
+import os
+import threading
+import time
 from types import SimpleNamespace
 
 import nanocode as n
@@ -184,9 +187,8 @@ def test_compaction_uses_configured_context_budget(tmp_path):
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
-    answers = iter(["n", "skip it"])
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
     runner.run([call("Bash", ["printf first"]), call("CreateFile", ["second.txt", "second"])])
 
     assert len(s.tool_records) == 1
@@ -198,6 +200,15 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     n.ToolRunner(bad, n.ContextManager(bad), output_fn=lambda text: None).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
+
+
+def test_tool_runner_refuses_without_reason_on_n(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
+
+    runner.run([call("Bash", ["printf first"])])
+
+    assert s.tool_errors[0].error == "Cancelled: user refused tool call"
 
 
 def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
@@ -282,6 +293,51 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert "extra instruction" not in second
     assert "[additional 1]\nsecond instruction" in second
     assert s.pending_user_inputs == []
+
+
+def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+    reader = os.fdopen(read_fd, encoding="utf-8")
+    writer = os.fdopen(write_fd, "w", encoding="utf-8")
+    monkeypatch.setattr(n.sys, "stdin", reader)
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    stop = threading.Event()
+    loop.queue_input_paused.set()
+    thread = threading.Thread(target=loop.queue_input_until, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        writer.write("later\n")
+        writer.flush()
+        time.sleep(0.2)
+        assert s.pending_user_inputs == []
+        loop.queue_input_paused.clear()
+        deadline = time.monotonic() + 1
+        while not s.pending_user_inputs and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert s.pending_user_inputs == ["later"]
+    finally:
+        stop.set()
+        writer.close()
+        reader.close()
+
+
+def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    calls = []
+
+    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt"):
+        calls.append((prompt, multiline, submit_on_enter, prompt_style))
+        return ""
+
+    loop.interactive_input = True
+    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(loop, "read_input", fake_read)
+
+    loop.tool_input("[Y/n or reason] ")
+
+    assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
 
 
 def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
