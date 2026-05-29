@@ -110,7 +110,7 @@ model request
 |   Discovery Context                             |
 |   Error Feedback                                |
 |   Latest Tool Results                           |
-|   Current User Request                          |
+|   Current Turn Conversation                     |
 +--------------------------------------------------+
 ```
 

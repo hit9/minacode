@@ -1849,42 +1849,40 @@ class ContextManager:
         self.latest_keys.append(key)
         return key
 
-    def model_messages(self, base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> list[Json]:
-        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(user_input, extra_messages)}])
+    def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
+        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages)}])
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, user_input: str = "", extra_messages: list[Json] | None = None) -> None:
-        if self.estimated_tokens(self.model_messages(base_system, user_input, extra_messages)) < self.session.settings.max_context_tokens:
+    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
+        if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
         try:
-            self.session.state.apply(model.compact(self.compaction_input(extra_messages)))
+            self.session.state.apply(model.compact(self.compaction_input(turn_messages)))
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
         self.session.messages = self.session.messages[-6:]
         self.latest_keys = []
 
-    def render(self, user_input: str = "", extra_messages: list[Json] | None = None) -> str:
+    def render(self, turn_messages: list[Json] | None = None) -> str:
         sections = [
             ("Environment", self.environment()),
             ("State", self.session.state.format()),
             ("Summary", self.session.state.summary or "(empty)"),
-            ("Recent Conversation", self.recent_conversation(extra_messages)),
+            ("Recent Conversation", self.recent_conversation()),
             ("Tool Result Index", self.tool_index()),
             ("File Context", self.file_context()),
             ("Discovery Context", self.discovery_context()),
             ("Error Feedback", self.error_feedback()),
             ("Latest Tool Results", self.latest_results()),
             ("Current Date", self.current_date()),
-            ("Current User Request", self.current_user_request(user_input)),
+            ("Current Turn Conversation", self.turn_conversation(turn_messages)),
         ]
         return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
 
     def current_date(self) -> str:
         return "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")
 
-    def current_user_request(self, user_input: str) -> str:
-        parts = [("[initial]", user_input.strip())]
-        parts.extend((f"[additional {index}]", text.strip()) for index, text in enumerate(self.session.pending_user_inputs, 1) if text.strip())
-        return "\n\n".join(label + "\n" + (text or "(empty)") for label, text in parts)
+    def turn_conversation(self, turn_messages: list[Json] | None = None) -> str:
+        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in (turn_messages or [])) or "(empty)"
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -2024,12 +2022,11 @@ class ContextManager:
         segments.append((start, previous + 1, source, lines))
         return segments
 
-    def recent_conversation(self, extra_messages: list[Json] | None = None) -> str:
-        messages = [*self.session.messages, *(extra_messages or [])]
-        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
+    def recent_conversation(self) -> str:
+        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in self.session.messages) or "(empty)"
 
-    def compaction_input(self, extra_messages: list[Json] | None = None) -> str:
-        return "\n\n".join(["State:\n" + self.session.state.format(), "Summary:\n" + (self.session.state.summary or "(empty)"), "Conversation:\n" + self.recent_conversation(extra_messages), "Tool Result Index:\n" + self.tool_index(), "Latest Tool Results:\n" + self.latest_results()])
+    def compaction_input(self, turn_messages: list[Json] | None = None) -> str:
+        return "\n\n".join(["State:\n" + self.session.state.format(), "Summary:\n" + (self.session.state.summary or "(empty)"), "Recent Conversation:\n" + self.recent_conversation(), "Current Turn Conversation:\n" + self.turn_conversation(turn_messages), "Tool Result Index:\n" + self.tool_index(), "Latest Tool Results:\n" + self.latest_results()])
 
     def block(self, record: ToolResultRecord) -> str:
         return "\n".join([record.summary(), "output:", self.bound_output(record.output, record.key).rstrip()])
@@ -2614,19 +2611,18 @@ Output: concise markdown, USER'S LANGUAGE.
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
         self.context.start_tool_batch()
-        user_message = {"role": "user", "content": user_input}
-        turn_messages: list[Json] = []
+        turn_messages: list[Json] = [{"role": "user", "content": user_input}]
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    _assistant, tool_calls, content = self.model.request(self.messages(user_input, turn_messages))
+                    _assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
                     break
                 except ModelRequestRetry:
                     continue
             if not tool_calls:
                 answer = content.strip() or "(empty response)"
-                self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": answer}])
+                self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
                 return answer
             if content.strip():
                 message = {"role": "assistant", "content": content.strip()}
@@ -2634,13 +2630,14 @@ Output: concise markdown, USER'S LANGUAGE.
                 self.output_fn(message["content"])
             self.tools.run(tool_calls)
         stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
-        self.session.messages.extend([user_message, *turn_messages, {"role": "assistant", "content": stopped}])
+        self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
         return stopped
 
-    def messages(self, user_input: str, turn_messages: list[Json] | None = None) -> list[Json]:
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, user_input, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, user_input, turn_messages)
+    def messages(self, turn_messages: list[Json]) -> list[Json]:
+        turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
+        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return messages
@@ -3874,7 +3871,7 @@ Tools:
         self.session.state.apply(data)
         self.session.messages = self.session.messages[-6:]
         self.agent.context.latest_keys = []
-        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT, "")
+        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT)
         tokens = ContextManager.estimated_tokens(messages)
         self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
         return (

@@ -110,7 +110,7 @@ def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
     s.store_tool_result("Bash", [bad], bad, bad)
     s.record_tool_error("tr.1", "Bash", [bad], bad, bad)
 
-    messages = n.ContextManager(s).model_messages("sys", bad)
+    messages = n.ContextManager(s).model_messages("sys", [{"role": "user", "content": bad}])
     debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
 
     json.dumps(messages, ensure_ascii=False).encode("utf-8")

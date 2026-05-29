@@ -18,8 +18,12 @@ def call(name, args, intention=""):
 def test_model_messages_are_two_message_context_snapshots(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
-    s.pending_user_inputs.extend(["extra one", "extra two"])
-    messages = n.ContextManager(s).model_messages(" system ", "current request")
+    turn = [
+        {"role": "user", "content": "current request"},
+        {"role": "user", "content": "extra one"},
+        {"role": "user", "content": "extra two"},
+    ]
+    messages = n.ContextManager(s).model_messages(" system ", turn)
 
     assert [message["role"] for message in messages] == ["system", "user"]
     assert messages[0]["content"] == "system"
@@ -37,14 +41,14 @@ def test_model_messages_are_two_message_context_snapshots(tmp_path):
         "Discovery Context",
         "Error Feedback",
         "Latest Tool Results",
-        "Current User Request",
+        "Current Turn Conversation",
     ]
     positions = [content.index(f"--- {section} ---") for section in sections]
     assert positions == sorted(positions)
     assert content.rfind("current request") > positions[-1]
-    assert "[initial]\ncurrent request" in content
-    assert "[additional 1]\nextra one" in content
-    assert "[additional 2]\nextra two" in content
+    assert "user:\ncurrent request" in content
+    assert "user:\nextra one" in content
+    assert "user:\nextra two" in content
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -62,7 +66,7 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     initial_calls = list(calls)
     context = n.ContextManager(s)
     first = context.environment()
-    second = context.render("request")
+    second = context.render([{"role": "user", "content": "request"}])
 
     assert calls == initial_calls
     assert "- cwd: " + str(tmp_path) in first
@@ -177,7 +181,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     model = FakeModel()
-    context.maybe_compact(model, "system", "request")
+    context.maybe_compact(model, "system", [{"role": "user", "content": "request"}])
     assert model.input is not None
     assert s.state.summary == "compact summary"
     assert s.state.plan == ["next"]
@@ -281,7 +285,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.pending_user_inputs.append("second instruction")
-                return {}, [call("LineCount", ["missing.txt"], "count")], ""
+                return {}, [call("LineCount", ["missing.txt"], "count")], "checking"
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
@@ -289,9 +293,15 @@ def test_agent_injects_pending_user_input_once(tmp_path):
 
     first = agent.model.messages[0][1]["content"]
     second = agent.model.messages[1][1]["content"]
-    assert "[additional 1]\nextra instruction" in first
-    assert "extra instruction" not in second
-    assert "[additional 1]\nsecond instruction" in second
+    assert "user:\nextra instruction" in first
+    assert "user:\nextra instruction" in second
+    assert "assistant:\n" in second
+    assert "user:\nsecond instruction" in second
+    assert s.messages[0]["content"] == "initial request"
+    assert s.messages[1]["content"] == "extra instruction"
+    assert s.messages[2]["content"] == "checking"
+    assert s.messages[3]["content"] == "second instruction"
+    assert s.messages[4]["role"] == "assistant"
     assert s.pending_user_inputs == []
 
 
@@ -380,7 +390,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
         def compact(self, text):
             raise n.ModelError("failed")
 
-    context.maybe_compact(FailingModel(), "system", "request")
+    context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 6
     assert context.latest_keys == []
