@@ -913,11 +913,11 @@ class FindTool(Tool):
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Search files with case-insensitive regex and optional context lines."
+    DESCRIPTION = "Search files with case-insensitive regex; batch related terms with A|B|C."
     SIGNATURE = "Search({pattern, path?, glob?, context?}[, ...])"
     EXAMPLE = (
         'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',
-        'Regex alternation. Args: [{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]',
+        'Batch regex terms. Args: [{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]',
     )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
@@ -2659,6 +2659,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 class Agent:
     SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
 Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
+Batch independent read-only tool calls when useful.
 Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
 For multi-step tasks, use concise plan/known as working memory.
 Output: concise markdown, USER'S LANGUAGE.
