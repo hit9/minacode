@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import code_symbol_index as csi
 from anthropic import Anthropic
@@ -194,6 +195,8 @@ class RuntimeSettings:
     shell_timeout: int = 60
     max_steps: int = 200
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    check_updates: bool = True
+    update_check_interval_hours: int = 24
     yolo: bool = False
     debug: bool = False
 
@@ -204,6 +207,8 @@ class RuntimeSettings:
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
+            check_updates=Config.bool(runtime, "check_updates", True),
+            update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
         )
 
@@ -306,6 +311,8 @@ data_dir = "~/.nanocode"
 shell_timeout = 60
 max_agent_steps = 200
 max_context_tokens = 128000
+check_updates = true
+update_check_interval_hours = 24
 yolo = false
 """
 
@@ -402,6 +409,24 @@ class AgentState:
 
 
 @dataclass
+class UpdateStatus:
+    latest: str = ""
+    checked_at: float = 0.0
+    checking: bool = False
+    error: str = ""
+
+    def newer_than(self, current: str) -> bool:
+        current_version = self.version_tuple(current)
+        latest_version = self.version_tuple(self.latest)
+        return bool(current_version and latest_version and latest_version > current_version)
+
+    @staticmethod
+    def version_tuple(value: str) -> tuple[int, ...]:
+        match = re.match(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", value)
+        return tuple(int(part or 0) for part in match.groups()) if match else ()
+
+
+@dataclass
 class ToolResultRecord:
     key: str
     name: str
@@ -464,6 +489,7 @@ class Session:
     pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
+    update: UpdateStatus = field(default_factory=UpdateStatus)
 
     def __post_init__(self) -> None:
         if self.system_info is None:
@@ -523,6 +549,76 @@ class Session:
     def record_tool_error(self, key: str, name: str, args: list[Any], intention: str, error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), Text.clean(intention), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
+
+
+class UpdateChecker:
+    PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
+    CACHE_FILE = "update.json"
+    TIMEOUT = 5
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def start(self) -> None:
+        self.load_cache()
+        if not self.session.settings.check_updates or self.session.update.checking or not self.due():
+            return
+        self.session.update.checking = True
+        threading.Thread(target=self.check, daemon=True).start()
+
+    def due(self) -> bool:
+        return time.time() - self.session.update.checked_at >= self.session.settings.update_check_interval_hours * 3600
+
+    def check(self) -> None:
+        try:
+            self.session.update.latest = self.fetch_latest()
+            self.session.update.error = ""
+        except Exception as error:
+            self.session.update.error = Text.clean(str(error))
+        finally:
+            self.session.update.checked_at = time.time()
+            self.session.update.checking = False
+            self.save_cache()
+
+    def fetch_latest(self) -> str:
+        request = Request(self.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
+        with urlopen(request, timeout=self.TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
+        if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
+            raise NanocodeError("invalid PyPI version response")
+        return version
+
+    def load_cache(self) -> None:
+        try:
+            with open(self.session.data_path(self.CACHE_FILE), encoding="utf-8") as file:
+                data = json.load(file)
+            latest = str(data.get("latest") or "")
+            self.session.update.latest = latest if UpdateStatus.version_tuple(latest) else ""
+            self.session.update.checked_at = float(data.get("checked_at") or 0)
+        except Exception:
+            pass
+
+    def save_cache(self) -> None:
+        path = self.session.data_path(self.CACHE_FILE)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump({"checked_at": self.session.update.checked_at, "latest": self.session.update.latest}, file)
+        except Exception:
+            pass
+
+    def status_line(self) -> str:
+        update = self.session.update
+        if not self.session.settings.check_updates:
+            return "update: off"
+        if update.checking:
+            return "update: checking"
+        if update.newer_than(__version__):
+            return f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)"
+        if update.error:
+            return "update: error"
+        return "update: current" if update.latest else "update: unknown"
 
 
 class Tool:
@@ -2655,6 +2751,7 @@ class CommandCompleter(Completer):
         "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
         "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature", "provider.timeout",
         "runtime.yolo", "runtime.max_agent_steps", "runtime.max_context_tokens", "runtime.shell_timeout",
+        "runtime.check_updates", "runtime.update_check_interval_hours",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -2663,6 +2760,7 @@ class CommandCompleter(Completer):
         "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",),
         "runtime.yolo": ("on", "off", "true", "false"),
+        "runtime.check_updates": ("on", "off", "true", "false"),
     }
 
     def __init__(self, providers: Callable[[], tuple[str, ...]] = tuple, models: Callable[[], tuple[str, ...]] = tuple):
@@ -3042,6 +3140,9 @@ class StatusBar:
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
+        update_status = self.update_status()
+        if update_status:
+            parts.append(update_status)
         index_status = self.index_status()
         if index_status:
             parts.append("index" + index_status)
@@ -3094,6 +3195,14 @@ class StatusBar:
             return self.index_spinner() if notice in {"syncing", "updating"} else notice
         return CodeIndex.label(self.session.state.code_index_status)
 
+    def update_status(self) -> str:
+        if not self.session.settings.check_updates:
+            return ""
+        update = self.session.update
+        if update.checking:
+            return "update..."
+        return "update " + update.latest if update.newer_than(__version__) else ""
+
     def index_spinner(self) -> str:
         return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
 
@@ -3122,7 +3231,7 @@ class CommandLoop:
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
   /reason            Select reasoning effort.
-  /set KEY VALUE     Set provider.*, runtime.yolo, runtime.max_agent_steps, runtime.max_context_tokens, runtime.shell_timeout.
+  /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
@@ -3257,6 +3366,7 @@ Tools:
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
+        UpdateChecker(self.session).start()
         while True:
             try:
                 user_input = self.read_input()
@@ -3815,6 +3925,7 @@ Tools:
             f"goal: {self.session.state.goal or '(empty)'}",
             f"known: {len(self.session.state.known)}",
             f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
+            UpdateChecker(self.session).status_line(),
             f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
             CodeIndex.status_line(index_status, index_message),
             CodeIndex.LEGEND,
@@ -3841,6 +3952,8 @@ Tools:
             f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
             f"runtime.max_agent_steps: {self.session.settings.max_steps}",
             f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
+            f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
+            f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
             f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
         ])
@@ -4028,6 +4141,12 @@ Tools:
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":
                 runtime.yolo = value.lower() in {"on", "true", "yes", "1"}
+            elif key == "runtime.check_updates":
+                runtime.check_updates = Config.bool({key: value}, key)
+                if runtime.check_updates:
+                    UpdateChecker(self.session).start()
+            elif key == "runtime.update_check_interval_hours":
+                runtime.update_check_interval_hours = max(1, int(value))
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
             elif key == "runtime.max_context_tokens":
