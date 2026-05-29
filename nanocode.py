@@ -492,8 +492,7 @@ class Session:
 
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
-        root = root if os.path.isabs(root) else os.path.join(self.cwd, root)
-        return os.path.abspath(os.path.join(root, *parts))
+        return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
 
     def debug_dir(self) -> str:
         return self.data_path("sessions", self.session_id, "debug")
@@ -621,11 +620,8 @@ class Tool:
         return f'<file_stat mtime_ns="{stat.st_mtime_ns}" size="{stat.st_size}"/>'
 
     def gitignore_patterns(self, root: str) -> list[str]:
-        paths = [os.path.join(self.session.cwd, ".gitignore")]
-        if os.path.isdir(root):
-            paths.append(os.path.join(root, ".gitignore"))
         patterns = []
-        for path in dict.fromkeys(paths):
+        for path in dict.fromkeys([os.path.join(self.session.cwd, ".gitignore"), *([os.path.join(root, ".gitignore")] if os.path.isdir(root) else [])]):
             try:
                 with open(path, encoding="utf-8") as file:
                     patterns.extend(line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!"))
@@ -698,8 +694,7 @@ class ReadTool(Tool):
         for index, spec in enumerate(self.args):
             if not isinstance(spec, dict):
                 raise ToolError("Read args must be {path,ranges} objects")
-            unexpected = sorted(set(spec) - {"path", "ranges"})
-            if unexpected:
+            if unexpected := sorted(set(spec) - {"path", "ranges"}):
                 raise ToolError("Read unexpected field: " + ", ".join(unexpected))
             path = str(spec.get("path") or "").strip()
             raw_ranges = spec.get("ranges")
@@ -788,14 +783,7 @@ class ListTool(Tool):
             for entry in scan:
                 if pattern and not fnmatch.fnmatch(entry.name, pattern):
                     continue
-                if entry.is_symlink():
-                    kind = "symlink"
-                elif entry.is_dir(follow_symlinks=False):
-                    kind = "dir"
-                elif entry.is_file(follow_symlinks=False):
-                    kind = "file"
-                else:
-                    kind = "other"
+                kind = "symlink" if entry.is_symlink() else "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"
                 label = kind + ((" " + self.file_type(entry.path)) if kind == "file" else "")
                 rows.append((kind, label, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
         order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
@@ -846,14 +834,8 @@ class FindTool(Tool):
     def short_args(self) -> list[str]:
         rows = []
         for request in self.requests():
-            parts = [str(request["name"])]
-            if self.session.relpath(str(request["path"])) != ".":
-                parts.append("path=" + self.session.relpath(str(request["path"])))
-            if request["type"] != "file":
-                parts.append("type=" + str(request["type"]))
-            if request["limit"] != 100:
-                parts.append("limit=" + str(request["limit"]))
-            rows.append(" ".join(parts))
+            rel = self.session.relpath(str(request["path"]))
+            rows.append(" ".join([str(request["name"]), *(["path=" + rel] if rel != "." else []), *(["type=" + str(request["type"])] if request["type"] != "file" else []), *(["limit=" + str(request["limit"])] if request["limit"] != 100 else [])]))
         return ["; ".join(rows)]
 
     def requests(self) -> list[Json]:
@@ -863,8 +845,7 @@ class FindTool(Tool):
         for item in self.args:
             if not isinstance(item, dict):
                 raise ToolError("Find args must be query objects")
-            unexpected = sorted(set(item) - {"name", "path", "type", "limit"})
-            if unexpected:
+            if unexpected := sorted(set(item) - {"name", "path", "type", "limit"}):
                 raise ToolError("Find unexpected field: " + ", ".join(unexpected))
             name = str(item.get("name") or "").strip()
             kind = str(item.get("type") or "file")
@@ -881,9 +862,7 @@ class FindTool(Tool):
     def find(self, request: Json) -> str:
         rows = self.matches(str(request["path"]), str(request["name"]), str(request["type"]))
         limit = int(request["limit"])
-        shown = rows[:limit]
-        if len(rows) > limit:
-            shown.append(f"* omitted: {len(rows) - limit}")
+        shown = rows[:limit] + ([f"* omitted: {len(rows) - limit}"] if len(rows) > limit else [])
         header = f"<FindToolResult pattern={json.dumps(request['name'])} matches={len(rows)}>"
         return "\n".join([header, *shown, "</FindToolResult>"])
 
@@ -945,14 +924,8 @@ class SearchTool(Tool):
     def short_args(self) -> list[str]:
         rows = []
         for request in self.requests():
-            parts = [json.dumps(request["pattern"], ensure_ascii=False)]
-            if self.session.relpath(str(request["path"])) != ".":
-                parts.append("path=" + self.session.relpath(str(request["path"])))
-            if request["glob"]:
-                parts.append("glob=" + str(request["glob"]))
-            if request["context"]:
-                parts.append("C=" + str(request["context"]))
-            rows.append(" ".join(parts))
+            rel = self.session.relpath(str(request["path"]))
+            rows.append(" ".join([json.dumps(request["pattern"], ensure_ascii=False), *(["path=" + rel] if rel != "." else []), *(["glob=" + str(request["glob"])] if request["glob"] else []), *(["C=" + str(request["context"])] if request["context"] else [])]))
         return ["; ".join(rows)]
 
     def requests(self) -> list[Json]:
@@ -962,8 +935,7 @@ class SearchTool(Tool):
         for item in self.args:
             if not isinstance(item, dict):
                 raise ToolError("Search args must be query objects")
-            unexpected = sorted(set(item) - {"pattern", "path", "glob", "context"})
-            if unexpected:
+            if unexpected := sorted(set(item) - {"pattern", "path", "glob", "context"}):
                 raise ToolError("Search unexpected field: " + ", ".join(unexpected))
             pattern = str(item.get("pattern") or "").replace("\\n", "\n")
             if not pattern:
@@ -971,14 +943,7 @@ class SearchTool(Tool):
             context = item.get("context", 0)
             if isinstance(context, bool) or not isinstance(context, int) or context < 0 or context > self.MAX_CONTEXT:
                 raise ToolError(f"Search context must be 0..{self.MAX_CONTEXT}")
-            requests.append(
-                {
-                    "pattern": pattern,
-                    "path": self.session.resolve_path(str(item.get("path") or ".")),
-                    "glob": str(item.get("glob") or ""),
-                    "context": context,
-                }
-            )
+            requests.append({"pattern": pattern, "path": self.session.resolve_path(str(item.get("path") or ".")), "glob": str(item.get("glob") or ""), "context": context})
         return requests
 
     def search(self, request: Json) -> str:
@@ -1257,8 +1222,7 @@ class InspectCodeTool(Tool):
         if len(self.args) == 3 and not isinstance(self.args[2], dict):
             raise ToolError("InspectCode options must be an object")
         options = self.args[2] if len(self.args) == 3 else {}
-        unexpected = sorted(set(options) - {"limit", "kind", "path", "symbol", "exact_only"})
-        if unexpected:
+        if unexpected := sorted(set(options) - {"limit", "kind", "path", "symbol", "exact_only"}):
             raise ToolError("InspectCode unexpected option: " + ", ".join(unexpected))
         if mode not in {"find", "inspect", "outline"}:
             raise ToolError("InspectCode mode must be find, inspect, or outline")
@@ -1314,13 +1278,7 @@ class CreateFileTool(Tool):
 
     @classmethod
     def args_schema(cls) -> Json:
-        return {
-            "type": "array",
-            "description": 'Exactly ["path","content"].',
-            "items": {"type": "string"},
-            "minItems": 2,
-            "maxItems": 2,
-        }
+        return {"type": "array", "description": 'Exactly ["path","content"].', "items": {"type": "string"}, "minItems": 2, "maxItems": 2}
 
     def preview(self) -> str:
         path, content = self.payload()
@@ -1440,8 +1398,7 @@ class EditTool(Tool):
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            unexpected = sorted(set(item) - {"op", "start", "end", "content", "old", "new"})
-            if unexpected:
+            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
             if op not in {"replace", "delete", "insert_before", "insert_after", "replace_all"}:
@@ -1563,12 +1520,7 @@ class BashTool(Tool):
 
     @classmethod
     def args_schema(cls) -> Json:
-        return {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1, "pattern": "\\S"},
-            "minItems": 1,
-            "maxItems": 1,
-        }
+        return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 1, "maxItems": 1}
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -1789,8 +1741,7 @@ class RecallTool(Tool):
         common_ranges: list[tuple[int, int]] = []
         for arg in self.args:
             if isinstance(arg, dict):
-                unexpected = sorted(set(arg) - {"key", "result_key", "keys", "range", "ranges"})
-                if unexpected:
+                if unexpected := sorted(set(arg) - {"key", "result_key", "keys", "range", "ranges"}):
                     raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
                 keys = [str(arg.get(name) or "").strip() for name in ("key", "result_key")]
                 keys.extend(str(item).strip() for item in arg.get("keys", []) if str(item).strip())
@@ -1937,13 +1888,7 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
-        return "\n".join([
-            f"- cwd: {info.cwd}",
-            f"- os: {info.os}",
-            f"- arch: {info.arch}",
-            f"- shell_timeout: {self.session.settings.shell_timeout}s",
-            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
-        ])
+        return "\n".join([f"- cwd: {info.cwd}", f"- os: {info.os}", f"- arch: {info.arch}", f"- shell_timeout: {self.session.settings.shell_timeout}s", "- detected_commands: " + (", ".join(info.commands) or "(none)")])
 
     def tool_index(self) -> str:
         return "\n".join(record.summary() for record in self.session.tool_records) or "(empty)"
@@ -2084,15 +2029,7 @@ class ContextManager:
         return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
 
     def compaction_input(self, extra_messages: list[Json] | None = None) -> str:
-        return "\n\n".join(
-            [
-                "State:\n" + self.session.state.format(),
-                "Summary:\n" + (self.session.state.summary or "(empty)"),
-                "Conversation:\n" + self.recent_conversation(extra_messages),
-                "Tool Result Index:\n" + self.tool_index(),
-                "Latest Tool Results:\n" + self.latest_results(),
-            ]
-        )
+        return "\n\n".join(["State:\n" + self.session.state.format(), "Summary:\n" + (self.session.state.summary or "(empty)"), "Conversation:\n" + self.recent_conversation(extra_messages), "Tool Result Index:\n" + self.tool_index(), "Latest Tool Results:\n" + self.latest_results()])
 
     def block(self, record: ToolResultRecord) -> str:
         return "\n".join([record.summary(), "output:", self.bound_output(record.output, record.key).rstrip()])
@@ -3265,21 +3202,14 @@ Tools:
     def style(self) -> Style:
         return Style.from_dict(
             {
-                "prompt": "ansicyan bold",
-                "approval": "ansiyellow",
-                "choice.title": "ansicyan bold",
-                "choice.selected": "reverse",
-                "choice.disabled": "ansibrightblack",
-                "completion-menu": "noreverse bg:default",
-                "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
+                "prompt": "ansicyan bold", "approval": "ansiyellow",
+                "choice.title": "ansicyan bold", "choice.selected": "reverse", "choice.disabled": "ansibrightblack",
+                "completion-menu": "noreverse bg:default", "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
                 "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
                 "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
-                "bottom-toolbar": "noreverse bg:default fg:default",
-                "bottom-toolbar.text": "noreverse bg:default fg:default",
-                "search-toolbar": "noreverse bg:default fg:default",
-                "search-toolbar.prompt": "ansicyan",
-                "search-toolbar.text": "ansiwhite",
+                "bottom-toolbar": "noreverse bg:default fg:default", "bottom-toolbar.text": "noreverse bg:default fg:default",
+                "search-toolbar": "noreverse bg:default fg:default", "search-toolbar.prompt": "ansicyan", "search-toolbar.text": "ansiwhite",
             }
         )
 
