@@ -271,7 +271,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_args = n.BashTool.schema()["function"]["parameters"]["properties"]["args"]
     assert bash_args["minItems"] == 1
     assert bash_args["maxItems"] == 1
-    assert bash_args["items"]["pattern"] == r"\S"
+    assert bash_args["items"]["pattern"] == r"^.*\S.*$"
 
     create_args = n.CreateFileTool.schema()["function"]["parameters"]["properties"]["args"]
     assert create_args["minItems"] == 2
@@ -294,6 +294,9 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
         if isinstance(value, dict):
             assert "anyOf" not in value
             assert "prefixItems" not in value
+            if isinstance(value.get("pattern"), str):
+                assert value["pattern"].startswith("^")
+                assert value["pattern"].endswith("$")
             if "items" in value:
                 assert isinstance(value["items"], dict)
             for item in value.values():

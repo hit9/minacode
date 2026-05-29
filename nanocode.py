@@ -1619,7 +1619,7 @@ class BashTool(Tool):
 
     @classmethod
     def args_schema(cls) -> Json:
-        return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 1, "maxItems": 1}
+        return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}, "minItems": 1, "maxItems": 1}
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
