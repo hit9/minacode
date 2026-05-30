@@ -2,19 +2,22 @@
 
 A small terminal coding agent written in Python.
 
+[简体中文](README.zh-CN.md)
+
 nanocode is pre-1.0 software. Commands, configuration, and tool behavior may change before a stable release.
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
 ## Features
 
-- **Current turn flow**: Interim answers, tool results, and appended user input stay in order during a running task.
-- **Latest file state**: `Read` and `Edit` maintain a current, line-numbered file view with stale-range checks.
-- **Anchored edits**: `line:hash` anchors catch stale edits before they touch the wrong code.
-- **Working memory**: `Note` keeps the active goal, plan, and known facts separate from noisy tool output.
-- **Symbol index**: Jump from names to outlines, references, and changed files without searching blindly.
-- **Tool recall**: Prompt output is bounded, while raw `tr.N` results remain recallable when needed.
-- **Terminal-native UI**: Model picking, history search, confirmations, live command output, appended input, and status stay in the terminal.
+- **Live turn control**: Add follow-up input while the agent is still working, without losing the current tool flow.
+- **File-state brain**: Reads and edits build a current, line-numbered view of the files that matter now.
+- **Stale-edit protection**: `line:hash` anchors reject edits when the target code has drifted.
+- **Project-aware navigation**: Use the symbol index to jump through outlines, references, and changed files quickly.
+- **Recoverable context**: Tool output stays bounded in the prompt, while raw `tr.N` results remain recallable.
+- **Cache-aware context**: Stable sections stay early and noisy working state stays late to improve prompt-cache reuse.
+- **Focused working memory**: `Note` separates goal, plan, and known facts from noisy execution logs.
+- **Terminal-first workflow**: Model selection, history search, confirmations, live command output, appended input, and status all stay in one CLI.
 
 ## Install
 
