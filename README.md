@@ -8,12 +8,13 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 
 ## Features
 
-- **Snapshot context**: Every turn starts from a clean workspace snapshot instead of a bloated chat replay.
-- **File memory**: Recent reads and edits stay available as focused, line-numbered file ranges.
+- **Current turn flow**: Interim answers, tool results, and appended user input stay in order during a running task.
+- **Latest file state**: `Read` and `Edit` maintain a current, line-numbered file view with stale-range checks.
 - **Anchored edits**: `line:hash` anchors catch stale edits before they touch the wrong code.
+- **Working memory**: `Note` keeps the active goal, plan, and known facts separate from noisy tool output.
 - **Symbol index**: Jump from names to outlines, references, and changed files without searching blindly.
-- **Tool recall**: Big outputs are bounded in the prompt but still recallable later by `tr.N`.
-- **Terminal-native UI**: Model picking, history search, confirmations, live command output, and status all stay in the terminal.
+- **Tool recall**: Prompt output is bounded, while raw `tr.N` results remain recallable when needed.
+- **Terminal-native UI**: Model picking, history search, confirmations, live command output, appended input, and status stay in the terminal.
 
 ## Install
 
@@ -42,6 +43,8 @@ Useful arguments:
 - `--init-config`: create a default config file.
 - `--yolo`: skip confirmations for mutating tools.
 - `-v`, `--version`: show the version.
+
+During a running turn, the `+>` prompt accepts follow-up input for the next model request.
 
 ## Commands
 
@@ -93,7 +96,7 @@ Main fields:
 
 ## Context Design
 
-Each model request is built manually from explicit messages. Stable context comes first, the live conversation stays as messages, and current file content is appended at the end.
+Each model request is built manually from explicit messages. Stable context comes first, conversation stays as messages, working memory follows, and the latest file state is appended at the end.
 
 ```text
 model request
@@ -105,23 +108,25 @@ model request
 |   Environment                                   |
 +--------------------------------------------------+
 | user/assistant                                  |
-|   conversation and bounded tool results         |
+|   conversation, compacted summaries, tools      |
 +--------------------------------------------------+
 | user                                             |
-|   Memory: goal, summary, plan, known, date       |
+|   Memory: goal, plan, known, date               |
 +--------------------------------------------------+
 | user                                             |
-|   FILE STATE                                    |
+|   FILE STATE: latest Read/Edit file view        |
 +--------------------------------------------------+
 ```
 
 Core rules:
 
-- FILE STATE is updated by successful `Read` and `Edit` tools and shows current listed file ranges.
+- Mid-turn assistant text and appended user input are kept as conversation.
+- Earlier conversation is compacted into an explicit summary when the context grows too large.
+- FILE STATE is updated by successful `Read` and `Edit` tools and shows current listed file ranges, with recent files first.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
 - Successful `Read` and `Edit` tool messages point to FILE STATE instead of repeating file bodies.
-- Other tool outputs are bounded in conversation messages.
+- Other tool outputs are bounded in conversation messages and can be recalled by `tr.N`.
 
 ## Safety
 
