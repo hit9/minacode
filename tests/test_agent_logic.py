@@ -140,14 +140,13 @@ def test_file_context_marks_full_file_reads(tmp_path):
     assert "|two" in rendered
 
 
-def test_file_context_projection_prefers_recent_current_lines(tmp_path, monkeypatch):
+def test_file_context_keeps_current_lines_without_local_budget(tmp_path):
     old_path = tmp_path / "old.txt"
     new_path = tmp_path / "new.txt"
     old_path.write_text("old-0\n" + "".join(f"old-{index}\n" for index in range(1, 80)), encoding="utf-8")
     new_path.write_text("new-0\n" + "".join(f"new-{index}\n" for index in range(1, 80)), encoding="utf-8")
     s = session(tmp_path)
     context = n.ContextManager(s)
-    monkeypatch.setattr(n.ContextManager, "FILE_STATE_CHAR_BUDGET", 900)
 
     s.store_tool_result("Read", [{"path": "old.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "old.txt", "ranges": [[0, 0]]}]).call())
     new_key = s.store_tool_result(
@@ -156,8 +155,130 @@ def test_file_context_projection_prefers_recent_current_lines(tmp_path, monkeypa
 
     rendered = context.file_context()
     assert f"source={new_key} tool=Read" in rendered
+    assert "|old-70" in rendered
     assert "|new-" in rendered
-    assert "old.txt source=current lines=" in rendered
+
+
+def test_file_context_edit_invalidate_replaces_only_changed_range(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    edit_output = n.EditTool(
+        s,
+        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
+    ).call()
+    edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
+
+    rendered = context.file_context()
+    assert "|a" in rendered
+    assert "|B" in rendered
+    assert "|c" in rendered
+    assert "|b" not in rendered
+    assert f"@@ a.txt 1:2 current source={edit_key} tool=Edit" in rendered
+    assert f"source={read_key} tool=Read" in rendered
+
+
+def test_file_context_drops_drifted_old_lines_instead_of_guessing(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    n.EditTool(s, ["a.txt", [{"op": "insert_before", "start": "0:" + n.ReadTool.line_hash("a\n"), "content": "x\n"}]]).call()
+
+    rendered = context.file_context()
+    assert "|a" not in rendered
+    assert "|b" not in rendered
+    assert "|c" not in rendered
+    assert f"{read_key}" in rendered
+    assert "Omitted content:" in rendered
+
+
+def test_file_context_uses_raw_current_lines_not_bounded_middle(tmp_path):
+    path = tmp_path / "large.txt"
+    path.write_text("first\n" + "".join(f"middle-{index}\n" for index in range(80)) + "last\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    key = s.store_tool_result("Read", [{"path": "large.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "large.txt", "ranges": [[0, 0]]}]).call())
+
+    rendered = context.file_context()
+    assert f"source={key} tool=Read" in rendered
+    assert "|first" in rendered
+    assert "|middle-40" in rendered
+    assert "|last" in rendered
+    assert "<bounded_output" not in rendered
+
+
+def test_file_context_merges_current_ranges_within_same_file(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
+    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[2, 3]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[2, 3]]}]).call())
+
+    rendered = context.file_context()
+    assert f"source={old_key} tool=Read" in rendered
+    assert f"source={new_key} tool=Read" in rendered
+    assert "|a" in rendered
+    assert "|c" in rendered
+
+
+def test_file_context_edit_read_edit_keeps_final_state(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    edit1 = n.EditTool(
+        s,
+        ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("a\n"), "end": "0:" + n.ReadTool.line_hash("a\n"), "content": "A\n"}]],
+    ).call()
+    s.store_tool_result("Edit", ["a.txt"], edit1)
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    edit2 = n.EditTool(
+        s,
+        ["a.txt", [{"op": "replace", "start": "2:" + n.ReadTool.line_hash("c\n"), "end": "2:" + n.ReadTool.line_hash("c\n"), "content": "C\n"}]],
+    ).call()
+    edit2_key = s.store_tool_result("Edit", ["a.txt"], edit2)
+
+    rendered = context.file_context()
+    assert "|A" in rendered
+    assert "|b" in rendered
+    assert "|C" in rendered
+    assert "|a" not in rendered
+    assert "|c" not in rendered
+    assert f"@@ a.txt 0:2 current source={read_key} tool=Read" in rendered
+    assert f"@@ a.txt 2:3 current source={edit2_key} tool=Edit" in rendered
+
+
+def test_file_context_read_edit_read_uses_latest_read(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    read1_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    edit = n.EditTool(
+        s,
+        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
+    ).call()
+    s.store_tool_result("Edit", ["a.txt"], edit)
+    read2_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+
+    rendered = context.file_context()
+    assert "|a" in rendered
+    assert "|B" in rendered
+    assert "|c" in rendered
+    assert "|b" not in rendered
+    assert f"@@ a.txt 0:3 current source={read2_key} tool=Read" in rendered
+    assert f"source={read1_key} tool=Read" not in rendered
 
 
 def test_tool_error_records_keep_recent_failures(tmp_path):
@@ -213,6 +334,62 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert all("recent 7" not in str(message.get("content") or "") for message in s.messages)
+
+
+def test_compaction_prunes_old_non_file_tool_records(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("one\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    old_key = s.store_tool_result("Bash", ["old"], "old output")
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    current_key = s.store_tool_result("Bash", ["current"], "current output")
+
+    context.apply_compaction({"summary": "summary"}, [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+
+    assert old_key not in s.tool_results
+    assert {record.key for record in s.tool_records} == {read_key, current_key}
+    assert set(s.tool_results) == {read_key, current_key}
+    assert "|one" in context.file_context()
+
+
+def test_compaction_keeps_current_turn_tool_records(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}]
+    old_key = s.store_tool_result("Bash", ["old"], "old output")
+    current_key = s.store_tool_result("Bash", ["current"], "current output")
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary"}
+
+    n.ContextManager(s).maybe_compact(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+
+    assert old_key not in s.tool_results
+    assert current_key in s.tool_results
+    assert [record.key for record in s.tool_records] == [current_key]
+
+
+def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    edit_key = s.store_tool_result(
+        "Edit",
+        ["a.txt"],
+        n.EditTool(s, ["a.txt", [{"op": "delete", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n")}]]).call(),
+    )
+
+    context.apply_compaction({"summary": "summary"}, [])
+
+    rendered = context.file_context()
+    assert {record.key for record in s.tool_records} == {read_key, edit_key}
+    assert "|a" in rendered
+    assert "|b" not in rendered
+    assert "Omitted content:" in rendered
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):

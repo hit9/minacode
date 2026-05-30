@@ -47,6 +47,13 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert "sample.py:0:" in multiline
 
 
+def test_line_hash_is_short_lowercase_base36(tmp_path):
+    line_hash = n.ReadTool.line_hash("alpha\n")
+    assert len(line_hash) == 5
+    assert line_hash == line_hash.lower()
+    assert set(line_hash) <= set("0123456789abcdefghijklmnopqrstuvwxyz")
+
+
 def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(n.shutil, "which", lambda name: None)
     (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")

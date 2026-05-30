@@ -92,9 +92,19 @@ class ToolError(NanocodeError):
 
 
 class Text:
+    BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
+
     @staticmethod
     def clean(text: str) -> str:
         return text.encode("utf-8", errors="replace").decode("utf-8")
+
+    @classmethod
+    def base36(cls, value: int) -> str:
+        out = ""
+        while value:
+            value, digit = divmod(value, 36)
+            out = cls.BASE36[digit] + out
+        return out or "0"
 
     @classmethod
     def value(cls, value: Any) -> Any:
@@ -820,7 +830,7 @@ class ReadTool(Tool):
 
     @staticmethod
     def line_hash(line: str) -> str:
-        return hashlib.sha1(line.encode("utf-8")).hexdigest()[:6]
+        return Text.base36(int(hashlib.sha1(line.encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
@@ -1553,10 +1563,10 @@ class EditTool(Tool):
     SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}], create_file?); ops=replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","create_file":true,"edits":[{"op":"replace_all","old":"","new":"print(1)\\n"}]}',
-        'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new_value = 1\\n"}]}',
-        'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:aaa111","end":"22:bbb222"}]}',
-        'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:ccc333","content":"setup()\\n"}]}',
-        'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:ddd444","content":"cleanup()\\n"}]}',
+        'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
+        'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:0aa11","end":"22:0bb22"}]}',
+        'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:0cc33","content":"setup()\\n"}]}',
+        'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:0dd44","content":"cleanup()\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     MUTATES = True
@@ -1746,7 +1756,7 @@ class EditTool(Tool):
         return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
-        match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
+        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
         if not match:
             raise ToolError('invalid anchor; use "line:hash" from Read or Search')
         index = int(match.group(1))
@@ -2111,7 +2121,6 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
-    FILE_STATE_CHAR_BUDGET: ClassVar[int] = MAX_TOOL_OUTPUT_TOKENS * 4
 
     @dataclass
     class FileContextItem:
@@ -2157,10 +2166,11 @@ class ContextManager:
         if not compacted:
             return
         try:
-            self.apply_compaction(model.compact(self.compaction_input(compacted)), keep)
+            self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
             self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
+            self.prune_tool_records([*keep, *(turn_messages or [])])
 
     @staticmethod
     def render_section(name: str, body: str) -> str:
@@ -2218,31 +2228,7 @@ class ContextManager:
             else:
                 omitted.setdefault(item.path, {}).setdefault(item.source, 0)
                 omitted[item.path][item.source] += 1
-        projected = self.project_file_lines(lines_by_path)
-        for path, lines in lines_by_path.items():
-            dropped = len(lines) - len(projected.get(path, {}))
-            if dropped > 0:
-                omitted.setdefault(path, {})["current"] = dropped
-        return projected, omitted
-
-    def project_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]]) -> dict[str, dict[int, tuple[str, str, str]]]:
-        entries = [
-            (int(source.removeprefix("tr.")) if source.startswith("tr.") else 0, path, number, value)
-            for path, lines in lines_by_path.items()
-            for number, value in lines.items()
-            for source, _tool, _line in [value]
-        ]
-        projected: dict[str, dict[int, tuple[str, str, str]]] = {}
-        used = 0
-        for _order, path, number, value in sorted(entries, reverse=True):
-            if number in projected.get(path, {}):
-                continue
-            cost = len(path) + len(value[2]) + 32
-            if used and used + cost > self.FILE_STATE_CHAR_BUDGET:
-                continue
-            projected.setdefault(path, {})[number] = value
-            used += cost
-        return projected
+        return lines_by_path, omitted
 
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
@@ -2260,7 +2246,7 @@ class ContextManager:
                     items.append(self.FileContextItem(order, 0, "clear", record.key, record.name, path, int(match.group(1)), int(match.group(2)), "", *stat))
                 for match in re.finditer(r"(?s)<content hashline-numbered>\n(.*?)\n</content>", body):
                     for line in match.group(1).splitlines():
-                        line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
+                        line_match = re.match(r"(\d+):[0-9a-z]{5}\|", line)
                         if line_match:
                             items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, int(line_match.group(1)), 0, line, *stat))
         return items
@@ -2285,7 +2271,7 @@ class ContextManager:
         if item.path not in current_lines:
             current_lines[item.path] = self.read_lines(item.path, wanted.get(item.path, set()))
         lines = current_lines[item.path]
-        hash_match = re.match(r"\d+:([0-9a-f]{6})\|", item.line)
+        hash_match = re.match(r"\d+:([0-9a-z]{5})\|", item.line)
         return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
 
     def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
@@ -2389,9 +2375,34 @@ class ContextManager:
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(self.message_text(message) for message in messages) or "(empty)"
 
-    def apply_compaction(self, data: Json, keep: list[Json]) -> None:
+    def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
         self.session.state.apply(data)
         self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
+        self.prune_tool_records([*keep, *(tool_messages or [])])
+
+    def prune_tool_records(self, keep_messages: list[Json]) -> None:
+        records = self.session.tool_records
+        keep = set(re.findall(r"\btr\.\d+\b", self.messages_text(keep_messages)))
+        index = {record.key: offset for offset, record in enumerate(records)}
+        paths: dict[str, list[str]] = {}
+        for record in records:
+            paths[record.key] = []
+            for match in re.findall(r"<(?:Read|Edit)\s+path=(\".*?\")", record.output):
+                try:
+                    paths[record.key].append(str(json.loads(match)))
+                except json.JSONDecodeError:
+                    pass
+        mins: dict[str, int] = {}
+        for path, lines in self.active_file_lines()[0].items():
+            for source, _tool, _line in lines.values():
+                if source in index:
+                    mins[path] = min(mins.get(path, index[source]), index[source])
+                    keep.add(source)
+        for offset, record in enumerate(records):
+            if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
+                keep.add(record.key)
+        self.session.tool_records = [record for record in records if record.key in keep][-400:]
+        self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
 
     def summary_message(self, summary: str) -> list[Json]:
         return [{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary.strip()}] if summary.strip() else []
@@ -2625,7 +2636,7 @@ class EditBatchPlan:
         return changes
 
     def resolve_anchor(self, state: FileState, anchor: str) -> int:
-        match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
+        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
         if not match:
             raise ToolError('invalid anchor; use "line:hash" from Read or Search')
         index, expected = int(match.group(1)), match.group(2).lower()
