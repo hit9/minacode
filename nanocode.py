@@ -1377,6 +1377,39 @@ class Edit:
     new: str = ""
 
 
+class TouchTool(Tool):
+    NAME = "Touch"
+    DESCRIPTION = "Create one empty file and parent directories; existing file is ok; use Edit for content."
+    SIGNATURE = "Touch(path)"
+    EXAMPLE = ('Create empty file. Example: {"path":"src/app.py"}',)
+    MUTATES = True
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", "")]
+
+    def call(self) -> str:
+        path = self.path()
+        if os.path.isdir(path):
+            raise ToolError("path is a directory: " + self.session.relpath(path))
+        created = not os.path.exists(path)
+        if created:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            os.makedirs(parent, exist_ok=True)
+            open(path, "x", encoding="utf-8").close()
+        return f"<Touch path={json.dumps(self.session.relpath(path))} created={str(created).lower()}>\n{self.file_stat(path)}\n</Touch>"
+
+    def short_args(self) -> list[str]: return [self.session.relpath(self.path())]
+
+    def path(self) -> str:
+        return self.session.resolve_path(self.strings(min_count=1, max_count=1)[0])
+
+
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; anchored ops verify hashes, replace_all is exact text."
@@ -1911,6 +1944,7 @@ TOOLS: tuple[type[Tool], ...] = (
     FindTool,
     InspectCodeTool,
     SearchTool,
+    TouchTool,
     EditTool,
     BashTool,
     GitTool,
@@ -2389,10 +2423,10 @@ class ToolRunner:
         return "; ".join(notes)
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
-        if call.name != "Edit":
+        if call.name not in {"Edit", "Touch"}:
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<Edit\s+path=(".*?")', output):
+        for match in re.finditer(r'<(?:Edit|Touch)\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
@@ -2772,7 +2806,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 class Agent:
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
+Tools: Read LineCount List Find InspectCode Search Touch Edit Bash Git Recall Note.
 Use EXACT named parameters.
 
 RULES:
@@ -3338,7 +3372,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
+  Read, LineCount, List, Find, InspectCode, Search, Touch, Edit, Bash, Git, Recall, Note.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):

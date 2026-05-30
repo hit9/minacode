@@ -120,6 +120,10 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
 
 def test_edit_creates_and_patches_file(tmp_path):
     s = session(tmp_path)
+    n.TouchTool(s, ["empty/keep.txt"]).call()
+    assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == ""
+    n.TouchTool(s, ["empty/keep.txt"]).call()
+
     n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "", "new": "one\ntwo\nthree\n"}], True]).call()
     path = tmp_path / "nested" / "note.txt"
     assert path.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
@@ -293,6 +297,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     search_params = n.SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
+    assert n.TouchTool.schema()["function"]["parameters"]["required"] == ["path"]
 
     def walk(value):
         if isinstance(value, dict):
@@ -422,11 +427,12 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
+    runner.run([n.ToolCall("touch", "Touch", ["empty.py"])])
     runner.run([n.ToolCall("create", "Edit", ["made.py", [{"op": "replace_all", "old": "", "new": "print(1)\n"}], True])])
     runner.run([n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "1", "new": "2"}]])])
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
-    assert updated == ["made.py", "made.py"]
+    assert updated == ["empty.py", "made.py", "made.py"]
 
 
 def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):

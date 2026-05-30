@@ -65,7 +65,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 
 - File: `Read`, `LineCount`, `List`, `Find`, `Search`.
 - Code index: `InspectCode`.
-- Edit: `Edit` creates or patches files.
+- Edit: `Touch` creates empty files; `Edit` creates or patches file content.
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
