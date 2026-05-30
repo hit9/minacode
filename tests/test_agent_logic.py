@@ -395,7 +395,7 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "replace_all", "old": "", "new": "second"}], True])])
+    runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1

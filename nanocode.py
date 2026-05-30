@@ -1522,47 +1522,12 @@ class Edit:
     new: str = ""
 
 
-class TouchTool(Tool):
-    NAME = "Touch"
-    DESCRIPTION = "Create one empty file and parent directories; existing file is ok."
-    SIGNATURE = "Touch(path)"
-    EXAMPLE = ('Create empty file. Example: {"path":"src/app.py"}',)
-    MUTATES = True
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload.get("path", "")]
-
-    def call(self) -> str:
-        path = self.path()
-        if os.path.isdir(path):
-            raise ToolError("path is a directory: " + self.session.relpath(path))
-        created = not os.path.exists(path)
-        if created:
-            parent = os.path.dirname(path) or "."
-            if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
-            os.makedirs(parent, exist_ok=True)
-            open(path, "x", encoding="utf-8").close()
-        return f"<Touch path={json.dumps(self.session.relpath(path))} created={str(created).lower()}>\n{self.file_stat(path)}\n</Touch>"
-
-    def short_args(self) -> list[str]:
-        return [self.session.relpath(self.path())]
-
-    def path(self) -> str:
-        return self.session.resolve_path(self.strings(min_count=1, max_count=1)[0])
-
-
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; Edit start/end anchors are inclusive."
-    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}], create_file?); ops=replace|delete|insert_before|insert_after|replace_all"
+    DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
+    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=create|replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
-        'create file. Example: {"path":"src/app.py","create_file":true,"edits":[{"op":"replace_all","old":"","new":"print(1)\\n"}]}',
+        'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
         'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:0aa11","end":"22:0bb22"}]}',
         'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:0cc33","content":"setup()\\n"}]}',
@@ -1581,18 +1546,18 @@ class EditTool(Tool):
         }
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}, "create_file": {"type": "boolean"}},
+            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}},
             "required": ["path", "edits"],
             "additionalProperties": False,
         }
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload.get("path", ""), payload.get("edits", []), bool(payload.get("create_file"))]
+        return [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
         path, original, created, new_content, changes = self.build()
-        if new_content == original:
+        if new_content == original and not created:
             raise ToolError("edit produced no changes")
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -1610,12 +1575,12 @@ class EditTool(Tool):
 
     def preview(self) -> str:
         path, original, _created, new_content, _changes = self.build()
-        if new_content == original:
+        if new_content == original and os.path.exists(path):
             raise ToolError("edit produced no changes")
         return self.diff(path, original, new_content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
-        path, _edits, _create_file = self.parse()
+        path, _edits = self.parse()
         return [self.session.relpath(path)]
 
     def diff(self, path: str, original: str, new_content: str) -> str:
@@ -1629,14 +1594,13 @@ class EditTool(Tool):
             )
         )
 
-    def parse(self) -> tuple[str, list[Edit], bool]:
-        if len(self.args) not in {2, 3}:
+    def parse(self) -> tuple[str, list[Edit]]:
+        if len(self.args) != 2:
             raise ToolError("Edit requires path and edits")
         if not isinstance(self.args[0], str):
             raise ToolError("Edit path must be a string")
         path = self.session.resolve_path(str(self.args[0]))
         raw_edits = self.args[1]
-        create_file = bool(self.args[2]) if len(self.args) == 3 else False
         if not isinstance(raw_edits, list) or not raw_edits:
             raise ToolError("Edit edits must be a non-empty array")
         edits = []
@@ -1646,8 +1610,10 @@ class EditTool(Tool):
             if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
-            if op not in {"replace", "delete", "insert_before", "insert_after", "replace_all"}:
+            if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all"}:
                 raise ToolError("unknown edit op")
+            if op == "create" and len(raw_edits) != 1:
+                raise ToolError("create cannot be mixed with other edits")
             if op in {"replace", "delete"} and (not item.get("start") or not item.get("end")):
                 raise ToolError(f"{op} requires start and end anchors")
             if op in {"insert_before", "insert_after"} and not item.get("start"):
@@ -1662,25 +1628,31 @@ class EditTool(Tool):
                     new=self.content_text(str(item.get("new") or "")),
                 )
             )
-        return path, edits, create_file
+        return path, edits
 
     def build(self) -> tuple[str, str, bool, str, list[tuple[int, int, int, int]]]:
-        path, edits, create_file = self.parse()
+        path, edits = self.parse()
+        creating = edits[0].op == "create"
         if os.path.exists(path):
+            if creating:
+                raise ToolError("file already exists")
             with open(path, encoding="utf-8") as file:
                 original = file.read()
             created = False
-        elif create_file:
+        elif creating:
             parent = os.path.dirname(path) or "."
             if not self.session.in_cwd(parent):
                 raise ToolError("refusing to create parent directories outside workspace")
             original, created = "", True
         else:
-            raise ToolError("file does not exist; set create_file=true to create it")
+            raise ToolError("file does not exist; use op=create to create it")
         new_content, changes = self.apply(original, edits)
         return path, original, created, new_content, changes
 
     def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
+        if edits[0].op == "create":
+            lines = self.content_lines(edits[0].content, False)
+            return "".join(lines), [(0, 0, 0, len(lines))]
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -2102,7 +2074,6 @@ TOOLS: tuple[type[Tool], ...] = (
     FindTool,
     InspectCodeTool,
     SearchTool,
-    TouchTool,
     EditTool,
     BashTool,
     GitTool,
@@ -2551,37 +2522,44 @@ class EditBatchPlan:
         return self
 
     def plan_call(self, call: ToolCall, tool: EditTool) -> None:
-        path, edits, create_file = tool.parse()
-        state = self.file_state(path, create_file)
+        path, edits = tool.parse()
+        state = self.file_state(path, edits[0].op == "create")
         before, created = state.text(), not state.exists
         lines, changes = self.apply(tool, state, edits)
         after = "".join(line.text for line in lines)
-        if after == before:
+        if after == before and not created:
             raise ToolError("edit produced no changes")
         self.planned[call.id] = self.PlannedEdit(path, before, after, created, changes)
         state.lines, state.exists = lines, True
 
-    def file_state(self, path: str, create_file: bool) -> FileState:
+    def file_state(self, path: str, creating: bool) -> FileState:
         if path in self.files:
             state = self.files[path]
-            if not state.exists and not create_file:
-                raise ToolError("file does not exist; set create_file=true to create it")
+            if not state.exists and not creating:
+                raise ToolError("file does not exist; use op=create to create it")
+            if state.exists and creating:
+                raise ToolError("file already exists")
             return state
         if os.path.exists(path):
+            if creating:
+                raise ToolError("file already exists")
             with open(path, encoding="utf-8") as file:
                 original = file.readlines()
             state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)
-        elif create_file:
+        elif creating:
             parent = os.path.dirname(path) or "."
             if not self.session.in_cwd(parent):
                 raise ToolError("refusing to create parent directories outside workspace")
             state = self.FileState(path, [], [], False)
         else:
-            raise ToolError("file does not exist; set create_file=true to create it")
+            raise ToolError("file does not exist; use op=create to create it")
         self.files[path] = state
         return state
 
     def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> tuple[list[Line], list[tuple[int, int, int, int]]]:
+        if edits[0].op == "create":
+            lines = self.new_lines(tool.content_lines(edits[0].content, False))
+            return lines, [(0, 0, 0, len(lines))]
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -2801,10 +2779,10 @@ class ToolRunner:
         return "; ".join(notes)
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
-        if call.name not in {"Edit", "Touch"}:
+        if call.name != "Edit":
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<(?:Edit|Touch)\s+path=(".*?")', output):
+        for match in re.finditer(r'<Edit\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
@@ -3267,7 +3245,7 @@ class Agent:
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
 
-TOOLS: Read LineCount List Find InspectCode Search Touch Edit Bash Git Recall Note.
+TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
 Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 
 FLOW:
@@ -3286,7 +3264,7 @@ EDITS:
 - After stale-anchor errors or successful edits, discard old anchors for that file/range.
 - Do not batch multiple Edit calls for the same file; sequence them.
 - Keep edits small/local/reversible; never overwrite unrelated user work.
-- Touch only creates empty files; Edit(create_file=true) creates content.
+- Edit op=create creates files, including empty files.
 
 FINAL:
 - Concise markdown in the user's language.
@@ -3891,7 +3869,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Touch, Edit, Bash, Git, Recall, Note.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):

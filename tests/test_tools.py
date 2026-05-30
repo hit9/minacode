@@ -127,13 +127,14 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
 
 def test_edit_creates_and_patches_file(tmp_path):
     s = session(tmp_path)
-    n.TouchTool(s, ["empty/keep.txt"]).call()
+    n.EditTool(s, ["empty/keep.txt", [{"op": "create", "content": ""}]]).call()
     assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == ""
-    n.TouchTool(s, ["empty/keep.txt"]).call()
+    with pytest.raises(n.ToolError):
+        n.EditTool(s, ["empty/keep.txt", [{"op": "create", "content": ""}]]).call()
     n.EditTool(s, ["empty/keep.txt", [{"op": "replace_all", "old": "", "new": "kept\n"}]]).call()
     assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == "kept\n"
 
-    n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "", "new": "one\ntwo\nthree\n"}], True]).call()
+    n.EditTool(s, ["nested/note.txt", [{"op": "create", "content": "one\ntwo\nthree\n"}]]).call()
     path = tmp_path / "nested" / "note.txt"
     assert path.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
 
@@ -174,9 +175,9 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
     assert "current is 0:" + n.ReadTool.line_hash("old\n") + "|old" in str(error.value)
 
 
-def test_edit_create_file_decodes_escaped_newlines_for_preview_and_write(tmp_path):
+def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     s = session(tmp_path)
-    tool = n.EditTool(s, ["script.py", [{"op": "replace_all", "old": "", "new": "print(1)\\nprint(2)\\n"}], True])
+    tool = n.EditTool(s, ["script.py", [{"op": "create", "content": "print(1)\\nprint(2)\\n"}]])
 
     preview = tool.preview()
     output = tool.call()
@@ -305,7 +306,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     edit_params = n.EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
-    assert set(edit_params["properties"]) == {"path", "edits", "create_file"}
+    assert set(edit_params["properties"]) == {"path", "edits"}
     assert "start/end anchors are inclusive" in n.EditTool.schema()["function"]["description"]
 
     recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
@@ -321,8 +322,6 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     search_params = n.SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
-    assert n.TouchTool.schema()["function"]["parameters"]["required"] == ["path"]
-
     def walk(value):
         if isinstance(value, dict):
             assert "anyOf" not in value
@@ -478,12 +477,102 @@ def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkey
 
     runner.run(
         [
-            n.ToolCall("create", "Edit", ["new.txt", [{"op": "replace_all", "old": "", "new": "a\nb\n"}], True]),
+            n.ToolCall("create", "Edit", ["new.txt", [{"op": "create", "content": "a\nb\n"}]]),
             n.ToolCall("patch", "Edit", ["new.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]),
         ]
     )
 
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "a\nB\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("create", "Edit", ["empty.txt", [{"op": "create", "content": ""}]]),
+            n.ToolCall("patch", "Edit", ["empty.txt", [{"op": "replace_all", "old": "", "new": "filled\n"}]]),
+        ]
+    )
+
+    assert (tmp_path / "empty.txt").read_text(encoding="utf-8") == "filled\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_rejects_duplicate_create_same_file(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("create", "Edit", ["dup.txt", [{"op": "create", "content": "one\n"}]]),
+            n.ToolCall("again", "Edit", ["dup.txt", [{"op": "create", "content": "two\n"}]]),
+        ]
+    )
+
+    assert (tmp_path / "dup.txt").read_text(encoding="utf-8") == "one\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
+    assert s.tool_errors and "file already exists" in s.tool_errors[0].error
+
+
+def test_tool_runner_batch_edit_rejects_create_mixed_with_patch_ops(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall(
+                "bad",
+                "Edit",
+                ["bad.txt", [{"op": "create", "content": "one\n"}, {"op": "replace_all", "old": "one", "new": "two"}]],
+            )
+        ]
+    )
+
+    assert not (tmp_path / "bad.txt").exists()
+    assert s.tool_records == []
+    assert s.tool_errors and "create cannot be mixed" in s.tool_errors[0].error
+
+
+def test_tool_runner_batch_edit_rejects_patch_missing_file_without_create(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("patch", "Edit", ["missing.txt", [{"op": "replace_all", "old": "", "new": "x\n"}]])])
+
+    assert not (tmp_path / "missing.txt").exists()
+    assert s.tool_records == []
+    assert s.tool_errors and "use op=create" in s.tool_errors[0].error
+
+
+def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    (tmp_path / "old.txt").write_text("a\nb\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("create", "Edit", ["new.txt", [{"op": "create", "content": "n\n"}]]),
+            n.ToolCall("edit", "Edit", ["old.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]),
+        ]
+    )
+
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "n\n"
+    assert (tmp_path / "old.txt").read_text(encoding="utf-8") == "a\nB\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
     assert s.tool_errors == []
 
@@ -639,8 +728,8 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("touch", "Touch", ["empty.py"])])
-    runner.run([n.ToolCall("create", "Edit", ["made.py", [{"op": "replace_all", "old": "", "new": "print(1)\n"}], True])])
+    runner.run([n.ToolCall("empty", "Edit", ["empty.py", [{"op": "create", "content": ""}]])])
+    runner.run([n.ToolCall("create", "Edit", ["made.py", [{"op": "create", "content": "print(1)\n"}]])])
     runner.run([n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "1", "new": "2"}]])])
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
@@ -653,7 +742,7 @@ def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_pa
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
 
     n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).update_code_index(
-        n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "", "new": "x\n"}], True]),
+        n.ToolCall("edit", "Edit", ["made.py", [{"op": "create", "content": "x\n"}]]),
         "<Edit path=bad />",
     )
 
@@ -665,7 +754,7 @@ def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
     s.settings.yolo = True
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("create", "Edit", ["auto.txt", [{"op": "replace_all", "old": "", "new": "ok\n"}], True])])
+    runner.run([n.ToolCall("create", "Edit", ["auto.txt", [{"op": "create", "content": "ok\n"}]])])
 
     assert (tmp_path / "auto.txt").read_text(encoding="utf-8") == "ok\n"
     assert len(s.tool_records) == 1
