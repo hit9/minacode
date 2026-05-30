@@ -393,12 +393,9 @@ class AgentState:
     context_percent: int = 0
     turn_step: int = 0
     turn_tool_calls: int = 0
-    debug_count: int = 0
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
-    cache_section_hashes: dict[str, str] = field(default_factory=dict)
-    cache_section_changes: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
     def plan_text(item: str) -> str:
@@ -537,7 +534,7 @@ class Session:
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
 
     def debug_dir(self) -> str:
-        return self.data_path("sessions", self.session_id, "debug")
+        return self.data_path("debug")
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -2106,16 +2103,6 @@ class ContextManager:
     def render_section(name: str, body: str) -> str:
         return f"--- {name} ---\n{body or '(empty)'}"
 
-    def record_cache_sections(self, turn_messages: list[Json] | None = None) -> None:
-        messages = "\n\n".join(self.message_text(message) for message in [*self.session.messages, *(turn_messages or [])]) or "(empty)"
-        sections = {"Environment": self.environment(), "Messages": messages, "Memory": self.memory_context(with_date=True), "CURRENT WORKING CONTEXT": self.file_context() or "(empty)"}
-        hashes = {name: hashlib.sha256(Text.clean(body).encode("utf-8")).hexdigest()[:8] for name, body in sections.items()}
-        old = self.session.state.cache_section_hashes
-        self.session.state.cache_section_changes = {
-            name: ("new" if name not in old else "same" if old[name] == digest else "changed") for name, digest in hashes.items()
-        }
-        self.session.state.cache_section_hashes = hashes
-
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join(self.session.state.plan_rows()), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
         if with_date:
@@ -2501,15 +2488,12 @@ class DebugTrace:
     def write(cls, session: Session, *, activity: str, label: str, payload: Any) -> str:
         if not session.settings.debug:
             return ""
-        session.state.debug_count += 1
         directory = session.debug_dir()
         os.makedirs(directory, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        safe_activity = re.sub(r"[^A-Za-z0-9_.-]+", "-", activity or "debug")
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
-        path = os.path.join(directory, f"{timestamp}-{session.state.debug_count:04d}-{safe_activity}-{safe_label}.json")
+        path = os.path.join(directory, f"last-{safe_label}.json")
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(cls.value(payload), file, ensure_ascii=False, indent=2)
+            json.dump({"activity": Text.clean(activity or "debug"), "label": safe_label, "payload": cls.value(payload)}, file, ensure_ascii=False, indent=2)
             file.write("\n")
         return path
 
@@ -2913,7 +2897,6 @@ Output: concise markdown in the USER'S LANGUAGE.\
         turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        self.context.record_cache_sections(turn_messages)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
         self.context.update_percent(messages)
         return messages
@@ -3325,8 +3308,6 @@ class StatusBar:
             parts.extend(
                 ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
             )
-        if self.session.settings.debug:
-            parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed and self.session.pending_user_inputs:
             parts.append("+" + str(len(self.session.pending_user_inputs)))
         if show_elapsed:
@@ -3881,13 +3862,13 @@ Tools:
         labels = labels or {}
         if not choices:
             return None
-        if self.interactive_input:
-            try:
-                return self.choice_application(title, choices, labels, current, set(disabled))
-            except (EOFError, KeyboardInterrupt):
-                self.emit("Cancelled")
-                return None
-        return self.choice_prompt(title, choices, labels, current, set(disabled))
+        if not self.interactive_input:
+            return None
+        try:
+            return self.choice_application(title, choices, labels, current, set(disabled))
+        except (EOFError, KeyboardInterrupt):
+            self.emit("Cancelled")
+            return None
 
     def choice_application(
         self,
@@ -4033,46 +4014,6 @@ Tools:
         )
         return self.run_input_app(app)
 
-    def choice_prompt(
-        self,
-        title: str,
-        choices: tuple[str, ...],
-        labels: dict[str, str],
-        current: str,
-        disabled: set[str],
-    ) -> str | None:
-        query = ""
-        while True:
-            visible = self.visible_choices(choices, labels, disabled, query)
-            lines = [title + (" /" + query if query else "")]
-            enabled: list[str] = []
-            for choice in visible:
-                label = labels.get(choice, choice)
-                if choice in disabled:
-                    lines.append("  " + label)
-                    continue
-                enabled.append(choice)
-                mark = " *" if choice == current else ""
-                lines.append(f"  {len(enabled)}. {label}{mark}")
-            if not enabled:
-                lines.append("  no matches")
-            self.emit("\n".join(lines))
-            try:
-                answer = self.read_input("select> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                return None
-            if not answer:
-                return None
-            if answer.startswith("/"):
-                query = answer[1:].strip()
-                continue
-            if answer.isdigit() and 1 <= int(answer) <= len(enabled):
-                return enabled[int(answer) - 1]
-            for choice in enabled:
-                if answer == choice or answer.lower() == labels.get(choice, choice).lower():
-                    return choice
-            self.emit("No match: " + answer)
-
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model
         labels = {label: label for label in self.MODEL_LABELS if label in choices}
@@ -4107,14 +4048,12 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
-        section_status = "; ".join(f"{name.lower()} `{status}`" for name, status in self.session.state.cache_section_changes.items()) or "(none)"
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)"),
-            ("cache sections", section_status),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),

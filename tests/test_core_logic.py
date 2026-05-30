@@ -129,6 +129,20 @@ def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
     assert "\udce5" not in str(debug_payload)
 
 
+def test_debug_trace_overwrites_last_file(tmp_path):
+    s = data_session(tmp_path)
+    s.settings.debug = True
+
+    first = n.DebugTrace.write(s, activity="one", label="prompt", payload={"value": 1})
+    second = n.DebugTrace.write(s, activity="two", label="prompt", payload={"value": 2})
+    data = json.loads((tmp_path / ".data" / "debug" / "last-prompt.json").read_text(encoding="utf-8"))
+
+    assert first == second
+    assert first.endswith("debug/last-prompt.json")
+    assert data["activity"] == "two"
+    assert data["payload"] == {"value": 2}
+
+
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
     s = session(tmp_path)
     inside = tmp_path / "inside.py"
