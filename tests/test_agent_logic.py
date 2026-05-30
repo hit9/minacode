@@ -163,7 +163,7 @@ def test_working_context_includes_recent_tool_errors(tmp_path):
 def test_compaction_uses_configured_context_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
-    s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
+    s.messages = [{"role": "user", "content": "old user"}, {"role": "assistant", "content": "old answer"}, *({"role": "assistant", "content": f"recent {index}"} for index in range(8)), {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
     context = n.ContextManager(s)
 
     class FakeModel:
@@ -177,13 +177,21 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     model = FakeModel()
     context.maybe_compact(model, "system", [{"role": "user", "content": "request"}])
     assert model.input is not None
+    assert "Older Messages:" in model.input
+    assert "old answer" in model.input
+    assert "Recent Messages (rewrite briefly inside summary):" in model.input
+    assert "recent 7" in model.input
+    assert "latest" not in model.input
+    assert "request" not in model.input
     assert s.state.summary == "compact summary"
     assert s.state.plan == ["next"]
     assert s.state.known == ["fact"]
-    assert len(s.messages) == 1
-    assert s.messages[0]["role"] == "user"
+    assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
     assert "compact summary" in s.messages[0]["content"]
+    assert s.messages[1]["content"] == "latest"
+    assert s.messages[2]["content"] == "tool kept"
+    assert all("recent 7" not in str(message.get("content") or "") for message in s.messages)
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -486,9 +494,10 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
 
     context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
-    assert len(s.messages) == 1
+    assert len(s.messages) == 2
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
     assert "deterministically trimmed" in s.messages[0]["content"]
+    assert s.messages[1]["content"] == "9"
 
 
 def test_manual_compact_inserts_summary_before_latest_user(tmp_path):

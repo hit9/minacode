@@ -1963,6 +1963,7 @@ class ToolCall:
 
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
+    COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
 
     @dataclass
     class FileContextItem:
@@ -2228,14 +2229,24 @@ class ContextManager:
         return segments
 
     def compaction_input(self, messages: list[Json]) -> str:
-        messages_text = "\n\n".join(self.message_text(message) for message in messages) or "(empty)"
-        return "\n\n".join(["State:\n" + self.session.state.format(), "Previous Summary:\n" + (self.session.state.summary or "(empty)"), "Messages:\n" + messages_text])
+        older, recent = self.compaction_recent(messages)
+        return "\n\n".join([
+            "State:\n" + self.session.state.format(),
+            "Previous Summary:\n" + (self.session.state.summary or "(empty)"),
+            "Older Messages:\n" + self.messages_text(older),
+            "Recent Messages (rewrite briefly inside summary):\n" + self.messages_text(recent),
+        ])
 
     def compaction_parts(self, turn_messages: list[Json] | None = None) -> tuple[list[Json], list[Json]]:
-        if turn_messages:
-            return self.session.messages, []
         index = self.latest_user_index(self.session.messages)
         return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
+
+    def compaction_recent(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+        cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
+        return messages[:cut], messages[cut:]
+
+    def messages_text(self, messages: list[Json]) -> str:
+        return "\n\n".join(self.message_text(message) for message in messages) or "(empty)"
 
     def apply_compaction(self, data: Json, keep: list[Json]) -> None:
         self.session.state.apply(data)
@@ -2619,6 +2630,7 @@ class ModelClient:
         prompt = """
 Compact the nanocode working context.
 Return exactly one JSON object with keys: summary, goal, plan, known.
+Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
