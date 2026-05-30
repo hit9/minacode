@@ -185,7 +185,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run([call("Bash", ["printf first"]), call("CreateFile", ["second.txt", "second"])])
+    runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "replace_all", "old": "", "new": "second"}], True])])
 
     assert len(s.tool_records) == 1
     assert len(s.tool_errors) == 1

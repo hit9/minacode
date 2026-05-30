@@ -102,7 +102,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     with pytest.raises(n.ToolError):
         n.ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
     with pytest.raises(n.ToolError):
-        n.CreateFileTool(s, [["a.txt", "a"], ["b.txt", "b"]]).call()
+        n.EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "new": "a\n"}]]).call()
     with pytest.raises(n.ToolError):
         n.BashTool(s, []).call()
     with pytest.raises(n.ToolError):
@@ -118,14 +118,14 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     assert not (tmp_path / "b.txt").exists()
 
 
-def test_createfile_and_edit_operations(tmp_path):
+def test_edit_creates_and_patches_file(tmp_path):
     s = session(tmp_path)
-    n.CreateFileTool(s, ["nested/note.txt", "one\ntwo\nthree\n"]).call()
+    n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "", "new": "one\ntwo\nthree\n"}], True]).call()
     path = tmp_path / "nested" / "note.txt"
     assert path.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
 
     with pytest.raises(n.ToolError):
-        n.CreateFileTool(s, ["nested/note.txt", "again\n"]).call()
+        n.EditTool(s, ["missing.txt", [{"op": "replace_all", "old": "", "new": "again\n"}]]).call()
 
     n.EditTool(
         s,
@@ -147,16 +147,16 @@ def test_createfile_and_edit_operations(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
-def test_createfile_decodes_escaped_newlines_for_preview_and_write(tmp_path):
+def test_edit_create_file_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     s = session(tmp_path)
-    tool = n.CreateFileTool(s, ["script.py", "print(1)\\nprint(2)\\n"])
+    tool = n.EditTool(s, ["script.py", [{"op": "replace_all", "old": "", "new": "print(1)\\nprint(2)\\n"}], True])
 
     preview = tool.preview()
     output = tool.call()
 
     assert "+print(1)\n+print(2)\n" in preview
     assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\nprint(2)\n"
-    assert "chars=18" in output
+    assert "<Edit path=" in output
 
 
 def test_bash_and_git_behaviors(tmp_path):
@@ -276,9 +276,9 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     assert bash_params["required"] == ["command"]
     assert bash_params["properties"]["command"]["pattern"] == r"^.*\S.*$"
 
-    create_params = n.CreateFileTool.schema()["function"]["parameters"]
-    assert create_params["required"] == ["path", "content"]
-    assert set(create_params["properties"]) == {"path", "content"}
+    edit_params = n.EditTool.schema()["function"]["parameters"]
+    assert edit_params["required"] == ["path", "edits"]
+    assert set(edit_params["properties"]) == {"path", "edits", "create_file"}
 
     recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
@@ -422,21 +422,21 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("create", "CreateFile", ["made.py", "print(1)\n"])])
+    runner.run([n.ToolCall("create", "Edit", ["made.py", [{"op": "replace_all", "old": "", "new": "print(1)\n"}], True])])
     runner.run([n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "1", "new": "2"}]])])
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
     assert updated == ["made.py", "made.py"]
 
 
-def test_createfile_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
+def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
     s = session(tmp_path)
     updated = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
 
     n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).update_code_index(
-        n.ToolCall("create", "CreateFile", ["made.py", "x\n"]),
-        "<CreateFileToolResult path=bad created=true />",
+        n.ToolCall("edit", "Edit", ["made.py", [{"op": "replace_all", "old": "", "new": "x\n"}], True]),
+        "<Edit path=bad />",
     )
 
     assert updated == ["made.py"]
@@ -447,7 +447,7 @@ def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
     s.settings.yolo = True
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("create", "CreateFile", ["auto.txt", "ok\n"])])
+    runner.run([n.ToolCall("create", "Edit", ["auto.txt", [{"op": "replace_all", "old": "", "new": "ok\n"}], True])])
 
     assert (tmp_path / "auto.txt").read_text(encoding="utf-8") == "ok\n"
     assert len(s.tool_records) == 1

@@ -65,7 +65,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 
 - File: `Read`, `LineCount`, `List`, `Find`, `Search`.
 - Code index: `InspectCode`.
-- Edit: `CreateFile`, `Edit`.
+- Edit: `Edit` creates or patches files.
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
@@ -117,10 +117,10 @@ model request
 
 Core rules:
 
-- ACTIVE FILE VIEW includes the latest active `Read`, `Edit`, and `CreateFile` file ranges.
+- ACTIVE FILE VIEW includes the latest active `Read` and `Edit` file ranges.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
-- Successful `Read`, `Edit`, and `CreateFile` tool messages point to ACTIVE FILE VIEW instead of repeating file bodies.
+- Successful `Read` and `Edit` tool messages point to ACTIVE FILE VIEW instead of repeating file bodies.
 - Other tool outputs are bounded in conversation messages.
 
 ## Safety

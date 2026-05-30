@@ -1367,74 +1367,6 @@ class InspectCodeTool(Tool):
         )
 
 
-class CreateFileTool(Tool):
-    NAME = "CreateFile"
-    DESCRIPTION = "Create one new UTF-8 file; prefer a small skeleton first, then expand with Edit; creates parent dirs inside workspace; fails if file exists."
-    SIGNATURE = "CreateFile(path, content); one file per call"
-    EXAMPLE = (
-        'Create text. Example: {"path":"notes.txt","content":"hello\\n"}',
-        'Create code skeleton, then use Edit for larger bodies. Example: {"path":"src/main.cpp","content":"#include <iostream>\\nint main() { return 0; }\\n"}',
-    )
-    MUTATES = True
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("content", "")]
-
-    def preview(self) -> str:
-        path, content = self.payload()
-        lines = content.splitlines(True)
-        return "".join(difflib.unified_diff([], lines, fromfile="/dev/null", tofile=self.session.relpath(path))) or f"CreateFile({self.session.relpath(path)})"
-
-    def call(self) -> str:
-        path, content = self.payload()
-        parent = os.path.dirname(path) or "."
-        if os.path.exists(path):
-            raise ToolError("file already exists: " + self.session.relpath(path))
-        if not os.path.isdir(parent):
-            if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
-            os.makedirs(parent, exist_ok=True)
-        with open(path, "x", encoding="utf-8") as file:
-            file.write(content)
-        lines = content.splitlines(True)
-        return "\n".join(
-            [
-                f"<CreateFile path={json.dumps(self.session.relpath(path))} created=true chars={len(content)}>",
-                self.file_stat(path),
-                f"<total_lines>{len(lines)}</total_lines>",
-                "<content hashline-numbered>",
-                "".join(f"{i}:{ReadTool.line_hash(line)}|{line}" for i, line in enumerate(lines)).rstrip("\n"),
-                "</content>",
-                "</CreateFile>",
-            ]
-        )
-
-    def short_args(self) -> list[str]:
-        path, _content = self.payload()
-        return [self.session.relpath(path)]
-
-    def payload(self) -> tuple[str, str]:
-        if self.args and all(isinstance(arg, list) and len(arg) == 2 for arg in self.args):
-            raise ToolError('CreateFile creates one file per call; call it separately for each file. Args must be ["path","content"].')
-        if len(self.args) != 2:
-            raise ToolError('CreateFile requires exactly ["path","content"]')
-        if not isinstance(self.args[0], str):
-            raise ToolError('CreateFile path must be a string; args must be ["path","content"]')
-        path = self.session.resolve_path(str(self.args[0]))
-        content = self.content_text(str(self.args[1]))
-        return path, content
-
-    @staticmethod
-    def content_text(text: str) -> str:
-        if "\n" not in text and "\\n" in text:
-            return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
-        return text
-
-
 @dataclass
 class Edit:
     op: str
@@ -1447,9 +1379,10 @@ class Edit:
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Patch one existing UTF-8 file; anchored ops verify hashes, replace_all is exact text, result returns diff and refreshed lines."
-    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=replace|delete|insert_before|insert_after|replace_all"
+    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; anchored ops verify hashes, replace_all is exact text."
+    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}], create_file?); ops=replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
+        'create file. Example: {"path":"src/app.py","create_file":true,"edits":[{"op":"replace_all","old":"","new":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new_value = 1\\n"}]}',
         'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:aaa111","end":"22:bbb222"}]}',
         'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:ccc333","content":"setup()\\n"}]}',
@@ -1461,18 +1394,17 @@ class EditTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         edit = {"type": "object", "properties": {key: {"type": "string"} for key in ("op", "start", "end", "content", "old", "new")}, "required": ["op"], "additionalProperties": False}
-        return {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}}, "required": ["path", "edits"], "additionalProperties": False}
+        return {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}, "create_file": {"type": "boolean"}}, "required": ["path", "edits"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", [])]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", []), bool(payload.get("create_file"))]
 
     def call(self) -> str:
-        path, edits = self.parse()
-        with open(path, encoding="utf-8") as file:
-            original = file.read()
-        new_content, changes = self.apply(original, edits)
+        path, original, created, new_content, changes = self.build()
         if new_content == original:
             raise ToolError("edit produced no changes")
+        if created:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
             file.write(new_content)
         return "\n".join(
@@ -1486,29 +1418,27 @@ class EditTool(Tool):
         )
 
     def preview(self) -> str:
-        path, edits = self.parse()
-        with open(path, encoding="utf-8") as file:
-            original = file.read()
-        new_content, _changes = self.apply(original, edits)
+        path, original, _created, new_content, _changes = self.build()
         if new_content == original:
             raise ToolError("edit produced no changes")
         return self.diff(path, original, new_content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
-        path, _edits = self.parse()
+        path, _edits, _create_file = self.parse()
         return [self.session.relpath(path)]
 
     def diff(self, path: str, original: str, new_content: str) -> str:
         relpath = self.session.relpath(path)
-        return "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile=relpath, tofile=relpath))
+        return "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile="/dev/null" if not original and not os.path.exists(path) else relpath, tofile=relpath))
 
-    def parse(self) -> tuple[str, list[Edit]]:
-        if len(self.args) != 2:
+    def parse(self) -> tuple[str, list[Edit], bool]:
+        if len(self.args) not in {2, 3}:
             raise ToolError("Edit requires path and edits")
         if not isinstance(self.args[0], str):
             raise ToolError("Edit path must be a string")
         path = self.session.resolve_path(str(self.args[0]))
         raw_edits = self.args[1]
+        create_file = bool(self.args[2]) if len(self.args) == 3 else False
         if not isinstance(raw_edits, list) or not raw_edits:
             raise ToolError("Edit edits must be a non-empty array")
         edits = []
@@ -1529,22 +1459,38 @@ class EditTool(Tool):
                     op=op,
                     start=str(item.get("start") or ""),
                     end=str(item.get("end") or ""),
-                    content=self.normalize_text(str(item.get("content") or "")),
+                    content=self.content_text(str(item.get("content") or "")),
                     old=self.normalize_text(str(item.get("old") or "")),
-                    new=self.normalize_text(str(item.get("new") or "")),
+                    new=self.content_text(str(item.get("new") or "")),
                 )
             )
-        return path, edits
+        return path, edits, create_file
 
-    def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
+    def build(self) -> tuple[str, str, bool, str, list[tuple[int, int, int, int]]]:
+        path, edits, create_file = self.parse()
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as file:
+                original = file.read()
+            created = False
+        elif create_file:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            original, created = "", True
+        else:
+            raise ToolError("file does not exist; set create_file=true to create it")
+        new_content, changes = self.apply(original, edits, allow_empty_replace_all=created)
+        return path, original, created, new_content, changes
+
+    def apply(self, original: str, edits: list[Edit], *, allow_empty_replace_all: bool = False) -> tuple[str, list[tuple[int, int, int, int]]]:
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
             content = original
             for edit in edits:
-                if not edit.old:
+                if not edit.old and (not allow_empty_replace_all or content):
                     raise ToolError("replace_all requires old")
-                if edit.old not in content:
+                if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
             return content, [(0, 0, 0, len(content.splitlines(True)))]
@@ -1604,6 +1550,11 @@ class EditTool(Tool):
 
     @staticmethod
     def normalize_text(value: str) -> str: return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    @classmethod
+    def content_text(cls, value: str) -> str:
+        value = cls.normalize_text(value)
+        return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
         match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
@@ -1960,7 +1911,6 @@ TOOLS: tuple[type[Tool], ...] = (
     FindTool,
     InspectCodeTool,
     SearchTool,
-    CreateFileTool,
     EditTool,
     BashTool,
     GitTool,
@@ -2115,9 +2065,9 @@ class ContextManager:
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
         for order, record in enumerate(self.session.tool_records, start=1):
-            if record.name not in {"Read", "Edit", "CreateFile"}:
+            if record.name not in {"Read", "Edit"}:
                 continue
-            for block in re.finditer(r"(?s)<(Read|Edit|CreateFile)\s+path=(\".*?\").*?>(.*?)</\1>", record.output):
+            for block in re.finditer(r"(?s)<(Read|Edit)\s+path=(\".*?\").*?>(.*?)</\1>", record.output):
                 try:
                     path = str(json.loads(block.group(2)))
                 except json.JSONDecodeError:
@@ -2189,7 +2139,7 @@ class ContextManager:
         actions = [
             f"- {record.key} {record.name} {record.note or ' '.join(Tool.compact(arg, 80) for arg in record.args)}".strip()
             for record in self.session.tool_records[-20:]
-            if record.name in {"Read", "Edit", "CreateFile"}
+            if record.name in {"Read", "Edit"}
         ]
         return actions[-10:]
 
@@ -2380,7 +2330,7 @@ class ToolRunner:
         return "\n".join(rows).strip()
 
     def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
-        if not failed and key and call.name in {"Read", "Edit", "CreateFile"}:
+        if not failed and key and call.name in {"Read", "Edit"}:
             return "\n".join(["FILE VIEW UPDATED:", *self.file_view_rows(key, output), "Use ACTIVE FILE VIEW before calling Read again."]).strip()
         return self.context.bound_output(output, key).rstrip()
 
@@ -2390,7 +2340,7 @@ class ToolRunner:
 
     def file_view_rows(self, key: str, output: str) -> list[str]:
         rows = []
-        for block in re.finditer(r"(?s)<(Read|Edit|CreateFile)\s+path=(\".*?\").*?>(.*?)</\1>", output):
+        for block in re.finditer(r"(?s)<(Read|Edit)\s+path=(\".*?\").*?>(.*?)</\1>", output):
             try:
                 path = str(json.loads(block.group(2)))
             except json.JSONDecodeError:
@@ -2423,8 +2373,6 @@ class ToolRunner:
         return ranges
 
     def tool_note(self, call: ToolCall, output: str) -> str:
-        if call.name == "CreateFile" and call.args and isinstance(call.args[0], str):
-            return self.session.relpath(self.session.resolve_path(call.args[0]))
         if call.name != "Read":
             return ""
         notes = []
@@ -2441,10 +2389,10 @@ class ToolRunner:
         return "; ".join(notes)
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
-        if call.name not in {"CreateFile", "Edit"}:
+        if call.name != "Edit":
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<(?:CreateFile|CreateFileToolResult|Edit)\s+path=(".*?")', output):
+        for match in re.finditer(r'<Edit\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
@@ -2461,7 +2409,7 @@ class ToolRunner:
 
     def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
         header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
-        if tool.NAME not in {"Edit", "CreateFile"}:
+        if tool.NAME != "Edit":
             return header
         return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
 
@@ -2824,7 +2772,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 class Agent:
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Note.
+Tools: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
 Use EXACT named parameters.
 
 RULES:
@@ -3390,7 +3338,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Note.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
