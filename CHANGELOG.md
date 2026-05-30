@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.7 - 2026-05-30
+
+### Changed
+- Encouraged early `Note` usage for multi-step work with goal and plan updates.
+- Added lightweight empty-memory guidance when goal or plan has not been set.
+- Ordered `FILE STATE` files by most recent visible Read/Edit source before stable path fallback.
+
 ## 0.5.6 - 2026-05-30
 
 ### Added

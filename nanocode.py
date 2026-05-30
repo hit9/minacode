@@ -52,7 +52,7 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -2142,8 +2142,8 @@ class ContextManager:
 
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = [
-            "Goal: " + (self.session.state.goal or "(empty)"),
-            "Plan:\n" + "\n".join(self.session.state.plan_rows()),
+            "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
+            "Plan:\n" + "\n".join(self.session.state.plan_rows() or ["- (empty; use Note for a short plan)"]),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
         ]
         if with_date:
@@ -2235,7 +2235,13 @@ class ContextManager:
         return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
 
     def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
-        paths = [path for path in sorted(lines_by_path) if lines_by_path[path]]
+        def recent(path: str) -> int:
+            return max(
+                (int(source[3:]) for source, _tool, _line in lines_by_path[path].values() if source.startswith("tr.") and source[3:].isdigit()),
+                default=-1,
+            )
+
+        paths = sorted((path for path in lines_by_path if lines_by_path[path]), key=lambda path: (-recent(path), path))
         focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not errors:
             return ""
@@ -3238,7 +3244,7 @@ FLOW:
 CONTEXT:
 - Trust LATEST FILE STATE from Read/Edit for listed ranges.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, Note goal/plan/known facts only.
+- For multi-step work, call Note early with goal and a short plan; update plan/known when they change.
 
 EDITS:
 - Inspect/read before edits.
