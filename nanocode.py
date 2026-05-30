@@ -1377,11 +1377,11 @@ class InspectCodeTool(Tool):
 
 class CreateFileTool(Tool):
     NAME = "CreateFile"
-    DESCRIPTION = "Create exactly one new UTF-8 file; creates parent dirs inside workspace, returns path/chars, fails if file exists."
+    DESCRIPTION = "Create one new UTF-8 file; prefer a small skeleton first, then expand with Edit; creates parent dirs inside workspace; fails if file exists."
     SIGNATURE = "CreateFile(path, content); one file per call"
     EXAMPLE = (
         'Create text. Example: {"path":"notes.txt","content":"hello\\n"}',
-        'Create code; content may contain real newlines or escaped \\n. Example: {"path":"src/main.cpp","content":"#include <iostream>\\nint main() { return 0; }\\n"}',
+        'Create code skeleton, then use Edit for larger bodies. Example: {"path":"src/main.cpp","content":"#include <iostream>\\nint main() { return 0; }\\n"}',
     )
     MUTATES = True
 
@@ -1401,14 +1401,25 @@ class CreateFileTool(Tool):
         path, content = self.payload()
         parent = os.path.dirname(path) or "."
         if os.path.exists(path):
-            raise ToolError("file already exists")
+            raise ToolError("file already exists: " + self.session.relpath(path))
         if not os.path.isdir(parent):
             if not self.session.in_cwd(parent):
                 raise ToolError("refusing to create parent directories outside workspace")
             os.makedirs(parent, exist_ok=True)
         with open(path, "x", encoding="utf-8") as file:
             file.write(content)
-        return f"<CreateFileToolResult path={json.dumps(self.session.relpath(path))} created=true chars={len(content)} />"
+        lines = content.splitlines(True)
+        return "\n".join(
+            [
+                f"<CreateFile path={json.dumps(self.session.relpath(path))} created=true chars={len(content)}>",
+                self.file_stat(path),
+                f"<total_lines>{len(lines)}</total_lines>",
+                "<content hashline-numbered>",
+                "".join(f"{i}:{ReadTool.line_hash(line)}|{line}" for i, line in enumerate(lines)).rstrip("\n"),
+                "</content>",
+                "</CreateFile>",
+            ]
+        )
 
     def short_args(self) -> list[str]:
         path, _content = self.payload()
@@ -2085,9 +2096,9 @@ class ContextManager:
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
         for order, record in enumerate(self.session.tool_records, start=1):
-            if record.name not in {"Read", "Edit"}:
+            if record.name not in {"Read", "Edit", "CreateFile"}:
                 continue
-            for block in re.finditer(r"(?s)<(Read|Edit)\s+path=(\".*?\").*?>(.*?)</\1>", record.output):
+            for block in re.finditer(r"(?s)<(Read|Edit|CreateFile)\s+path=(\".*?\").*?>(.*?)</\1>", record.output):
                 try:
                     path = str(json.loads(block.group(2)))
                 except json.JSONDecodeError:
@@ -2349,6 +2360,8 @@ class ToolRunner:
         return self.context.bound_output(output, key).rstrip()
 
     def tool_note(self, call: ToolCall, output: str) -> str:
+        if call.name == "CreateFile" and call.args and isinstance(call.args[0], str):
+            return self.session.relpath(self.session.resolve_path(call.args[0]))
         if call.name != "Read":
             return ""
         notes = []
@@ -2368,7 +2381,7 @@ class ToolRunner:
         if call.name not in {"CreateFile", "Edit"}:
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<(?:CreateFileToolResult|Edit)\s+path=(".*?")', output):
+        for match in re.finditer(r'<(?:CreateFile|CreateFileToolResult|Edit)\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
