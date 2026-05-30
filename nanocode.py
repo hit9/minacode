@@ -52,12 +52,13 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.4"
+__version__ = "0.5.5"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
+MODEL_REQUEST_RETRIES = 2
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
@@ -1797,12 +1798,7 @@ class BashTool(Tool):
         proc = None
         try:
             proc = subprocess.Popen(
-                [bash, "-lc", command],
-                cwd=self.session.cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
+                [bash, "-lc", command], cwd=self.session.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
             assert proc.stdout is not None and proc.stderr is not None
             return self.stream_process(proc)
@@ -2684,16 +2680,36 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
-        self.session.state.current_model_call_started_at = time.monotonic()
+        for attempt in range(MODEL_REQUEST_RETRIES + 1):
+            self.session.state.current_model_call_started_at = time.monotonic()
+            try:
+                return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
+            except KeyboardInterrupt:
+                if self.session.state.manual_model_retry_requested:
+                    self.session.state.manual_model_retry_requested = False
+                    raise ModelRequestRetry() from None
+                raise
+            except ModelError as error:
+                if attempt >= MODEL_REQUEST_RETRIES or not self.retryable_error(error):
+                    raise
+                self.session.state.model_retry_count += 1
+                time.sleep(0.5 * (attempt + 1))
+            finally:
+                self.session.state.current_model_call_started_at = 0.0
+        raise ModelError("model request retry exhausted")
+
+    @staticmethod
+    def retryable_error(error: Exception) -> bool:
+        status = getattr(error.__cause__, "status_code", None) or getattr(error.__cause__, "code", None)
         try:
-            return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
-        except KeyboardInterrupt:
-            if self.session.state.manual_model_retry_requested:
-                self.session.state.manual_model_retry_requested = False
-                raise ModelRequestRetry() from None
-            raise
-        finally:
-            self.session.state.current_model_call_started_at = 0.0
+            if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+        except Exception:
+            pass
+        text = str(error).lower()
+        return any(
+            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
+        )
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
@@ -2993,31 +3009,27 @@ You are nanocode, a concise terminal coding agent.
 TOOLS: Read LineCount List Find InspectCode Search Touch Edit Bash Git Recall Note.
 Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 
-LOOP:
-- ACT when clear; continue with tool calls until done.
-- Each turn either calls tools or returns final. Never emit empty content.
+FLOW:
+- ACT when clear; keep using tools until done.
+- Every turn must call tools or return final; never emit empty content.
+- Prefer built-ins over Bash. Batch independent read-only calls.
 
-DISCOVERY:
-- Prefer built-ins over Bash; use Bash only when no safer tool fits.
-- Batch independent read-only calls: Read, LineCount, Find, Search, Recall.
-- Trust LATEST FILE STATE from Read for listed ranges.
+CONTEXT:
+- Trust LATEST FILE STATE from Read/Edit for listed ranges.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
+- For multi-step work, Note goal/plan/known facts only.
 
-CHANGE:
+EDITS:
 - Inspect/read before edits.
-- Use Edit with line:hash anchors for existing text.
-- Keep edits small, local, and reversible.
-- Never overwrite unrelated user work.
-- Touch creates empty files; Edit(create_file=true) creates content.
-- Use Git for repo inspection; mutating git commands may require approval.
-
-STATE:
-- For multi-step work, Note goal, plan, and durable known facts.
-- Do not Note routine observations.
+- Patch with Edit line:hash anchors from the newest FILE STATE.
+- After stale-anchor errors or successful edits, discard old anchors for that file/range.
+- Do not batch multiple Edit calls for the same file; sequence them.
+- Keep edits small/local/reversible; never overwrite unrelated user work.
+- Touch only creates empty files; Edit(create_file=true) creates content.
 
 FINAL:
 - Concise markdown in the user's language.
-- Mention changed files and verification result when relevant.\
+- Include changed files and checks when relevant.\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -3484,12 +3496,10 @@ class StatusBar:
         if count == self.seen_retry_count:
             return
         self.seen_retry_count = count
-        now = time.monotonic()
-        self.retry_notice_until = now + 2.0
+        self.retry_notice_until = time.monotonic() + 2.0
 
     def model_elapsed(self) -> float:
-        started = self.session.state.current_model_call_started_at
-        return max(0.0, time.monotonic() - started) if started > 0 else 0.0
+        return max(0.0, time.monotonic() - started) if (started := self.session.state.current_model_call_started_at) > 0 else 0.0
 
     def clear(self) -> None:
         if self.rendered:

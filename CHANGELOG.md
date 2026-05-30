@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 - 2026-05-30
+
+### Changed
+- Tightened the system prompt around FILE STATE, anchored edits, and final-answer flow.
+
+### Fixed
+- Added limited automatic retries for transient model request failures such as 5xx, rate limits, and timeouts.
+
 ## 0.5.4 - 2026-05-29
 
 ### Changed
