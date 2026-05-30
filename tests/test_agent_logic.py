@@ -575,6 +575,16 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
 
 
+def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    monkeypatch.setattr(n.time, "monotonic", lambda: 0.2)
+
+    fragments = loop.input_prompt_fragments("[Y/n] ", "class:approval")
+
+    assert fragments == [("class:approval", "[Y/n] "), ("class:approval.wait", "/ ")]
+    assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
+
+
 def test_tool_preview_handles_only_interactive_edit_approval(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)

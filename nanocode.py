@@ -4062,6 +4062,7 @@ Tools:
             {
                 "prompt": "ansicyan bold",
                 "approval": "ansiyellow",
+                "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
@@ -4102,10 +4103,15 @@ Tools:
         finally:
             self.queue_input_paused.clear()
 
+    def input_prompt_fragments(self, prompt_text: str, prompt_style: str) -> list[tuple[str, str]]:
+        if prompt_style != "class:approval" or not prompt_text:
+            return [(prompt_style, prompt_text)]
+        frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
+        return [("class:approval", prompt_text), ("class:approval.wait", frame + " ")]
+
     def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False, submit_on_enter: bool = False, prompt_style: str = "class:prompt") -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
-        prompt = FormattedText([(prompt_style, prompt_text)])
 
         def accept(buffer: Buffer) -> bool:
             app.exit(result=buffer.text)
@@ -4122,7 +4128,7 @@ Tools:
         search_toolbar = SearchToolbar()
         control = BufferControl(
             buffer=buffer,
-            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(prompt)],
+            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(lambda: self.input_prompt_fragments(prompt_text, prompt_style))],
             search_buffer_control=search_toolbar.control,
             preview_search=True,
         )
