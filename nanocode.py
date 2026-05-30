@@ -709,10 +709,10 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read exact UTF-8 line ranges; returns file stat, total lines, and line:hash text."
-    SIGNATURE = "Read(path,ranges?) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive, end=0 reads to EOF"
+    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, line:hash text, and updates FILE STATE."
+    SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
     EXAMPLE = (
-        'Read one file. Example: {"path":"src/app.py","ranges":[[0,80],[120,0]]}',
+        'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
         'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
     )
 
@@ -815,9 +815,9 @@ class LineCountTool(Tool):
 
 class ListTool(Tool):
     NAME = "List"
-    DESCRIPTION = "List one directory, not recursive; returns dirs/files/symlinks and text/binary labels."
-    SIGNATURE = "List(path, glob?)"
-    EXAMPLE = ('List a directory. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
+    DESCRIPTION = "List one directory, including hidden entries; returns child dirs/files/symlinks with file text/binary labels."
+    SIGNATURE = "List(path, glob?); glob filters child names, not recursively"
+    EXAMPLE = ('List child entries. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -871,12 +871,12 @@ class ListTool(Tool):
 
 class FindTool(Tool):
     NAME = "Find"
-    DESCRIPTION = "Find paths by name or relative-path glob; skips hidden/gitignored entries and returns file/dir paths."
-    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any, default type=file, default limit=100"
+    DESCRIPTION = "Find file/dir paths by name or relative glob; skips hidden/gitignored entries."
+    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any"
     EXAMPLE = (
-        'Find files. Example: {"name":"*.py","type":"file","limit":100}',
-        'Find directories. Example: {"queries":[{"name":"migrations","type":"dir","limit":20}]}',
-        'Find dirs or files below a path. Example: {"queries":[{"name":"test_*","path":"tests","type":"any","limit":50}]}',
+        'Find files. Example: {"name":"*.py"}',
+        'Find dirs. Example: {"name":"migrations","type":"dir"}',
+        'Batch. Example: {"queries":[{"name":"*.py","path":"src"},{"name":"test_*","path":"tests"}]}',
     )
     MAX_LIMIT = 500
 
@@ -1816,49 +1816,30 @@ class RecallTool(Tool):
         return ["; ".join(rows)]
 
     def requests(self) -> list[tuple[str, tuple[tuple[int, int], ...]]]:
-        requests: list[tuple[str, tuple[tuple[int, int], ...]]] = []
-        common_ranges: list[tuple[int, int]] = []
-        for arg in self.args:
-            if isinstance(arg, dict):
-                if unexpected := sorted(set(arg) - {"key", "result_key", "keys", "range", "ranges"}):
-                    raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
-                keys = [str(arg.get(name) or "").strip() for name in ("key", "result_key")]
-                keys.extend(str(item).strip() for item in arg.get("keys", []) if str(item).strip())
-                keys = [key for key in keys if key]
-                if not keys:
-                    raise ToolError("Recall object requires key, result_key, or keys")
-                ranges = self.parse_ranges(arg)
-                requests.extend((key, ranges) for key in keys)
-            elif isinstance(arg, str) and re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg):
-                common_ranges.append(self.range_token(arg))
-            else:
-                key = str(arg).strip()
-                if key:
-                    requests.append((key, ()))
-        if common_ranges:
-            common = tuple(common_ranges)
-            requests = [(key, ranges or common) for key, ranges in requests]
-        return list(dict.fromkeys(requests))
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Recall requires keys")
+        payload = self.args[0]
+        if unexpected := sorted(set(payload) - {"keys", "ranges"}):
+            raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
+        raw_keys = payload.get("keys")
+        if not isinstance(raw_keys, list) or not raw_keys:
+            raise ToolError("Recall requires keys")
+        ranges = self.parse_ranges(payload)
+        keys = []
+        for item in raw_keys:
+            key = str(item).strip()
+            if not re.fullmatch(r"tr\.\d+", key):
+                raise ToolError("Recall key must look like tr.N")
+            keys.append(key)
+        return list(dict.fromkeys((key, ranges) for key in keys))
 
     def parse_ranges(self, payload: Json) -> tuple[tuple[int, int], ...]:
-        ranges = []
-        if "range" in payload:
-            ranges.append(self.parse_range(payload["range"]))
-        if "ranges" in payload:
-            raw = payload["ranges"]
-            if not isinstance(raw, list) or not raw:
-                raise ToolError("Recall ranges must be a non-empty array")
-            ranges.extend(self.parse_range(item) for item in raw)
-        return tuple(ranges)
-
-    def parse_range(self, value: Any) -> tuple[int, int]: return self.range_token(value) if isinstance(value, str) else self.line_range(value, "Recall range")
-
-    @staticmethod
-    def range_token(value: str) -> tuple[int, int]:
-        match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
-        if not match:
-            raise ToolError("range token must look like 0,120")
-        return int(match.group(1)), int(match.group(2))
+        raw = payload.get("ranges")
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or not raw:
+            raise ToolError("Recall ranges must be a non-empty array")
+        return tuple(self.line_range(item, "Recall range") for item in raw)
 
     @staticmethod
     def slice(value: str, ranges: tuple[tuple[int, int], ...]) -> str:
@@ -2094,7 +2075,7 @@ class ContextManager:
         if paths:
             chunks.extend(["", "Files:"])
             for path in paths:
-                chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)} current" for start, end in self.coverage(lines_by_path[path]))
+                chunks.extend(f"- {path} {start}:{end} current" for start, end in self.coverage(lines_by_path[path]))
         if actions:
             chunks.extend(["", "Recent file events:", *actions])
         if errors:
@@ -2126,10 +2107,6 @@ class ContextManager:
             f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
             for record in self.session.tool_errors[-5:]
         ]
-
-    def coverage_note(self, path: str, start: int, end: int) -> str:
-        notes = [record.note for record in self.session.tool_records if record.name == "Read" and record.note and f"{path} {start}:{end}" in record.note]
-        return " (FULL FILE, from Read 0:0)" if any("FULL FILE" in note for note in notes) else ""
 
     def coverage(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int]]:
         numbers = sorted(numbered)
@@ -2319,7 +2296,7 @@ class ToolRunner:
 
     def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False, display: str | None = None, store: bool = True) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        key = self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output)) if store and (tool_class is None or tool_class.STORES_RESULT) else ""
+        key = self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output)) if not failed and store and (tool_class is None or tool_class.STORES_RESULT) else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
@@ -2767,7 +2744,9 @@ RULES:
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
+                    messages, pending = self.messages(turn_messages)
+                    assistant, tool_calls, content = self.model.request(messages)
+                    self.accept_pending_inputs(turn_messages, pending)
                     break
                 except ModelRequestRetry:
                     continue
@@ -2788,14 +2767,26 @@ RULES:
         self.session.state.turn_messages = 0
         return stopped
 
-    def messages(self, turn_messages: list[Json]) -> list[Json]:
-        turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
-        self.session.pending_user_inputs.clear()
-        self.session.state.turn_messages = len(turn_messages)
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
+    def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[str]]:
+        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        request_turn = [*turn_messages, *({"role": "user", "content": text} for text in pending)]
+        self.session.state.turn_messages = len(request_turn)
+        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, request_turn)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, request_turn)
         self.context.update_percent(messages)
-        return messages
+        return messages, pending
+
+    def accept_pending_inputs(self, turn_messages: list[Json], pending: list[str]) -> None:
+        if not pending:
+            return
+        turn_messages.extend({"role": "user", "content": text} for text in pending)
+        remaining = list(self.session.pending_user_inputs)
+        for text in pending:
+            for index, value in enumerate(remaining):
+                if value.strip() == text:
+                    del remaining[index]
+                    break
+        self.session.pending_user_inputs = remaining
 
     @staticmethod
     def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
