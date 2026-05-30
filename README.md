@@ -111,16 +111,16 @@ model request
 |   Memory: goal, summary, plan, known, date       |
 +--------------------------------------------------+
 | user                                             |
-|   ACTIVE FILE VIEW                              |
+|   FILE STATE                                    |
 +--------------------------------------------------+
 ```
 
 Core rules:
 
-- ACTIVE FILE VIEW includes the latest active `Read` and `Edit` file ranges.
+- FILE STATE is updated by successful `Read` and `Edit` tools and shows current listed file ranges.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
-- Successful `Read` and `Edit` tool messages point to ACTIVE FILE VIEW instead of repeating file bodies.
+- Successful `Read` and `Edit` tool messages point to FILE STATE instead of repeating file bodies.
 - Other tool outputs are bounded in conversation messages.
 
 ## Safety

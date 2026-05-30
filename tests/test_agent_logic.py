@@ -34,7 +34,7 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
     assert messages[-2]["content"].startswith("--- Memory ---")
     assert "Date:" in messages[-2]["content"]
-    assert messages[-1]["content"].startswith("--- ACTIVE FILE VIEW ---")
+    assert messages[-1]["content"].startswith("--- FILE STATE ---")
 
 
 def test_empty_file_context_is_empty(tmp_path):
@@ -118,10 +118,10 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert "Current focus: inspect" in rendered
     assert f"source={edit_key} tool=Edit" in rendered
     assert "Files:\n- a.txt 0:2" in rendered
-    assert "Current file ranges available in ACTIVE FILE VIEW." in rendered
+    assert "Read/Edit outputs update this section." in rendered
     assert f"Recent file events:\n- {read_key} Read" in rendered
     assert "Format: line:hash|text. Use line:hash as edit anchors." in rendered
-    assert f"@@ a.txt 0:1 source={edit_key} tool=Edit" in rendered
+    assert f"@@ a.txt 0:1 current source={edit_key} tool=Edit" in rendered
     assert rendered.endswith("OUTPUT IN USER LANGUAGE")
     assert "|new" in rendered
     assert "|old" not in rendered
@@ -265,7 +265,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert agent.model.messages[1][4]["role"] == "tool"
     assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
     assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
-    assert any(message["role"] == "tool" and "-> synced to ACTIVE FILE VIEW" in message["content"] for message in agent.model.messages[1])
+    assert any(message["role"] == "tool" and "-> FILE STATE" in message["content"] for message in agent.model.messages[1])
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -445,7 +445,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
     assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
-    assert "-> synced to ACTIVE FILE VIEW" in s.messages[2]["content"]
+    assert "-> FILE STATE" in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 

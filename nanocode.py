@@ -1975,7 +1975,7 @@ class ContextManager:
         ]
         messages.extend([
             {"role": "user", "content": self.render_section("Memory", self.memory_context(with_date=True))},
-            {"role": "user", "content": self.render_section("ACTIVE FILE VIEW", self.file_context() or "(empty)")},
+            {"role": "user", "content": self.render_section("FILE STATE", self.file_context() or "(empty)")},
         ])
         return Text.value(messages)
 
@@ -2088,13 +2088,13 @@ class ContextManager:
         focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not errors:
             return ""
-        chunks = ["Current file ranges available in ACTIVE FILE VIEW."] if paths else []
+        chunks = ["Read/Edit outputs update this section. Treat listed ranges as current file state."] if paths else []
         if focus:
             chunks.extend(["", "Current focus: " + focus])
         if paths:
             chunks.extend(["", "Files:"])
             for path in paths:
-                chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
+                chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)} current" for start, end in self.coverage(lines_by_path[path]))
         if actions:
             chunks.extend(["", "Recent file events:", *actions])
         if errors:
@@ -2103,7 +2103,7 @@ class ContextManager:
             chunks.extend(["", "Content:", "Format: line:hash|text. Use line:hash as edit anchors."])
             for path in paths:
                 for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
-                    chunks.append(f"@@ {path} {start}:{end} source={source} tool={tool}")
+                    chunks.append(f"@@ {path} {start}:{end} current source={source} tool={tool}")
                     chunks.extend(segment_lines)
                 chunks.append("")
         if omitted:
@@ -2330,7 +2330,7 @@ class ToolRunner:
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
         if not failed and call.name in {"Read", "Edit"}:
-            return head + " -> synced to ACTIVE FILE VIEW"
+            return head + " -> FILE STATE"
         rows = [head]
         if failed:
             rows.append("status: failed")
@@ -2744,7 +2744,7 @@ Use EXACT named parameters.
 RULES:
 * Act when the next step is clear; continue with tool calls until done.
 * Prefer built-in tools over Bash; batch independent read-only calls.
-* Use ACTIVE FILE VIEW when it already covers needed lines.
+* Use FILE STATE as current source for listed file ranges.
 * Inspect/read before edits; keep changes small; never overwrite user work.
 * For multi-step work, Note goal/plan/known. Recall bounded tr.N only when needed.
 * Each response either calls tools to continue the loop or returns the final answer to end it.
