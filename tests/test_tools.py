@@ -123,6 +123,8 @@ def test_edit_creates_and_patches_file(tmp_path):
     n.TouchTool(s, ["empty/keep.txt"]).call()
     assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == ""
     n.TouchTool(s, ["empty/keep.txt"]).call()
+    n.EditTool(s, ["empty/keep.txt", [{"op": "replace_all", "old": "", "new": "kept\n"}]]).call()
+    assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == "kept\n"
 
     n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "", "new": "one\ntwo\nthree\n"}], True]).call()
     path = tmp_path / "nested" / "note.txt"
@@ -147,6 +149,8 @@ def test_edit_creates_and_patches_file(tmp_path):
     n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "TWO", "new": "two"}]]).call()
     assert path.read_text(encoding="utf-8") == "ONE\ntwo\ntwo-AND-HALF\n"
 
+    with pytest.raises(n.ToolError):
+        n.EditTool(s, ["nested/note.txt", [{"op": "replace_all", "old": "", "new": "bad\n"}]]).call()
     with pytest.raises(n.ToolError):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 

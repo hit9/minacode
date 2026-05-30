@@ -711,7 +711,7 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read exact UTF-8 line ranges; returns file stat, total lines, and line:hash anchors for Edit."
+    DESCRIPTION = "Read exact UTF-8 line ranges; returns file stat, total lines, and line:hash text."
     SIGNATURE = "Read(path,ranges?) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive, end=0 reads to EOF"
     EXAMPLE = (
         'Read one file. Example: {"path":"src/app.py","ranges":[[0,80],[120,0]]}',
@@ -821,7 +821,7 @@ class LineCountTool(Tool):
 
 class ListTool(Tool):
     NAME = "List"
-    DESCRIPTION = "List one directory, not recursive; returns dirs/files/symlinks and text/binary labels; use Read for content."
+    DESCRIPTION = "List one directory, not recursive; returns dirs/files/symlinks and text/binary labels."
     SIGNATURE = "List(path, glob?)"
     EXAMPLE = ('List a directory. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
 
@@ -1379,7 +1379,7 @@ class Edit:
 
 class TouchTool(Tool):
     NAME = "Touch"
-    DESCRIPTION = "Create one empty file and parent directories; existing file is ok; use Edit for content."
+    DESCRIPTION = "Create one empty file and parent directories; existing file is ok."
     SIGNATURE = "Touch(path)"
     EXAMPLE = ('Create empty file. Example: {"path":"src/app.py"}',)
     MUTATES = True
@@ -1412,7 +1412,7 @@ class TouchTool(Tool):
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; anchored ops verify hashes, replace_all is exact text."
+    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; anchored ops verify hashes."
     SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}], create_file?); ops=replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","create_file":true,"edits":[{"op":"replace_all","old":"","new":"print(1)\\n"}]}',
@@ -1521,7 +1521,7 @@ class EditTool(Tool):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
             content = original
             for edit in edits:
-                if not edit.old and (not allow_empty_replace_all or content):
+                if not edit.old and content:
                     raise ToolError("replace_all requires old")
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
@@ -2156,7 +2156,7 @@ class ContextManager:
         if errors:
             chunks.extend(["", "Recent tool errors:", *errors])
         if paths:
-            chunks.extend(["", "Content:"])
+            chunks.extend(["", "Content:", "Format: line:hash|text. Use line:hash as edit anchors."])
             for path in paths:
                 for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
                     chunks.append(f"@@ {path} {start}:{end} source={source} tool={tool}")
@@ -2357,20 +2357,29 @@ class ToolRunner:
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
-        rows = ["tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))]
+        head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
+        if not failed and call.name in {"Read", "Edit"}:
+            return head + " -> " + self.file_view_summary(key, output)
+        rows = [head]
         if failed:
             rows.append("status: failed")
         rows.extend(["output:", self.project_output(call, key, output, failed)])
         return "\n".join(rows).strip()
 
+    def file_view_summary(self, key: str, output: str) -> str:
+        rows = [line for line in output.splitlines()[1:] if line.startswith("- ")] if output.startswith("FILE VIEW:") else self.file_view_rows(key, output)
+        return "FILE VIEW " + "; ".join(row.removeprefix("- ") for row in rows[:4]) + ("; ..." if len(rows) > 4 else "")
+
     def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
-        if not failed and key and call.name in {"Read", "Edit"}:
-            return "\n".join(["FILE VIEW UPDATED:", *self.file_view_rows(key, output), "Current lines are available in ACTIVE FILE VIEW."]).strip()
+        if not failed and output.startswith("FILE VIEW:"):
+            return output.rstrip()
+        if not failed and call.name in {"Read", "Edit"}:
+            return "\n".join(["FILE VIEW:", *self.file_view_rows(key, output), "Current lines are available in ACTIVE FILE VIEW."]).strip()
         return self.context.bound_output(output, key).rstrip()
 
     def read_cache_hit(self, tool: ReadTool) -> str:
         rows = self.context.read_cache_rows(tool.targets())
-        return "\n".join(["READ CACHE HIT:", *rows, "Already valid in ACTIVE FILE VIEW."]) if rows else ""
+        return "\n".join(["FILE VIEW:", *rows, "Current lines are available in ACTIVE FILE VIEW."]) if rows else ""
 
     def file_view_rows(self, key: str, output: str) -> list[str]:
         rows = []
@@ -2815,7 +2824,8 @@ RULES:
 * Use ACTIVE FILE VIEW when it already covers needed lines.
 * Inspect/read before edits; keep changes small; never overwrite user work.
 * For multi-step work, Note goal/plan/known. Recall bounded tr.N only when needed.
-* No tool call means final answer; never send an empty final answer.
+* Each response either calls tools to continue the loop or returns the final answer to end it.
+* Never send empty content without tool calls.
 * Output concise markdown in the user's language.\
 """
 
