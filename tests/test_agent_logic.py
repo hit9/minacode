@@ -241,37 +241,6 @@ def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     assert [record.key for record in s.tool_records] == [key]
 
 
-def test_read_cache_hit_avoids_duplicate_result_keys(tmp_path):
-    (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
-    s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-
-    messages = runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}]), call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
-
-    assert len(s.tool_records) == 1
-    assert messages[0]["content"].startswith("tool tr.1 Read a.txt 0:0")
-    assert messages[0]["content"].endswith("-> synced to ACTIVE FILE VIEW")
-    assert "\n" not in messages[0]["content"]
-    assert messages[1]["content"].startswith("tool Read a.txt 0:0")
-    assert "\n" not in messages[1]["content"]
-    assert "a.txt 0:2 FULL source=tr.1" not in messages[1]["content"]
-    assert "|alpha" not in messages[0]["content"] + messages[1]["content"]
-
-
-def test_read_cache_hit_misses_when_full_file_changed(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("alpha\n", encoding="utf-8")
-    s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-
-    runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
-    path.write_text("alpha\nchanged\n", encoding="utf-8")
-    messages = runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
-
-    assert len(s.tool_records) == 2
-    assert "-> synced to ACTIVE FILE VIEW" in messages[0]["content"]
-
-
 def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)

@@ -83,7 +83,7 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     message = SimpleNamespace(
         tool_calls=[
             SimpleNamespace(id="ok", function=SimpleNamespace(name="Bash", arguments=json.dumps({"command": "pwd"}))),
-            SimpleNamespace(id="legacy", function=SimpleNamespace(name="Bash", arguments=json.dumps({"args": ["whoami"]}))),
+            SimpleNamespace(id="second", function=SimpleNamespace(name="Bash", arguments=json.dumps({"command": "whoami"}))),
             SimpleNamespace(id="bad-json", function=SimpleNamespace(name="Read", arguments="{")),
             SimpleNamespace(id="list-payload", function=SimpleNamespace(name="Recall", arguments=json.dumps(["tr.1"]))),
         ]
@@ -92,7 +92,7 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     calls = client.tool_calls(message)
 
     assert calls[0] == n.ToolCall(id="ok", name="Bash", args=["pwd"])
-    assert calls[1] == n.ToolCall(id="legacy", name="Bash", args=["whoami"])
+    assert calls[1] == n.ToolCall(id="second", name="Bash", args=["whoami"])
     assert calls[2].id == "bad-json"
     assert calls[2].name == "Read"
     assert calls[2].args == []

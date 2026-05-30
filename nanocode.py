@@ -626,9 +626,7 @@ class Tool:
     def params_schema(cls) -> Json: return {"type": "object", "properties": {}, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        args = payload.get("args")
-        return args if isinstance(args, list) else [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return [payload]
 
     def needs_confirmation(self) -> bool: return self.MUTATES
 
@@ -728,11 +726,7 @@ class ReadTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        if isinstance(payload.get("args"), list):
-            return payload["args"]
-        if isinstance(payload.get("files"), list) or isinstance(payload.get("requests"), list):
-            return payload.get("files") or payload.get("requests")
-        return [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
+        return payload["files"] if isinstance(payload.get("files"), list) else [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
 
     @classmethod
     def ranges_arg(cls, value: Any) -> Any: return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
@@ -791,7 +785,7 @@ class LineCountTool(Tool):
         return {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["paths"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("paths") or [])
+    def payload_args(cls, payload: Json) -> list[Any]: return list(payload.get("paths") or [])
 
     def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(path) for path in self.paths())
 
@@ -831,8 +825,6 @@ class ListTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        if isinstance(payload.get("args"), list):
-            return payload["args"]
         return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
 
     def needs_confirmation(self) -> bool: return not self.session.in_cwd(self.path())
@@ -899,7 +891,7 @@ class FindTool(Tool):
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload.get("queries") or [payload]
 
     def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
@@ -1002,7 +994,7 @@ class SearchTool(Tool):
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload.get("queries") or [payload]
 
     def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
@@ -1316,8 +1308,6 @@ class InspectCodeTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        if isinstance(payload.get("args"), list):
-            return payload["args"]
         options = {key: payload[key] for key in ("limit", "kind", "path", "symbol", "exact_only") if key in payload}
         return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
@@ -1389,7 +1379,7 @@ class TouchTool(Tool):
         return {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", "")]
+    def payload_args(cls, payload: Json) -> list[Any]: return [payload.get("path", "")]
 
     def call(self) -> str:
         path = self.path()
@@ -1430,7 +1420,7 @@ class EditTool(Tool):
         return {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}, "create_file": {"type": "boolean"}}, "required": ["path", "edits"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", []), bool(payload.get("create_file"))]
+    def payload_args(cls, payload: Json) -> list[Any]: return [payload.get("path", ""), payload.get("edits", []), bool(payload.get("create_file"))]
 
     def call(self) -> str:
         path, original, created, new_content, changes = self.build()
@@ -1512,10 +1502,10 @@ class EditTool(Tool):
             original, created = "", True
         else:
             raise ToolError("file does not exist; set create_file=true to create it")
-        new_content, changes = self.apply(original, edits, allow_empty_replace_all=created)
+        new_content, changes = self.apply(original, edits)
         return path, original, created, new_content, changes
 
-    def apply(self, original: str, edits: list[Edit], *, allow_empty_replace_all: bool = False) -> tuple[str, list[tuple[int, int, int, int]]]:
+    def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -1619,7 +1609,7 @@ class BashTool(Tool):
         return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}}, "required": ["command"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("command", "")]
+    def payload_args(cls, payload: Json) -> list[Any]: return [payload.get("command", "")]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -1745,8 +1735,6 @@ class GitTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        if isinstance(payload.get("args"), list):
-            return payload["args"]
         argv = list(payload.get("argv") or [])
         return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
@@ -1800,11 +1788,7 @@ class RecallTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        return (
-            payload["args"]
-            if isinstance(payload.get("args"), list)
-            else [{"keys": payload.get("keys", []), **({"ranges": payload["ranges"]} if "ranges" in payload else {})}]
-        )
+        return [{"keys": payload.get("keys", []), **({"ranges": payload["ranges"]} if "ranges" in payload else {})}]
 
     def call(self) -> str:
         requests = self.requests()
@@ -1982,15 +1966,13 @@ class ContextManager:
     def __init__(self, session: Session):
         self.session = session
 
-    def model_messages(self, base_system: str, turn_messages: list[Json] | None = None, error_feedback: str = "") -> list[Json]:
+    def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         messages = [
             {"role": "system", "content": base_system.strip()},
             {"role": "user", "content": self.render_section("Environment", self.environment())},
             *self.session.messages,
             *(turn_messages or []),
         ]
-        if error_feedback.strip():
-            messages.append({"role": "user", "content": self.render_section("Runtime Feedback", error_feedback.strip())})
         messages.extend([
             {"role": "user", "content": self.render_section("Memory", self.memory_context(with_date=True))},
             {"role": "user", "content": self.render_section("ACTIVE FILE VIEW", self.file_context() or "(empty)")},
@@ -2005,7 +1987,7 @@ class ContextManager:
     def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
         if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
-        compacted, keep = self.compaction_parts(turn_messages)
+        compacted, keep = self.compaction_parts()
         if not compacted:
             return
         try:
@@ -2057,50 +2039,6 @@ class ContextManager:
                 omitted.setdefault(item.path, {}).setdefault(item.source, 0)
                 omitted[item.path][item.source] += 1
         return lines_by_path, omitted
-
-    def read_cache_rows(self, targets: list[tuple[str, list[tuple[int, int]]]]) -> list[str]:
-        lines_by_path, _omitted = self.active_file_lines()
-        rows = []
-        for path, ranges in targets:
-            relpath = self.session.relpath(path)
-            lines = lines_by_path.get(relpath) or {}
-            for start, end in ranges:
-                if end == 0:
-                    row = self.full_file_cache_row(relpath)
-                else:
-                    row = self.line_range_cache_row(relpath, start, end, lines)
-                if not row:
-                    return []
-                rows.append(row)
-        return rows
-
-    def full_file_cache_row(self, relpath: str) -> str:
-        current = self.current_stat(relpath)
-        if current is None:
-            return ""
-        for record in reversed(self.session.tool_records):
-            if record.name != "Read":
-                continue
-            for block in re.finditer(r"(?s)<Read\s+path=(\".*?\").*?>(.*?)</Read>", record.output):
-                try:
-                    path = str(json.loads(block.group(1)))
-                except json.JSONDecodeError:
-                    continue
-                body = block.group(2)
-                total_match = re.search(r"<total_lines>(\d+)</total_lines>", body)
-                if path != relpath or not total_match or self.output_stat(body) != current:
-                    continue
-                total = int(total_match.group(1))
-                if any(int(start) == 0 and int(end) == total for start, end in re.findall(r"<range>(\d+):(\d+)</range>", body)):
-                    return f"- {relpath} 0:{total} FULL source={record.key}"
-        return ""
-
-    @staticmethod
-    def line_range_cache_row(relpath: str, start: int, end: int, lines: dict[int, tuple[str, str, str]]) -> str:
-        if end < start or any(index not in lines for index in range(start, end)):
-            return ""
-        sources = ",".join(dict.fromkeys(lines[index][0] for index in range(start, end))) if end > start else "ACTIVE"
-        return f"- {relpath} {start}:{end} source={sources}"
 
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
@@ -2237,7 +2175,7 @@ class ContextManager:
             "Recent Messages (rewrite briefly inside summary):\n" + self.messages_text(recent),
         ])
 
-    def compaction_parts(self, turn_messages: list[Json] | None = None) -> tuple[list[Json], list[Json]]:
+    def compaction_parts(self) -> tuple[list[Json], list[Json]]:
         index = self.latest_user_index(self.session.messages)
         return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
 
@@ -2362,8 +2300,6 @@ class ToolRunner:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
                 approved = True
-            if isinstance(tool, ReadTool) and (cached := self.read_cache_hit(tool)):
-                return "ok", self.finish(call, cached, elapsed=time.monotonic() - started, display=display, store=False)
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
             output = tool.call()
@@ -2398,53 +2334,8 @@ class ToolRunner:
         rows = [head]
         if failed:
             rows.append("status: failed")
-        rows.extend(["output:", self.project_output(call, key, output, failed)])
+        rows.extend(["output:", self.context.bound_output(output, key).rstrip()])
         return "\n".join(rows).strip()
-
-    def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
-        if not failed and output.startswith("FILE VIEW:"):
-            return output.rstrip()
-        if not failed and call.name in {"Read", "Edit"}:
-            return "\n".join(["FILE VIEW:", *self.file_view_rows(key, output), "Current lines are available in ACTIVE FILE VIEW."]).strip()
-        return self.context.bound_output(output, key).rstrip()
-
-    def read_cache_hit(self, tool: ReadTool) -> str:
-        rows = self.context.read_cache_rows(tool.targets())
-        return "\n".join(["FILE VIEW:", *rows, "Current lines are available in ACTIVE FILE VIEW."]) if rows else ""
-
-    def file_view_rows(self, key: str, output: str) -> list[str]:
-        rows = []
-        for block in re.finditer(r"(?s)<(Read|Edit)\s+path=(\".*?\").*?>(.*?)</\1>", output):
-            try:
-                path = str(json.loads(block.group(2)))
-            except json.JSONDecodeError:
-                continue
-            body = block.group(3)
-            total_match = re.search(r"<total_lines>(\d+)</total_lines>", body)
-            total = int(total_match.group(1)) if total_match else None
-            ranges = [(int(start), int(end)) for start, end in re.findall(r"<range>(\d+):(\d+)</range>", body)]
-            if not ranges:
-                numbers = [int(match.group(1)) for match in re.finditer(r"(?m)^(\d+):[0-9a-f]{6}\|", body)]
-                ranges = self.coverage(numbers)
-            for start, end in ranges:
-                full = " FULL" if total is not None and start == 0 and end == total else ""
-                rows.append(f"- {path} {start}:{end}{full} source={key}")
-        return rows or ["- source=" + key]
-
-    @staticmethod
-    def coverage(numbers: list[int]) -> list[tuple[int, int]]:
-        if not numbers:
-            return []
-        numbers = sorted(numbers)
-        ranges, start, previous = [], numbers[0], numbers[0]
-        for number in numbers[1:]:
-            if number == previous + 1:
-                previous = number
-                continue
-            ranges.append((start, previous + 1))
-            start = previous = number
-        ranges.append((start, previous + 1))
-        return ranges
 
     def tool_note(self, call: ToolCall, output: str) -> str:
         if call.name != "Read":
