@@ -419,6 +419,82 @@ def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
     assert s.tool_errors == []
 
 
+def test_tool_runner_batch_edit_maps_original_anchor_after_insert(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("insert", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"}]]),
+            n.ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(2, "c\n"), "end": anchor(2, "c\n"), "content": "C\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_maps_original_anchor_after_delete(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("delete", "Edit", ["code.txt", [{"op": "delete", "start": anchor(1, "b\n"), "end": anchor(1, "b\n")}]]),
+            n.ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(3, "d\n"), "end": anchor(3, "d\n"), "content": "D\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nc\nD\n"
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("create", "Edit", ["new.txt", [{"op": "replace_all", "old": "", "new": "a\nb\n"}], True]),
+            n.ToolCall("patch", "Edit", ["new.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]),
+        ]
+    )
+
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "a\nB\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    (tmp_path / "a.txt").write_text("a\nb\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("x\ny\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("edit-a", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "a\n"), "content": "A\n"}]]),
+            n.ToolCall("edit-b", "Edit", ["b.txt", [{"op": "replace", "start": anchor(1, "y\n"), "end": anchor(1, "y\n"), "content": "Y\n"}]]),
+        ]
+    )
+
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "a\nA\nb\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "x\nY\n"
+    assert s.tool_errors == []
+
+
 def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -460,6 +536,41 @@ def test_tool_runner_batch_edit_rejects_anchor_for_line_changed_in_batch(tmp_pat
     assert path.read_text(encoding="utf-8") == "a\nb\nC\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
     assert s.tool_errors
+
+
+def test_tool_runner_batch_edit_barrier_stops_original_anchor_mapping(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("insert", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"}]]),
+            n.ToolCall("barrier", "Bash", [":"]),
+            n.ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(2, "c\n"), "end": anchor(2, "c\n"), "content": "C\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nx\nb\nc\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
+    assert s.tool_errors
+
+
+def test_planned_edit_refuses_to_overwrite_external_change(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    call = n.ToolCall("edit", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]])
+    plan = n.EditBatchPlan(s).build([call])
+    path.write_text("external\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError, match="planned edit is stale"):
+        plan.planned[call.id].call(n.EditTool(s, call.args))
+
+    assert path.read_text(encoding="utf-8") == "external\n"
 
 
 def test_bash_timeout_and_live_output(tmp_path):
