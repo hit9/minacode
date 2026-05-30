@@ -162,6 +162,18 @@ def test_edit_creates_and_patches_file(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
+def test_edit_stale_anchor_reports_current_line(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError) as error:
+        n.EditTool(s, ["note.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(0, "wrong\n"), "content": "new\n"}]]).call()
+
+    assert "stale anchor" in str(error.value)
+    assert "current is 0:" + n.ReadTool.line_hash("old\n") + "|old" in str(error.value)
+
+
 def test_edit_create_file_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     s = session(tmp_path)
     tool = n.EditTool(s, ["script.py", [{"op": "replace_all", "old": "", "new": "print(1)\\nprint(2)\\n"}], True])
@@ -294,6 +306,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     edit_params = n.EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
     assert set(edit_params["properties"]) == {"path", "edits", "create_file"}
+    assert "start/end anchors are inclusive" in n.EditTool.schema()["function"]["description"]
 
     recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
@@ -536,6 +549,21 @@ def test_tool_runner_batch_edit_rejects_anchor_for_line_changed_in_batch(tmp_pat
     assert path.read_text(encoding="utf-8") == "a\nb\nC\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
     assert s.tool_errors
+
+
+def test_batch_edit_stale_anchor_reports_current_line(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("bad", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "wrong\n"), "end": anchor(1, "wrong\n"), "content": "B\n"}]])])
+
+    assert s.tool_errors
+    assert "current is 1:" + n.ReadTool.line_hash("b\n") + "|b" in s.tool_errors[0].error
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_tool_runner_batch_edit_barrier_stops_original_anchor_mapping(tmp_path, monkeypatch):

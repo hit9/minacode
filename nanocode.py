@@ -1559,7 +1559,7 @@ class TouchTool(Tool):
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; anchored ops verify hashes."
+    DESCRIPTION = "Create or patch one UTF-8 file; set create_file=true for a missing file; Edit start/end anchors are inclusive."
     SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}], create_file?); ops=replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","create_file":true,"edits":[{"op":"replace_all","old":"","new":"print(1)\\n"}]}',
@@ -1765,7 +1765,8 @@ class EditTool(Tool):
         expected = match.group(2).lower()
         actual = ReadTool.line_hash(lines[index])
         if actual != expected:
-            raise ToolError(f"stale anchor {anchor}; current hash is {actual}")
+            current = f"{index}:{actual}|{lines[index].rstrip()}"
+            raise ToolError(f"stale anchor {anchor}; current is {current}")
         return index
 
 
@@ -2647,8 +2648,8 @@ class EditBatchPlan:
             if current is not None:
                 return current
             raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
-        actual = ReadTool.line_hash(state.lines[index].text) if index < len(state.lines) else "out of range"
-        raise ToolError(f"stale anchor {anchor}; current hash is {actual}")
+        current = f"{index}:{ReadTool.line_hash(state.lines[index].text)}|{state.lines[index].text.rstrip()}" if index < len(state.lines) else "out of range"
+        raise ToolError(f"stale anchor {anchor}; current is {current}")
 
 
 class ToolRunner:
