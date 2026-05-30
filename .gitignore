@@ -1,5 +1,5 @@
 build
-demo/
+demo*/
 *.egg-info
 __pycache__/
 *.pyc
