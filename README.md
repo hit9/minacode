@@ -67,7 +67,8 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 - Code index: `InspectCode`.
 - Edit: `CreateFile`, `Edit`.
 - Shell: `Bash`, `Git`.
-- Tool results: `Recall`, `Forget`.
+- Tool results: `Recall`.
+- Working notes: `Note`.
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
@@ -116,12 +117,11 @@ model request
 
 Core rules:
 
-- CURRENT WORKING CONTEXT includes the latest active `Read` and `Edit` file ranges.
+- CURRENT WORKING CONTEXT includes the latest active `Read`, `Edit`, and `CreateFile` file ranges.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
 - Successful `Read`, `Edit`, and `CreateFile` tool messages point to CURRENT WORKING CONTEXT instead of repeating file bodies.
 - Other tool outputs are bounded in conversation messages.
-- `Forget` removes stale result keys from the active tool result store.
 
 ## Safety
 

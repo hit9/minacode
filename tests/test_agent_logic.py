@@ -37,6 +37,10 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert messages[-1]["content"].startswith("--- CURRENT WORKING CONTEXT ---")
 
 
+def test_empty_file_context_is_empty(tmp_path):
+    assert n.ContextManager(session(tmp_path)).file_context() == ""
+
+
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     calls = []
 
@@ -62,7 +66,7 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- detected_commands: bash, rg, sed" in second
 
 
-def test_session_tool_result_store_prunes_and_forget_removes_records(tmp_path):
+def test_session_tool_result_store_prunes_old_records(tmp_path):
     s = session(tmp_path)
     for index in range(405):
         s.store_tool_result("Bash", [str(index)], f"output {index}")
@@ -71,12 +75,7 @@ def test_session_tool_result_store_prunes_and_forget_removes_records(tmp_path):
     assert len(s.tool_records) == 400
     assert "tr.1" not in s.tool_results
     assert s.tool_records[0].key == "tr.6"
-
-    removed = s.forget_tool_results(["tr.6", "tr.405", "tr.999"])
-    assert removed == 2
-    assert "tr.6" not in s.tool_results
-    assert "tr.405" not in s.tool_results
-    assert all(record.key not in {"tr.6", "tr.405"} for record in s.tool_records)
+    assert "tr.405" in s.tool_results
 
 
 def test_bounded_output_marks_recall_key(tmp_path):

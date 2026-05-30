@@ -231,7 +231,7 @@ def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
     assert "bad query" in result
 
 
-def test_recall_and_forget_behaviors(tmp_path):
+def test_recall_behaviors(tmp_path):
     s = session(tmp_path)
     first = s.store_tool_result("Read", ["a.txt"], "a0\na1\na2\n")
     second = s.store_tool_result("Search", [{"pattern": "b"}], "b0\nb1\n")
@@ -245,10 +245,6 @@ def test_recall_and_forget_behaviors(tmp_path):
 
     with pytest.raises(n.ToolError):
         n.RecallTool(s, [{"key": first, "ranges": [[2, "bad"]]}]).call()
-
-    n.ForgetTool(s, [first, first, "tr.999"]).call()
-    assert first not in s.tool_results
-    assert second in s.tool_results
 
 
 def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
@@ -271,8 +267,8 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    remember = runner.short_call(n.ToolCall("m", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
-    assert remember == "Remember goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
+    note = runner.short_call(n.ToolCall("m", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
+    assert note == "Note goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -286,9 +282,6 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
-
-    forget_keys = n.ForgetTool.schema()["function"]["parameters"]["properties"]["keys"]
-    assert forget_keys["items"]["pattern"] == r"^tr\.\d+$"
 
     read_params = n.ReadTool.schema()["function"]["parameters"]
     assert {"path", "ranges", "files"} <= set(read_params["properties"])
@@ -331,17 +324,17 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert n.ModelClient.tool_payload("Remember", {"goal": "ship"}) == [{"goal": "ship"}]
+    assert n.ModelClient.tool_payload("Note", {"goal": "ship"}) == [{"goal": "ship"}]
 
 
-def test_remember_tool_updates_durable_memory_without_result_key(tmp_path):
+def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     s = session(tmp_path)
     s.state.known = ["existing"]
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("remember", "Remember", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
+    runner.run([n.ToolCall("note", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
 
     assert s.state.goal == "ship"
     assert s.state.plan == ["inspect", "patch"]

@@ -535,14 +535,6 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def forget_tool_results(self, keys: list[str]) -> int:
-        wanted = set(keys)
-        count = sum(1 for key in wanted if key in self.tool_results)
-        for key in wanted:
-            self.tool_results.pop(key, None)
-        self.tool_records = [record for record in self.tool_records if record.key not in wanted]
-        return count
-
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
@@ -1908,30 +1900,10 @@ class RecallTool(Tool):
         return "\n".join("\n".join(lines[start:end]) for start, end in ranges if end > start)
 
 
-class ForgetTool(Tool):
-    NAME = "Forget"
-    DESCRIPTION = "Forget stored tool result keys from future context; does not touch files."
-    SIGNATURE = "Forget(keys=[tr.N,...])"
-    EXAMPLE = ('Forget old outputs. Example: {"keys":["tr.1","tr.2"]}',)
-    STORES_RESULT = False
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("keys") or [])
-
-    def call(self) -> str:
-        keys = list(dict.fromkeys(self.strings(min_count=1)))
-        count = self.session.forget_tool_results(keys)
-        return f"Forgot {count}/{len(keys)} tool results"
-
-
-class RememberTool(Tool):
-    NAME = "Remember"
-    DESCRIPTION = "Maintain durable working memory; goal and plan replace current values, known appends unique facts."
-    SIGNATURE = "Remember(goal?, plan?, known?)"
+class NoteTool(Tool):
+    NAME = "Note"
+    DESCRIPTION = "Maintain durable working notes; goal and plan replace current values, known appends unique facts."
+    SIGNATURE = "Note(goal?, plan?, known?)"
     EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"]}',)
     STORES_RESULT = False
 
@@ -1945,26 +1917,26 @@ class RememberTool(Tool):
 
     def call(self) -> str:
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Remember requires named fields")
+            raise ToolError("Note requires named fields")
         data = self.args[0]
         if unexpected := sorted(set(data) - {"goal", "plan", "known"}):
-            raise ToolError("Remember unexpected field: " + ", ".join(unexpected))
+            raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
         if "goal" in data:
             self.session.state.goal = str(data["goal"]).strip()
             changed.append("goal")
         if "plan" in data:
             if not isinstance(data["plan"], list):
-                raise ToolError("Remember plan must be an array")
+                raise ToolError("Note plan must be an array")
             self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["plan"] if AgentState.plan_text(str(item))]
             changed.append("plan")
         if "known" in data:
             if not isinstance(data["known"], list):
-                raise ToolError("Remember known must be an array")
+                raise ToolError("Note known must be an array")
             self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
             changed.append("known")
         if not changed:
-            raise ToolError("Remember requires goal, plan, or known")
+            raise ToolError("Note requires goal, plan, or known")
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
@@ -1993,8 +1965,7 @@ TOOLS: tuple[type[Tool], ...] = (
     BashTool,
     GitTool,
     RecallTool,
-    ForgetTool,
-    RememberTool,
+    NoteTool,
 )
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
@@ -2137,25 +2108,28 @@ class ContextManager:
         return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
 
     def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
-        chunks = ["**ALREADY READ FILE RANGES ARE BELOW. DO NOT READ THEM AGAIN UNLESS THE FILE CHANGED.**"]
-        if focus := self.session.state.current_focus():
+        paths = [path for path in sorted(lines_by_path) if lines_by_path[path]]
+        focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
+        if not paths and not omitted and not focus and not actions and not errors:
+            return ""
+        chunks = ["**ALREADY READ FILE RANGES ARE BELOW. DO NOT READ THEM AGAIN UNLESS THE FILE CHANGED.**"] if paths else []
+        if focus:
             chunks.extend(["", "Current focus: " + focus])
-        chunks.extend(["", "Available:"])
-        for path in sorted(lines_by_path):
-            chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
-        if actions := self.recent_file_actions():
+        if paths:
+            chunks.extend(["", "Available:"])
+            for path in paths:
+                chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
+        if actions:
             chunks.extend(["", "Recent file actions:", *actions])
-        if errors := self.recent_tool_errors():
+        if errors:
             chunks.extend(["", "Recent tool errors:", *errors])
-        chunks.extend(["", "Content:"])
-        for path in sorted(lines_by_path):
-            segments = self.segments(lines_by_path[path])
-            if not segments:
-                continue
-            for start, end, source, tool, segment_lines in segments:
-                chunks.append(f"@@ {path} {start}:{end} source={source} tool={tool}")
-                chunks.extend(segment_lines)
-            chunks.append("")
+        if paths:
+            chunks.extend(["", "Content:"])
+            for path in paths:
+                for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
+                    chunks.append(f"@@ {path} {start}:{end} source={source} tool={tool}")
+                    chunks.extend(segment_lines)
+                chunks.append("")
         if omitted:
             chunks.append("Omitted stale content:")
             for path in sorted(omitted):
@@ -2410,8 +2384,8 @@ class ToolRunner:
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None) -> str:
-        if call.name == "Remember" and not failed and display:
-            return display.removeprefix("Remember ").strip()
+        if call.name == "Note" and not failed and display:
+            return display.removeprefix("Note ").strip()
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
         line = "tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag
         lines = [line]
@@ -2760,28 +2734,18 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 class Agent:
     SYSTEM_PROMPT = """\
-You are nanocode, a CONCISE terminal coding agent.
-
-TOOLS: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget Remember.
+You are nanocode, a concise terminal coding agent.
+Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Note.
 Use EXACT named parameters.
 
 RULES:
-
-* ACT when the next useful step is clear.
-* USE LATEST FILE READS first; do NOT re-read files unless stale, incomplete, or needed for verification.
-* PREFER built-in tools over Bash when they cover the task.
-* BATCH independent read-only calls when useful.
-* AVOID repeated or unnecessary tool calls.
-* Tool results may be BOUNDED; Recall tr.N when needed, Forget stale tr.N.
-* INSPECT/READ before edits.
-* Keep changes SMALL and LOCAL; NEVER overwrite user work.
-* For MULTI-STEP work, Remember goal/plan/known; keep plan short and current.
-* CONTINUE with tool calls until done.
-
-NO TOOL CALL means FINAL ANSWER.
-NEVER send an EMPTY final answer.
-
-Output: concise markdown in the USER'S LANGUAGE.\
+* Act when the next step is clear; continue with tool calls until done.
+* Prefer built-in tools over Bash; batch independent read-only calls.
+* Use latest file reads; do not re-read unless stale, incomplete, or needed.
+* Inspect/read before edits; keep changes small; never overwrite user work.
+* For multi-step work, Note goal/plan/known. Recall bounded tr.N only when needed.
+* No tool call means final answer; never send an empty final answer.
+* Output concise markdown in the user's language.\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -3325,7 +3289,7 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget, Remember.
+  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Note.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
