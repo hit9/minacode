@@ -2487,7 +2487,7 @@ class ToolRunner:
             return header
         return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
 
-    def preview_block(self, preview: str, *, max_lines: int = 80) -> str:
+    def preview_block(self, preview: str, *, max_lines: int = 40) -> str:
         lines = preview.rstrip().splitlines()
         if not lines:
             return ""
