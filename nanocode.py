@@ -79,8 +79,7 @@ class ToolError(NanocodeError): pass
 
 class Text:
     @staticmethod
-    def clean(text: str) -> str:
-        return text.encode("utf-8", errors="replace").decode("utf-8")
+    def clean(text: str) -> str: return text.encode("utf-8", errors="replace").decode("utf-8")
 
     @classmethod
     def value(cls, value: Any) -> Any:
@@ -153,14 +152,11 @@ class ProviderConfig:
                 return url[: -len(suffix)]
         return url
 
-    def host(self) -> str:
-        return (urlparse(self.base_url()).hostname or "").lower()
+    def host(self) -> str: return (urlparse(self.base_url()).hostname or "").lower()
 
-    def resolved_chat_reasoning(self) -> str:
-        return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
+    def resolved_chat_reasoning(self) -> str: return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
-    def resolved_api(self) -> str:
-        return self.profile_value(self.api, "chat", "api", "api_rules")
+    def resolved_api(self) -> str: return self.profile_value(self.api, "chat", "api", "api_rules")
 
     def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
         if configured != "auto":
@@ -174,8 +170,7 @@ class ProviderConfig:
                 return str(value)
         return str(profile.get(profile_attr, default))
 
-    def reasoning_effort(self) -> str:
-        return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+    def reasoning_effort(self) -> str: return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -220,8 +215,7 @@ class Config:
     data_dir: str = "~/.nanocode"
 
     @property
-    def provider(self) -> ProviderConfig:
-        return self.providers[self.active_provider]
+    def provider(self) -> ProviderConfig: return self.providers[self.active_provider]
 
     @classmethod
     def from_dict(cls, data: Json) -> "Config":
@@ -236,12 +230,10 @@ class Config:
         return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"))
 
     @staticmethod
-    def table(data: Json, key: str) -> Json:
-        return value if isinstance((value := data.get(key)), dict) else {}
+    def table(data: Json, key: str) -> Json: return value if isinstance((value := data.get(key)), dict) else {}
 
     @staticmethod
-    def str(data: Json, key: str, default: str = "") -> str:
-        return default if (value := data.get(key)) is None else str(value)
+    def str(data: Json, key: str, default: str = "") -> str: return default if (value := data.get(key)) is None else str(value)
 
     @staticmethod
     def str_tuple(data: Json, key: str) -> tuple[str, ...]:
@@ -261,8 +253,9 @@ class Config:
             return default
         if isinstance(value, bool):
             return value
-        if isinstance(value, str) and value.lower() in {"on", "true", "yes", "1", "off", "false", "no", "0"}:
-            return value.lower() in {"on", "true", "yes", "1"}
+        lower = value.lower() if isinstance(value, str) else ""
+        if lower in {"on", "true", "yes", "1", "off", "false", "no", "0"}:
+            return lower in {"on", "true", "yes", "1"}
         raise ConfigError(f"config value `{key}` must be boolean")
 
     @staticmethod
@@ -287,6 +280,7 @@ class Config:
 
 
 class ConfigFile:
+    DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
 
 [provider]
@@ -317,12 +311,8 @@ yolo = false
 """
 
     @classmethod
-    def path(cls) -> str:
-        return os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
-
-    @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:
-        config_path = os.path.expanduser(path or cls.path())
+        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
         if os.path.exists(config_path):
             return config_path, False
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -332,7 +322,7 @@ yolo = false
 
     @classmethod
     def load(cls, path: str | None = None) -> Json:
-        config_path = os.path.expanduser(path or cls.path())
+        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
         try:
             with open(config_path, "rb") as file:
                 data = tomllib.load(file)
@@ -393,6 +383,7 @@ class AgentState:
     context_percent: int = 0
     turn_step: int = 0
     turn_tool_calls: int = 0
+    turn_messages: int = 0
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
@@ -403,17 +394,12 @@ class AgentState:
 
     @classmethod
     def plan_rows_for(cls, items: list[str], *, status: bool = False) -> list[str]:
-        rows = []
-        for item in (cls.plan_text(str(item)) for item in items):
-            if item:
-                rows.append(f"- [{'~' if not rows else ' '}] {item}" if status else "- " + item)
+        rows = [f"- [{'~' if index == 0 else ' '}] {item}" if status else "- " + item for index, item in enumerate(filter(None, (cls.plan_text(str(item)) for item in items)))]
         return rows or ["- (empty)"]
 
-    def plan_rows(self, *, status: bool = False) -> list[str]:
-        return self.plan_rows_for(self.plan, status=status)
+    def plan_rows(self, *, status: bool = False) -> list[str]: return self.plan_rows_for(self.plan, status=status)
 
-    def current_focus(self) -> str:
-        return next((self.plan_text(item) for item in self.plan if self.plan_text(item)), "")
+    def current_focus(self) -> str: return next((text for item in self.plan if (text := self.plan_text(item))), "")
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
@@ -422,7 +408,7 @@ class AgentState:
         for attr in ("plan", "known"):
             value = data.get(attr)
             if isinstance(value, list):
-                items = [str(item).strip() for item in value if str(item).strip()]
+                items = list(filter(None, (str(item).strip() for item in value)))
                 setattr(self, attr, [self.plan_text(item) for item in items] if attr == "plan" else items)
 
     def format(self) -> str:
@@ -493,7 +479,6 @@ class Session:
     system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
-    session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
     messages: list[Json] = field(default_factory=list)
     state: AgentState = field(default_factory=AgentState)
     tool_results: dict[str, str] = field(default_factory=dict)
@@ -533,8 +518,7 @@ class Session:
         root = os.path.expanduser(self.config.data_dir)
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
 
-    def debug_dir(self) -> str:
-        return self.data_path("debug")
+    def debug_dir(self) -> str: return self.data_path("debug")
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -574,11 +558,7 @@ class UpdateChecker:
 
     def start(self) -> None:
         self.load_cache()
-        if (
-            not self.session.settings.check_updates
-            or self.session.update.checking
-            or time.time() - self.session.update.checked_at < self.session.settings.update_check_interval_hours * 3600
-        ):
+        if not self.session.settings.check_updates or self.session.update.checking or time.time() - self.session.update.checked_at < self.session.settings.update_check_interval_hours * 3600:
             return
         self.session.update.checking = True
         threading.Thread(target=self.check, daemon=True).start()
@@ -628,11 +608,7 @@ class UpdateChecker:
             return "update: off"
         if update.checking:
             return "update: checking"
-        if update.newer_than(__version__):
-            return f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)"
-        if update.error:
-            return "update: error"
-        return "update: current" if update.latest else "update: unknown"
+        return f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)" if update.newer_than(__version__) else "update: error" if update.error else "update: current" if update.latest else "update: unknown"
 
 
 class Tool:
@@ -655,22 +631,18 @@ class Tool:
         return {"type": "function", "function": {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}}
 
     @classmethod
-    def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {}, "additionalProperties": False}
+    def params_schema(cls) -> Json: return {"type": "object", "properties": {}, "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
         args = payload.get("args")
         return args if isinstance(args, list) else [payload]
 
-    def needs_confirmation(self) -> bool:
-        return self.MUTATES
+    def needs_confirmation(self) -> bool: return self.MUTATES
 
-    def preview(self) -> str:
-        return f"{self.NAME}({', '.join(self.short_args())})"
+    def preview(self) -> str: return f"{self.NAME}({', '.join(self.short_args())})"
 
-    def short_args(self) -> list[str]:
-        return [self.compact(arg) for arg in self.args]
+    def short_args(self) -> list[str]: return [self.compact(arg) for arg in self.args]
 
     def call(self) -> str:
         raise NotImplementedError
@@ -771,21 +743,16 @@ class ReadTool(Tool):
         return [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
 
     @classmethod
-    def ranges_arg(cls, value: Any) -> Any:
-        return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
+    def ranges_arg(cls, value: Any) -> Any: return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
 
     @staticmethod
-    def line_hash(line: str) -> str:
-        return hashlib.sha1(line.encode("utf-8")).hexdigest()[:6]
+    def line_hash(line: str) -> str: return hashlib.sha1(line.encode("utf-8")).hexdigest()[:6]
 
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
+    def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
 
-    def call(self) -> str:
-        return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
+    def call(self) -> str: return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
 
-    def short_args(self) -> list[str]:
-        return [self.session.relpath(path) + " " + ",".join(f"{start}:{end}" for start, end in ranges) for path, ranges in self.targets()]
+    def short_args(self) -> list[str]: return [self.session.relpath(path) + " " + ",".join(f"{start}:{end}" for start, end in ranges) for path, ranges in self.targets()]
 
     def targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
         if not self.args:
@@ -832,11 +799,9 @@ class LineCountTool(Tool):
         return {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["paths"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("paths") or [])
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("paths") or [])
 
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path in self.paths())
+    def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(path) for path in self.paths())
 
     def call(self) -> str:
         rows = []
@@ -859,8 +824,7 @@ class LineCountTool(Tool):
             rows.append(f"* {relpath}: {count}")
         return "\n".join(["<LineCountToolResult>", *rows, f"<total>{total}</total>", "</LineCountToolResult>"])
 
-    def paths(self) -> list[str]:
-        return [self.session.resolve_path(path) for path in self.strings(min_count=1)]
+    def paths(self) -> list[str]: return [self.session.resolve_path(path) for path in self.strings(min_count=1)]
 
 
 class ListTool(Tool):
@@ -879,8 +843,7 @@ class ListTool(Tool):
             return payload["args"]
         return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
 
-    def needs_confirmation(self) -> bool:
-        return not self.session.in_cwd(self.path())
+    def needs_confirmation(self) -> bool: return not self.session.in_cwd(self.path())
 
     def call(self) -> str:
         path = self.path()
@@ -944,14 +907,11 @@ class FindTool(Tool):
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
 
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
+    def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
-    def call(self) -> str:
-        return "\n\n".join(self.find(request) for request in self.requests())
+    def call(self) -> str: return "\n\n".join(self.find(request) for request in self.requests())
 
     def short_args(self) -> list[str]:
         rows = []
@@ -1022,11 +982,9 @@ class FindTool(Tool):
                 )
         return sorted(rows)
 
-    def match_path(self, path: str, pattern: str) -> bool:
-        return fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(self.session.relpath(path).replace(os.sep, "/"), pattern)
+    def match_path(self, path: str, pattern: str) -> bool: return fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(self.session.relpath(path).replace(os.sep, "/"), pattern)
 
-    def row(self, kind: str, path: str) -> str:
-        return f"* {kind}: {self.session.relpath(path)}" + ("/" if kind == "dir" else "")
+    def row(self, kind: str, path: str) -> str: return f"* {kind}: {self.session.relpath(path)}" + ("/" if kind == "dir" else "")
 
 
 class SearchTool(Tool):
@@ -1052,14 +1010,11 @@ class SearchTool(Tool):
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else payload.get("queries") or payload.get("requests") or [payload]
 
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
+    def needs_confirmation(self) -> bool: return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
-    def call(self) -> str:
-        return "\n\n".join(self.search(request) for request in self.requests())
+    def call(self) -> str: return "\n\n".join(self.search(request) for request in self.requests())
 
     def short_args(self) -> list[str]:
         rows = []
@@ -1203,8 +1158,7 @@ class SearchTool(Tool):
                 rows.append((self.match_line(prefix, path, line_index, lines[line_index]), line_index == index))
         return rows
 
-    def match_line(self, prefix: str, path: str, line_index: int, line: str) -> str:
-        return f"{prefix} {self.session.relpath(path)}:{line_index}:{ReadTool.line_hash(line)}|{line.rstrip()}"
+    def match_line(self, prefix: str, path: str, line_index: int, line: str) -> str: return f"{prefix} {self.session.relpath(path)}:{line_index}:{ReadTool.line_hash(line)}|{line.rstrip()}"
 
 
 class CodeIndex:
@@ -1223,8 +1177,7 @@ class CodeIndex:
     def __init__(self, session: Session):
         self.session = session
 
-    def db_path(self) -> str:
-        return os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
+    def db_path(self) -> str: return os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
 
     def available(self) -> bool:
         status, message = self.status()
@@ -1236,8 +1189,7 @@ class CodeIndex:
         self.session.state.code_index_error = message if status == "error" else ""
 
     @classmethod
-    def label(cls, status: str) -> str:
-        return cls.SYMBOLS.get(status, status)
+    def label(cls, status: str) -> str: return cls.SYMBOLS.get(status, status)
 
     @classmethod
     def status_line(cls, status: str, message: str = "") -> str:
@@ -1257,8 +1209,7 @@ class CodeIndex:
 
     def finish(self, status: str = "synced") -> None:
         self.notice("")
-        self.session.state.code_index_error = ""
-        self.session.state.code_index_status = status
+        self.session.state.code_index_error, self.session.state.code_index_status = "", status
 
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
         try:
@@ -1439,8 +1390,7 @@ class CreateFileTool(Tool):
         return {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("content", "")]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("content", "")]
 
     def preview(self) -> str:
         path, content = self.payload()
@@ -1511,8 +1461,7 @@ class EditTool(Tool):
         return {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}}, "required": ["path", "edits"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", [])]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
         path, edits = self.parse()
@@ -1651,8 +1600,7 @@ class EditTool(Tool):
         return lines
 
     @staticmethod
-    def normalize_text(value: str) -> str:
-        return value.replace("\r\n", "\n").replace("\r", "\n")
+    def normalize_text(value: str) -> str: return value.replace("\r\n", "\n").replace("\r", "\n")
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
         match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
@@ -1684,8 +1632,7 @@ class BashTool(Tool):
         return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}}, "required": ["command"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("command", "")]
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else [payload.get("command", "")]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -1693,8 +1640,7 @@ class BashTool(Tool):
             raise ToolError("Bash command must be non-empty")
         return command
 
-    def short_args(self) -> list[str]:
-        return [self.command()]
+    def short_args(self) -> list[str]: return [self.command()]
 
     def call(self) -> str:
         command = self.command()
@@ -1934,8 +1880,7 @@ class RecallTool(Tool):
             ranges.extend(self.parse_range(item) for item in raw)
         return tuple(ranges)
 
-    def parse_range(self, value: Any) -> tuple[int, int]:
-        return self.range_token(value) if isinstance(value, str) else self.line_range(value, "Recall range")
+    def parse_range(self, value: Any) -> tuple[int, int]: return self.range_token(value) if isinstance(value, str) else self.line_range(value, "Recall range")
 
     @staticmethod
     def range_token(value: str) -> tuple[int, int]:
@@ -1964,8 +1909,7 @@ class ForgetTool(Tool):
         return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1}}, "required": ["keys"], "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("keys") or [])
+    def payload_args(cls, payload: Json) -> list[Any]: return payload["args"] if isinstance(payload.get("args"), list) else list(payload.get("keys") or [])
 
     def call(self) -> str:
         keys = list(dict.fromkeys(self.strings(min_count=1)))
@@ -1986,8 +1930,7 @@ class RememberTool(Tool):
         return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings}, "additionalProperties": False}
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
+    def payload_args(cls, payload: Json) -> list[Any]: return [payload]
 
     def call(self) -> str:
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
@@ -2100,8 +2043,7 @@ class ContextManager:
         self.session.messages = self.session.messages[-6:]
 
     @staticmethod
-    def render_section(name: str, body: str) -> str:
-        return f"--- {name} ---\n{body or '(empty)'}"
+    def render_section(name: str, body: str) -> str: return f"--- {name} ---\n{body or '(empty)'}"
 
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join(self.session.state.plan_rows()), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
@@ -2110,8 +2052,7 @@ class ContextManager:
         return "\n\n".join(rows)
 
     @staticmethod
-    def message_text(message: Json) -> str:
-        return f"{message.get('role', 'message')}:\n{message.get('content') or ''}"
+    def message_text(message: Json) -> str: return f"{message.get('role', 'message')}:\n{message.get('content') or ''}"
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -2162,6 +2103,8 @@ class ContextManager:
                             items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, int(line_match.group(1)), 0, line, *stat))
         return items
 
+    def file_count(self) -> int: return len({item.path for item in self.file_items() if item.kind == "line"})
+
     def item_current(
         self,
         item: ContextManager.FileContextItem,
@@ -2210,19 +2153,18 @@ class ContextManager:
         return "\n".join(chunks).strip() if len(chunks) > 4 else ""
 
     def recent_file_actions(self) -> list[str]:
-        actions = []
-        for record in self.session.tool_records[-20:]:
-            if record.name in {"Read", "Edit", "CreateFile"}:
-                detail = record.note or " ".join(Tool.compact(arg, 80) for arg in record.args)
-                actions.append(f"- {record.key} {record.name} {detail}".strip())
+        actions = [
+            f"- {record.key} {record.name} {record.note or ' '.join(Tool.compact(arg, 80) for arg in record.args)}".strip()
+            for record in self.session.tool_records[-20:]
+            if record.name in {"Read", "Edit", "CreateFile"}
+        ]
         return actions[-10:]
 
     def recent_tool_errors(self) -> list[str]:
-        rows = []
-        for record in self.session.tool_errors[-5:]:
-            args = " ".join(Tool.compact(arg, 80) for arg in record.args)
-            rows.append(f"- {' '.join(part for part in (record.key, record.name, args) if part)}: {Tool.compact(record.error, 160)}")
-        return rows
+        return [
+            f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
+            for record in self.session.tool_errors[-5:]
+        ]
 
     def coverage_note(self, path: str, start: int, end: int) -> str:
         notes = [record.note for record in self.session.tool_records if record.name == "Read" and record.note and f"{path} {start}:{end}" in record.note]
@@ -2326,8 +2268,7 @@ class ContextManager:
         return (chars + 3) // 4
 
     @staticmethod
-    def estimated_text_tokens(text: str) -> int:
-        return (len(text) + 3) // 4
+    def estimated_text_tokens(text: str) -> int: return (len(text) + 3) // 4
 
 
 class ToolRunner:
@@ -2516,8 +2457,7 @@ class DebugTrace:
         return Text.clean(str(value))
 
     @classmethod
-    def prompt(cls, session: Session, *, activity: str, messages: list[Json]) -> None:
-        cls.write(session, activity=activity, label="prompt", payload={"messages": messages})
+    def prompt(cls, session: Session, *, activity: str, messages: list[Json]) -> None: cls.write(session, activity=activity, label="prompt", payload={"messages": messages})
 
     @classmethod
     def model_request(cls, session: Session, *, activity: str, api: str, model: str, params: Json, tools: list[Json] | None) -> None:
@@ -2535,12 +2475,10 @@ class DebugTrace:
         cls.write(session, activity=activity, label="model-error", payload=payload)
 
     @staticmethod
-    def filtered_params(params: Json) -> Json:
-        return {key: value for key, value in params.items() if key not in {"messages", "tools"}}
+    def filtered_params(params: Json) -> Json: return {key: value for key, value in params.items() if key not in {"messages", "tools"}}
 
     @staticmethod
-    def tool_names(tools: list[Json] | None) -> list[str]:
-        return [str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)")) for schema in tools or []]
+    def tool_names(tools: list[Json] | None) -> list[str]: return [str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)")) for schema in tools or []]
 
 
 class ModelClient:
@@ -2587,9 +2525,7 @@ class ModelClient:
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(getattr(message, "content", None) or "")
-        DebugTrace.model_response(
-            self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls]
-        )
+        DebugTrace.model_response(self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
@@ -2599,11 +2535,7 @@ Return exactly one JSON object with keys: summary, goal, plan, known.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = (
-            self.anthropic_request(messages, None, activity="compact")
-            if self.session.config.provider.resolved_api() == "anthropic"
-            else self.chat_request(messages, None, activity="compact")
-        )
+        _, _, content = self.anthropic_request(messages, None, activity="compact") if self.session.config.provider.resolved_api() == "anthropic" else self.chat_request(messages, None, activity="compact")
         content = content.strip()
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE | re.DOTALL).strip()
         data = json.loads(content)
@@ -2615,22 +2547,14 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return OpenAI(
-            api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
-        )
+        return OpenAI(api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
 
     def anthropic_client(self) -> Anthropic:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         url = provider.base_url().rstrip("/")
-        return Anthropic(
-            api_key=provider.key,
-            base_url=url[: -len("/v1")] if url.endswith("/v1") else url,
-            timeout=provider.timeout,
-            max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
-        )
+        return Anthropic(api_key=provider.key, base_url=url[: -len("/v1")] if url.endswith("/v1") else url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
@@ -2660,9 +2584,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             raise ModelError(str(error)) from error
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
-        DebugTrace.model_response(
-            self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls]
-        )
+        DebugTrace.model_response(self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls])
         return assistant, calls, content
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
@@ -2883,6 +2805,7 @@ Output: concise markdown in the USER'S LANGUAGE.\
                     raise ModelError("empty final response")
                 answer = content.strip()
                 self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
+                self.session.state.turn_messages = 0
                 return answer
             if content.strip():
                 message = {"role": "assistant", "content": content.strip()}
@@ -2891,11 +2814,13 @@ Output: concise markdown in the USER'S LANGUAGE.\
             turn_messages.extend(self.tools.run(tool_calls))
         stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
+        self.session.state.turn_messages = 0
         return stopped
 
     def messages(self, turn_messages: list[Json], error_feedback: str = "") -> list[Json]:
         turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
+        self.session.state.turn_messages = len(turn_messages)
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
         self.context.update_percent(messages)
@@ -3860,9 +3785,7 @@ Tools:
         disabled: set[str] | frozenset[str] = frozenset(),
     ) -> str | object | None:
         labels = labels or {}
-        if not choices:
-            return None
-        if not self.interactive_input:
+        if not choices or not self.interactive_input:
             return None
         try:
             return self.choice_application(title, choices, labels, current, set(disabled))
@@ -4051,7 +3974,7 @@ Tools:
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
-            ("context", f"ctx `{self.session.state.context_percent}%`; messages `{len(self.session.messages)}`; tools `{len(self.session.tool_results)}`; known `{len(self.session.state.known)}`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; known `{len(self.session.state.known)}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`"),
