@@ -2449,23 +2449,25 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
 
-    def run(self, calls: list[ToolCall]) -> list[Json]:
+    def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
         refused = False
-        for call in calls:
+        for index, call in enumerate(calls):
             self.session.state.turn_tool_calls += 1
             status, content = (
-                ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)) if refused else self.run_one(call)
+                ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True))
+                if refused
+                else self.run_one(call, batch_suffix=batch_suffix if index == 0 else "")
             )
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
             if status == "refused":
                 refused = True
         return messages
 
-    def run_one(self, call: ToolCall) -> tuple[str, str]:
+    def run_one(self, call: ToolCall, batch_suffix: str = "") -> tuple[str, str]:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}")
+            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
@@ -2474,28 +2476,28 @@ class ToolRunner:
             display = self.short_call(call, tool.short_args())
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                self.output_fn(self.approval_display(call, tool, "auto"))
+                self.output_fn(self.approval_display(call, tool, "auto", batch_suffix=batch_suffix))
             elif needs_confirmation:
-                confirmed, reason = self.confirm(call, tool)
+                confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
+                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
             output = tool.call()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display)
+            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         except Exception as error:
             output = f"ToolError: {error}"
-            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, display=display)
+            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, display=display, batch_suffix=batch_suffix)
 
-    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None) -> str:
+    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
         if self.session.settings.debug:
-            return self.finish(call, output, failed=True, elapsed=elapsed, display=display)
+            return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
         self.session.record_tool_error("-", call.name, call.args, output)
-        self.output_fn(self.finish_display(call, "", output, failed=True, display=display))
+        self.output_fn(self.finish_display(call, "", output, failed=True, display=display, batch_suffix=batch_suffix))
         return self.tool_message(call, "", output, failed=True, display=display)
 
     def finish(
@@ -2508,6 +2510,7 @@ class ToolRunner:
         approved: bool = False,
         display: str | None = None,
         store: bool = True,
+        batch_suffix: str = "",
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = (
@@ -2519,7 +2522,7 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display))
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix))
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
@@ -2559,16 +2562,16 @@ class ToolRunner:
                 pass
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
-    def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm"))
+    def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "") -> tuple[bool, str]:
+        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix))
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
         return False, "" if lower in {"n", "no"} else answer
 
-    def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
-        header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
+    def approval_display(self, call: ToolCall, tool: Tool, status: str, batch_suffix: str = "") -> str:
+        header = self.with_batch_suffix(("approve " if status == "confirm" else "auto ") + self.short_call(call), batch_suffix)
         if tool.NAME != "Edit":
             return header
         return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
@@ -2580,15 +2583,21 @@ class ToolRunner:
         lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
-    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None) -> str:
+    def finish_display(
+        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = ""
+    ) -> str:
         if call.name == "Note" and not failed and display:
-            return display.removeprefix("Note ").strip()
+            return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
-        line = "tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag
+        line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
         return "\n".join(lines)
+
+    @staticmethod
+    def with_batch_suffix(text: str, suffix: str) -> str:
+        return text + (("  " + suffix) if suffix else "")
 
     def short_call(self, call: ToolCall, args: list[str] | None = None) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
@@ -3042,6 +3051,7 @@ FINAL:
     def run(self, user_input: str) -> str:
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
+        tool_batches = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
@@ -3064,7 +3074,8 @@ FINAL:
             turn_messages.append(assistant)
             if content.strip():
                 self.output_fn(content.strip())
-            turn_messages.extend(self.tools.run(tool_calls))
+            tool_batches += 1
+            turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
         stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
         self.session.state.turn_messages = 0
