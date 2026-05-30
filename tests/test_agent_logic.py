@@ -336,6 +336,75 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert all("recent 7" not in str(message.get("content") or "") for message in s.messages)
 
 
+def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
+    s = session(tmp_path)
+    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    s.messages = [
+        {"role": "user", "content": summary},
+        {"role": "assistant", "content": "before"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest request"},
+        {"role": "assistant", "content": "working"},
+        {"role": "tool", "content": "tool tr.1"},
+    ]
+
+    compacted, keep = n.ContextManager(s).compaction_parts()
+
+    assert [message["content"] for message in compacted] == [summary, "before", "old request", "old answer"]
+    assert [message["content"] for message in keep] == ["latest request", "working", "tool tr.1"]
+
+
+def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
+    s = session(tmp_path)
+    s.messages = [
+        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "tool", "content": "tool tr.1"},
+    ]
+
+    compacted, keep = n.ContextManager(s).compaction_parts()
+
+    assert compacted == s.messages
+    assert keep == []
+
+
+def test_compaction_recent_uses_last_fixed_window(tmp_path):
+    messages = [{"role": "assistant", "content": f"m{index}"} for index in range(10)]
+
+    older, recent = n.ContextManager(session(tmp_path)).compaction_recent(messages)
+
+    assert [message["content"] for message in older] == ["m0", "m1"]
+    assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]
+
+
+def test_maybe_compact_skips_when_context_under_budget(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 999_999
+    s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
+
+    class ExplodingModel:
+        def compact(self, text):
+            raise AssertionError(text)
+
+    n.ContextManager(s).maybe_compact(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+
+    assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
+
+
+def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    kept = s.store_tool_result("Bash", ["kept"], "kept output")
+    dropped = s.store_tool_result("Bash", ["dropped"], "dropped output")
+
+    context.apply_compaction({"summary": f"Continue from {kept}."}, [])
+
+    assert kept in s.tool_results
+    assert dropped not in s.tool_results
+    assert [record.key for record in s.tool_records] == [kept]
+
+
 def test_compaction_prunes_old_non_file_tool_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("one\n", encoding="utf-8")

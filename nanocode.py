@@ -2350,7 +2350,7 @@ class ContextManager:
     def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
         self.session.state.apply(data)
         self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
-        self.prune_tool_records([*keep, *(tool_messages or [])])
+        self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
