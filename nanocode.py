@@ -3259,6 +3259,8 @@ FLOW:
 - ACT when clear; keep using tools until done.
 - Every turn must call tools or return final; never emit empty content.
 - Prefer built-ins over Bash. Batch independent read-only calls.
+- All user-visible output follows the latest user input and uses the user's language.
+- Interim text is shown to the user and kept as conversation.
 
 CONTEXT:
 - Trust LATEST FILE STATE from Read/Edit for listed ranges.
