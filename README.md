@@ -25,6 +25,12 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 uv tool install nanocode-cli
 ```
 
+Upgrade:
+
+```sh
+uv tool upgrade nanocode-cli
+```
+
 For local development:
 
 ```sh

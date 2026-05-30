@@ -25,6 +25,12 @@ nanocode 仍是 1.0 前的软件。稳定版发布前，命令、配置和工具
 uv tool install nanocode-cli
 ```
 
+升级：
+
+```sh
+uv tool upgrade nanocode-cli
+```
+
 本地开发：
 
 ```sh
