@@ -2359,16 +2359,12 @@ class ToolRunner:
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
         if not failed and call.name in {"Read", "Edit"}:
-            return head + " -> " + self.file_view_summary(key, output)
+            return head + " -> synced to ACTIVE FILE VIEW"
         rows = [head]
         if failed:
             rows.append("status: failed")
         rows.extend(["output:", self.project_output(call, key, output, failed)])
         return "\n".join(rows).strip()
-
-    def file_view_summary(self, key: str, output: str) -> str:
-        rows = [line for line in output.splitlines()[1:] if line.startswith("- ")] if output.startswith("FILE VIEW:") else self.file_view_rows(key, output)
-        return "FILE VIEW " + "; ".join(row.removeprefix("- ") for row in rows[:4]) + ("; ..." if len(rows) > 4 else "")
 
     def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
         if not failed and output.startswith("FILE VIEW:"):
