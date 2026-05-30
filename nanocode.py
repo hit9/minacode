@@ -2931,7 +2931,10 @@ class ModelClient:
                     raise ModelRequestRetry() from None
                 raise
             except ModelError as error:
-                if attempt >= MODEL_REQUEST_RETRIES or not self.retryable_error(error):
+                retryable = self.retryable_error(error)
+                if attempt >= MODEL_REQUEST_RETRIES or not retryable:
+                    if attempt:
+                        raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
                     raise
                 self.session.state.model_retry_count += 1
                 time.sleep(0.5 * (attempt + 1))
@@ -2942,12 +2945,14 @@ class ModelClient:
     @staticmethod
     def retryable_error(error: Exception) -> bool:
         status = getattr(error.__cause__, "status_code", None) or getattr(error.__cause__, "code", None)
+        text = str(error).lower()
         try:
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
         except Exception:
             pass
-        text = str(error).lower()
+        if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
+            return True
         return any(
             part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
         )

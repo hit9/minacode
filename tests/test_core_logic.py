@@ -99,6 +99,36 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     assert calls[3] == n.ToolCall(id="list-payload", name="Recall", args=[["tr.1"]])
 
 
+def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.config.provider.url = "https://example.test/v1"
+    s.config.provider.key = "key"
+    s.config.provider.model = "model"
+    client = n.ModelClient(s)
+    calls = []
+
+    def fail(_messages, _tools):
+        calls.append(1)
+        raise n.ModelError("Error code: 500 - provider failed")
+
+    monkeypatch.setattr(client, "chat_request", fail)
+    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(n.ModelError, match="after 3 attempts"):
+        client.request([{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 3
+    assert s.state.model_retry_count == 2
+
+
+def test_retryable_error_detects_status_codes_in_text(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+
+    assert client.retryable_error(n.ModelError("Error code: 500 - provider failed"))
+    assert client.retryable_error(n.ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
+    assert not client.retryable_error(n.ModelError("Error code: 400 - bad request"))
+
+
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     usage = n.ModelUsage()
 
