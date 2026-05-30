@@ -248,7 +248,7 @@ def test_recall_behaviors(tmp_path):
     assert "a1" in sliced and "a0" not in sliced
     assert "b1" in sliced and "b0" not in sliced
 
-    common_range = n.RecallTool(s, [first, "0:1"]).call()
+    common_range = n.RecallTool(s, [{"keys": [first], "ranges": [[0, 1]]}]).call()
     assert "a0" in common_range and "a1" not in common_range
 
     with pytest.raises(n.ToolError):
@@ -391,6 +391,68 @@ def test_edit_inserts_before_existing_line_with_needed_newline(tmp_path):
 
     n.EditTool(s, ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "inserted"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\ninserted\nb\n"
+
+
+def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("insert", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"}]]),
+            n.ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(3, "c\n"), "end": anchor(3, "c\n"), "content": "C\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("insert", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"}]]),
+            n.ToolCall("read", "Read", [{"path": "code.txt", "ranges": [[0, 0]]}]),
+            n.ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(3, "c\n"), "end": anchor(3, "c\n"), "content": "C\n"}]]),
+        ]
+    )
+
+    read_record = next(record for record in s.tool_records if record.name == "Read")
+    assert "|x" in read_record.output
+    assert "|c" in read_record.output
+    assert "|C" not in read_record.output
+    assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
+
+
+def test_tool_runner_batch_edit_rejects_anchor_for_line_changed_in_batch(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            n.ToolCall("first", "Edit", ["code.txt", [{"op": "replace", "start": anchor(2, "c\n"), "end": anchor(2, "c\n"), "content": "C\n"}]]),
+            n.ToolCall("second", "Edit", ["code.txt", [{"op": "replace", "start": anchor(2, "c\n"), "end": anchor(2, "c\n"), "content": "D\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nC\n"
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
+    assert s.tool_errors
 
 
 def test_bash_timeout_and_live_output(tmp_path):

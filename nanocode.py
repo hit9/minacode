@@ -2111,6 +2111,7 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    FILE_STATE_CHAR_BUDGET: ClassVar[int] = MAX_TOOL_OUTPUT_TOKENS * 4
 
     @dataclass
     class FileContextItem:
@@ -2193,7 +2194,7 @@ class ContextManager:
 
     def file_context(self) -> str:
         lines_by_path, omitted = self.active_file_lines()
-        return self.bound_output(self.render_file_lines(lines_by_path, omitted))
+        return self.render_file_lines(lines_by_path, omitted)
 
     def active_file_lines(self) -> tuple[dict[str, dict[int, tuple[str, str, str]]], dict[str, dict[str, int]]]:
         lines_by_path: dict[str, dict[int, tuple[str, str, str]]] = {}
@@ -2217,7 +2218,31 @@ class ContextManager:
             else:
                 omitted.setdefault(item.path, {}).setdefault(item.source, 0)
                 omitted[item.path][item.source] += 1
-        return lines_by_path, omitted
+        projected = self.project_file_lines(lines_by_path)
+        for path, lines in lines_by_path.items():
+            dropped = len(lines) - len(projected.get(path, {}))
+            if dropped > 0:
+                omitted.setdefault(path, {})["current"] = dropped
+        return projected, omitted
+
+    def project_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]]) -> dict[str, dict[int, tuple[str, str, str]]]:
+        entries = [
+            (int(source.removeprefix("tr.")) if source.startswith("tr.") else 0, path, number, value)
+            for path, lines in lines_by_path.items()
+            for number, value in lines.items()
+            for source, _tool, _line in [value]
+        ]
+        projected: dict[str, dict[int, tuple[str, str, str]]] = {}
+        used = 0
+        for _order, path, number, value in sorted(entries, reverse=True):
+            if number in projected.get(path, {}):
+                continue
+            cost = len(path) + len(value[2]) + 32
+            if used and used + cost > self.FILE_STATE_CHAR_BUDGET:
+                continue
+            projected.setdefault(path, {})[number] = value
+            used += cost
+        return projected
 
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
@@ -2287,9 +2312,9 @@ class ContextManager:
                     chunks.extend(segment_lines)
                 chunks.append("")
         if omitted:
-            chunks.append("Omitted stale content:")
+            chunks.append("Omitted content:")
             for path in sorted(omitted):
-                chunks.extend(f"- {path} source={source} stale_lines={count}" for source, count in sorted(omitted[path].items()))
+                chunks.extend(f"- {path} source={source} lines={count}" for source, count in sorted(omitted[path].items()))
         chunks.extend(["", "OUTPUT IN USER LANGUAGE"])
         return "\n".join(chunks).strip() if len(chunks) > 4 else ""
 
@@ -2440,6 +2465,181 @@ class ContextManager:
         return (len(text) + 3) // 4
 
 
+class EditBatchPlan:
+    @dataclass
+    class Line:
+        text: str
+        origin: int | None
+
+    @dataclass
+    class FileState:
+        path: str
+        lines: list["EditBatchPlan.Line"]
+        original: list[str]
+        exists: bool
+
+        def text(self) -> str:
+            return "".join(line.text for line in self.lines)
+
+        def current_origin(self, origin: int) -> int | None:
+            for index, line in enumerate(self.lines):
+                if line.origin == origin:
+                    return index
+            return None
+
+    @dataclass
+    class PlannedEdit:
+        path: str
+        before: str
+        after: str
+        created: bool
+        changes: list[tuple[int, int, int, int]]
+
+        def preview(self, tool: EditTool) -> str:
+            return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
+
+        def call(self, tool: EditTool) -> str:
+            if os.path.exists(self.path):
+                with open(self.path, encoding="utf-8") as file:
+                    current = file.read()
+            elif self.created and not self.before:
+                current = ""
+            else:
+                raise ToolError("planned edit is stale; file state changed")
+            if current != self.before:
+                raise ToolError("planned edit is stale; file state changed")
+            if self.created:
+                os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as file:
+                file.write(self.after)
+            return "\n".join(
+                [
+                    f"<Edit path={json.dumps(tool.session.relpath(self.path))}>",
+                    tool.file_stat(self.path),
+                    tool.diff(self.path, self.before, self.after).rstrip(),
+                    tool.edit_context(self.after, self.changes),
+                    "</Edit>",
+                ]
+            )
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.files: dict[str, EditBatchPlan.FileState] = {}
+        self.planned: dict[str, EditBatchPlan.PlannedEdit] = {}
+        self.errors: dict[str, str] = {}
+
+    def build(self, calls: list[ToolCall]) -> "EditBatchPlan":
+        for call in calls:
+            if call.name != "Edit":
+                continue
+            try:
+                self.plan_call(call, EditTool(self.session, call.args))
+            except ToolError as error:
+                self.errors[call.id] = str(error)
+        return self
+
+    def plan_call(self, call: ToolCall, tool: EditTool) -> None:
+        path, edits, create_file = tool.parse()
+        state = self.file_state(path, create_file)
+        before, created = state.text(), not state.exists
+        lines, changes = self.apply(tool, state, edits)
+        after = "".join(line.text for line in lines)
+        if after == before:
+            raise ToolError("edit produced no changes")
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, changes)
+        state.lines, state.exists = lines, True
+
+    def file_state(self, path: str, create_file: bool) -> FileState:
+        if path in self.files:
+            state = self.files[path]
+            if not state.exists and not create_file:
+                raise ToolError("file does not exist; set create_file=true to create it")
+            return state
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as file:
+                original = file.readlines()
+            state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)
+        elif create_file:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            state = self.FileState(path, [], [], False)
+        else:
+            raise ToolError("file does not exist; set create_file=true to create it")
+        self.files[path] = state
+        return state
+
+    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> tuple[list[Line], list[tuple[int, int, int, int]]]:
+        if any(edit.op == "replace_all" for edit in edits):
+            if any(edit.op != "replace_all" for edit in edits):
+                raise ToolError("replace_all cannot be mixed with anchored edits")
+            content = state.text()
+            for edit in edits:
+                if not edit.old and content:
+                    raise ToolError("replace_all requires old")
+                if edit.old and edit.old not in content:
+                    raise ToolError("replace_all old text not found")
+                content = content.replace(edit.old, edit.new)
+            lines = [self.Line(line, None) for line in content.splitlines(True)]
+            return lines, [(0, 0, 0, len(lines))]
+
+        replacements = []
+        for edit in edits:
+            start = self.resolve_anchor(state, edit.start)
+            if edit.op in {"replace", "delete"}:
+                end = self.resolve_anchor(state, edit.end)
+                if end < start:
+                    raise ToolError("end anchor is before start anchor")
+                replacement = [] if edit.op == "delete" else self.new_lines(tool.content_lines(edit.content, end + 1 < len(state.lines)))
+                replacements.append((start, end + 1, replacement))
+            elif edit.op in {"insert_before", "insert_after"}:
+                index = start if edit.op == "insert_before" else start + 1
+                replacements.append((index, index, self.new_lines(tool.content_lines(edit.content, index < len(state.lines)))))
+            else:
+                raise ToolError("unknown edit op")
+
+        previous = None
+        for start, end, _replacement in sorted(replacements):
+            if previous and (start < previous[1] or (start == previous[0] and end == previous[1])):
+                raise ToolError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
+            previous = (start, end)
+
+        lines = list(state.lines)
+        for start, end, replacement in sorted(replacements, reverse=True):
+            lines[start:end] = replacement
+        return lines, self.changes(replacements)
+
+    @staticmethod
+    def new_lines(lines: list[str]) -> list[Line]:
+        return [EditBatchPlan.Line(line, None) for line in lines]
+
+    @staticmethod
+    def changes(replacements: list[tuple[int, int, list[Line]]]) -> list[tuple[int, int, int, int]]:
+        changes, delta = [], 0
+        for start, end, replacement in sorted(replacements):
+            new_start = start + delta
+            new_end = new_start + len(replacement)
+            clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
+            changes.append((new_start, clear_end, new_start, new_end))
+            delta += len(replacement) - (end - start)
+        return changes
+
+    def resolve_anchor(self, state: FileState, anchor: str) -> int:
+        match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
+        if not match:
+            raise ToolError('invalid anchor; use "line:hash" from Read or Search')
+        index, expected = int(match.group(1)), match.group(2).lower()
+        if index < len(state.lines) and ReadTool.line_hash(state.lines[index].text) == expected:
+            return index
+        if index < len(state.original) and ReadTool.line_hash(state.original[index]) == expected:
+            current = state.current_origin(index)
+            if current is not None:
+                return current
+            raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
+        actual = ReadTool.line_hash(state.lines[index].text) if index < len(state.lines) else "out of range"
+        raise ToolError(f"stale anchor {anchor}; current hash is {actual}")
+
+
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -2451,20 +2651,55 @@ class ToolRunner:
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
-        refused = False
-        for index, call in enumerate(calls):
-            self.session.state.turn_tool_calls += 1
-            status, content = (
-                ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True))
-                if refused
-                else self.run_one(call, batch_suffix=batch_suffix if index == 0 else "")
-            )
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-            if status == "refused":
-                refused = True
+        index = 0
+        first, refused = True, False
+        while index < len(calls):
+            end = index + 1 if self.edit_barrier(calls[index]) else self.edit_segment_end(calls, index)
+            segment = calls[index:end]
+            plan = EditBatchPlan(self.session).build(segment) if not refused and any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
+            for call in segment:
+                self.session.state.turn_tool_calls += 1
+                suffix = batch_suffix if first else ""
+                first = False
+                status, content = (
+                    ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True))
+                    if refused
+                    else self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+                )
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                if status == "refused":
+                    refused = True
+            index = end
         return messages
 
-    def run_one(self, call: ToolCall, batch_suffix: str = "") -> tuple[str, str]:
+    def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
+        end = start
+        while end < len(calls) and not self.edit_barrier(calls[end]):
+            end += 1
+        return end
+
+    def edit_barrier(self, call: ToolCall) -> bool:
+        if call.name == "Edit":
+            return False
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            return True
+        if tool_class.MUTATES:
+            return True
+        if call.name == "Git":
+            try:
+                return tool_class(self.session, call.args).needs_confirmation()
+            except Exception:
+                return True
+        return False
+
+    def run_one(
+        self,
+        call: ToolCall,
+        batch_suffix: str = "",
+        planned_edit: EditBatchPlan.PlannedEdit | None = None,
+        plan_error: str = "",
+    ) -> tuple[str, str]:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
@@ -2474,18 +2709,20 @@ class ToolRunner:
         started, approved, display = time.monotonic(), False, None
         try:
             display = self.short_call(call, tool.short_args())
+            if plan_error:
+                raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                self.output_fn(self.approval_display(call, tool, "auto", batch_suffix=batch_suffix))
+                self.output_fn(self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit))
             elif needs_confirmation:
-                confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix)
+                confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
-            output = tool.call()
+            output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         except Exception as error:
@@ -2562,19 +2799,22 @@ class ToolRunner:
                 pass
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
-    def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "") -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix))
+    def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
+        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
         return False, "" if lower in {"n", "no"} else answer
 
-    def approval_display(self, call: ToolCall, tool: Tool, status: str, batch_suffix: str = "") -> str:
+    def approval_display(
+        self, call: ToolCall, tool: Tool, status: str, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None
+    ) -> str:
         header = self.with_batch_suffix(("approve " if status == "confirm" else "auto ") + self.short_call(call), batch_suffix)
         if tool.NAME != "Edit":
             return header
-        return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
+        preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
+        return header + (("\n" + block) if (block := self.preview_block(preview)) else "")
 
     def preview_block(self, preview: str, *, max_lines: int = 40) -> str:
         lines = preview.rstrip().splitlines()

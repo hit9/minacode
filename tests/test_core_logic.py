@@ -327,8 +327,8 @@ def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
     debug = session(tmp_path)
     debug.settings.debug = True
     n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
-    assert len(debug.tool_records) == 1
-    assert len(debug.tool_results) == 1
+    assert debug.tool_records == []
+    assert debug.tool_results == {}
     assert len(debug.tool_errors) == 1
 
 

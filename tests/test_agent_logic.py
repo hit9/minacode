@@ -135,8 +135,29 @@ def test_file_context_marks_full_file_reads(tmp_path):
     s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], output, n.ToolRunner(s, n.ContextManager(s)).tool_note(call("Read", []), output))
 
     rendered = n.ContextManager(s).file_context()
-    assert "- a.txt 0:2 (FULL FILE, from Read 0:0)" in rendered
-    assert "Read a.txt 0:2 FULL FILE" in rendered
+    assert "- a.txt 0:2 current" in rendered
+    assert "|one" in rendered
+    assert "|two" in rendered
+
+
+def test_file_context_projection_prefers_recent_current_lines(tmp_path, monkeypatch):
+    old_path = tmp_path / "old.txt"
+    new_path = tmp_path / "new.txt"
+    old_path.write_text("old-0\n" + "".join(f"old-{index}\n" for index in range(1, 80)), encoding="utf-8")
+    new_path.write_text("new-0\n" + "".join(f"new-{index}\n" for index in range(1, 80)), encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    monkeypatch.setattr(n.ContextManager, "FILE_STATE_CHAR_BUDGET", 900)
+
+    s.store_tool_result("Read", [{"path": "old.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "old.txt", "ranges": [[0, 0]]}]).call())
+    new_key = s.store_tool_result(
+        "Read", [{"path": "new.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "new.txt", "ranges": [[0, 0]]}]).call()
+    )
+
+    rendered = context.file_context()
+    assert f"source={new_key} tool=Read" in rendered
+    assert "|new-" in rendered
+    assert "old.txt source=current lines=" in rendered
 
 
 def test_tool_error_records_keep_recent_failures(tmp_path):
@@ -199,7 +220,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
     runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "replace_all", "old": "", "new": "second"}], True])])
 
-    assert len(s.tool_records) == 1
+    assert s.tool_records == []
     assert len(s.tool_errors) == 1
     assert "skip it" in s.tool_errors[0].error
     assert not (tmp_path / "second.txt").exists()
@@ -227,7 +248,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
 
     runner.run([call("Bash", ["printf first"])])
 
-    assert len(s.tool_records) == 1
+    assert s.tool_records == []
     assert len(s.tool_errors) == 1
     assert "not now" in s.tool_errors[0].error
 
