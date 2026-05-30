@@ -111,16 +111,16 @@ model request
 |   Memory: goal, summary, plan, known, date       |
 +--------------------------------------------------+
 | user                                             |
-|   CURRENT WORKING CONTEXT                       |
+|   ACTIVE FILE VIEW                              |
 +--------------------------------------------------+
 ```
 
 Core rules:
 
-- CURRENT WORKING CONTEXT includes the latest active `Read`, `Edit`, and `CreateFile` file ranges.
+- ACTIVE FILE VIEW includes the latest active `Read`, `Edit`, and `CreateFile` file ranges.
 - Newer file lines overwrite older lines; edit invalidations clear stale ranges.
 - File lines are checked against current file stat or line hash before being shown.
-- Successful `Read`, `Edit`, and `CreateFile` tool messages point to CURRENT WORKING CONTEXT instead of repeating file bodies.
+- Successful `Read`, `Edit`, and `CreateFile` tool messages point to ACTIVE FILE VIEW instead of repeating file bodies.
 - Other tool outputs are bounded in conversation messages.
 
 ## Safety

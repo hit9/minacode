@@ -34,7 +34,7 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
     assert messages[-2]["content"].startswith("--- Memory ---")
     assert "Date:" in messages[-2]["content"]
-    assert messages[-1]["content"].startswith("--- CURRENT WORKING CONTEXT ---")
+    assert messages[-1]["content"].startswith("--- ACTIVE FILE VIEW ---")
 
 
 def test_empty_file_context_is_empty(tmp_path):
@@ -117,9 +117,9 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert edit_key in rendered
     assert "Current focus: inspect" in rendered
     assert f"source={edit_key} tool=Edit" in rendered
-    assert "Available:\n- a.txt 0:2" in rendered
-    assert "**ALREADY READ FILE RANGES ARE BELOW" in rendered
-    assert f"Recent file actions:\n- {read_key} Read" in rendered
+    assert "Files:\n- a.txt 0:2" in rendered
+    assert "Use these file ranges before calling Read again." in rendered
+    assert f"Recent file events:\n- {read_key} Read" in rendered
     assert f"@@ a.txt 0:1 source={edit_key} tool=Edit" in rendered
     assert rendered.endswith("OUTPUT IN USER LANGUAGE")
     assert "|new" in rendered
@@ -229,6 +229,36 @@ def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     assert [record.key for record in s.tool_records] == [key]
 
 
+def test_read_cache_hit_avoids_duplicate_result_keys(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    messages = runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}]), call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
+
+    assert len(s.tool_records) == 1
+    assert messages[0]["content"].startswith("tool tr.1 Read a.txt 0:0")
+    assert "FILE VIEW UPDATED" in messages[0]["content"]
+    assert messages[1]["content"].startswith("tool Read a.txt 0:0")
+    assert "READ CACHE HIT" in messages[1]["content"]
+    assert "- a.txt 0:2 FULL source=tr.1" in messages[1]["content"]
+
+
+def test_read_cache_hit_misses_when_full_file_changed(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
+    path.write_text("alpha\nchanged\n", encoding="utf-8")
+    messages = runner.run([call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])])
+
+    assert len(s.tool_records) == 2
+    assert "READ CACHE HIT" not in messages[0]["content"]
+    assert "FILE VIEW UPDATED" in messages[0]["content"]
+
+
 def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
@@ -247,9 +277,13 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert [len(messages) for messages in agent.model.messages] == [5, 6]
-    assert any("tool tr.1 Read a.txt 0:1" in message["content"] for message in agent.model.messages[1])
-    assert any("READ COMPLETED. CONTENT IS NOW IN CURRENT WORKING CONTEXT" in message["content"] for message in agent.model.messages[1])
+    assert [len(messages) for messages in agent.model.messages] == [5, 7]
+    assert agent.model.messages[1][3]["role"] == "assistant"
+    assert agent.model.messages[1][3]["tool_calls"][0]["id"] == "Read-id"
+    assert agent.model.messages[1][4]["role"] == "tool"
+    assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
+    assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
+    assert any(message["role"] == "tool" and "FILE VIEW UPDATED" in message["content"] for message in agent.model.messages[1])
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -309,6 +343,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[0]["content"] == "initial request"
     assert s.messages[1]["content"] == "extra instruction"
     assert s.messages[2]["content"] == "checking"
+    assert s.messages[3]["role"] == "tool"
     assert s.messages[3]["content"].startswith("tool tr.1 LineCount")
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
@@ -423,11 +458,11 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
     assert any(line.startswith("tool Read") for line in output)
-    assert [message["role"] for message in s.messages] == ["user", "assistant", "user", "assistant"]
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
     assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
-    assert s.messages[2]["content"].endswith("DO NOT READ THIS FILE/RANGE AGAIN UNLESS IT CHANGED.")
+    assert "Use ACTIVE FILE VIEW before calling Read again." in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 

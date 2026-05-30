@@ -2006,7 +2006,7 @@ class ContextManager:
             messages.append({"role": "user", "content": self.render_section("Runtime Feedback", error_feedback.strip())})
         messages.extend([
             {"role": "user", "content": self.render_section("Memory", self.memory_context(with_date=True))},
-            {"role": "user", "content": self.render_section("CURRENT WORKING CONTEXT", self.file_context() or "(empty)")},
+            {"role": "user", "content": self.render_section("ACTIVE FILE VIEW", self.file_context() or "(empty)")},
         ])
         return Text.value(messages)
 
@@ -2041,6 +2041,10 @@ class ContextManager:
         return "\n".join([f"- cwd: {info.cwd}", f"- os: {info.os}", f"- arch: {info.arch}", f"- shell_timeout: {self.session.settings.shell_timeout}s", "- detected_commands: " + (", ".join(info.commands) or "(none)")])
 
     def file_context(self) -> str:
+        lines_by_path, omitted = self.active_file_lines()
+        return self.bound_output(self.render_file_lines(lines_by_path, omitted))
+
+    def active_file_lines(self) -> tuple[dict[str, dict[int, tuple[str, str, str]]], dict[str, dict[str, int]]]:
         lines_by_path: dict[str, dict[int, tuple[str, str, str]]] = {}
         omitted: dict[str, dict[str, int]] = {}
         items = sorted(self.file_items(), key=lambda item: (item.order, item.phase, item.path, item.start))
@@ -2062,7 +2066,51 @@ class ContextManager:
             else:
                 omitted.setdefault(item.path, {}).setdefault(item.source, 0)
                 omitted[item.path][item.source] += 1
-        return self.bound_output(self.render_file_lines(lines_by_path, omitted))
+        return lines_by_path, omitted
+
+    def read_cache_rows(self, targets: list[tuple[str, list[tuple[int, int]]]]) -> list[str]:
+        lines_by_path, _omitted = self.active_file_lines()
+        rows = []
+        for path, ranges in targets:
+            relpath = self.session.relpath(path)
+            lines = lines_by_path.get(relpath) or {}
+            for start, end in ranges:
+                if end == 0:
+                    row = self.full_file_cache_row(relpath)
+                else:
+                    row = self.line_range_cache_row(relpath, start, end, lines)
+                if not row:
+                    return []
+                rows.append(row)
+        return rows
+
+    def full_file_cache_row(self, relpath: str) -> str:
+        current = self.current_stat(relpath)
+        if current is None:
+            return ""
+        for record in reversed(self.session.tool_records):
+            if record.name != "Read":
+                continue
+            for block in re.finditer(r"(?s)<Read\s+path=(\".*?\").*?>(.*?)</Read>", record.output):
+                try:
+                    path = str(json.loads(block.group(1)))
+                except json.JSONDecodeError:
+                    continue
+                body = block.group(2)
+                total_match = re.search(r"<total_lines>(\d+)</total_lines>", body)
+                if path != relpath or not total_match or self.output_stat(body) != current:
+                    continue
+                total = int(total_match.group(1))
+                if any(int(start) == 0 and int(end) == total for start, end in re.findall(r"<range>(\d+):(\d+)</range>", body)):
+                    return f"- {relpath} 0:{total} FULL source={record.key}"
+        return ""
+
+    @staticmethod
+    def line_range_cache_row(relpath: str, start: int, end: int, lines: dict[int, tuple[str, str, str]]) -> str:
+        if end < start or any(index not in lines for index in range(start, end)):
+            return ""
+        sources = ",".join(dict.fromkeys(lines[index][0] for index in range(start, end))) if end > start else "ACTIVE"
+        return f"- {relpath} {start}:{end} source={sources}"
 
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
@@ -2112,15 +2160,15 @@ class ContextManager:
         focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not errors:
             return ""
-        chunks = ["**ALREADY READ FILE RANGES ARE BELOW. DO NOT READ THEM AGAIN UNLESS THE FILE CHANGED.**"] if paths else []
+        chunks = ["Use these file ranges before calling Read again."] if paths else []
         if focus:
             chunks.extend(["", "Current focus: " + focus])
         if paths:
-            chunks.extend(["", "Available:"])
+            chunks.extend(["", "Files:"])
             for path in paths:
                 chunks.extend(f"- {path} {start}:{end}{self.coverage_note(path, start, end)}" for start, end in self.coverage(lines_by_path[path]))
         if actions:
-            chunks.extend(["", "Recent file actions:", *actions])
+            chunks.extend(["", "Recent file events:", *actions])
         if errors:
             chunks.extend(["", "Recent tool errors:", *errors])
         if paths:
@@ -2267,12 +2315,13 @@ class ToolRunner:
 
     def run(self, calls: list[ToolCall]) -> list[Json]:
         messages = []
+        refused = False
         for call in calls:
             self.session.state.turn_tool_calls += 1
-            status, content = self.run_one(call)
-            messages.append({"role": "user", "content": content})
+            status, content = ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)) if refused else self.run_one(call)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
             if status == "refused":
-                break
+                refused = True
         return messages
 
     def run_one(self, call: ToolCall) -> tuple[str, str]:
@@ -2294,6 +2343,8 @@ class ToolRunner:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display)
                 approved = True
+            if isinstance(tool, ReadTool) and (cached := self.read_cache_hit(tool)):
+                return "ok", self.finish(call, cached, elapsed=time.monotonic() - started, display=display, store=False)
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
             output = tool.call()
@@ -2311,9 +2362,9 @@ class ToolRunner:
         self.output_fn(self.finish_display(call, "", output, failed=True, display=display))
         return self.tool_message(call, "", output, failed=True, display=display)
 
-    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False, display: str | None = None) -> str:
+    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False, display: str | None = None, store: bool = True) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        key = self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output)) if tool_class is None or tool_class.STORES_RESULT else ""
+        key = self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output)) if store and (tool_class is None or tool_class.STORES_RESULT) else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
@@ -2322,7 +2373,7 @@ class ToolRunner:
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
-        rows = ["tool " + (key or "-") + " " + (display or self.short_call(call))]
+        rows = ["tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))]
         if failed:
             rows.append("status: failed")
         rows.extend(["output:", self.project_output(call, key, output, failed)])
@@ -2330,8 +2381,46 @@ class ToolRunner:
 
     def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
         if not failed and key and call.name in {"Read", "Edit", "CreateFile"}:
-            return f"{call.name.upper()} COMPLETED. CONTENT IS NOW IN CURRENT WORKING CONTEXT. DO NOT READ THIS FILE/RANGE AGAIN UNLESS IT CHANGED."
+            return "\n".join(["FILE VIEW UPDATED:", *self.file_view_rows(key, output), "Use ACTIVE FILE VIEW before calling Read again."]).strip()
         return self.context.bound_output(output, key).rstrip()
+
+    def read_cache_hit(self, tool: ReadTool) -> str:
+        rows = self.context.read_cache_rows(tool.targets())
+        return "\n".join(["READ CACHE HIT:", *rows, "Already valid in ACTIVE FILE VIEW."]) if rows else ""
+
+    def file_view_rows(self, key: str, output: str) -> list[str]:
+        rows = []
+        for block in re.finditer(r"(?s)<(Read|Edit|CreateFile)\s+path=(\".*?\").*?>(.*?)</\1>", output):
+            try:
+                path = str(json.loads(block.group(2)))
+            except json.JSONDecodeError:
+                continue
+            body = block.group(3)
+            total_match = re.search(r"<total_lines>(\d+)</total_lines>", body)
+            total = int(total_match.group(1)) if total_match else None
+            ranges = [(int(start), int(end)) for start, end in re.findall(r"<range>(\d+):(\d+)</range>", body)]
+            if not ranges:
+                numbers = [int(match.group(1)) for match in re.finditer(r"(?m)^(\d+):[0-9a-f]{6}\|", body)]
+                ranges = self.coverage(numbers)
+            for start, end in ranges:
+                full = " FULL" if total is not None and start == 0 and end == total else ""
+                rows.append(f"- {path} {start}:{end}{full} source={key}")
+        return rows or ["- source=" + key]
+
+    @staticmethod
+    def coverage(numbers: list[int]) -> list[tuple[int, int]]:
+        if not numbers:
+            return []
+        numbers = sorted(numbers)
+        ranges, start, previous = [], numbers[0], numbers[0]
+        for number in numbers[1:]:
+            if number == previous + 1:
+                previous = number
+                continue
+            ranges.append((start, previous + 1))
+            start = previous = number
+        ranges.append((start, previous + 1))
+        return ranges
 
     def tool_note(self, call: ToolCall, output: str) -> str:
         if call.name == "CreateFile" and call.args and isinstance(call.args[0], str):
@@ -2765,7 +2854,7 @@ RULES:
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    _assistant, tool_calls, content = self.model.request(self.messages(turn_messages, parser_feedback))
+                    assistant, tool_calls, content = self.model.request(self.messages(turn_messages, parser_feedback))
                     parser_feedback = ""
                     break
                 except ModelRequestRetry:
@@ -2784,10 +2873,10 @@ RULES:
                 self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
                 self.session.state.turn_messages = 0
                 return answer
+            assistant = self.assistant_turn_message(assistant, tool_calls, content)
+            turn_messages.append(assistant)
             if content.strip():
-                message = {"role": "assistant", "content": content.strip()}
-                turn_messages.append(message)
-                self.output_fn(message["content"])
+                self.output_fn(content.strip())
             turn_messages.extend(self.tools.run(tool_calls))
         stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
@@ -2802,6 +2891,18 @@ RULES:
         messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
         self.context.update_percent(messages)
         return messages
+
+    @staticmethod
+    def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
+        message = dict(assistant or {})
+        message["role"] = "assistant"
+        message["content"] = message.get("content") if message.get("content") is not None else (content.strip() or None)
+        if tool_calls and not message.get("tool_calls"):
+            message["tool_calls"] = [
+                {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps({"args": call.args}, ensure_ascii=False)}}
+                for call in tool_calls
+            ]
+        return Text.value(message)
 
 
 class CommandCompleter(Completer):

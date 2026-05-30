@@ -370,7 +370,7 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     assert "|second" in rendered
     assert "|first" not in rendered
     assert f"source={new_key} tool=Read" in rendered
-    assert "**ALREADY READ FILE RANGES ARE BELOW" in rendered
+    assert "Use these file ranges before calling Read again." in rendered
     assert "- a.txt 0:1" in rendered
     assert f"@@ a.txt 0:1 source={new_key} tool=Read" in rendered
     assert old_key in rendered
