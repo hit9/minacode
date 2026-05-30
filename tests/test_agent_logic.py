@@ -575,6 +575,34 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
 
 
+def test_tool_preview_handles_only_interactive_edit_approval(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    shown = []
+    loop.interactive_input = True
+    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(loop, "show_transient_tool_preview", shown.append)
+
+    assert loop.tool_preview("approve Edit a.py\n  preview\n  diff")
+    assert shown == ["approve Edit a.py\n  preview\n  diff"]
+    assert not loop.tool_preview("approve Bash echo ok")
+
+
+def test_tool_runner_edit_approval_can_use_preview_callback(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    outputs = []
+    previews = []
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=outputs.append)
+    runner.preview_fn = lambda text: previews.append(text) or True
+
+    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": "x\n"}]])])
+
+    assert previews and previews[0].startswith("approve Edit new.txt\n  preview")
+    assert not any(output.startswith("approve Edit") for output in outputs)
+    assert any("[approved]" in output for output in outputs)
+
+
 def test_memory_command_shows_durable_memory(tmp_path):
     s = session(tmp_path)
     s.state.goal = "ship"

@@ -2636,6 +2636,7 @@ class ToolRunner:
         self.context = context
         self.input_fn = input_fn
         self.output_fn = output_fn
+        self.preview_fn: Callable[[str], bool] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
 
@@ -2790,7 +2791,8 @@ class ToolRunner:
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
+        if not (self.preview_fn and self.preview_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))):
+            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
@@ -3892,6 +3894,7 @@ Tools:
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
+        self.agent.tools.preview_fn = self.tool_preview
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
 
@@ -4238,6 +4241,22 @@ Tools:
         self.clear_transient_tool_output()
         self.emit(text)
         self.transient_tool_lines = len(text.splitlines() or [""])
+
+    def tool_preview(self, text: str) -> bool:
+        if not text.startswith("approve Edit ") or not self.interactive_input or not sys.stdout.isatty():
+            return False
+        self.with_status_paused(lambda: self.show_transient_tool_preview(text))
+        return True
+
+    def show_transient_tool_preview(self, text: str) -> None:
+        self.clear_transient_tool_output()
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return
+        height, width = 12, max(20, shutil.get_terminal_size((120, 20)).columns)
+        shown = lines[:height] + (["... preview truncated ..."] if len(lines) > height else [])
+        self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
+        self.transient_tool_lines = len(shown)
 
     def emit_tool_output(self, text: str) -> None:
         self.clear_transient_tool_output()
