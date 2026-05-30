@@ -1300,9 +1300,6 @@ class CodeIndex:
     def __init__(self, session: Session):
         self.session = session
 
-    def db_path(self) -> str:
-        return os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
-
     def available(self) -> bool:
         status, message = self.status()
         self.session.state.code_index_error = message if status == "error" else ""
@@ -1366,7 +1363,8 @@ class CodeIndex:
             return "code_index: error\n" + self.fail(error)
         self.finish()
         status, message = self.status(check=True)
-        lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + self.db_path()]
+        index_path = os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
+        lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + index_path]
         if message:
             lines.append("note: " + message)
         return "\n".join(lines)
@@ -2112,18 +2110,15 @@ class ContextManager:
         self.session = session
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
+        file_context = self.file_context() or "(empty)"
         messages = [
             {"role": "system", "content": base_system.strip()},
-            {"role": "user", "content": self.render_section("Environment", self.environment())},
+            {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
             *self.session.messages,
             *(turn_messages or []),
+            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
+            {"role": "user", "content": "--- FILE STATE ---\n" + file_context},
         ]
-        messages.extend(
-            [
-                {"role": "user", "content": self.render_section("Memory", self.memory_context(with_date=True))},
-                {"role": "user", "content": self.render_section("FILE STATE", self.file_context() or "(empty)")},
-            ]
-        )
         return Text.value(messages)
 
     def update_percent(self, messages: list[Json]) -> int:
@@ -2141,12 +2136,9 @@ class ContextManager:
             self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-            self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
+            summary = self.session.state.summary
+            self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
             self.prune_tool_records([*keep, *(turn_messages or [])])
-
-    @staticmethod
-    def render_section(name: str, body: str) -> str:
-        return f"--- {name} ---\n{body or '(empty)'}"
 
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = [
@@ -2157,10 +2149,6 @@ class ContextManager:
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
         return "\n\n".join(rows)
-
-    @staticmethod
-    def message_text(message: Json) -> str:
-        return f"{message.get('role', 'message')}:\n{message.get('content') or ''}"
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -2345,11 +2333,12 @@ class ContextManager:
         return messages[:cut], messages[cut:]
 
     def messages_text(self, messages: list[Json]) -> str:
-        return "\n\n".join(self.message_text(message) for message in messages) or "(empty)"
+        return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
 
     def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
         self.session.state.apply(data)
-        self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
+        summary = self.session.state.summary
+        self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
         self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
@@ -2375,9 +2364,6 @@ class ContextManager:
                 keep.add(record.key)
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
-
-    def summary_message(self, summary: str) -> list[Json]:
-        return [{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary.strip()}] if summary.strip() else []
 
     def latest_user_index(self, messages: list[Json]) -> int | None:
         for index in range(len(messages) - 1, -1, -1):
@@ -3038,23 +3024,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "cwd": self.session.cwd,
             "host": provider.host(),
             "model": provider.model,
-            "tools": self.tool_schema_names(tools),
+            "tools": ",".join(sorted(DebugTrace.tool_names(tools))) or "(none)",
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "nanocode-" + digest[:24]
-
-    @staticmethod
-    def tool_schema_names(tools: list[Json] | None) -> str:
-        names = [
-            name
-            for schema in tools or []
-            if (
-                name := str(
-                    (schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or schema.get("type") or ""
-                )
-            )
-        ]
-        return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
@@ -3896,8 +3869,15 @@ Tools:
         self.queue_input_active = threading.Event()
         self.queue_input_app: Application | None = None
         self.queue_input_text = ""
-        self.input_history = self.make_input_history() if self.interactive_input else None
-        self.input_completer = self.make_completer()
+        if self.interactive_input:
+            history_path = self.session.data_path("history.txt")
+            os.makedirs(os.path.dirname(history_path), exist_ok=True)
+            self.input_history = FileHistory(history_path)
+        else:
+            self.input_history = None
+        self.input_completer = CommandCompleter(
+            providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models
+        )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
@@ -4085,14 +4065,6 @@ Tools:
                 "search-toolbar.text": "ansiwhite",
             }
         )
-
-    def make_input_history(self):
-        history_path = self.session.data_path("history.txt")
-        os.makedirs(os.path.dirname(history_path), exist_ok=True)
-        return FileHistory(history_path)
-
-    def make_completer(self) -> CommandCompleter:
-        return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
     def status_window(self, *, active: bool = False) -> Window:
         return Window(
