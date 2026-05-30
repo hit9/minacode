@@ -11,15 +11,21 @@ def session(tmp_path):
     return n.Session(cwd=str(tmp_path))
 
 
+def data_session(tmp_path):
+    return n.Session(cwd=str(tmp_path), config=n.Config(data_dir=str(tmp_path / ".data")))
+
+
 def test_runtime_settings_reads_limits_and_yolo_override():
     settings = n.RuntimeSettings.from_dict(
-        {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "yolo": False}},
+        {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "check_updates": False, "update_check_interval_hours": 0, "yolo": False}},
         yolo=True,
     )
 
     assert settings.shell_timeout == 7
     assert settings.max_steps == 1
     assert settings.max_context_tokens == 1
+    assert settings.check_updates is False
+    assert settings.update_check_interval_hours == 1
     assert settings.yolo is True
 
 
@@ -76,7 +82,8 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     client = n.ModelClient(session(tmp_path))
     message = SimpleNamespace(
         tool_calls=[
-            SimpleNamespace(id="ok", function=SimpleNamespace(name="Bash", arguments=json.dumps({"args": ["pwd"], "intention": "cwd"}))),
+            SimpleNamespace(id="ok", function=SimpleNamespace(name="Bash", arguments=json.dumps({"command": "pwd"}))),
+            SimpleNamespace(id="second", function=SimpleNamespace(name="Bash", arguments=json.dumps({"command": "whoami"}))),
             SimpleNamespace(id="bad-json", function=SimpleNamespace(name="Read", arguments="{")),
             SimpleNamespace(id="list-payload", function=SimpleNamespace(name="Recall", arguments=json.dumps(["tr.1"]))),
         ]
@@ -84,11 +91,42 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
 
     calls = client.tool_calls(message)
 
-    assert calls[0] == n.ToolCall(id="ok", name="Bash", args=["pwd"], intention="cwd")
-    assert calls[1].id == "bad-json"
-    assert calls[1].name == "Read"
-    assert calls[1].args == []
-    assert calls[2] == n.ToolCall(id="list-payload", name="Recall", args=[["tr.1"]], intention="")
+    assert calls[0] == n.ToolCall(id="ok", name="Bash", args=["pwd"])
+    assert calls[1] == n.ToolCall(id="second", name="Bash", args=["whoami"])
+    assert calls[2].id == "bad-json"
+    assert calls[2].name == "Read"
+    assert calls[2].args == []
+    assert calls[3] == n.ToolCall(id="list-payload", name="Recall", args=[["tr.1"]])
+
+
+def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.config.provider.url = "https://example.test/v1"
+    s.config.provider.key = "key"
+    s.config.provider.model = "model"
+    client = n.ModelClient(s)
+    calls = []
+
+    def fail(_messages, _tools):
+        calls.append(1)
+        raise n.ModelError("Error code: 500 - provider failed")
+
+    monkeypatch.setattr(client, "chat_request", fail)
+    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(n.ModelError, match="after 3 attempts"):
+        client.request([{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 3
+    assert s.state.model_retry_count == 2
+
+
+def test_retryable_error_detects_status_codes_in_text(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+
+    assert client.retryable_error(n.ModelError("Error code: 500 - provider failed"))
+    assert client.retryable_error(n.ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
+    assert not client.retryable_error(n.ModelError("Error code: 400 - bad request"))
 
 
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():
@@ -102,13 +140,15 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.completion_tokens == 8
     assert usage.total_tokens == 30
     assert usage.cached_prompt_tokens == 6
+    assert usage.last_total_tokens == 10
+    assert usage.last_cached_prompt_tokens == 2
 
 
 def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
     s = session(tmp_path)
-    s.store_tool_result("Bash", [bad], bad, bad)
-    s.record_tool_error("tr.1", "Bash", [bad], bad, bad)
+    s.store_tool_result("Bash", [bad], bad)
+    s.record_tool_error("tr.1", "Bash", [bad], bad)
 
     messages = n.ContextManager(s).model_messages("sys", [{"role": "user", "content": bad}])
     debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
@@ -117,6 +157,20 @@ def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
     json.dumps(debug_payload, ensure_ascii=False).encode("utf-8")
     assert "\udce5" not in str(messages)
     assert "\udce5" not in str(debug_payload)
+
+
+def test_debug_trace_overwrites_last_file(tmp_path):
+    s = data_session(tmp_path)
+    s.settings.debug = True
+
+    first = n.DebugTrace.write(s, activity="one", label="prompt", payload={"value": 1})
+    second = n.DebugTrace.write(s, activity="two", label="prompt", payload={"value": 2})
+    data = json.loads((tmp_path / ".data" / "debug" / "last-prompt.json").read_text(encoding="utf-8"))
+
+    assert first == second
+    assert first.endswith("debug/last-prompt.json")
+    assert data["activity"] == "two"
+    assert data["payload"] == {"value": 2}
 
 
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
@@ -224,17 +278,87 @@ def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     assert second in n.StatusBar.INDEX_SPINNER
 
 
+def test_update_checker_version_cache_and_status_signal(tmp_path):
+    s = data_session(tmp_path)
+    checker = n.UpdateChecker(s)
+
+    s.update.latest = "99.0.0"
+    s.update.checked_at = 123
+    checker.save_cache()
+    s.update.latest = ""
+    s.update.checked_at = 0
+    checker.load_cache()
+
+    assert n.UpdateStatus.version_tuple("1.2") == (1, 2, 0)
+    assert s.update.newer_than(n.__version__)
+    assert s.update.latest in n.StatusBar(s).update_status()
+    assert s.update.checked_at == 123
+
+
+def test_update_checker_start_respects_switch_and_interval(tmp_path, monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            started.append((self.target, self.daemon))
+
+    s = data_session(tmp_path)
+    monkeypatch.setattr(n.threading, "Thread", FakeThread)
+
+    s.settings.check_updates = False
+    n.UpdateChecker(s).start()
+    assert started == []
+
+    s.settings.check_updates = True
+    s.update.checked_at = time.time()
+    n.UpdateChecker(s).start()
+    assert started == []
+
+    s.update.checked_at = 0
+    n.UpdateChecker(s).start()
+    assert len(started) == 1
+    assert s.update.checking is True
+
+
+def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch):
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b'{"info":{"version":"9.8.7"}}'
+
+    def fake_urlopen(request, timeout):
+        seen["timeout"] = timeout
+        seen["user_agent"] = request.get_header("User-agent")
+        return Response()
+
+    monkeypatch.setattr(n, "urlopen", fake_urlopen)
+
+    assert n.UpdateChecker(data_session(tmp_path)).fetch_latest() == "9.8.7"
+    assert seen == {"timeout": n.UpdateChecker.TIMEOUT, "user_agent": n.HTTP_USER_AGENT}
+
+
 def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
     off = session(tmp_path)
-    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [], "missing")])
+    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
     assert off.tool_records == []
     assert len(off.tool_errors) == 1
 
     debug = session(tmp_path)
     debug.settings.debug = True
-    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [], "missing")])
-    assert len(debug.tool_records) == 1
-    assert len(debug.tool_results) == 1
+    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
+    assert debug.tool_records == []
+    assert debug.tool_results == {}
     assert len(debug.tool_errors) == 1
 
 
@@ -243,7 +367,7 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s.settings.yolo = True
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([n.ToolCall("bad", "Bash", [], "bad args"), n.ToolCall("create", "CreateFile", ["ok.txt", "ok\n"], "create")])
+    runner.run([n.ToolCall("bad", "Bash", []), n.ToolCall("create", "Edit", ["ok.txt", [{"op": "create", "content": "ok\n"}]])])
 
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
@@ -257,7 +381,7 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     context = n.ContextManager(s)
 
     first_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call()
-    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", first_output)
+    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], first_output)
     assert "|first" in context.file_context()
 
     path.unlink()
@@ -268,12 +392,16 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     path.write_text("first\n", encoding="utf-8")
     s = session(tmp_path)
     context = n.ContextManager(s)
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
+    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
     path.write_text("second\n", encoding="utf-8")
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], "read", n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
+    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
 
     rendered = context.file_context()
     assert "|second" in rendered
     assert "|first" not in rendered
-    assert f"source={new_key}" in rendered
+    assert f"source={new_key} tool=Read" in rendered
+    assert "Read/Edit outputs update this section." in rendered
+    assert "- a.txt 0:1" in rendered
+    assert "Format: line:hash|text. Use line:hash as edit anchors." in rendered
+    assert f"@@ a.txt 0:1 current source={new_key} tool=Read" in rendered
     assert old_key in rendered

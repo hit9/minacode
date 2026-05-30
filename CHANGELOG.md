@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.7 - 2026-05-30
+
+### Changed
+- Encouraged early `Note` usage for multi-step work with goal and plan updates.
+- Added lightweight empty-memory guidance when goal or plan has not been set.
+- Ordered `FILE STATE` files by most recent visible Read/Edit source before stable path fallback.
+
+## 0.5.6 - 2026-05-30
+
+### Added
+- Added a visible purple approval wait indicator.
+- Expanded compact logic tests around latest-turn retention, recent-message windows, fallback trimming, and tool-result preservation.
+
+### Changed
+- Clarified prompt rules for user-visible interim output and final answers.
+- Simplified core flow by removing thin wrappers and duplicate tool-schema name extraction.
+
+### Fixed
+- Preserved raw tool results referenced from compact summaries so `tr.N` keys remain recallable.
+- Improved transient model error retry detection and final retry reporting.
+
+## 0.5.5 - 2026-05-30
+
+### Changed
+- Tightened the system prompt around FILE STATE, anchored edits, and final-answer flow.
+
+### Fixed
+- Added limited automatic retries for transient model request failures such as 5xx, rate limits, and timeouts.
+
 ## 0.5.4 - 2026-05-29
 
 ### Changed

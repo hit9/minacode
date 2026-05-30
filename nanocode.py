@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import code_symbol_index as csi
 from anthropic import Anthropic
@@ -51,12 +52,13 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.4"
+__version__ = "0.5.7"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
+MODEL_REQUEST_RETRIES = 2
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
@@ -69,17 +71,40 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
 SELECTION_BACK = object()
 
 
-class NanocodeError(Exception): pass
-class ConfigError(NanocodeError): pass
-class ModelError(NanocodeError): pass
-class ModelRequestRetry(NanocodeError): pass
-class ToolError(NanocodeError): pass
+class NanocodeError(Exception):
+    pass
+
+
+class ConfigError(NanocodeError):
+    pass
+
+
+class ModelError(NanocodeError):
+    pass
+
+
+class ModelRequestRetry(NanocodeError):
+    pass
+
+
+class ToolError(NanocodeError):
+    pass
 
 
 class Text:
+    BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
+
     @staticmethod
     def clean(text: str) -> str:
         return text.encode("utf-8", errors="replace").decode("utf-8")
+
+    @classmethod
+    def base36(cls, value: int) -> str:
+        out = ""
+        while value:
+            value, digit = divmod(value, 36)
+            out = cls.BASE36[digit] + out
+        return out or "0"
 
     @classmethod
     def value(cls, value: Any) -> Any:
@@ -194,6 +219,8 @@ class RuntimeSettings:
     shell_timeout: int = 60
     max_steps: int = 200
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    check_updates: bool = True
+    update_check_interval_hours: int = 24
     yolo: bool = False
     debug: bool = False
 
@@ -204,6 +231,8 @@ class RuntimeSettings:
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
+            check_updates=Config.bool(runtime, "check_updates", True),
+            update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
         )
 
@@ -256,8 +285,9 @@ class Config:
             return default
         if isinstance(value, bool):
             return value
-        if isinstance(value, str) and value.lower() in {"on", "true", "yes", "1", "off", "false", "no", "0"}:
-            return value.lower() in {"on", "true", "yes", "1"}
+        lower = value.lower() if isinstance(value, str) else ""
+        if lower in {"on", "true", "yes", "1", "off", "false", "no", "0"}:
+            return lower in {"on", "true", "yes", "1"}
         raise ConfigError(f"config value `{key}` must be boolean")
 
     @staticmethod
@@ -282,6 +312,7 @@ class Config:
 
 
 class ConfigFile:
+    DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
     DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
 
 [provider]
@@ -306,16 +337,14 @@ data_dir = "~/.nanocode"
 shell_timeout = 60
 max_agent_steps = 200
 max_context_tokens = 128000
+check_updates = true
+update_check_interval_hours = 24
 yolo = false
 """
 
     @classmethod
-    def path(cls) -> str:
-        return os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
-
-    @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:
-        config_path = os.path.expanduser(path or cls.path())
+        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
         if os.path.exists(config_path):
             return config_path, False
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -325,7 +354,7 @@ yolo = false
 
     @classmethod
     def load(cls, path: str | None = None) -> Json:
-        config_path = os.path.expanduser(path or cls.path())
+        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
         try:
             with open(config_path, "rb") as file:
                 data = tomllib.load(file)
@@ -343,6 +372,8 @@ class ModelUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
+    last_total_tokens: int = 0
+    last_cached_prompt_tokens: int = 0
 
     def add(self, usage: Any) -> None:
         def value(*paths: str) -> int:
@@ -360,12 +391,15 @@ class ModelUsage:
         prompt_tokens = value("prompt_tokens", "input_tokens")
         completion_tokens = value("completion_tokens", "output_tokens")
         total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
+        cached_tokens = value(
+            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+        )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
-        self.cached_prompt_tokens += value(
-            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
-        )
+        self.cached_prompt_tokens += cached_tokens
+        self.last_total_tokens = total_tokens
+        self.last_cached_prompt_tokens = cached_tokens
 
 
 @dataclass
@@ -381,10 +415,28 @@ class AgentState:
     context_percent: int = 0
     turn_step: int = 0
     turn_tool_calls: int = 0
-    debug_count: int = 0
+    turn_messages: int = 0
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
+
+    @staticmethod
+    def plan_text(item: str) -> str:
+        return re.sub(r"^\[(?: |x|X|~|-)\]\s+", "", item.strip()).strip()
+
+    @classmethod
+    def plan_rows_for(cls, items: list[str], *, status: bool = False) -> list[str]:
+        rows = [
+            f"- [{'~' if index == 0 else ' '}] {item}" if status else "- " + item
+            for index, item in enumerate(filter(None, (cls.plan_text(str(item)) for item in items)))
+        ]
+        return rows or ["- (empty)"]
+
+    def plan_rows(self, *, status: bool = False) -> list[str]:
+        return self.plan_rows_for(self.plan, status=status)
+
+    def current_focus(self) -> str:
+        return next((text for item in self.plan if (text := self.plan_text(item))), "")
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary"):
@@ -393,12 +445,30 @@ class AgentState:
         for attr in ("plan", "known"):
             value = data.get(attr)
             if isinstance(value, list):
-                setattr(self, attr, [str(item).strip() for item in value if str(item).strip()])
+                items = list(filter(None, (str(item).strip() for item in value)))
+                setattr(self, attr, [self.plan_text(item) for item in items] if attr == "plan" else items)
 
     def format(self) -> str:
-        plan = ["- " + item for item in self.plan] or ["- (empty)"]
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *plan, "Known:", *known])
+        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows(), "Known:", *known])
+
+
+@dataclass
+class UpdateStatus:
+    latest: str = ""
+    checked_at: float = 0.0
+    checking: bool = False
+    error: str = ""
+
+    def newer_than(self, current: str) -> bool:
+        current_version = self.version_tuple(current)
+        latest_version = self.version_tuple(self.latest)
+        return bool(current_version and latest_version and latest_version > current_version)
+
+    @staticmethod
+    def version_tuple(value: str) -> tuple[int, ...]:
+        match = re.match(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", value)
+        return tuple(int(part or 0) for part in match.groups()) if match else ()
 
 
 @dataclass
@@ -406,12 +476,8 @@ class ToolResultRecord:
     key: str
     name: str
     args: list[Any]
-    intention: str
     output: str
-
-    def summary(self) -> str:
-        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}]"
-        return text + (" why=" + self.intention if self.intention else "")
+    note: str = ""
 
 
 @dataclass
@@ -419,19 +485,38 @@ class ToolErrorRecord:
     key: str
     name: str
     args: list[Any]
-    intention: str
     error: str
-
-    def summary(self) -> str:
-        text = f"- tool={self.name} key={self.key} args=[{', '.join(Tool.compact(arg, 80) for arg in self.args)}] error={Tool.compact(self.error, 200)}"
-        return text + (" why=" + self.intention if self.intention else "")
 
 
 @dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
-        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs", "cat", "head", "tail", "wc", "sort", "uniq",
-        "make", "cmake", "gcc", "g++", "clang", "clang++", "node", "npm", "uv", "pytest",
+        "bash",
+        "git",
+        "rg",
+        "sed",
+        "grep",
+        "find",
+        "awk",
+        "python3",
+        "jq",
+        "xargs",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "make",
+        "cmake",
+        "gcc",
+        "g++",
+        "clang",
+        "clang++",
+        "node",
+        "npm",
+        "uv",
+        "pytest",
     )
 
     cwd: str
@@ -455,7 +540,6 @@ class Session:
     system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
-    session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
     messages: list[Json] = field(default_factory=list)
     state: AgentState = field(default_factory=AgentState)
     tool_results: dict[str, str] = field(default_factory=dict)
@@ -464,6 +548,7 @@ class Session:
     pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
+    update: UpdateStatus = field(default_factory=UpdateStatus)
 
     def __post_init__(self) -> None:
         if self.system_info is None:
@@ -495,34 +580,101 @@ class Session:
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
 
     def debug_dir(self) -> str:
-        return self.data_path("sessions", self.session_id, "debug")
+        return self.data_path("debug")
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
         return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
 
-    def store_tool_result(self, name: str, args: list[Any], intention: str, output: str) -> str:
+    def store_tool_result(self, name: str, args: list[Any], output: str, note: str = "") -> str:
         self.tool_counter += 1
         key = f"tr.{self.tool_counter}"
-        args, intention, output = Text.value(list(args)), Text.clean(intention), Text.clean(output)
+        args, output = Text.value(list(args)), Text.clean(output)
         self.tool_results[key] = output
-        self.tool_records.append(ToolResultRecord(key, name, args, intention, output))
+        self.tool_records.append(ToolResultRecord(key, name, args, output, note))
         if len(self.tool_results) > 400:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
         return key
 
-    def forget_tool_results(self, keys: list[str]) -> int:
-        wanted = set(keys)
-        count = sum(1 for key in wanted if key in self.tool_results)
-        for key in wanted:
-            self.tool_results.pop(key, None)
-        self.tool_records = [record for record in self.tool_records if record.key not in wanted]
-        return count
-
-    def record_tool_error(self, key: str, name: str, args: list[Any], intention: str, error: str) -> None:
-        self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), Text.clean(intention), " ".join(Text.clean(error).split())))
+    def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
+        self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
+
+
+class UpdateChecker:
+    PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
+    CACHE_FILE = "update.json"
+    TIMEOUT = 5
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def start(self) -> None:
+        self.load_cache()
+        if (
+            not self.session.settings.check_updates
+            or self.session.update.checking
+            or time.time() - self.session.update.checked_at < self.session.settings.update_check_interval_hours * 3600
+        ):
+            return
+        self.session.update.checking = True
+        threading.Thread(target=self.check, daemon=True).start()
+
+    def check(self) -> None:
+        try:
+            self.session.update.latest = self.fetch_latest()
+            self.session.update.error = ""
+        except Exception as error:
+            self.session.update.error = Text.clean(str(error))
+        finally:
+            self.session.update.checked_at = time.time()
+            self.session.update.checking = False
+            self.save_cache()
+
+    def fetch_latest(self) -> str:
+        request = Request(self.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
+        with urlopen(request, timeout=self.TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
+        if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
+            raise NanocodeError("invalid PyPI version response")
+        return version
+
+    def load_cache(self) -> None:
+        try:
+            with open(self.session.data_path(self.CACHE_FILE), encoding="utf-8") as file:
+                data = json.load(file)
+            latest = str(data.get("latest") or "")
+            self.session.update.latest = latest if UpdateStatus.version_tuple(latest) else ""
+            self.session.update.checked_at = float(data.get("checked_at") or 0)
+        except Exception:
+            pass
+
+    def save_cache(self) -> None:
+        path = self.session.data_path(self.CACHE_FILE)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump({"checked_at": self.session.update.checked_at, "latest": self.session.update.latest}, file)
+        except Exception:
+            pass
+
+    def status_line(self) -> str:
+        update = self.session.update
+        if not self.session.settings.check_updates:
+            return "update: off"
+        if update.checking:
+            return "update: checking"
+        return (
+            f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)"
+            if update.newer_than(__version__)
+            else "update: error"
+            if update.error
+            else "update: current"
+            if update.latest
+            else "update: unknown"
+        )
 
 
 class Tool:
@@ -541,43 +693,25 @@ class Tool:
 
     @classmethod
     def schema(cls) -> Json:
-        description = " ".join(part for part in (cls.DESCRIPTION, cls.SIGNATURE, *cls.EXAMPLE) if part)
-        return {
-            "type": "function",
-            "function": {
-                "name": cls.NAME,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "intention": {"type": "string", "description": "Question being answered or concrete outcome needed."},
-                        "args": cls.args_schema(),
-                    },
-                    "required": ["intention", "args"],
-                    "additionalProperties": False,
-                },
-            },
-        }
+        description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
+        return {"type": "function", "function": {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}}
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"anyOf": [{"type": "object"}, {"type": "array"}, {"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]}
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {}, "additionalProperties": False}
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema()}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
 
     def preview(self) -> str:
-        return f"{self.NAME}({', '.join(self.display_args())})"
-
-    def display_args(self) -> list[str]:
-        return [self.compact(arg) for arg in self.args]
+        return f"{self.NAME}({', '.join(self.short_args())})"
 
     def short_args(self) -> list[str]:
-        return self.display_args()
+        return [self.compact(arg) for arg in self.args]
 
     def call(self) -> str:
         raise NotImplementedError
@@ -654,29 +788,49 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read exact UTF-8 file ranges. Output includes line:hash anchors for safe Edit."
-    SIGNATURE = "Read({path, ranges:[[start,end], ...]}[, ...]); end=0 means EOF"
-    EXAMPLE = ('Example args: [{"path":"nanocode.py","ranges":[[0,80],[120,0]]}]',)
+    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, line:hash text, and updates FILE STATE."
+    SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
+    EXAMPLE = (
+        'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
+        'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
+    )
 
     @classmethod
     def arg_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "ranges": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": cls.RANGE_SCHEMA,
-                },
-            },
-            "required": ["path", "ranges"],
+            "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}},
+            "required": ["path"],
             "additionalProperties": False,
         }
 
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
+                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1},
+            },
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return (
+            payload["files"]
+            if isinstance(payload.get("files"), list)
+            else [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
+        )
+
+    @classmethod
+    def ranges_arg(cls, value: Any) -> Any:
+        return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
+
     @staticmethod
     def line_hash(line: str) -> str:
-        return hashlib.sha1(line.encode("utf-8")).hexdigest()[:6]
+        return Text.base36(int(hashlib.sha1(line.encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
@@ -697,7 +851,7 @@ class ReadTool(Tool):
             if unexpected := sorted(set(spec) - {"path", "ranges"}):
                 raise ToolError("Read unexpected field: " + ", ".join(unexpected))
             path = str(spec.get("path") or "").strip()
-            raw_ranges = spec.get("ranges")
+            raw_ranges = self.ranges_arg(spec.get("ranges") if "ranges" in spec else [[0, 0]])
             if not path:
                 raise ToolError("Read requires non-empty path")
             if not isinstance(raw_ranges, list) or not raw_ranges:
@@ -723,13 +877,22 @@ class ReadTool(Tool):
 
 class LineCountTool(Tool):
     NAME = "LineCount"
-    DESCRIPTION = "Count lines in UTF-8 files; missing paths are reported."
-    SIGNATURE = "LineCount(path[, path...])"
-    EXAMPLE = ('Example args: ["nanocode.py", "pyproject.toml"]',)
+    DESCRIPTION = "Count UTF-8 file lines; returns per-file counts, missing/not_file rows, and total."
+    SIGNATURE = "LineCount(paths=[path,...])"
+    EXAMPLE = ('Count several files. Example: {"paths":["src/app.py","pyproject.toml"]}',)
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+            "required": ["paths"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return list(payload.get("paths") or [])
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path in self.paths())
@@ -761,13 +924,17 @@ class LineCountTool(Tool):
 
 class ListTool(Tool):
     NAME = "List"
-    DESCRIPTION = "List one directory, optionally filtered by a glob. Use for navigation, not source truth."
-    SIGNATURE = "List([path][, glob])"
-    EXAMPLE = ('Example args: ["."]', 'Example args: ["tests", "test_*.py"]')
+    DESCRIPTION = "List one directory, including hidden entries; returns child dirs/files/symlinks with file text/binary labels."
+    SIGNATURE = "List(path, glob?); glob filters child names, not recursively"
+    EXAMPLE = ('List child entries. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
+    def params_schema(cls) -> Json:
+        return {"type": "object", "properties": {"path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
 
     def needs_confirmation(self) -> bool:
         return not self.session.in_cwd(self.path())
@@ -783,7 +950,15 @@ class ListTool(Tool):
             for entry in scan:
                 if pattern and not fnmatch.fnmatch(entry.name, pattern):
                     continue
-                kind = "symlink" if entry.is_symlink() else "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"
+                kind = (
+                    "symlink"
+                    if entry.is_symlink()
+                    else "dir"
+                    if entry.is_dir(follow_symlinks=False)
+                    else "file"
+                    if entry.is_file(follow_symlinks=False)
+                    else "other"
+                )
                 label = kind + ((" " + self.file_type(entry.path)) if kind == "file" else "")
                 rows.append((kind, label, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
         order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
@@ -806,9 +981,13 @@ class ListTool(Tool):
 
 class FindTool(Tool):
     NAME = "Find"
-    DESCRIPTION = "Find files or directories by path/name glob; use Search for file contents."
-    SIGNATURE = "Find({name, path?, type?, limit?}[, ...])"
-    EXAMPLE = ('Example args: [{"name":"*.py"},{"name":"test_*","path":"tests","type":"file","limit":50}]',)
+    DESCRIPTION = "Find file/dir paths by name or relative glob; skips hidden/gitignored entries."
+    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any"
+    EXAMPLE = (
+        'Find files. Example: {"name":"*.py"}',
+        'Find dirs. Example: {"name":"migrations","type":"dir"}',
+        'Batch. Example: {"queries":[{"name":"*.py","path":"src"},{"name":"test_*","path":"tests"}]}',
+    )
     MAX_LIMIT = 500
 
     @classmethod
@@ -825,6 +1004,16 @@ class FindTool(Tool):
             "additionalProperties": False,
         }
 
+    @classmethod
+    def params_schema(cls) -> Json:
+        props = dict(cls.arg_schema()["properties"])
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        return {"type": "object", "properties": props, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload.get("queries") or [payload]
+
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
@@ -835,7 +1024,16 @@ class FindTool(Tool):
         rows = []
         for request in self.requests():
             rel = self.session.relpath(str(request["path"]))
-            rows.append(" ".join([str(request["name"]), *(["path=" + rel] if rel != "." else []), *(["type=" + str(request["type"])] if request["type"] != "file" else []), *(["limit=" + str(request["limit"])] if request["limit"] != 100 else [])]))
+            rows.append(
+                " ".join(
+                    [
+                        str(request["name"]),
+                        *(["path=" + rel] if rel != "." else []),
+                        *(["type=" + str(request["type"])] if request["type"] != "file" else []),
+                        *(["limit=" + str(request["limit"])] if request["limit"] != 100 else []),
+                    ]
+                )
+            )
         return ["; ".join(rows)]
 
     def requests(self) -> list[Json]:
@@ -876,11 +1074,19 @@ class FindTool(Tool):
         if not os.path.isdir(root):
             raise ToolError("Find path is not a file or directory")
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [name for name in dirnames if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns)]
+            dirnames[:] = [
+                name for name in dirnames if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns)
+            ]
             if kind in {"dir", "any"}:
                 rows.extend(self.row("dir", os.path.join(dirpath, name)) for name in dirnames if self.match_path(os.path.join(dirpath, name), pattern))
             if kind in {"file", "any"}:
-                rows.extend(self.row("file", os.path.join(dirpath, name)) for name in filenames if not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns) and self.match_path(os.path.join(dirpath, name), pattern))
+                rows.extend(
+                    self.row("file", os.path.join(dirpath, name))
+                    for name in filenames
+                    if not name.startswith(".")
+                    and not self.ignored(os.path.join(dirpath, name), patterns)
+                    and self.match_path(os.path.join(dirpath, name), pattern)
+                )
         return sorted(rows)
 
     def match_path(self, path: str, pattern: str) -> bool:
@@ -892,11 +1098,12 @@ class FindTool(Tool):
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Search files with case-insensitive regex; batch related terms with A|B|C."
-    SIGNATURE = "Search({pattern, path?, glob?, context?}[, ...])"
+    DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path:line:hash matches."
+    SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
     EXAMPLE = (
-        'Example args: [{"pattern":"class .*Tool","path":"nanocode.py"},{"pattern":"TODO","glob":"*.py","context":2}]',
-        'Batch regex terms. Args: [{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]',
+        'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
+        'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
+        'Batch regex terms. Example: {"queries":[{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]}',
     )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
@@ -915,6 +1122,16 @@ class SearchTool(Tool):
             "additionalProperties": False,
         }
 
+    @classmethod
+    def params_schema(cls) -> Json:
+        props = dict(cls.arg_schema()["properties"])
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        return {"type": "object", "properties": props, "additionalProperties": False}
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return payload.get("queries") or [payload]
+
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(request["path"]) for request in self.requests())
 
@@ -925,7 +1142,16 @@ class SearchTool(Tool):
         rows = []
         for request in self.requests():
             rel = self.session.relpath(str(request["path"]))
-            rows.append(" ".join([json.dumps(request["pattern"], ensure_ascii=False), *(["path=" + rel] if rel != "." else []), *(["glob=" + str(request["glob"])] if request["glob"] else []), *(["C=" + str(request["context"])] if request["context"] else [])]))
+            rows.append(
+                " ".join(
+                    [
+                        json.dumps(request["pattern"], ensure_ascii=False),
+                        *(["path=" + rel] if rel != "." else []),
+                        *(["glob=" + str(request["glob"])] if request["glob"] else []),
+                        *(["C=" + str(request["context"])] if request["context"] else []),
+                    ]
+                )
+            )
         return ["; ".join(rows)]
 
     def requests(self) -> list[Json]:
@@ -943,7 +1169,9 @@ class SearchTool(Tool):
             context = item.get("context", 0)
             if isinstance(context, bool) or not isinstance(context, int) or context < 0 or context > self.MAX_CONTEXT:
                 raise ToolError(f"Search context must be 0..{self.MAX_CONTEXT}")
-            requests.append({"pattern": pattern, "path": self.session.resolve_path(str(item.get("path") or ".")), "glob": str(item.get("glob") or ""), "context": context})
+            requests.append(
+                {"pattern": pattern, "path": self.session.resolve_path(str(item.get("path") or ".")), "glob": str(item.get("glob") or ""), "context": context}
+            )
         return requests
 
     def search(self, request: Json) -> str:
@@ -1035,9 +1263,11 @@ class SearchTool(Tool):
             return []
         rows: list[tuple[str, bool]] = []
         content = "".join(lines)
-        starts = [content.count("\n", 0, match.start()) for match in regex.finditer(content)] if "\n" in regex.pattern else [
-            index for index, line in enumerate(lines) if regex.search(line)
-        ]
+        starts = (
+            [content.count("\n", 0, match.start()) for match in regex.finditer(content)]
+            if "\n" in regex.pattern
+            else [index for index, line in enumerate(lines) if regex.search(line)]
+        )
         for index in starts:
             seen = set()
             start = max(0, index - context)
@@ -1056,17 +1286,19 @@ class SearchTool(Tool):
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
-    SYMBOLS: ClassVar[dict[str, str]] = {"ready": "✓", "synced": "✓", "stale": "*", "syncing": "~", "updating": "~", "missing": "?", "unavailable": "!", "error": "!"}
-    LEGEND: ClassVar[str] = "legend: index✓ synced, index* stale, index~ syncing/updating, index? missing, index! error"
+    SYMBOLS: ClassVar[dict[str, str]] = {
+        "ready": "✓",
+        "synced": "✓",
+        "stale": "*",
+        "syncing": "~",
+        "updating": "~",
+        "missing": "?",
+        "unavailable": "!",
+        "error": "!",
+    }
 
     def __init__(self, session: Session):
         self.session = session
-
-    def db_dir(self) -> str:
-        return os.path.join(self.session.cwd, ".code-symbol-index")
-
-    def db_path(self) -> str:
-        return os.path.join(self.db_dir(), "index.sqlite")
 
     def available(self) -> bool:
         status, message = self.status()
@@ -1099,8 +1331,7 @@ class CodeIndex:
 
     def finish(self, status: str = "synced") -> None:
         self.notice("")
-        self.session.state.code_index_error = ""
-        self.session.state.code_index_status = status
+        self.session.state.code_index_error, self.session.state.code_index_status = "", status
 
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
         try:
@@ -1132,7 +1363,8 @@ class CodeIndex:
             return "code_index: error\n" + self.fail(error)
         self.finish()
         status, message = self.status(check=True)
-        lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + self.db_path()]
+        index_path = os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
+        lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + index_path]
         if message:
             lines.append("note: " + message)
         return "\n".join(lines)
@@ -1197,21 +1429,34 @@ class CodeIndex:
 
 class InspectCodeTool(Tool):
     NAME = "InspectCode"
-    DESCRIPTION = "Find symbols, inspect one symbol, or outline one file using the code index."
-    SIGNATURE = "InspectCode(mode, target[, options])"
+    MAX_LIMIT: ClassVar[int] = 80
+    MAX_OUTLINE_LIMIT: ClassVar[int] = 1000
+    DESCRIPTION = "Use the code index: find returns symbols, inspect returns anchors/members/references, outline returns a file symbol tree."
+    SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?)"
     EXAMPLE = (
-        'Find symbols, returns kind/file/range/signature. kind: class|function|variable|constant|enum|struct|dict_key; comma-ok. Args: ["find","Tool",{"kind":"class","limit":20}]',
-        'Inspect one symbol, returns source anchors/members/references. Args: ["inspect","Tool",{"path":"nanocode.py"}]',
-        'Outline one file, returns symbol tree and ranges. Args: ["outline","nanocode.py"]',
+        'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
+        'Find exact symbol in a path. Example: {"mode":"find","target":"Session","path":"src","exact_only":true,"limit":10}',
+        'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
+        'Outline one file; symbol narrows subtree. Example: {"mode":"outline","target":"src/app.py","symbol":"App","limit":300}',
     )
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"description": "mode, target, optional options object"}
+    def params_schema(cls) -> Json:
+        props = {
+            "mode": {"type": "string", "enum": ["find", "inspect", "outline"]},
+            "target": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT},
+            "kind": {"type": "string"},
+            "path": {"type": "string"},
+            "symbol": {"type": "string"},
+            "exact_only": {"type": "boolean"},
+        }
+        return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 3}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        options = {key: payload[key] for key in ("limit", "kind", "path", "symbol", "exact_only") if key in payload}
+        return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
     def call(self) -> str:
         if len(self.args) not in (2, 3):
@@ -1235,8 +1480,9 @@ class InspectCodeTool(Tool):
         if mode == "outline" and not os.path.isfile(self.session.resolve_path(target)):
             raise ToolError("InspectCode outline target must be an existing file")
         limit = options.get("limit")
-        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 80):
-            raise ToolError("InspectCode limit must be 1..80")
+        max_limit = self.MAX_OUTLINE_LIMIT if mode == "outline" else self.MAX_LIMIT
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > max_limit):
+            raise ToolError(f"InspectCode {mode} limit must be 1..{max_limit}")
         index = CodeIndex(self.session)
         if not index.available():
             raise ToolError("code index is not available; run /index")
@@ -1259,65 +1505,9 @@ class InspectCodeTool(Tool):
         if mode == "inspect":
             return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, **common)
         symbol = options.get("symbol") or None
-        return csi.outline(target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text")
-
-
-class CreateFileTool(Tool):
-    NAME = "CreateFile"
-    DESCRIPTION = "Create one new UTF-8 file; fails if it already exists."
-    SIGNATURE = "CreateFile(path, content)"
-    EXAMPLE = (
-        'Create one file only; returns path/created/chars. Args: ["notes.txt","hello\\n"]',
-        'Call separately for each file. Args: ["demo/main.cpp","int main() {}\\n"]',
-    )
-    MUTATES = True
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
-
-    @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "description": 'Exactly ["path","content"].', "items": {"type": "string"}, "minItems": 2, "maxItems": 2}
-
-    def preview(self) -> str:
-        path, content = self.payload()
-        lines = content.splitlines(True)
-        return "".join(difflib.unified_diff([], lines, fromfile="/dev/null", tofile=self.session.relpath(path))) or f"CreateFile({self.session.relpath(path)})"
-
-    def call(self) -> str:
-        path, content = self.payload()
-        parent = os.path.dirname(path) or "."
-        if os.path.exists(path):
-            raise ToolError("file already exists")
-        if not os.path.isdir(parent):
-            if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
-            os.makedirs(parent, exist_ok=True)
-        with open(path, "x", encoding="utf-8") as file:
-            file.write(content)
-        return f"<CreateFileToolResult path={json.dumps(self.session.relpath(path))} created=true chars={len(content)} />"
-
-    def short_args(self) -> list[str]:
-        path, _content = self.payload()
-        return [self.session.relpath(path)]
-
-    def payload(self) -> tuple[str, str]:
-        if self.args and all(isinstance(arg, list) and len(arg) == 2 for arg in self.args):
-            raise ToolError('CreateFile creates one file per call; call it separately for each file. Args must be ["path","content"].')
-        if len(self.args) != 2:
-            raise ToolError('CreateFile requires exactly ["path","content"]')
-        if not isinstance(self.args[0], str):
-            raise ToolError('CreateFile path must be a string; args must be ["path","content"]')
-        path = self.session.resolve_path(str(self.args[0]))
-        content = self.content_text(str(self.args[1]))
-        return path, content
-
-    @staticmethod
-    def content_text(text: str) -> str:
-        if "\n" not in text and "\\n" in text:
-            return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
-        return text
+        return csi.outline(
+            target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"
+        )
 
 
 @dataclass
@@ -1332,48 +1522,58 @@ class Edit:
 
 class EditTool(Tool):
     NAME = "Edit"
-    DESCRIPTION = "Patch an existing UTF-8 file with anchored edits or exact text replacement."
-    SIGNATURE = "Edit(path, edits)"
+    DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
+    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=create|replace|delete|insert_before|insert_after|replace_all"
     EXAMPLE = (
-        'replace: ["code.py",[{"op":"replace","start":"10:abc123","end":"12:def456","content":"new text\\n"}]]',
-        'delete: ["code.py",[{"op":"delete","start":"10:abc123","end":"12:def456"}]]',
-        'insert_before: ["code.py",[{"op":"insert_before","start":"10:abc123","content":"new line\\n"}]]',
-        'insert_after: ["code.py",[{"op":"insert_after","start":"10:abc123","content":"new line\\n"}]]',
-        'replace_all: ["code.py",[{"op":"replace_all","old":"OldName","new":"NewName"}]]',
+        'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
+        'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
+        'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:0aa11","end":"22:0bb22"}]}',
+        'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:0cc33","content":"setup()\\n"}]}',
+        'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:0dd44","content":"cleanup()\\n"}]}',
+        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     MUTATES = True
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"description": 'Exactly ["path", edits].'}
+    def params_schema(cls) -> Json:
+        edit = {
+            "type": "object",
+            "properties": {key: {"type": "string"} for key in ("op", "start", "end", "content", "old", "new")},
+            "required": ["op"],
+            "additionalProperties": False,
+        }
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}},
+            "required": ["path", "edits"],
+            "additionalProperties": False,
+        }
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 2, "maxItems": 2}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
-        path, edits = self.parse()
-        with open(path, encoding="utf-8") as file:
-            original = file.read()
-        new_content, changes = self.apply(original, edits)
-        if new_content == original:
+        path, original, created, new_content, changes = self.build()
+        if new_content == original and not created:
             raise ToolError("edit produced no changes")
+        if created:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
             file.write(new_content)
-        return "\n".join([
-            f"<Edit path={json.dumps(self.session.relpath(path))}>",
-            self.file_stat(path),
-            self.diff(path, original, new_content).rstrip(),
-            self.edit_context(new_content, changes),
-            "</Edit>",
-        ])
+        return "\n".join(
+            [
+                f"<Edit path={json.dumps(self.session.relpath(path))}>",
+                self.file_stat(path),
+                self.diff(path, original, new_content).rstrip(),
+                self.edit_context(new_content, changes),
+                "</Edit>",
+            ]
+        )
 
     def preview(self) -> str:
-        path, edits = self.parse()
-        with open(path, encoding="utf-8") as file:
-            original = file.read()
-        new_content, _changes = self.apply(original, edits)
-        if new_content == original:
+        path, original, _created, new_content, _changes = self.build()
+        if new_content == original and os.path.exists(path):
             raise ToolError("edit produced no changes")
         return self.diff(path, original, new_content) or f"Edit({path})"
 
@@ -1383,7 +1583,14 @@ class EditTool(Tool):
 
     def diff(self, path: str, original: str, new_content: str) -> str:
         relpath = self.session.relpath(path)
-        return "".join(difflib.unified_diff(original.splitlines(True), new_content.splitlines(True), fromfile=relpath, tofile=relpath))
+        return "".join(
+            difflib.unified_diff(
+                original.splitlines(True),
+                new_content.splitlines(True),
+                fromfile="/dev/null" if not original and not os.path.exists(path) else relpath,
+                tofile=relpath,
+            )
+        )
 
     def parse(self) -> tuple[str, list[Edit]]:
         if len(self.args) != 2:
@@ -1401,8 +1608,10 @@ class EditTool(Tool):
             if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
-            if op not in {"replace", "delete", "insert_before", "insert_after", "replace_all"}:
+            if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all"}:
                 raise ToolError("unknown edit op")
+            if op == "create" and len(raw_edits) != 1:
+                raise ToolError("create cannot be mixed with other edits")
             if op in {"replace", "delete"} and (not item.get("start") or not item.get("end")):
                 raise ToolError(f"{op} requires start and end anchors")
             if op in {"insert_before", "insert_after"} and not item.get("start"):
@@ -1412,22 +1621,44 @@ class EditTool(Tool):
                     op=op,
                     start=str(item.get("start") or ""),
                     end=str(item.get("end") or ""),
-                    content=self.normalize_text(str(item.get("content") or "")),
+                    content=self.content_text(str(item.get("content") or "")),
                     old=self.normalize_text(str(item.get("old") or "")),
-                    new=self.normalize_text(str(item.get("new") or "")),
+                    new=self.content_text(str(item.get("new") or "")),
                 )
             )
         return path, edits
 
+    def build(self) -> tuple[str, str, bool, str, list[tuple[int, int, int, int]]]:
+        path, edits = self.parse()
+        creating = edits[0].op == "create"
+        if os.path.exists(path):
+            if creating:
+                raise ToolError("file already exists")
+            with open(path, encoding="utf-8") as file:
+                original = file.read()
+            created = False
+        elif creating:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            original, created = "", True
+        else:
+            raise ToolError("file does not exist; use op=create to create it")
+        new_content, changes = self.apply(original, edits)
+        return path, original, created, new_content, changes
+
     def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
+        if edits[0].op == "create":
+            lines = self.content_lines(edits[0].content, False)
+            return "".join(lines), [(0, 0, 0, len(lines))]
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
             content = original
             for edit in edits:
-                if not edit.old:
+                if not edit.old and content:
                     raise ToolError("replace_all requires old")
-                if edit.old not in content:
+                if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
             return content, [(0, 0, 0, len(content.splitlines(True)))]
@@ -1489,8 +1720,13 @@ class EditTool(Tool):
     def normalize_text(value: str) -> str:
         return value.replace("\r\n", "\n").replace("\r", "\n")
 
+    @classmethod
+    def content_text(cls, value: str) -> str:
+        value = cls.normalize_text(value)
+        return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
+
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
-        match = re.fullmatch(r"(\d+):([0-9a-fA-F]{6})", anchor.split("|", 1)[0].strip())
+        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
         if not match:
             raise ToolError('invalid anchor; use "line:hash" from Read or Search')
         index = int(match.group(1))
@@ -1499,28 +1735,34 @@ class EditTool(Tool):
         expected = match.group(2).lower()
         actual = ReadTool.line_hash(lines[index])
         if actual != expected:
-            raise ToolError(f"stale anchor {anchor}; current hash is {actual}")
+            current = f"{index}:{actual}|{lines[index].rstrip()}"
+            raise ToolError(f"stale anchor {anchor}; current is {current}")
         return index
 
 
 class BashTool(Tool):
     NAME = "Bash"
-    DESCRIPTION = "Run one bash command in the workspace."
+    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output."
     SIGNATURE = "Bash(command)"
     EXAMPLE = (
-        'Check environment, returns exit/stdout/stderr. Args: ["python3 --version"]',
-        'Run a project command. Args: ["python3 -m py_compile nanocode.py"]',
+        'Check environment. Example: {"command":"python3 --version"}',
+        'Run a project command. Example: {"command":"python3 -m py_compile nanocode.py"}',
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}},
+            "required": ["command"],
+            "additionalProperties": False,
+        }
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 1, "maxItems": 1}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload.get("command", "")]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -1537,12 +1779,7 @@ class BashTool(Tool):
         proc = None
         try:
             proc = subprocess.Popen(
-                [bash, "-lc", command],
-                cwd=self.session.cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
+                [bash, "-lc", command], cwd=self.session.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
             assert proc.stdout is not None and proc.stderr is not None
             return self.stream_process(proc)
@@ -1627,28 +1864,33 @@ class BashTool(Tool):
             return "", ""
         cls.kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        return cls.pipe_text(stdout), cls.pipe_text(stderr)
-
-    @staticmethod
-    def pipe_text(value: Any) -> str:
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return value or ""
+        return tuple(value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or "" for value in (stdout, stderr))
 
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = "Run git with argv args; cwd=path may be the first arg."
-    SIGNATURE = "Git([cwd=path,] git_arg...)"
+    DESCRIPTION = "Run git argv in the workspace; returns exit/stdout/stderr, with approval for mutating commands."
+    SIGNATURE = "Git(argv=[...], cwd?)"
     EXAMPLE = (
-        'Read repo status, returns exit/stdout/stderr. Args: ["status","--short"]',
-        'Diff inside a subdir. Args: ["cwd=src","diff","--","app.py"]',
+        'Read repo status. Example: {"argv":["status","--short"]}',
+        'Diff inside a subdir. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
+        'Read history/object. Example: {"argv":["show","--stat","HEAD"]}',
     )
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string"}
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+            "required": ["argv"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        argv = list(payload.get("argv") or [])
+        return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
     def needs_confirmation(self) -> bool:
         args, _ = self.git_args()
@@ -1686,30 +1928,29 @@ class GitTool(Tool):
 
 class RecallTool(Tool):
     NAME = "Recall"
-    DESCRIPTION = "Recall stored tool results by tr.N key, optionally sliced by output lines."
-    SIGNATURE = "Recall(key...) or Recall({key|keys, ranges?})"
+    DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
+    SIGNATURE = "Recall(keys=[tr.N,...], ranges?); ranges are 0-based [start,end] output lines"
     EXAMPLE = (
-        'Recall full result. Args: ["tr.1"]',
-        'Recall output line ranges, 0-based end-exclusive. Args: [{"keys":["tr.1","tr.2"],"ranges":[[0,80]]}]',
+        'Recall full result. Example: {"keys":["tr.1"]}',
+        'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
     )
     STORES_RESULT = False
 
     @classmethod
-    def arg_schema(cls) -> Json:
+    def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "description": "Use key or keys, optionally with ranges.",
             "properties": {
-                "key": {"type": "string", "pattern": "^tr\\.\\d+$"},
                 "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
                 "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
             },
+            "required": ["keys"],
             "additionalProperties": False,
         }
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [{"keys": payload.get("keys", []), **({"ranges": payload["ranges"]} if "ranges" in payload else {})}]
 
     def call(self) -> str:
         requests = self.requests()
@@ -1737,50 +1978,30 @@ class RecallTool(Tool):
         return ["; ".join(rows)]
 
     def requests(self) -> list[tuple[str, tuple[tuple[int, int], ...]]]:
-        requests: list[tuple[str, tuple[tuple[int, int], ...]]] = []
-        common_ranges: list[tuple[int, int]] = []
-        for arg in self.args:
-            if isinstance(arg, dict):
-                if unexpected := sorted(set(arg) - {"key", "result_key", "keys", "range", "ranges"}):
-                    raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
-                keys = [str(arg.get(name) or "").strip() for name in ("key", "result_key")]
-                keys.extend(str(item).strip() for item in arg.get("keys", []) if str(item).strip())
-                keys = [key for key in keys if key]
-                if not keys:
-                    raise ToolError("Recall object requires key, result_key, or keys")
-                ranges = self.parse_ranges(arg)
-                requests.extend((key, ranges) for key in keys)
-            elif isinstance(arg, str) and re.fullmatch(r"\s*\d+\s*[-:,]\s*\d+\s*", arg):
-                common_ranges.append(self.range_token(arg))
-            else:
-                key = str(arg).strip()
-                if key:
-                    requests.append((key, ()))
-        if common_ranges:
-            common = tuple(common_ranges)
-            requests = [(key, ranges or common) for key, ranges in requests]
-        return list(dict.fromkeys(requests))
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Recall requires keys")
+        payload = self.args[0]
+        if unexpected := sorted(set(payload) - {"keys", "ranges"}):
+            raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
+        raw_keys = payload.get("keys")
+        if not isinstance(raw_keys, list) or not raw_keys:
+            raise ToolError("Recall requires keys")
+        ranges = self.parse_ranges(payload)
+        keys = []
+        for item in raw_keys:
+            key = str(item).strip()
+            if not re.fullmatch(r"tr\.\d+", key):
+                raise ToolError("Recall key must look like tr.N")
+            keys.append(key)
+        return list(dict.fromkeys((key, ranges) for key in keys))
 
     def parse_ranges(self, payload: Json) -> tuple[tuple[int, int], ...]:
-        ranges = []
-        if "range" in payload:
-            ranges.append(self.parse_range(payload["range"]))
-        if "ranges" in payload:
-            raw = payload["ranges"]
-            if not isinstance(raw, list) or not raw:
-                raise ToolError("Recall ranges must be a non-empty array")
-            ranges.extend(self.parse_range(item) for item in raw)
-        return tuple(ranges)
-
-    def parse_range(self, value: Any) -> tuple[int, int]:
-        return self.range_token(value) if isinstance(value, str) else self.line_range(value, "Recall range")
-
-    @staticmethod
-    def range_token(value: str) -> tuple[int, int]:
-        match = re.fullmatch(r"\s*(\d+)\s*[-:,]\s*(\d+)\s*", value)
-        if not match:
-            raise ToolError("range token must look like 0,120")
-        return int(match.group(1)), int(match.group(2))
+        raw = payload.get("ranges")
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or not raw:
+            raise ToolError("Recall ranges must be a non-empty array")
+        return tuple(self.line_range(item, "Recall range") for item in raw)
 
     @staticmethod
     def slice(value: str, ranges: tuple[tuple[int, int], ...]) -> str:
@@ -1790,28 +2011,73 @@ class RecallTool(Tool):
         return "\n".join("\n".join(lines[start:end]) for start, end in ranges if end > start)
 
 
-class ForgetTool(Tool):
-    NAME = "Forget"
-    DESCRIPTION = "Forget stored tool result keys that are no longer useful."
-    SIGNATURE = "Forget(key...)"
-    EXAMPLE = ('Args: ["tr.1","tr.2"]',)
+class NoteTool(Tool):
+    NAME = "Note"
+    DESCRIPTION = "Maintain durable working notes; goal and plan replace current values, known appends unique facts."
+    SIGNATURE = "Note(goal?, plan?, known?)"
+    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"]}',)
     STORES_RESULT = False
 
     @classmethod
-    def arg_schema(cls) -> Json:
-        return {"type": "string", "pattern": "^tr\\.\\d+$"}
+    def params_schema(cls) -> Json:
+        strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings}, "additionalProperties": False}
 
     @classmethod
-    def args_schema(cls) -> Json:
-        return {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
 
     def call(self) -> str:
-        keys = list(dict.fromkeys(self.strings(min_count=1)))
-        count = self.session.forget_tool_results(keys)
-        return f"Forgot {count}/{len(keys)} tool results"
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Note requires named fields")
+        data = self.args[0]
+        if unexpected := sorted(set(data) - {"goal", "plan", "known"}):
+            raise ToolError("Note unexpected field: " + ", ".join(unexpected))
+        changed = []
+        if "goal" in data:
+            self.session.state.goal = str(data["goal"]).strip()
+            changed.append("goal")
+        if "plan" in data:
+            if not isinstance(data["plan"], list):
+                raise ToolError("Note plan must be an array")
+            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["plan"] if AgentState.plan_text(str(item))]
+            changed.append("plan")
+        if "known" in data:
+            if not isinstance(data["known"], list):
+                raise ToolError("Note known must be an array")
+            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
+            changed.append("known")
+        if not changed:
+            raise ToolError("Note requires goal, plan, or known")
+        return "Updated memory: " + ", ".join(changed)
+
+    def short_args(self) -> list[str]:
+        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        lines = []
+        if goal := str(data.get("goal") or "").strip():
+            lines.append("goal -> " + Tool.compact(goal, 120))
+        if isinstance(data.get("plan"), list):
+            lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["plan"], status=True) if row != "- (empty)")])
+        if isinstance(data.get("known"), list):
+            known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
+            if known:
+                lines.extend(["known:", *(f"  + {item}" for item in known)])
+        return ["\n".join(lines) or "{}"]
 
 
-TOOLS: tuple[type[Tool], ...] = (ReadTool, LineCountTool, ListTool, FindTool, InspectCodeTool, SearchTool, CreateFileTool, EditTool, BashTool, GitTool, RecallTool, ForgetTool)
+TOOLS: tuple[type[Tool], ...] = (
+    ReadTool,
+    LineCountTool,
+    ListTool,
+    FindTool,
+    InspectCodeTool,
+    SearchTool,
+    EditTool,
+    BashTool,
+    GitTool,
+    RecallTool,
+    NoteTool,
+)
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -1820,16 +2086,19 @@ class ToolCall:
     id: str
     name: str
     args: list[Any]
-    intention: str = ""
 
 
 class ContextManager:
+    COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
+    COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+
     @dataclass
     class FileContextItem:
         order: int
         phase: int
         kind: str
         source: str
+        tool: str
         path: str
         start: int
         end: int
@@ -1839,81 +2108,66 @@ class ContextManager:
 
     def __init__(self, session: Session):
         self.session = session
-        self.latest_keys: list[str] = []
-
-    def start_tool_batch(self) -> None:
-        self.latest_keys = []
-
-    def store_tool_result(self, call: ToolCall, output: str) -> str:
-        key = self.session.store_tool_result(call.name, call.args, call.intention, output)
-        self.latest_keys.append(key)
-        return key
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
-        return Text.value([{"role": "system", "content": base_system.strip()}, {"role": "user", "content": self.render(turn_messages)}])
+        file_context = self.file_context() or "(empty)"
+        messages = [
+            {"role": "system", "content": base_system.strip()},
+            {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
+            *self.session.messages,
+            *(turn_messages or []),
+            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
+            {"role": "user", "content": "--- FILE STATE ---\n" + file_context},
+        ]
+        return Text.value(messages)
+
+    def update_percent(self, messages: list[Json]) -> int:
+        tokens = self.estimated_tokens(messages)
+        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        return self.session.state.context_percent
 
     def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
         if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
+        compacted, keep = self.compaction_parts()
+        if not compacted:
+            return
         try:
-            self.session.state.apply(model.compact(self.compaction_input(turn_messages)))
+            self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-        self.session.messages = self.session.messages[-6:]
-        self.latest_keys = []
+            summary = self.session.state.summary
+            self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
+            self.prune_tool_records([*keep, *(turn_messages or [])])
 
-    def render(self, turn_messages: list[Json] | None = None) -> str:
-        sections = [
-            ("Environment", self.environment()),
-            ("State", self.session.state.format()),
-            ("Summary", self.session.state.summary or "(empty)"),
-            ("Recent Conversation", self.recent_conversation()),
-            ("Tool Result Index", self.tool_index()),
-            ("File Context", self.file_context()),
-            ("Discovery Context", self.discovery_context()),
-            ("Error Feedback", self.error_feedback()),
-            ("Latest Tool Results", self.latest_results()),
-            ("Current Date", self.current_date()),
-            ("Current Turn Conversation", self.turn_conversation(turn_messages)),
+    def memory_context(self, *, with_date: bool = False) -> str:
+        rows = [
+            "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
+            "Plan:\n" + "\n".join(self.session.state.plan_rows() or ["- (empty; use Note for a short plan)"]),
+            "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
         ]
-        return "\n\n".join(f"--- {name} ---\n{body or '(empty)'}" for name, body in sections)
-
-    def current_date(self) -> str:
-        return "- date: " + datetime.now().astimezone().strftime("%Y-%m-%d")
-
-    def turn_conversation(self, turn_messages: list[Json] | None = None) -> str:
-        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in (turn_messages or [])) or "(empty)"
+        if with_date:
+            rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
+        return "\n\n".join(rows)
 
     def environment(self) -> str:
         info = self.session.system_info
-        return "\n".join([f"- cwd: {info.cwd}", f"- os: {info.os}", f"- arch: {info.arch}", f"- shell_timeout: {self.session.settings.shell_timeout}s", "- detected_commands: " + (", ".join(info.commands) or "(none)")])
-
-    def tool_index(self) -> str:
-        return "\n".join(record.summary() for record in self.session.tool_records) or "(empty)"
-
-    def error_feedback(self) -> str:
-        return "\n".join(["Recent failed tool calls:"] + [record.summary() for record in self.session.tool_errors]) if self.session.tool_errors else ""
-
-    def latest_results(self) -> str:
-        records = [record for record in self.session.tool_records if record.key in set(self.latest_keys)]
-        return "\n\n".join(self.block(record) for record in records)
-
-    def discovery_context(self) -> str:
-        records = [record for record in self.session.tool_records if record.name in {"Find", "Search", "InspectCode"}]
-        if not records:
-            return ""
-        lines = [
-            "Source Policy:",
-            "- Find, Search, and InspectCode are discovery leads, not current source truth.",
-            "- Use Read before editing exact code.",
-            "",
-        ]
-        for record in records:
-            lines.extend(["Source: " + record.key + " tool=" + record.name, self.bound_output(record.output, record.key).rstrip(), ""])
-        return "\n".join(lines).rstrip()
+        return "\n".join(
+            [
+                f"- cwd: {info.cwd}",
+                f"- os: {info.os}",
+                f"- arch: {info.arch}",
+                f"- shell_timeout: {self.session.settings.shell_timeout}s",
+                "- detected_commands: " + (", ".join(info.commands) or "(none)"),
+            ]
+        )
 
     def file_context(self) -> str:
-        lines_by_path: dict[str, dict[int, tuple[str, str]]] = {}
+        lines_by_path, omitted = self.active_file_lines()
+        return self.render_file_lines(lines_by_path, omitted)
+
+    def active_file_lines(self) -> tuple[dict[str, dict[int, tuple[str, str, str]]], dict[str, dict[str, int]]]:
+        lines_by_path: dict[str, dict[int, tuple[str, str, str]]] = {}
         omitted: dict[str, dict[str, int]] = {}
         items = sorted(self.file_items(), key=lambda item: (item.order, item.phase, item.path, item.start))
         wanted: dict[str, set[int]] = {}
@@ -1930,11 +2184,11 @@ class ContextManager:
                         del file_lines[number]
                 continue
             if self.item_current(item, wanted, current_stats, current_lines):
-                file_lines[item.start] = (item.source, item.line)
+                file_lines[item.start] = (item.source, item.tool, item.line)
             else:
                 omitted.setdefault(item.path, {}).setdefault(item.source, 0)
                 omitted[item.path][item.source] += 1
-        return self.bound_output(self.render_file_lines(lines_by_path, omitted))
+        return lines_by_path, omitted
 
     def file_items(self) -> list[ContextManager.FileContextItem]:
         items: list[ContextManager.FileContextItem] = []
@@ -1949,13 +2203,16 @@ class ContextManager:
                 body = block.group(3)
                 stat = self.output_stat(body)
                 for match in re.finditer(r"<invalidate>(\d+):(\d+)</invalidate>", body):
-                    items.append(self.FileContextItem(order, 0, "clear", record.key, path, int(match.group(1)), int(match.group(2)), "", *stat))
+                    items.append(self.FileContextItem(order, 0, "clear", record.key, record.name, path, int(match.group(1)), int(match.group(2)), "", *stat))
                 for match in re.finditer(r"(?s)<content hashline-numbered>\n(.*?)\n</content>", body):
                     for line in match.group(1).splitlines():
-                        line_match = re.match(r"(\d+):[0-9a-f]{6}\|", line)
+                        line_match = re.match(r"(\d+):[0-9a-z]{5}\|", line)
                         if line_match:
-                            items.append(self.FileContextItem(order, 1, "line", record.key, path, int(line_match.group(1)), 0, line, *stat))
+                            items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, int(line_match.group(1)), 0, line, *stat))
         return items
+
+    def file_count(self) -> int:
+        return len({item.path for item in self.file_items() if item.kind == "line"})
 
     def item_current(
         self,
@@ -1974,62 +2231,151 @@ class ContextManager:
         if item.path not in current_lines:
             current_lines[item.path] = self.read_lines(item.path, wanted.get(item.path, set()))
         lines = current_lines[item.path]
-        hash_match = re.match(r"\d+:([0-9a-f]{6})\|", item.line)
+        hash_match = re.match(r"\d+:([0-9a-z]{5})\|", item.line)
         return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
 
-    def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str]]], omitted: dict[str, dict[str, int]]) -> str:
-        chunks = [
-            "Source Policy:",
-            "- Built dynamically from active Read and Edit results.",
-            "- Newer lines overwrite older lines; Edit invalidations clear stale ranges.",
-            "- Lines are checked against the current file before being shown.",
-            "",
-        ]
-        for path in sorted(lines_by_path):
-            segments = self.segments(lines_by_path[path])
-            if not segments:
-                continue
-            chunks.extend(["File: " + path, "Ranges:"])
-            chunks.extend(f"- {start}:{end} source={source}" for start, end, source, _ in segments)
-            chunks.append("Content:")
-            for start, end, source, segment_lines in segments:
-                chunks.append(f"@@ {start}:{end} source={source}")
-                chunks.extend(segment_lines)
-            chunks.append("")
-        if omitted:
-            chunks.append("Omitted stale content:")
-            for path in sorted(omitted):
-                chunks.extend(f"- {path} source={source} stale_lines={count}" for source, count in sorted(omitted[path].items()))
-        return "\n".join(chunks).strip() if len(chunks) > 5 else ""
+    def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
+        def recent(path: str) -> int:
+            return max(
+                (int(source[3:]) for source, _tool, _line in lines_by_path[path].values() if source.startswith("tr.") and source[3:].isdigit()),
+                default=-1,
+            )
 
-    def segments(self, numbered: dict[int, tuple[str, str]]) -> list[tuple[int, int, str, list[str]]]:
+        paths = sorted((path for path in lines_by_path if lines_by_path[path]), key=lambda path: (-recent(path), path))
+        focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
+        if not paths and not omitted and not focus and not actions and not errors:
+            return ""
+        chunks = ["Read/Edit outputs update this section. Treat listed ranges as current file state."] if paths else []
+        if focus:
+            chunks.extend(["", "Current focus: " + focus])
+        if paths:
+            chunks.extend(["", "Files:"])
+            for path in paths:
+                chunks.extend(f"- {path} {start}:{end} current" for start, end in self.coverage(lines_by_path[path]))
+        if actions:
+            chunks.extend(["", "Recent file events:", *actions])
+        if errors:
+            chunks.extend(["", "Recent tool errors:", *errors])
+        if paths:
+            chunks.extend(["", "Content:", "Format: line:hash|text. Use line:hash as edit anchors."])
+            for path in paths:
+                for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
+                    chunks.append(f"@@ {path} {start}:{end} current source={source} tool={tool}")
+                    chunks.extend(segment_lines)
+                chunks.append("")
+        if omitted:
+            chunks.append("Omitted content:")
+            for path in sorted(omitted):
+                chunks.extend(f"- {path} source={source} lines={count}" for source, count in sorted(omitted[path].items()))
+        chunks.extend(["", "OUTPUT IN USER LANGUAGE"])
+        return "\n".join(chunks).strip() if len(chunks) > 4 else ""
+
+    def recent_file_actions(self) -> list[str]:
+        actions = [
+            f"- {record.key} {record.name} {record.note or ' '.join(Tool.compact(arg, 80) for arg in record.args)}".strip()
+            for record in self.session.tool_records[-20:]
+            if record.name in {"Read", "Edit"}
+        ]
+        return actions[-10:]
+
+    def recent_tool_errors(self) -> list[str]:
+        return [
+            f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
+            for record in self.session.tool_errors[-5:]
+        ]
+
+    def coverage(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int]]:
+        numbers = sorted(numbered)
+        if not numbers:
+            return []
+        ranges = []
+        start = previous = numbers[0]
+        for number in numbers[1:]:
+            if number == previous + 1:
+                previous = number
+                continue
+            ranges.append((start, previous + 1))
+            start = previous = number
+        ranges.append((start, previous + 1))
+        return ranges
+
+    def segments(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int, str, str, list[str]]]:
         items = sorted(numbered.items())
         if not items:
             return []
         segments = []
         start = previous = items[0][0]
-        source, first = items[0][1]
+        source, tool, first = items[0][1]
         lines = [first]
-        for number, (line_source, line) in items[1:]:
-            if number == previous + 1 and line_source == source:
+        for number, (line_source, line_tool, line) in items[1:]:
+            if number == previous + 1 and line_source == source and line_tool == tool:
                 previous = number
                 lines.append(line)
                 continue
-            segments.append((start, previous + 1, source, lines))
+            segments.append((start, previous + 1, source, tool, lines))
             start = previous = number
-            source = line_source
+            source, tool = line_source, line_tool
             lines = [line]
-        segments.append((start, previous + 1, source, lines))
+        segments.append((start, previous + 1, source, tool, lines))
         return segments
 
-    def recent_conversation(self) -> str:
-        return "\n\n".join(f"{message['role']}:\n{message.get('content') or ''}" for message in self.session.messages) or "(empty)"
+    def compaction_input(self, messages: list[Json]) -> str:
+        older, recent = self.compaction_recent(messages)
+        return "\n\n".join(
+            [
+                "State:\n" + self.session.state.format(),
+                "Previous Summary:\n" + (self.session.state.summary or "(empty)"),
+                "Older Messages:\n" + self.messages_text(older),
+                "Recent Messages (rewrite briefly inside summary):\n" + self.messages_text(recent),
+            ]
+        )
 
-    def compaction_input(self, turn_messages: list[Json] | None = None) -> str:
-        return "\n\n".join(["State:\n" + self.session.state.format(), "Summary:\n" + (self.session.state.summary or "(empty)"), "Recent Conversation:\n" + self.recent_conversation(), "Current Turn Conversation:\n" + self.turn_conversation(turn_messages), "Tool Result Index:\n" + self.tool_index(), "Latest Tool Results:\n" + self.latest_results()])
+    def compaction_parts(self) -> tuple[list[Json], list[Json]]:
+        index = self.latest_user_index(self.session.messages)
+        return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
 
-    def block(self, record: ToolResultRecord) -> str:
-        return "\n".join([record.summary(), "output:", self.bound_output(record.output, record.key).rstrip()])
+    def compaction_recent(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+        cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
+        return messages[:cut], messages[cut:]
+
+    def messages_text(self, messages: list[Json]) -> str:
+        return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
+
+    def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
+        self.session.state.apply(data)
+        summary = self.session.state.summary
+        self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
+        self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
+
+    def prune_tool_records(self, keep_messages: list[Json]) -> None:
+        records = self.session.tool_records
+        keep = set(re.findall(r"\btr\.\d+\b", self.messages_text(keep_messages)))
+        index = {record.key: offset for offset, record in enumerate(records)}
+        paths: dict[str, list[str]] = {}
+        for record in records:
+            paths[record.key] = []
+            for match in re.findall(r"<(?:Read|Edit)\s+path=(\".*?\")", record.output):
+                try:
+                    paths[record.key].append(str(json.loads(match)))
+                except json.JSONDecodeError:
+                    pass
+        mins: dict[str, int] = {}
+        for path, lines in self.active_file_lines()[0].items():
+            for source, _tool, _line in lines.values():
+                if source in index:
+                    mins[path] = min(mins.get(path, index[source]), index[source])
+                    keep.add(source)
+        for offset, record in enumerate(records):
+            if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
+                keep.add(record.key)
+        self.session.tool_records = [record for record in records if record.key in keep][-400:]
+        self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
+
+    def latest_user_index(self, messages: list[Json]) -> int | None:
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user" and not str(messages[index].get("content") or "").startswith(self.COMPACT_TITLE):
+                return index
+        return None
 
     def bound_output(self, text: str, key: str = "") -> str:
         estimated = self.estimated_text_tokens(text)
@@ -2094,117 +2440,398 @@ class ContextManager:
         return (len(text) + 3) // 4
 
 
+class EditBatchPlan:
+    @dataclass
+    class Line:
+        text: str
+        origin: int | None
+
+    @dataclass
+    class FileState:
+        path: str
+        lines: list["EditBatchPlan.Line"]
+        original: list[str]
+        exists: bool
+
+        def text(self) -> str:
+            return "".join(line.text for line in self.lines)
+
+        def current_origin(self, origin: int) -> int | None:
+            for index, line in enumerate(self.lines):
+                if line.origin == origin:
+                    return index
+            return None
+
+    @dataclass
+    class PlannedEdit:
+        path: str
+        before: str
+        after: str
+        created: bool
+        changes: list[tuple[int, int, int, int]]
+
+        def preview(self, tool: EditTool) -> str:
+            return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
+
+        def call(self, tool: EditTool) -> str:
+            if os.path.exists(self.path):
+                with open(self.path, encoding="utf-8") as file:
+                    current = file.read()
+            elif self.created and not self.before:
+                current = ""
+            else:
+                raise ToolError("planned edit is stale; file state changed")
+            if current != self.before:
+                raise ToolError("planned edit is stale; file state changed")
+            if self.created:
+                os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as file:
+                file.write(self.after)
+            return "\n".join(
+                [
+                    f"<Edit path={json.dumps(tool.session.relpath(self.path))}>",
+                    tool.file_stat(self.path),
+                    tool.diff(self.path, self.before, self.after).rstrip(),
+                    tool.edit_context(self.after, self.changes),
+                    "</Edit>",
+                ]
+            )
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.files: dict[str, EditBatchPlan.FileState] = {}
+        self.planned: dict[str, EditBatchPlan.PlannedEdit] = {}
+        self.errors: dict[str, str] = {}
+
+    def build(self, calls: list[ToolCall]) -> "EditBatchPlan":
+        for call in calls:
+            if call.name != "Edit":
+                continue
+            try:
+                self.plan_call(call, EditTool(self.session, call.args))
+            except ToolError as error:
+                self.errors[call.id] = str(error)
+        return self
+
+    def plan_call(self, call: ToolCall, tool: EditTool) -> None:
+        path, edits = tool.parse()
+        state = self.file_state(path, edits[0].op == "create")
+        before, created = state.text(), not state.exists
+        lines, changes = self.apply(tool, state, edits)
+        after = "".join(line.text for line in lines)
+        if after == before and not created:
+            raise ToolError("edit produced no changes")
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, changes)
+        state.lines, state.exists = lines, True
+
+    def file_state(self, path: str, creating: bool) -> FileState:
+        if path in self.files:
+            state = self.files[path]
+            if not state.exists and not creating:
+                raise ToolError("file does not exist; use op=create to create it")
+            if state.exists and creating:
+                raise ToolError("file already exists")
+            return state
+        if os.path.exists(path):
+            if creating:
+                raise ToolError("file already exists")
+            with open(path, encoding="utf-8") as file:
+                original = file.readlines()
+            state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)
+        elif creating:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            state = self.FileState(path, [], [], False)
+        else:
+            raise ToolError("file does not exist; use op=create to create it")
+        self.files[path] = state
+        return state
+
+    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> tuple[list[Line], list[tuple[int, int, int, int]]]:
+        if edits[0].op == "create":
+            lines = self.new_lines(tool.content_lines(edits[0].content, False))
+            return lines, [(0, 0, 0, len(lines))]
+        if any(edit.op == "replace_all" for edit in edits):
+            if any(edit.op != "replace_all" for edit in edits):
+                raise ToolError("replace_all cannot be mixed with anchored edits")
+            content = state.text()
+            for edit in edits:
+                if not edit.old and content:
+                    raise ToolError("replace_all requires old")
+                if edit.old and edit.old not in content:
+                    raise ToolError("replace_all old text not found")
+                content = content.replace(edit.old, edit.new)
+            lines = [self.Line(line, None) for line in content.splitlines(True)]
+            return lines, [(0, 0, 0, len(lines))]
+
+        replacements = []
+        for edit in edits:
+            start = self.resolve_anchor(state, edit.start)
+            if edit.op in {"replace", "delete"}:
+                end = self.resolve_anchor(state, edit.end)
+                if end < start:
+                    raise ToolError("end anchor is before start anchor")
+                replacement = [] if edit.op == "delete" else self.new_lines(tool.content_lines(edit.content, end + 1 < len(state.lines)))
+                replacements.append((start, end + 1, replacement))
+            elif edit.op in {"insert_before", "insert_after"}:
+                index = start if edit.op == "insert_before" else start + 1
+                replacements.append((index, index, self.new_lines(tool.content_lines(edit.content, index < len(state.lines)))))
+            else:
+                raise ToolError("unknown edit op")
+
+        previous = None
+        for start, end, _replacement in sorted(replacements):
+            if previous and (start < previous[1] or (start == previous[0] and end == previous[1])):
+                raise ToolError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
+            previous = (start, end)
+
+        lines = list(state.lines)
+        for start, end, replacement in sorted(replacements, reverse=True):
+            lines[start:end] = replacement
+        return lines, self.changes(replacements)
+
+    @staticmethod
+    def new_lines(lines: list[str]) -> list[Line]:
+        return [EditBatchPlan.Line(line, None) for line in lines]
+
+    @staticmethod
+    def changes(replacements: list[tuple[int, int, list[Line]]]) -> list[tuple[int, int, int, int]]:
+        changes, delta = [], 0
+        for start, end, replacement in sorted(replacements):
+            new_start = start + delta
+            new_end = new_start + len(replacement)
+            clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
+            changes.append((new_start, clear_end, new_start, new_end))
+            delta += len(replacement) - (end - start)
+        return changes
+
+    def resolve_anchor(self, state: FileState, anchor: str) -> int:
+        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
+        if not match:
+            raise ToolError('invalid anchor; use "line:hash" from Read or Search')
+        index, expected = int(match.group(1)), match.group(2).lower()
+        if index < len(state.lines) and ReadTool.line_hash(state.lines[index].text) == expected:
+            return index
+        if index < len(state.original) and ReadTool.line_hash(state.original[index]) == expected:
+            current = state.current_origin(index)
+            if current is not None:
+                return current
+            raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
+        current = f"{index}:{ReadTool.line_hash(state.lines[index].text)}|{state.lines[index].text.rstrip()}" if index < len(state.lines) else "out of range"
+        raise ToolError(f"stale anchor {anchor}; current is {current}")
+
+
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
         self.context = context
         self.input_fn = input_fn
         self.output_fn = output_fn
+        self.preview_fn: Callable[[str], bool] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
 
-    def run(self, calls: list[ToolCall]) -> list[Json]:
-        self.session.state.turn_tool_calls += len(calls)
-        for call in calls:
-            if self.run_one(call)[0] == "refused":
-                break
-        return []
+    def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
+        messages = []
+        index = 0
+        first, refused = True, False
+        while index < len(calls):
+            end = index + 1 if self.edit_barrier(calls[index]) else self.edit_segment_end(calls, index)
+            segment = calls[index:end]
+            plan = EditBatchPlan(self.session).build(segment) if not refused and any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
+            for call in segment:
+                self.session.state.turn_tool_calls += 1
+                suffix = batch_suffix if first else ""
+                first = False
+                status, content = (
+                    ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True))
+                    if refused
+                    else self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+                )
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                if status == "refused":
+                    refused = True
+            index = end
+        return messages
 
-    def run_one(self, call: ToolCall) -> tuple[str, str]:
+    def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
+        end = start
+        while end < len(calls) and not self.edit_barrier(calls[end]):
+            end += 1
+        return end
+
+    def edit_barrier(self, call: ToolCall) -> bool:
+        if call.name == "Edit":
+            return False
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}")
+            return True
+        if tool_class.MUTATES:
+            return True
+        if call.name == "Git":
+            try:
+                return tool_class(self.session, call.args).needs_confirmation()
+            except Exception:
+                return True
+        return False
+
+    def run_one(
+        self,
+        call: ToolCall,
+        batch_suffix: str = "",
+        planned_edit: EditBatchPlan.PlannedEdit | None = None,
+        plan_error: str = "",
+    ) -> tuple[str, str]:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started = time.monotonic()
-        approved = False
+        started, approved, display = time.monotonic(), False, None
         try:
-            tool.short_args()
+            display = self.short_call(call, tool.short_args())
+            if plan_error:
+                raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                self.output_fn(self.approval_display(call, tool, "auto"))
+                self.output_fn(self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit))
             elif needs_confirmation:
-                confirmed, reason = self.confirm(call, tool)
+                confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
-                    return "refused", output
+                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 self.live_start()
-            output = tool.call()
+            output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started)
+            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         except Exception as error:
             output = f"ToolError: {error}"
-            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved)
+            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, display=display, batch_suffix=batch_suffix)
 
-    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None) -> str:
+    def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
         if self.session.settings.debug:
-            return self.finish(call, output, failed=True, elapsed=elapsed)
-        self.session.record_tool_error("-", call.name, call.args, call.intention, output)
-        return output
+            return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
+        self.session.record_tool_error("-", call.name, call.args, output)
+        self.output_fn(self.finish_display(call, "", output, failed=True, display=display, batch_suffix=batch_suffix))
+        return self.tool_message(call, "", output, failed=True, display=display)
 
-    def finish(self, call: ToolCall, output: str, *, failed: bool = False, elapsed: float | None = None, approved: bool = False) -> str:
+    def finish(
+        self,
+        call: ToolCall,
+        output: str,
+        *,
+        failed: bool = False,
+        elapsed: float | None = None,
+        approved: bool = False,
+        display: str | None = None,
+        store: bool = True,
+        batch_suffix: str = "",
+    ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        key = self.context.store_tool_result(call, output) if tool_class is None or tool_class.STORES_RESULT else ""
+        key = (
+            self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output))
+            if not failed and store and (tool_class is None or tool_class.STORES_RESULT)
+            else ""
+        )
         if failed:
-            self.session.record_tool_error(key or "-", call.name, call.args, call.intention, output)
+            self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved))
-        return f"result_key: {key}\n{self.context.bound_output(output, key)}" if key else output
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix))
+        return self.tool_message(call, key, output, failed=failed, display=display)
+
+    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
+        head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
+        if not failed and call.name in {"Read", "Edit"}:
+            return head + " -> FILE STATE"
+        rows = [head]
+        if failed:
+            rows.append("status: failed")
+        rows.extend(["output:", self.context.bound_output(output, key).rstrip()])
+        return "\n".join(rows).strip()
+
+    def tool_note(self, call: ToolCall, output: str) -> str:
+        if call.name != "Read":
+            return ""
+        notes = []
+        for block in re.finditer(r"(?s)<Read\s+path=(\".*?\").*?<total_lines>(\d+)</total_lines>(.*?)</Read>", output):
+            try:
+                path = str(json.loads(block.group(1)))
+            except json.JSONDecodeError:
+                continue
+            total = int(block.group(2))
+            for start, end in re.findall(r"<range>(\d+):(\d+)</range>", block.group(3)):
+                start_i, end_i = int(start), int(end)
+                suffix = " FULL FILE" if start_i == 0 and end_i == total else ""
+                notes.append(f"{path} {start_i}:{end_i}{suffix}")
+        return "; ".join(notes)
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
-        if call.name not in {"CreateFile", "Edit"}:
+        if call.name != "Edit":
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<(?:CreateFileToolResult|Edit)\s+path=(".*?")', output):
+        for match in re.finditer(r'<Edit\s+path=(".*?")', output):
             try:
                 paths.append(str(json.loads(match.group(1))))
             except json.JSONDecodeError:
                 pass
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
-    def confirm(self, call: ToolCall, tool: Tool) -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm"))
+    def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
+        if not (self.preview_fn and self.preview_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))):
+            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
         return False, "" if lower in {"n", "no"} else answer
 
-    def approval_display(self, call: ToolCall, tool: Tool, status: str) -> str:
-        header = ("approve " if status == "confirm" else "auto ") + self.short_call(call)
-        if tool.NAME not in {"Edit", "CreateFile"}:
+    def approval_display(
+        self, call: ToolCall, tool: Tool, status: str, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None
+    ) -> str:
+        header = self.with_batch_suffix(("approve " if status == "confirm" else "auto ") + self.short_call(call), batch_suffix)
+        if tool.NAME != "Edit":
             return header
-        return header + (("\n" + preview) if (preview := self.preview_block(tool.preview())) else "")
+        preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
+        return header + (("\n" + block) if (block := self.preview_block(preview)) else "")
 
-    def preview_block(self, preview: str, *, max_lines: int = 80) -> str:
+    def preview_block(self, preview: str, *, max_lines: int = 40) -> str:
         lines = preview.rstrip().splitlines()
         if not lines:
             return ""
         lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
-    def finish_display(self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False) -> str:
+    def finish_display(
+        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = ""
+    ) -> str:
+        if call.name == "Note" and not failed and display:
+            return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
-        line = "tool " + self.short_call(call) + ((" -> " + key) if key else "") + tag
+        line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
         return "\n".join(lines)
 
-    def short_call(self, call: ToolCall) -> str:
+    @staticmethod
+    def with_batch_suffix(text: str, suffix: str) -> str:
+        return text + (("  " + suffix) if suffix else "")
+
+    def short_call(self, call: ToolCall, args: list[str] | None = None) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        try:
-            args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
-        except Exception:
-            args = [Tool.compact(arg) for arg in call.args]
+        if args is None:
+            try:
+                args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
+            except Exception:
+                args = [Tool.compact(arg) for arg in call.args]
         text = " ".join([call.name, *args]).strip()
-        return self.oneline(text, 200)
+        return text if "\n" in text else self.oneline(text, 200)
 
     @staticmethod
     def oneline(text: str, limit: int) -> str:
@@ -2219,15 +2846,12 @@ class DebugTrace:
     def write(cls, session: Session, *, activity: str, label: str, payload: Any) -> str:
         if not session.settings.debug:
             return ""
-        session.state.debug_count += 1
         directory = session.debug_dir()
         os.makedirs(directory, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        safe_activity = re.sub(r"[^A-Za-z0-9_.-]+", "-", activity or "debug")
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
-        path = os.path.join(directory, f"{timestamp}-{session.state.debug_count:04d}-{safe_activity}-{safe_label}.json")
+        path = os.path.join(directory, f"last-{safe_label}.json")
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(cls.value(payload), file, ensure_ascii=False, indent=2)
+            json.dump({"activity": Text.clean(activity or "debug"), "label": safe_label, "payload": cls.value(payload)}, file, ensure_ascii=False, indent=2)
             file.write("\n")
         return path
 
@@ -2289,16 +2913,41 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
-        self.session.state.current_model_call_started_at = time.monotonic()
+        for attempt in range(MODEL_REQUEST_RETRIES + 1):
+            self.session.state.current_model_call_started_at = time.monotonic()
+            try:
+                return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
+            except KeyboardInterrupt:
+                if self.session.state.manual_model_retry_requested:
+                    self.session.state.manual_model_retry_requested = False
+                    raise ModelRequestRetry() from None
+                raise
+            except ModelError as error:
+                retryable = self.retryable_error(error)
+                if attempt >= MODEL_REQUEST_RETRIES or not retryable:
+                    if attempt:
+                        raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
+                    raise
+                self.session.state.model_retry_count += 1
+                time.sleep(0.5 * (attempt + 1))
+            finally:
+                self.session.state.current_model_call_started_at = 0.0
+        raise ModelError("model request retry exhausted")
+
+    @staticmethod
+    def retryable_error(error: Exception) -> bool:
+        status = getattr(error.__cause__, "status_code", None) or getattr(error.__cause__, "code", None)
+        text = str(error).lower()
         try:
-            return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
-        except KeyboardInterrupt:
-            if self.session.state.manual_model_retry_requested:
-                self.session.state.manual_model_retry_requested = False
-                raise ModelRequestRetry() from None
-            raise
-        finally:
-            self.session.state.current_model_call_started_at = 0.0
+            if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+        except Exception:
+            pass
+        if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
+            return True
+        return any(
+            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
+        )
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
@@ -2333,6 +2982,7 @@ class ModelClient:
         prompt = """
 Compact the nanocode working context.
 Return exactly one JSON object with keys: summary, goal, plan, known.
+Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
@@ -2352,18 +3002,22 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return OpenAI(api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
+        return OpenAI(
+            api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
+        )
 
     def anthropic_client(self) -> Anthropic:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        return Anthropic(api_key=provider.key, base_url=self.anthropic_base_url(provider), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT})
-
-    @staticmethod
-    def anthropic_base_url(provider: ProviderConfig) -> str:
         url = provider.base_url().rstrip("/")
-        return url[: -len("/v1")] if url.endswith("/v1") else url
+        return Anthropic(
+            api_key=provider.key,
+            base_url=url[: -len("/v1")] if url.endswith("/v1") else url,
+            timeout=provider.timeout,
+            max_retries=0,
+            default_headers={"User-Agent": HTTP_USER_AGENT},
+        )
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
@@ -2376,23 +3030,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "cwd": self.session.cwd,
             "host": provider.host(),
             "model": provider.model,
-            "tools": self.tool_schema_names(tools),
+            "tools": ",".join(sorted(DebugTrace.tool_names(tools))) or "(none)",
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "nanocode-" + digest[:24]
-
-    @staticmethod
-    def tool_schema_names(tools: list[Json] | None) -> str:
-        names = [
-            name
-            for schema in tools or []
-            if (
-                name := str(
-                    (schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or schema.get("type") or ""
-                )
-            )
-        ]
-        return ",".join(sorted(names)) or "(none)"
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
@@ -2416,7 +3057,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         provider = self.session.config.provider
         params: Json = {
             "model": provider.model,
-            "system": self.anthropic_system(messages),
+            "system": "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip(),
             "messages": self.anthropic_messages(messages),
             "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
         }
@@ -2429,10 +3070,6 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             budget = CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096)
             params["thinking"] = {"type": "enabled", "budget_tokens": min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, int(budget))}
         return params
-
-    @staticmethod
-    def anthropic_system(messages: list[Json]) -> str:
-        return "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
 
     def anthropic_messages(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
@@ -2513,8 +3150,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
                 arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-                args, intention = self.tool_payload(payload)
-                calls.append(ToolCall(id=call_id, name=name, args=args, intention=intention))
+                calls.append(ToolCall(id=call_id, name=name, args=self.tool_payload(name, payload)))
         text = "".join(text_parts)
         assistant: Json = {"role": "assistant", "content": text or None}
         if tool_calls:
@@ -2578,28 +3214,49 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         for raw in getattr(message, "tool_calls", None) or []:
             try:
                 payload = json.loads(raw.function.arguments or "{}")
-            except json.JSONDecodeError as error:
-                calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[], intention=f"invalid JSON arguments: {error}"))
+            except json.JSONDecodeError:
+                calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
                 continue
-            args, intention = self.tool_payload(payload)
-            calls.append(ToolCall(id=raw.id, name=raw.function.name, args=args, intention=intention))
+            calls.append(ToolCall(id=raw.id, name=raw.function.name, args=self.tool_payload(raw.function.name, payload)))
         return calls
 
     @staticmethod
-    def tool_payload(payload: Any) -> tuple[list[Any], str]:
-        if isinstance(payload, dict):
-            args = payload.get("args")
-            return (args if isinstance(args, list) else [payload], str(payload.get("intention") or ""))
-        return [payload], ""
+    def tool_payload(name: str, payload: Any) -> list[Any]:
+        if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
+            return tool.payload_args(payload)
+        return [payload]
 
 
 class Agent:
-    SYSTEM_PROMPT = """You are nanocode, a concise terminal coding agent.
-Tools: Read LineCount List Find InspectCode Search CreateFile Edit Bash Git Recall Forget. Call as {"intention":"why","args":[...]}.
-Batch independent read-only tool calls when useful.
-Trust File Context; Discovery is leads. Recall tr.N when needed. Forget stale tr.N results. Inspect/read before edits. Keep changes small; never overwrite user work.
-For multi-step tasks, use concise plan/known as working memory.
-Output: concise markdown, USER'S LANGUAGE.
+    SYSTEM_PROMPT = """\
+You are nanocode, a concise terminal coding agent.
+
+TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
+Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
+
+FLOW:
+- ACT when clear; keep using tools until done.
+- Every turn must call tools or return final; never emit empty content.
+- Prefer built-ins over Bash. Batch independent read-only calls.
+- All user-visible output follows the latest user input and uses the user's language.
+- Interim text is shown to the user and kept as conversation.
+
+CONTEXT:
+- Trust LATEST FILE STATE from Read/Edit for listed ranges.
+- Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
+- For multi-step work, call Note early with goal and a short plan; update plan/known when they change.
+
+EDITS:
+- Inspect/read before edits.
+- Patch with Edit line:hash anchors from the newest FILE STATE.
+- After stale-anchor errors or successful edits, discard old anchors for that file/range.
+- Do not batch multiple Edit calls for the same file; sequence them.
+- Keep edits small/local/reversible; never overwrite unrelated user work.
+- Edit op=create creates files, including empty files.
+
+FINAL:
+- Concise markdown in the user's language.
+- Include changed files and checks when relevant.\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -2610,48 +3267,107 @@ Output: concise markdown, USER'S LANGUAGE.
         self.output_fn = output_fn
 
     def run(self, user_input: str) -> str:
-        self.session.state.goal = user_input.strip()
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
-        self.context.start_tool_batch()
+        tool_batches = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    _assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
+                    messages, pending = self.messages(turn_messages)
+                    assistant, tool_calls, content = self.model.request(messages)
+                    self.accept_pending_inputs(turn_messages, pending)
                     break
                 except ModelRequestRetry:
                     continue
             if not tool_calls:
-                answer = content.strip() or "(empty response)"
+                if not content.strip():
+                    raise ModelError("empty final response")
+                answer = content.strip()
                 self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
+                self.session.state.turn_messages = 0
                 return answer
+            assistant = self.assistant_turn_message(assistant, tool_calls, content)
+            turn_messages.append(assistant)
             if content.strip():
-                message = {"role": "assistant", "content": content.strip()}
-                turn_messages.append(message)
-                self.output_fn(message["content"])
-            self.tools.run(tool_calls)
+                self.output_fn(content.strip())
+            tool_batches += 1
+            turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
         stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
+        self.session.state.turn_messages = 0
         return stopped
 
-    def messages(self, turn_messages: list[Json]) -> list[Json]:
-        turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
-        self.session.pending_user_inputs.clear()
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
-        tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
-        return messages
+    def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[str]]:
+        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        request_turn = [*turn_messages, *({"role": "user", "content": text} for text in pending)]
+        self.session.state.turn_messages = len(request_turn)
+        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, request_turn)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, request_turn)
+        self.context.update_percent(messages)
+        return messages, pending
+
+    def accept_pending_inputs(self, turn_messages: list[Json], pending: list[str]) -> None:
+        if not pending:
+            return
+        turn_messages.extend({"role": "user", "content": text} for text in pending)
+        remaining = list(self.session.pending_user_inputs)
+        for text in pending:
+            for index, value in enumerate(remaining):
+                if value.strip() == text:
+                    del remaining[index]
+                    break
+        self.session.pending_user_inputs = remaining
+
+    @staticmethod
+    def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
+        message = dict(assistant or {})
+        message["role"] = "assistant"
+        message["content"] = message.get("content") if message.get("content") is not None else (content.strip() or None)
+        if tool_calls and not message.get("tool_calls"):
+            message["tool_calls"] = [
+                {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps({"args": call.args}, ensure_ascii=False)}}
+                for call in tool_calls
+            ]
+        return Text.value(message)
 
 
 class CommandCompleter(Completer):
-    COMMANDS = ("/help", "/status", "/config", "/api", "/debug", "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit")
+    COMMANDS = (
+        "/help",
+        "/status",
+        "/memory",
+        "/config",
+        "/api",
+        "/debug",
+        "/compact",
+        "/index",
+        "/model",
+        "/provider",
+        "/reason",
+        "/set",
+        "/yolo",
+        "/exit",
+        "/quit",
+    )
     SET_KEYS = (
-        "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
-        "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature", "provider.timeout",
-        "runtime.yolo", "runtime.max_agent_steps", "runtime.max_context_tokens", "runtime.shell_timeout",
+        "provider.model",
+        "provider.url",
+        "provider.key",
+        "provider.api",
+        "provider.prompt_cache_key",
+        "provider.reasoning",
+        "provider.chat_reasoning",
+        "provider.available_models",
+        "provider.temperature",
+        "provider.timeout",
+        "runtime.yolo",
+        "runtime.max_agent_steps",
+        "runtime.max_context_tokens",
+        "runtime.shell_timeout",
+        "runtime.check_updates",
+        "runtime.update_check_interval_hours",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -2660,6 +3376,7 @@ class CommandCompleter(Completer):
         "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",),
         "runtime.yolo": ("on", "off", "true", "false"),
+        "runtime.check_updates": ("on", "off", "true", "false"),
     }
 
     def __init__(self, providers: Callable[[], tuple[str, ...]] = tuple, models: Callable[[], tuple[str, ...]] = tuple):
@@ -2718,6 +3435,8 @@ class UiPrinter:
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
+        if text.startswith(("goal ->", "goal:", "plan:", "known:")):
+            return self.memory_segments(text)
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("ansiwhite", text[2:] + "\n")]
         if text.startswith("[done in "):
@@ -2745,6 +3464,20 @@ class UiPrinter:
             elif line.startswith("  "):
                 label, value = line[:8], line[8:]
                 segments.extend([("ansibrightblack", label), ("ansiwhite", value)])
+            else:
+                segments.append(("ansiwhite", line))
+            segments.append(("", "\n"))
+        return segments
+
+    def memory_segments(self, text: str) -> list[tuple[str, str]]:
+        segments = []
+        for line in text.splitlines() or [""]:
+            if line.startswith(("goal ->", "goal:")):
+                segments.append(("ansimagenta", line))
+            elif line in {"summary:", "plan:", "known:"}:
+                segments.append(("ansicyan", line))
+            elif line.lstrip().startswith("+ "):
+                segments.append(("ansigreen", line))
             else:
                 segments.append(("ansiwhite", line))
             segments.append(("", "\n"))
@@ -2882,13 +3615,9 @@ class BashLivePreview:
 
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
-        body = self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]
-        return ["  output", *("  " + self.fit(line, width - 2) for line in body)] if body else []
-
-    @staticmethod
-    def fit(text: str, width: int) -> str:
-        text = text.expandtabs(4)
-        return text if len(text) <= width else text[: max(0, width - 3)] + "..."
+        body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
+        limit = width - 2
+        return ["  output", *("  " + (line if len(line) <= limit else line[: max(0, limit - 3)] + "...") for line in body)] if body else []
 
 
 class ModelRetryShortcut:
@@ -2996,12 +3725,10 @@ class StatusBar:
         if count == self.seen_retry_count:
             return
         self.seen_retry_count = count
-        now = time.monotonic()
-        self.retry_notice_until = now + 2.0
+        self.retry_notice_until = time.monotonic() + 2.0
 
     def model_elapsed(self) -> float:
-        started = self.session.state.current_model_call_started_at
-        return max(0.0, time.monotonic() - started) if started > 0 else 0.0
+        return max(0.0, time.monotonic() - started) if (started := self.session.state.current_model_call_started_at) > 0 else 0.0
 
     def clear(self) -> None:
         if self.rendered:
@@ -3039,6 +3766,9 @@ class StatusBar:
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
+        update_status = self.update_status()
+        if update_status:
+            parts.append(update_status)
         index_status = self.index_status()
         if index_status:
             parts.append("index" + index_status)
@@ -3048,8 +3778,6 @@ class StatusBar:
             parts.extend(
                 ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
             )
-        if self.session.settings.debug:
-            parts.append("dbg " + str(self.session.state.debug_count))
         if show_elapsed and self.session.pending_user_inputs:
             parts.append("+" + str(len(self.session.pending_user_inputs)))
         if show_elapsed:
@@ -3088,11 +3816,16 @@ class StatusBar:
             return CodeIndex.label("error")
         if self.session.state.code_index_refreshing:
             notice = self.session.state.code_index_notice or "syncing"
-            return self.index_spinner() if notice in {"syncing", "updating"} else notice
+            return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)] if notice in {"syncing", "updating"} else notice
         return CodeIndex.label(self.session.state.code_index_status)
 
-    def index_spinner(self) -> str:
-        return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
+    def update_status(self) -> str:
+        if not self.session.settings.check_updates:
+            return ""
+        update = self.session.update
+        if update.checking:
+            return "update..."
+        return "update " + update.latest if update.newer_than(__version__) else ""
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
@@ -3111,6 +3844,7 @@ class CommandLoop:
     HELP = """Commands:
   /help              Show this help.
   /status            Show runtime status.
+  /memory            Show durable agent memory.
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
   /debug [on|off]    Toggle model I/O debug traces.
@@ -3119,11 +3853,11 @@ class CommandLoop:
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
   /reason            Select reasoning effort.
-  /set KEY VALUE     Set provider.*, runtime.yolo, runtime.max_agent_steps, runtime.max_context_tokens, runtime.shell_timeout.
+  /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, CreateFile, Edit, Bash, Git, Recall, Forget.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -3141,11 +3875,19 @@ Tools:
         self.queue_input_active = threading.Event()
         self.queue_input_app: Application | None = None
         self.queue_input_text = ""
-        self.input_history = self.make_input_history() if self.interactive_input else None
-        self.input_completer = self.make_completer()
+        if self.interactive_input:
+            history_path = self.session.data_path("history.txt")
+            os.makedirs(os.path.dirname(history_path), exist_ok=True)
+            self.input_history = FileHistory(history_path)
+        else:
+            self.input_history = None
+        self.input_completer = CommandCompleter(
+            providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models
+        )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
+        self.agent.tools.preview_fn = self.tool_preview
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
 
@@ -3186,9 +3928,11 @@ Tools:
             if not texts:
                 return
             self.session.pending_user_inputs.extend(texts)
+
             def show() -> None:
                 for text in texts:
                     self.emit("+ " + text)
+
             run_in_terminal(show)
 
         @bindings.add("enter", eager=True)
@@ -3220,7 +3964,11 @@ Tools:
 
         app = Application(
             layout=Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window),
-            key_bindings=bindings, full_screen=False, style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
+            key_bindings=bindings,
+            full_screen=False,
+            style=self.style(),
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
         )
         self.queue_input_app = app
         self.queue_input_active.set()
@@ -3254,6 +4002,7 @@ Tools:
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
+        UpdateChecker(self.session).start()
         while True:
             try:
                 user_input = self.read_input()
@@ -3304,24 +4053,24 @@ Tools:
     def style(self) -> Style:
         return Style.from_dict(
             {
-                "prompt": "ansicyan bold", "approval": "ansiyellow",
-                "choice.title": "ansicyan bold", "choice.selected": "reverse", "choice.disabled": "ansibrightblack",
-                "completion-menu": "noreverse bg:default", "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
+                "prompt": "ansicyan bold",
+                "approval": "ansiyellow",
+                "approval.wait": "ansimagenta",
+                "choice.title": "ansicyan bold",
+                "choice.selected": "reverse",
+                "choice.disabled": "ansibrightblack",
+                "completion-menu": "noreverse bg:default",
+                "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
                 "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
                 "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
-                "bottom-toolbar": "noreverse bg:default fg:default", "bottom-toolbar.text": "noreverse bg:default fg:default",
-                "search-toolbar": "noreverse bg:default fg:default", "search-toolbar.prompt": "ansicyan", "search-toolbar.text": "ansiwhite",
+                "bottom-toolbar": "noreverse bg:default fg:default",
+                "bottom-toolbar.text": "noreverse bg:default fg:default",
+                "search-toolbar": "noreverse bg:default fg:default",
+                "search-toolbar.prompt": "ansicyan",
+                "search-toolbar.text": "ansiwhite",
             }
         )
-
-    def make_input_history(self):
-        history_path = self.session.data_path("history.txt")
-        os.makedirs(os.path.dirname(history_path), exist_ok=True)
-        return FileHistory(history_path)
-
-    def make_completer(self) -> CommandCompleter:
-        return CommandCompleter(providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models)
 
     def status_window(self, *, active: bool = False) -> Window:
         return Window(
@@ -3339,23 +4088,34 @@ Tools:
         finally:
             self.queue_input_paused.clear()
 
+    def input_prompt_fragments(self, prompt_text: str, prompt_style: str) -> list[tuple[str, str]]:
+        if prompt_style != "class:approval" or not prompt_text:
+            return [(prompt_style, prompt_text)]
+        frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
+        return [("class:approval", prompt_text), ("class:approval.wait", frame + " ")]
+
     def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False, submit_on_enter: bool = False, prompt_style: str = "class:prompt") -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
-        prompt = FormattedText([(prompt_style, prompt_text)])
 
         def accept(buffer: Buffer) -> bool:
             app.exit(result=buffer.text)
             return True
 
         buffer = Buffer(
-            history=self.input_history, completer=self.input_completer, complete_while_typing=False,
-            enable_history_search=True, multiline=multiline, accept_handler=accept,
+            history=self.input_history,
+            completer=self.input_completer,
+            complete_while_typing=False,
+            enable_history_search=True,
+            multiline=multiline,
+            accept_handler=accept,
         )
         search_toolbar = SearchToolbar()
         control = BufferControl(
-            buffer=buffer, input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(prompt)],
-            search_buffer_control=search_toolbar.control, preview_search=True,
+            buffer=buffer,
+            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(lambda: self.input_prompt_fragments(prompt_text, prompt_style))],
+            search_buffer_control=search_toolbar.control,
+            preview_search=True,
         )
         input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
         bindings = KeyBindings()
@@ -3416,8 +4176,12 @@ Tools:
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = Application(
-            layout=Layout(root, focused_element=input_window), key_bindings=bindings, full_screen=False,
-            style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
+            layout=Layout(root, focused_element=input_window),
+            key_bindings=bindings,
+            full_screen=False,
+            style=self.style(),
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
         )
         text = self.run_input_app(app)
         print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
@@ -3453,7 +4217,11 @@ Tools:
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
             try:
-                return self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval") if self.interactive_input else self.input_fn(prompt)
+                return (
+                    self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval")
+                    if self.interactive_input
+                    else self.input_fn(prompt)
+                )
             finally:
                 if self.interactive_input and sys.stdout.isatty():
                     self.clear_transient_tool_output()
@@ -3464,6 +4232,22 @@ Tools:
         self.clear_transient_tool_output()
         self.emit(text)
         self.transient_tool_lines = len(text.splitlines() or [""])
+
+    def tool_preview(self, text: str) -> bool:
+        if not text.startswith("approve Edit ") or not self.interactive_input or not sys.stdout.isatty():
+            return False
+        self.with_status_paused(lambda: self.show_transient_tool_preview(text))
+        return True
+
+    def show_transient_tool_preview(self, text: str) -> None:
+        self.clear_transient_tool_output()
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return
+        height, width = 12, max(20, shutil.get_terminal_size((120, 20)).columns)
+        shown = lines[:height] + (["... preview truncated ..."] if len(lines) > height else [])
+        self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
+        self.transient_tool_lines = len(shown)
 
     def emit_tool_output(self, text: str) -> None:
         self.clear_transient_tool_output()
@@ -3529,6 +4313,7 @@ Tools:
         handlers = {
             "/help": self.help,
             "/status": self.status,
+            "/memory": self.memory,
             "/config": self.config,
             "/api": self.api,
             "/debug": self.debug,
@@ -3541,7 +4326,8 @@ Tools:
             "/yolo": self.yolo,
         }
         handler = handlers.get(name)
-        self.emit(handler(args.strip()) if handler else f"Unknown command: {name}")
+        output = handler(args.strip()) if handler else f"Unknown command: {name}"
+        (self.ui.emit_answer if name == "/status" else self.emit)(output)
         return True, False
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
@@ -3580,15 +4366,13 @@ Tools:
         disabled: set[str] | frozenset[str] = frozenset(),
     ) -> str | object | None:
         labels = labels or {}
-        if not choices:
+        if not choices or not self.interactive_input:
             return None
-        if self.interactive_input:
-            try:
-                return self.choice_application(title, choices, labels, current, set(disabled))
-            except (EOFError, KeyboardInterrupt):
-                self.emit("Cancelled")
-                return None
-        return self.choice_prompt(title, choices, labels, current, set(disabled))
+        try:
+            return self.choice_application(title, choices, labels, current, set(disabled))
+        except (EOFError, KeyboardInterrupt):
+            self.emit("Cancelled")
+            return None
 
     def choice_application(
         self,
@@ -3726,49 +4510,13 @@ Tools:
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = Application(
             layout=Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window),
-            key_bindings=bindings, full_screen=False, style=self.style(), refresh_interval=StatusBar.INTERVAL, erase_when_done=True,
+            key_bindings=bindings,
+            full_screen=False,
+            style=self.style(),
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
         )
         return self.run_input_app(app)
-
-    def choice_prompt(
-        self,
-        title: str,
-        choices: tuple[str, ...],
-        labels: dict[str, str],
-        current: str,
-        disabled: set[str],
-    ) -> str | None:
-        query = ""
-        while True:
-            visible = self.visible_choices(choices, labels, disabled, query)
-            lines = [title + (" /" + query if query else "")]
-            enabled: list[str] = []
-            for choice in visible:
-                label = labels.get(choice, choice)
-                if choice in disabled:
-                    lines.append("  " + label)
-                    continue
-                enabled.append(choice)
-                mark = " *" if choice == current else ""
-                lines.append(f"  {len(enabled)}. {label}{mark}")
-            if not enabled:
-                lines.append("  no matches")
-            self.emit("\n".join(lines))
-            try:
-                answer = self.read_input("select> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                return None
-            if not answer:
-                return None
-            if answer.startswith("/"):
-                query = answer[1:].strip()
-                continue
-            if answer.isdigit() and 1 <= int(answer) <= len(enabled):
-                return enabled[int(answer) - 1]
-            for choice in enabled:
-                if answer == choice or answer.lower() == labels.get(choice, choice).lower():
-                    return choice
-            self.emit("No match: " + answer)
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model
@@ -3792,6 +4540,7 @@ Tools:
     def status(self, args: str) -> str:
         usage = self.session.usage
         provider = self.session.config.provider
+        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         index_status, index_message = CodeIndex(self.session).status(check=True)
         if self.session.state.code_index_refreshing:
             index_status, index_message = self.session.state.code_index_notice or "syncing", ""
@@ -3801,46 +4550,73 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        return "\n".join([
-            f"cwd: {self.session.cwd}",
-            f"provider: {self.session.config.active_provider}",
-            f"model: {provider.model or '(empty)'}",
-            f"api: {provider.resolved_api()} ({provider.api})",
-            f"reasoning: {provider.reasoning} ({provider.resolved_chat_reasoning()})",
-            f"messages: {len(self.session.messages)}",
-            f"tool_results: {len(self.session.tool_results)}",
-            f"goal: {self.session.state.goal or '(empty)'}",
-            f"known: {len(self.session.state.known)}",
-            f"tokens: calls={usage.calls} total={usage.total_tokens} cached={usage.cached_prompt_tokens}",
-            f"runtime: yolo={'on' if self.session.settings.yolo else 'off'} debug={'on' if self.session.settings.debug else 'off'} max_steps={self.session.settings.max_steps}",
-            CodeIndex.status_line(index_status, index_message),
-            CodeIndex.LEGEND,
-        ])
+        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
+        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
+        rows = [
+            ("workspace", "`" + self.session.cwd + "`"),
+            (
+                "model",
+                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`",
+            ),
+            (
+                "context",
+                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; known `{len(self.session.state.known)}`",
+            ),
+            ("goal", self.session.state.goal or "(empty)"),
+            (
+                "usage",
+                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)",
+            ),
+            (
+                "runtime",
+                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`",
+            ),
+            ("index", CodeIndex.status_line(index_status, index_message)),
+            ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
+        ]
+        return "\n".join(
+            [
+                "| status | value |",
+                "| --- | --- |",
+                *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
+            ]
+        )
+
+    def memory(self, args: str) -> str:
+        state = self.session.state
+        known = ["- " + item for item in state.known] or ["- (empty)"]
+        return "\n".join(
+            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *state.plan_rows(status=True), "known:", *known]
+        )
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
-        return "\n".join([
-            f"provider.active: {self.session.config.active_provider}",
-            f"provider.available: {', '.join(sorted(self.session.config.providers))}",
-            f"provider.url: {provider.url or '(empty)'}",
-            f"provider.key: {'(set)' if provider.key else '(empty)'}",
-            f"provider.model: {provider.model or '(empty)'}",
-            f"provider.api: {provider.api}",
-            f"provider.resolved_api: {provider.resolved_api()}",
-            f"provider.prompt_cache_key: {provider.prompt_cache_key}",
-            f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
-            f"provider.reasoning: {provider.reasoning}",
-            f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
-            f"provider.chat_reasoning: {provider.chat_reasoning}",
-            f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
-            f"provider.timeout: {provider.timeout}",
-            f"paths.data_dir: {self.session.data_path()}",
-            f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
-            f"runtime.max_agent_steps: {self.session.settings.max_steps}",
-            f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
-            f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
-            f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
-        ])
+        return "\n".join(
+            [
+                f"provider.active: {self.session.config.active_provider}",
+                f"provider.available: {', '.join(sorted(self.session.config.providers))}",
+                f"provider.url: {provider.url or '(empty)'}",
+                f"provider.key: {'(set)' if provider.key else '(empty)'}",
+                f"provider.model: {provider.model or '(empty)'}",
+                f"provider.api: {provider.api}",
+                f"provider.resolved_api: {provider.resolved_api()}",
+                f"provider.prompt_cache_key: {provider.prompt_cache_key}",
+                f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
+                f"provider.reasoning: {provider.reasoning}",
+                f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
+                f"provider.chat_reasoning: {provider.chat_reasoning}",
+                f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
+                f"provider.timeout: {provider.timeout}",
+                f"paths.data_dir: {self.session.data_path()}",
+                f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
+                f"runtime.max_agent_steps: {self.session.settings.max_steps}",
+                f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
+                f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
+                f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
+                f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
+                f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
+            ]
+        )
 
     def api(self, args: str) -> str:
         value = args.strip()
@@ -3872,23 +4648,28 @@ Tools:
         if args.strip():
             return "Usage: /compact"
         before = len(self.session.messages)
+        compacted, keep = self.agent.context.compaction_parts()
+        if not compacted:
+            return "No prior conversation to compact"
         try:
             self.status_bar.start()
-            data = self.agent.model.compact(self.agent.context.compaction_input())
+            data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
         except Exception as error:
             return "Error: " + str(error)
         finally:
             self.status_bar.stop()
-        self.session.state.apply(data)
-        self.session.messages = self.session.messages[-6:]
-        self.agent.context.latest_keys = []
-        messages = self.agent.context.model_messages(self.agent.SYSTEM_PROMPT)
-        tokens = ContextManager.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        self.agent.context.apply_compaction(data, keep)
+        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         return (
-            "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", ctx " + str(self.session.state.context_percent) + "%"
+            "Compacted context: messages "
+            + str(before)
+            + " -> "
+            + str(len(self.session.messages))
+            + ", prior summary inserted, ctx "
+            + str(self.session.state.context_percent)
+            + "%"
         )
 
     def index(self, args: str) -> str:
@@ -4025,6 +4806,12 @@ Tools:
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":
                 runtime.yolo = value.lower() in {"on", "true", "yes", "1"}
+            elif key == "runtime.check_updates":
+                runtime.check_updates = Config.bool({key: value}, key)
+                if runtime.check_updates:
+                    UpdateChecker(self.session).start()
+            elif key == "runtime.update_check_interval_hours":
+                runtime.update_check_interval_hours = max(1, int(value))
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
             elif key == "runtime.max_context_tokens":
