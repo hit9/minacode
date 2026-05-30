@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.6 - 2026-05-30
+
+### Added
+- Added a visible purple approval wait indicator.
+- Expanded compact logic tests around latest-turn retention, recent-message windows, fallback trimming, and tool-result preservation.
+
+### Changed
+- Clarified prompt rules for user-visible interim output and final answers.
+- Simplified core flow by removing thin wrappers and duplicate tool-schema name extraction.
+
+### Fixed
+- Preserved raw tool results referenced from compact summaries so `tr.N` keys remain recallable.
+- Improved transient model error retry detection and final retry reporting.
+
 ## 0.5.5 - 2026-05-30
 
 ### Changed
