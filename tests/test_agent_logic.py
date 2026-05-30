@@ -118,7 +118,7 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert "Current focus: inspect" in rendered
     assert f"source={edit_key} tool=Edit" in rendered
     assert "Files:\n- a.txt 0:2" in rendered
-    assert "Use these file ranges before calling Read again." in rendered
+    assert "Current file ranges available in ACTIVE FILE VIEW." in rendered
     assert f"Recent file events:\n- {read_key} Read" in rendered
     assert f"@@ a.txt 0:1 source={edit_key} tool=Edit" in rendered
     assert rendered.endswith("OUTPUT IN USER LANGUAGE")
@@ -462,7 +462,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
     assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
-    assert "Use ACTIVE FILE VIEW before calling Read again." in s.messages[2]["content"]
+    assert "Current lines are available in ACTIVE FILE VIEW." in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 

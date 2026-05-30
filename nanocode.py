@@ -2144,7 +2144,7 @@ class ContextManager:
         focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not errors:
             return ""
-        chunks = ["Use these file ranges before calling Read again."] if paths else []
+        chunks = ["Current file ranges available in ACTIVE FILE VIEW."] if paths else []
         if focus:
             chunks.extend(["", "Current focus: " + focus])
         if paths:
@@ -2365,7 +2365,7 @@ class ToolRunner:
 
     def project_output(self, call: ToolCall, key: str, output: str, failed: bool) -> str:
         if not failed and key and call.name in {"Read", "Edit"}:
-            return "\n".join(["FILE VIEW UPDATED:", *self.file_view_rows(key, output), "Use ACTIVE FILE VIEW before calling Read again."]).strip()
+            return "\n".join(["FILE VIEW UPDATED:", *self.file_view_rows(key, output), "Current lines are available in ACTIVE FILE VIEW."]).strip()
         return self.context.bound_output(output, key).rstrip()
 
     def read_cache_hit(self, tool: ReadTool) -> str:
@@ -2812,7 +2812,7 @@ Use EXACT named parameters.
 RULES:
 * Act when the next step is clear; continue with tool calls until done.
 * Prefer built-in tools over Bash; batch independent read-only calls.
-* Use latest file reads; do not re-read unless stale, incomplete, or needed.
+* Use ACTIVE FILE VIEW when it already covers needed lines.
 * Inspect/read before edits; keep changes small; never overwrite user work.
 * For multi-step work, Note goal/plan/known. Recall bounded tr.N only when needed.
 * No tool call means final answer; never send an empty final answer.
@@ -2830,23 +2830,13 @@ RULES:
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
-        parser_retry_used = False
-        parser_feedback = ""
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
                 try:
-                    assistant, tool_calls, content = self.model.request(self.messages(turn_messages, parser_feedback))
-                    parser_feedback = ""
+                    assistant, tool_calls, content = self.model.request(self.messages(turn_messages))
                     break
                 except ModelRequestRetry:
-                    continue
-                except ModelError as error:
-                    text = str(error)
-                    if parser_retry_used or "Failed to parse input" not in text or "<tool_call>" not in text:
-                        raise
-                    parser_retry_used = True
-                    parser_feedback = "Previous model request failed before execution: provider parser rejected the tool_call format. Retry once using only valid JSON named parameters from the tool schema; do not emit XML-style tool calls or ad-hoc parameter text."
                     continue
             if not tool_calls:
                 if not content.strip():
@@ -2865,12 +2855,12 @@ RULES:
         self.session.state.turn_messages = 0
         return stopped
 
-    def messages(self, turn_messages: list[Json], error_feedback: str = "") -> list[Json]:
+    def messages(self, turn_messages: list[Json]) -> list[Json]:
         turn_messages.extend({"role": "user", "content": text} for text in self.session.pending_user_inputs if text.strip())
         self.session.pending_user_inputs.clear()
         self.session.state.turn_messages = len(turn_messages)
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, turn_messages)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages, error_feedback)
+        messages = self.context.model_messages(self.SYSTEM_PROMPT, turn_messages)
         self.context.update_percent(messages)
         return messages
 
