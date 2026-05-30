@@ -1962,6 +1962,8 @@ class ToolCall:
 
 
 class ContextManager:
+    COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
+
     @dataclass
     class FileContextItem:
         order: int
@@ -2002,17 +2004,20 @@ class ContextManager:
     def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
         if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
             return
+        compacted, keep = self.compaction_parts(turn_messages)
+        if not compacted:
+            return
         try:
-            self.session.state.apply(model.compact(self.compaction_input(turn_messages)))
+            self.apply_compaction(model.compact(self.compaction_input(compacted)), keep)
         except Exception:
             self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-        self.session.messages = self.session.messages[-6:]
+            self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
 
     @staticmethod
     def render_section(name: str, body: str) -> str: return f"--- {name} ---\n{body or '(empty)'}"
 
     def memory_context(self, *, with_date: bool = False) -> str:
-        rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Summary:\n" + (self.session.state.summary or "(empty)"), "Plan:\n" + "\n".join(self.session.state.plan_rows()), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
+        rows = ["Goal: " + (self.session.state.goal or "(empty)"), "Plan:\n" + "\n".join(self.session.state.plan_rows()), "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"])]
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
         return "\n\n".join(rows)
@@ -2222,9 +2227,28 @@ class ContextManager:
         segments.append((start, previous + 1, source, tool, lines))
         return segments
 
-    def compaction_input(self, turn_messages: list[Json] | None = None) -> str:
-        messages = "\n\n".join(self.message_text(message) for message in [*self.session.messages, *(turn_messages or [])]) or "(empty)"
-        return "\n\n".join(["State:\n" + self.session.state.format(), "Summary:\n" + (self.session.state.summary or "(empty)"), "Messages:\n" + messages])
+    def compaction_input(self, messages: list[Json]) -> str:
+        messages_text = "\n\n".join(self.message_text(message) for message in messages) or "(empty)"
+        return "\n\n".join(["State:\n" + self.session.state.format(), "Previous Summary:\n" + (self.session.state.summary or "(empty)"), "Messages:\n" + messages_text])
+
+    def compaction_parts(self, turn_messages: list[Json] | None = None) -> tuple[list[Json], list[Json]]:
+        if turn_messages:
+            return self.session.messages, []
+        index = self.latest_user_index(self.session.messages)
+        return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
+
+    def apply_compaction(self, data: Json, keep: list[Json]) -> None:
+        self.session.state.apply(data)
+        self.session.messages = [*self.summary_message(self.session.state.summary), *keep]
+
+    def summary_message(self, summary: str) -> list[Json]:
+        return [{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary.strip()}] if summary.strip() else []
+
+    def latest_user_index(self, messages: list[Json]) -> int | None:
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user" and not str(messages[index].get("content") or "").startswith(self.COMPACT_TITLE):
+                return index
+        return None
 
     def bound_output(self, text: str, key: str = "") -> str:
         estimated = self.estimated_text_tokens(text)
@@ -4103,19 +4127,21 @@ Tools:
         if args.strip():
             return "Usage: /compact"
         before = len(self.session.messages)
+        compacted, keep = self.agent.context.compaction_parts()
+        if not compacted:
+            return "No prior conversation to compact"
         try:
             self.status_bar.start()
-            data = self.agent.model.compact(self.agent.context.compaction_input())
+            data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
         except Exception as error:
             return "Error: " + str(error)
         finally:
             self.status_bar.stop()
-        self.session.state.apply(data)
-        self.session.messages.clear()
+        self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
-        return "Compacted context: messages " + str(before) + " -> 0, summary updated, ctx " + str(self.session.state.context_percent) + "%"
+        return "Compacted context: messages " + str(before) + " -> " + str(len(self.session.messages)) + ", prior summary inserted, ctx " + str(self.session.state.context_percent) + "%"
 
     def index(self, args: str) -> str:
         value = args.strip()

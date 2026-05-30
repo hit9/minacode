@@ -180,7 +180,10 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert s.state.summary == "compact summary"
     assert s.state.plan == ["next"]
     assert s.state.known == ["fact"]
-    assert len(s.messages) == 6
+    assert len(s.messages) == 1
+    assert s.messages[0]["role"] == "user"
+    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert "compact summary" in s.messages[0]["content"]
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -413,6 +416,7 @@ def test_memory_command_shows_durable_memory(tmp_path):
     assert "- pytest" in output
 
     prompt_memory = n.ContextManager(s).memory_context()
+    assert "summary" not in prompt_memory
     assert "- inspect" in prompt_memory
     assert "[~]" not in prompt_memory
 
@@ -482,12 +486,14 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
 
     context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
-    assert len(s.messages) == 6
+    assert len(s.messages) == 1
+    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert "deterministically trimmed" in s.messages[0]["content"]
 
 
-def test_manual_compact_clears_conversation_messages(tmp_path):
+def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     s = session(tmp_path)
-    s.messages = [{"role": "user", "content": str(index)} for index in range(5)]
+    s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
     s.state.context_percent = 80
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
@@ -498,10 +504,13 @@ def test_manual_compact_clears_conversation_messages(tmp_path):
     loop.agent.model = FakeModel()
     result = loop.compact("")
 
-    assert s.messages == []
+    assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
+    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert s.messages[1]["content"] == "latest"
+    assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
-    assert "messages 5 -> 0" in result
-    assert "summary updated" in result
+    assert "messages 4 -> 3" in result
+    assert "prior summary inserted" in result
 
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
