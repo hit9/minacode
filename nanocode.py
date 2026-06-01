@@ -2157,19 +2157,28 @@ class ContextManager:
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, round(tokens * 100 / self.session.settings.max_context_tokens))
+        self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
         return self.session.state.context_percent
 
     def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
-        if self.estimated_tokens(self.model_messages(base_system, turn_messages)) < self.session.settings.max_context_tokens:
+        if not self.over_budget(base_system, turn_messages):
             return
         compacted, keep = self.compaction_parts()
-        if not compacted:
-            return
-        try:
-            self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
-        except Exception:
-            self.apply_compaction_fallback(keep, turn_messages)
+        if compacted:
+            try:
+                self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
+            except Exception:
+                self.apply_compaction_fallback(keep, turn_messages)
+        if turn_messages is not None and self.over_budget(base_system, turn_messages):
+            compacted, keep = self.turn_compaction_parts(turn_messages)
+            if compacted:
+                try:
+                    self.apply_turn_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
+                except Exception:
+                    self.apply_turn_compaction_fallback(keep, turn_messages)
+
+    def over_budget(self, base_system: str, turn_messages: list[Json] | None = None) -> bool:
+        return self.estimated_tokens(self.model_messages(base_system, turn_messages)) >= self.session.settings.max_context_tokens
 
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = [
@@ -2396,9 +2405,19 @@ class ContextManager:
         index = self.latest_user_index(self.session.messages)
         return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
 
-    def compaction_recent(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+    def turn_compaction_parts(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+        index = self.latest_user_index(messages)
+        if index is None:
+            return self.compaction_parts_for(messages)
+        compacted, keep = self.compaction_parts_for(messages[index + 1 :])
+        return compacted, messages[: index + 1] + keep
+
+    def compaction_parts_for(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
         cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
         return messages[:cut], messages[cut:]
+
+    def compaction_recent(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+        return self.compaction_parts_for(messages)
 
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
@@ -2414,6 +2433,18 @@ class ContextManager:
         summary = self.session.state.summary
         self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
         self.prune_tool_records([*keep, *(tool_messages or [])])
+
+    def apply_turn_compaction(self, data: Json, keep: list[Json], turn_messages: list[Json]) -> None:
+        self.session.state.apply(data)
+        summary = self.session.state.summary
+        index = self.latest_user_index(keep)
+        insert = len(keep) if index is None else index + 1
+        turn_messages[:] = keep[:insert] + ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep[insert:]
+        self.prune_tool_records([*self.session.messages, *turn_messages])
+
+    def apply_turn_compaction_fallback(self, keep: list[Json], turn_messages: list[Json]) -> None:
+        self.session.state.summary = (self.session.state.summary + "\nCurrent turn context was deterministically trimmed.").strip()
+        self.apply_turn_compaction({"summary": self.session.state.summary}, keep, turn_messages)
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
