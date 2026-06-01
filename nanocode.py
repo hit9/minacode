@@ -4381,9 +4381,11 @@ Tools:
             return
         fd, path = tempfile.mkstemp(prefix="nanocode-preview-", suffix=".diff")
         try:
+            pager_env = os.environ.get("PAGER", "")
+            pager = shlex.split(pager_env) if pager_env else ([less, "-R"] if (less := shutil.which("less")) else [])
+            text = self.ansi_diff_preview(self.approval_full_preview) if pager and os.path.basename(pager[0]) == "less" else self.approval_full_preview
             with os.fdopen(fd, "w", encoding="utf-8") as file:
-                file.write(self.approval_full_preview.rstrip() + "\n")
-            pager = shlex.split(os.environ.get("PAGER", "")) or ([less, "-R"] if (less := shutil.which("less")) else [])
+                file.write(text.rstrip() + "\n")
             if pager:
                 subprocess.run([*pager, path])
             else:
@@ -4394,6 +4396,15 @@ Tools:
                 os.unlink(path)
             except OSError:
                 pass
+
+    @staticmethod
+    def ansi_diff_preview(text: str) -> str:
+        colors = [("---", "\033[90m"), ("+++", "\033[90m"), ("@@", "\033[36m"), ("+", "\033[32m"), ("-", "\033[31m")]
+        lines = []
+        for line in text.splitlines():
+            style = next((color for prefix, color in colors if line.lstrip().startswith(prefix)), "")
+            lines.append(style + line + ("\033[0m" if style else ""))
+        return "\n".join(lines)
 
     def show_transient_tool_preview(self, text: str) -> None:
         self.clear_transient_tool_output()
