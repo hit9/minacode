@@ -28,6 +28,10 @@ from urllib.request import Request, urlopen
 
 import code_symbol_index as csi
 from anthropic import Anthropic
+try:
+    from json_repair import repair_json
+except Exception:
+    repair_json = None
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application, run_in_terminal
@@ -2146,10 +2150,7 @@ class ContextManager:
         try:
             self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
         except Exception:
-            self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-            summary = self.session.state.summary
-            self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
-            self.prune_tool_records([*keep, *(turn_messages or [])])
+            self.apply_compaction_fallback(keep, turn_messages)
 
     def memory_context(self, *, with_date: bool = False) -> str:
         rows = [
@@ -2388,6 +2389,12 @@ class ContextManager:
         summary = self.session.state.summary
         self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
         self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
+
+    def apply_compaction_fallback(self, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
+        self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
+        summary = self.session.state.summary
+        self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
+        self.prune_tool_records([*keep, *(tool_messages or [])])
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
@@ -3023,7 +3030,8 @@ class ModelClient:
     def compact(self, context: str) -> Json:
         prompt = """
 Compact the nanocode working context.
-Return exactly one JSON object with keys: summary, goal, plan, known.
+Return one JSON object only. No markdown, prose, code fences, or comments.
+Use keys: summary, goal, plan, known.
 Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
@@ -3033,12 +3041,62 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             if self.session.config.provider.resolved_api() == "anthropic"
             else self.chat_request(messages, None, activity="compact")
         )
-        content = content.strip()
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE | re.DOTALL).strip()
-        data = json.loads(content)
+        data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
         return data
+
+    @classmethod
+    def parse_json_object(cls, text: str) -> Json:
+        text = cls.strip_json_fence(Text.clean(text).strip())
+        if not text:
+            raise ModelError("compactor returned empty output")
+        candidates = list(dict.fromkeys([text, cls.first_json_object(text)]))
+        for candidate in filter(None, candidates):
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        if repair_json is not None:
+            for candidate in filter(None, candidates):
+                try:
+                    data = repair_json(candidate, return_objects=True)
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    pass
+        raise ModelError("compactor returned invalid JSON: " + Tool.compact(text, 200))
+
+    @staticmethod
+    def strip_json_fence(text: str) -> str:
+        match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.IGNORECASE | re.DOTALL)
+        return (match.group(1) if match else text).strip()
+
+    @staticmethod
+    def first_json_object(text: str) -> str:
+        start = text.find("{")
+        if start < 0:
+            return ""
+        depth, in_string, escaped = 0, False, False
+        for offset, char in enumerate(text[start:], start=start):
+            if in_string:
+                escaped = (not escaped and char == "\\")
+                if char == '"' and not escaped:
+                    in_string = False
+                elif char != "\\":
+                    escaped = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : offset + 1]
+        return text[start:]
 
     def client(self) -> OpenAI:
         provider = self.session.config.provider
@@ -4694,16 +4752,20 @@ Tools:
         compacted, keep = self.agent.context.compaction_parts()
         if not compacted:
             return "No prior conversation to compact"
+        fallback = False
         try:
             self.status_bar.start()
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
-        except Exception as error:
-            return "Error: " + str(error)
+        except Exception:
+            self.agent.context.apply_compaction_fallback(keep)
+            fallback = True
+            data = None
         finally:
             self.status_bar.stop()
-        self.agent.context.apply_compaction(data, keep)
+        if data is not None:
+            self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         return (
             "Compacted context: messages "
@@ -4713,6 +4775,7 @@ Tools:
             + ", prior summary inserted, ctx "
             + str(self.session.state.context_percent)
             + "%"
+            + (" (fallback)" if fallback else "")
         )
 
     def index(self, args: str) -> str:

@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.64.0",
     "code-symbol-index>=0.1.13",
+    "json-repair",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",
     "rich>=13.0",
