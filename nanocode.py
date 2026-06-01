@@ -11,10 +11,12 @@ import os
 import platform
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -2675,6 +2677,7 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.preview_fn: Callable[[str], bool] | None = None
+        self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
 
@@ -2829,8 +2832,11 @@ class ToolRunner:
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
-        if not (self.preview_fn and self.preview_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))):
-            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
+        display = self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, preview_lines=40)
+        if self.preview_full_fn and tool.NAME == "Edit":
+            self.preview_full_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, preview_lines=None))
+        if not (self.preview_fn and self.preview_fn(display)):
+            self.output_fn(display)
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
@@ -2838,19 +2844,26 @@ class ToolRunner:
         return False, "" if lower in {"n", "no"} else answer
 
     def approval_display(
-        self, call: ToolCall, tool: Tool, status: str, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None
+        self,
+        call: ToolCall,
+        tool: Tool,
+        status: str,
+        batch_suffix: str = "",
+        planned_edit: EditBatchPlan.PlannedEdit | None = None,
+        preview_lines: int | None = 40,
     ) -> str:
         header = self.with_batch_suffix(("approve " if status == "confirm" else "auto ") + self.short_call(call), batch_suffix)
         if tool.NAME != "Edit":
             return header
         preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
-        return header + (("\n" + block) if (block := self.preview_block(preview)) else "")
+        return header + (("\n" + block) if (block := self.preview_block(preview, max_lines=preview_lines)) else "")
 
-    def preview_block(self, preview: str, *, max_lines: int = 40) -> str:
+    def preview_block(self, preview: str, *, max_lines: int | None = 40) -> str:
         lines = preview.rstrip().splitlines()
         if not lines:
             return ""
-        lines = lines[:max_lines] + (["... preview truncated ..."] if len(lines) > max_lines else [])
+        if max_lines is not None and len(lines) > max_lines:
+            lines = lines[:max_lines] + [f"... preview truncated: {len(lines) - max_lines} more lines (Ctrl-A: full preview) ..."]
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(
@@ -3934,6 +3947,7 @@ Tools:
         self.live_status_paused = False
         self.live_queue_paused = False
         self.transient_tool_lines = 0
+        self.approval_full_preview = ""
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
         self.queue_input_active = threading.Event()
@@ -3952,6 +3966,7 @@ Tools:
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.preview_fn = self.tool_preview
+        self.agent.tools.preview_full_fn = lambda text: setattr(self, "approval_full_preview", text)
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
 
@@ -4158,7 +4173,14 @@ Tools:
         frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
         return [("class:approval", prompt_text), ("class:approval.wait", frame + " ")]
 
-    def read_input(self, prompt_text: str = "nano> ", *, multiline: bool = False, submit_on_enter: bool = False, prompt_style: str = "class:prompt") -> str:
+    def read_input(
+        self,
+        prompt_text: str = "nano> ",
+        *,
+        multiline: bool = False,
+        submit_on_enter: bool = False,
+        prompt_style: str = "class:prompt",
+    ) -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
 
@@ -4213,6 +4235,10 @@ Tools:
                 pt_search.do_incremental_search(direction, count=event.arg)
             else:
                 pt_search.start_search(direction=direction)
+
+        @bindings.add("c-a", filter=Condition(lambda: bool(self.approval_full_preview)), eager=True)
+        def _ctrl_a(event):
+            run_in_terminal(self.open_approval_preview)
 
         @bindings.add("tab")
         def _tab(event):
@@ -4289,6 +4315,7 @@ Tools:
             finally:
                 if self.interactive_input and sys.stdout.isatty():
                     self.clear_transient_tool_output()
+                    self.approval_full_preview = ""
 
         return self.with_status_paused(read)
 
@@ -4303,13 +4330,32 @@ Tools:
         self.with_status_paused(lambda: self.show_transient_tool_preview(text))
         return True
 
+    def open_approval_preview(self) -> None:
+        if not self.approval_full_preview:
+            return
+        fd, path = tempfile.mkstemp(prefix="nanocode-preview-", suffix=".diff")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.write(self.approval_full_preview.rstrip() + "\n")
+            pager = shlex.split(os.environ.get("PAGER", "")) or ([less, "-R"] if (less := shutil.which("less")) else [])
+            if pager:
+                subprocess.run([*pager, path])
+            else:
+                print(self.approval_full_preview)
+                input("Press Enter to return...")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def show_transient_tool_preview(self, text: str) -> None:
         self.clear_transient_tool_output()
         lines = text.rstrip().splitlines()
         if not lines:
             return
         height, width = 12, max(20, shutil.get_terminal_size((120, 20)).columns)
-        shown = lines[:height] + (["... preview truncated ..."] if len(lines) > height else [])
+        shown = lines[:height] + ([f"... preview truncated: {len(lines) - height} more lines (Ctrl-A: full preview) ..."] if len(lines) > height else [])
         self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
         self.transient_tool_lines = len(shown)
 
