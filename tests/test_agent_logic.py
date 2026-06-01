@@ -368,10 +368,10 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
     assert keep == []
 
 
-def test_compaction_recent_uses_last_fixed_window(tmp_path):
+def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     messages = [{"role": "assistant", "content": f"m{index}"} for index in range(10)]
 
-    older, recent = n.ContextManager(session(tmp_path)).compaction_recent(messages)
+    older, recent = n.ContextManager(session(tmp_path)).compaction_parts_for(messages)
 
     assert [message["content"] for message in older] == ["m0", "m1"]
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]

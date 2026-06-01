@@ -2390,7 +2390,7 @@ class ContextManager:
         return segments
 
     def compaction_input(self, messages: list[Json]) -> str:
-        older, recent = self.compaction_recent(messages)
+        older, recent = self.compaction_parts_for(messages)
         return "\n\n".join(
             [
                 "State:\n" + self.session.state.format(),
@@ -2414,9 +2414,6 @@ class ContextManager:
     def compaction_parts_for(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
         cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
         return messages[:cut], messages[cut:]
-
-    def compaction_recent(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
-        return self.compaction_parts_for(messages)
 
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
@@ -3572,7 +3569,7 @@ class UiPrinter:
             return [("ansicyan", text + "\n")]
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
-        return self.text_segments(text)
+        return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
 
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
@@ -3688,10 +3685,6 @@ class UiPrinter:
                 indented.append((style, part))
                 at_start = part.endswith("\n")
         return indented
-
-    def text_segments(self, text: str) -> list[tuple[str, str]]:
-        return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
-
 
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
@@ -3864,15 +3857,13 @@ class StatusBar:
             self.output.flush()
             self.rendered = False
 
-    def elapsed(self) -> float:
-        return max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
-
     def idle_fragments(self) -> list[tuple[str, str]]:
         return self.fragments(0.0, sweep=False, show_elapsed=False)
 
     def active_fragments(self) -> list[tuple[str, str]]:
         self.refresh_retry_state()
-        return self.fragments(self.elapsed(), sweep=True, show_elapsed=True)
+        elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
+        return self.fragments(elapsed, sweep=True, show_elapsed=True)
 
     def fragments(self, elapsed: float, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         text = self.text(elapsed, show_elapsed=show_elapsed)
@@ -4349,7 +4340,12 @@ Tools:
         if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
             self.with_status_paused(lambda: self.show_transient_tool_output(text))
             return
-        self.with_status_paused(lambda: self.emit_tool_output(text))
+
+        def emit() -> None:
+            self.clear_transient_tool_output()
+            self.emit(text)
+
+        self.with_status_paused(emit)
 
     def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit_agent_output(text))
@@ -4408,10 +4404,6 @@ Tools:
         shown = lines[:height] + ([f"... preview truncated: {len(lines) - height} more lines (Ctrl-A: full preview) ..."] if len(lines) > height else [])
         self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
         self.transient_tool_lines = len(shown)
-
-    def emit_tool_output(self, text: str) -> None:
-        self.clear_transient_tool_output()
-        self.emit(text)
 
     def emit_agent_output(self, text: str) -> None:
         self.clear_transient_tool_output()
