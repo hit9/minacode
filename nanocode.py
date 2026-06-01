@@ -1870,12 +1870,12 @@ class BashTool(Tool):
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = "Run git argv in the workspace; returns exit/stdout/stderr, with approval for mutating commands."
-    SIGNATURE = "Git(argv=[...], cwd?)"
+    DESCRIPTION = 'Run git with explicit argv in the workspace; argv is required; use Git(argv=["status","--short"]) for status.'
+    SIGNATURE = "Git(argv=[command,...], cwd?)"
     EXAMPLE = (
-        'Read repo status. Example: {"argv":["status","--short"]}',
-        'Diff inside a subdir. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
-        'Read history/object. Example: {"argv":["show","--stat","HEAD"]}',
+        'Status. Example: {"argv":["status","--short"]}',
+        'Diff. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
+        'Show commit/file. Example: {"argv":["show","--stat","HEAD"]}',
     )
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
 
@@ -1883,7 +1883,7 @@ class GitTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+            "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}},
             "required": ["argv"],
             "additionalProperties": False,
         }
