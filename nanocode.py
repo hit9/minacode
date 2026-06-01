@@ -1873,14 +1873,16 @@ class BashTool(Tool):
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = 'Run git with explicit argv in the workspace; argv is required; use Git(argv=["status","--short"]) for status.'
+    DESCRIPTION = 'Run git with explicit argv in the workspace. For add, pass explicit file paths; broad add is rejected.'
     SIGNATURE = "Git(argv=[command,...], cwd?)"
     EXAMPLE = (
         'Status. Example: {"argv":["status","--short"]}',
         'Diff. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
+        'Stage explicit files. Example: {"argv":["add","--","nanocode.py","README.md"]}',
         'Show commit/file. Example: {"argv":["show","--stat","HEAD"]}',
     )
     READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
+    BROAD_ADD = {"-A", "--all", ".", "./", ":/", "*"}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1927,7 +1929,25 @@ class GitTool(Tool):
                 raise ToolError("git cwd is not a directory")
         if not args:
             raise ToolError("Git requires arguments")
+        self.validate_add(args, cwd)
         return args, cwd
+
+    def validate_add(self, args: list[str], cwd: str) -> None:
+        if args[0] != "add":
+            return
+        paths, explicit = [], False
+        for arg in args[1:]:
+            if arg == "--":
+                explicit = True
+            elif arg in self.BROAD_ADD or arg.startswith("--pathspec-from-file"):
+                raise ToolError("Git add requires explicit file paths")
+            elif explicit or not arg.startswith("-"):
+                paths.append(arg)
+        if not paths:
+            raise ToolError("Git add requires explicit file paths")
+        for path in paths:
+            if path.startswith(":") or any(char in path for char in "*?[]") or not self.session.in_cwd(os.path.abspath(os.path.join(cwd, path))):
+                raise ToolError("Git add requires explicit file paths inside workspace")
 
 
 class RecallTool(Tool):
