@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.9 - 2026-06-01
+
+### Changed
+- Colorized `Ctrl-A` full edit previews when shown through `less`.
+
 ## 0.5.8 - 2026-06-01
 
 ### Added

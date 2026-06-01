@@ -55,7 +55,7 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.8"
+__version__ = "0.5.9"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
