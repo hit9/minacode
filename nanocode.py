@@ -28,10 +28,7 @@ from urllib.request import Request, urlopen
 
 import code_symbol_index as csi
 from anthropic import Anthropic
-try:
-    from json_repair import repair_json
-except Exception:
-    repair_json = None
+from json_repair import repair_json
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
 from prompt_toolkit.application import Application, run_in_terminal
@@ -3051,52 +3048,18 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         text = cls.strip_json_fence(Text.clean(text).strip())
         if not text:
             raise ModelError("compactor returned empty output")
-        candidates = list(dict.fromkeys([text, cls.first_json_object(text)]))
-        for candidate in filter(None, candidates):
-            try:
-                data = json.loads(candidate)
-                if isinstance(data, dict):
-                    return data
-            except json.JSONDecodeError:
-                pass
-        if repair_json is not None:
-            for candidate in filter(None, candidates):
-                try:
-                    data = repair_json(candidate, return_objects=True)
-                    if isinstance(data, dict):
-                        return data
-                except Exception:
-                    pass
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = repair_json(text, return_objects=True)
+        if isinstance(data, dict):
+            return data
         raise ModelError("compactor returned invalid JSON: " + Tool.compact(text, 200))
 
     @staticmethod
     def strip_json_fence(text: str) -> str:
         match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.IGNORECASE | re.DOTALL)
         return (match.group(1) if match else text).strip()
-
-    @staticmethod
-    def first_json_object(text: str) -> str:
-        start = text.find("{")
-        if start < 0:
-            return ""
-        depth, in_string, escaped = 0, False, False
-        for offset, char in enumerate(text[start:], start=start):
-            if in_string:
-                escaped = (not escaped and char == "\\")
-                if char == '"' and not escaped:
-                    in_string = False
-                elif char != "\\":
-                    escaped = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : offset + 1]
-        return text[start:]
 
     def client(self) -> OpenAI:
         provider = self.session.config.provider
