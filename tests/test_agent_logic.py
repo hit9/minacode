@@ -122,7 +122,6 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert f"Recent file events:\n- {read_key} Read" in rendered
     assert "Format: line:hash|text. Use line:hash as edit anchors." in rendered
     assert f"@@ a.txt 0:1 current source={edit_key} tool=Edit" in rendered
-    assert rendered.endswith("OUTPUT IN USER LANGUAGE")
     assert "|new" in rendered
     assert "|old" not in rendered
 

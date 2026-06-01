@@ -2314,7 +2314,6 @@ class ContextManager:
             chunks.append("Omitted content:")
             for path in sorted(omitted):
                 chunks.extend(f"- {path} source={source} lines={count}" for source, count in sorted(omitted[path].items()))
-        chunks.extend(["", "OUTPUT IN USER LANGUAGE"])
         return "\n".join(chunks).strip() if len(chunks) > 4 else ""
 
     def recent_file_actions(self) -> list[str]:
@@ -3365,7 +3364,7 @@ FLOW:
 - ACT when clear; keep using tools until done.
 - Every turn must call tools or return final; never emit empty content.
 - Prefer built-ins over Bash. Batch independent read-only calls.
-- All user-visible output follows the latest user input and uses the user's language.
+- All user-visible output follows the latest user input, uses the user's language, and is markdown.
 - Interim text is shown to the user and kept as conversation.
 
 CONTEXT:
