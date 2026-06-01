@@ -407,6 +407,7 @@ class AgentState:
     goal: str = ""
     plan: list[str] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
+    check: str = ""
     summary: str = ""
     code_index_status: str = ""
     code_index_error: str = ""
@@ -439,7 +440,7 @@ class AgentState:
         return next((text for item in self.plan if (text := self.plan_text(item))), "")
 
     def apply(self, data: Json) -> None:
-        for attr in ("goal", "summary"):
+        for attr in ("goal", "summary", "check"):
             if isinstance(data.get(attr), str):
                 setattr(self, attr, str(data[attr]).strip())
         for attr in ("plan", "known"):
@@ -450,7 +451,7 @@ class AgentState:
 
     def format(self) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows(), "Known:", *known])
+        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows(), "Known:", *known, "Check: " + (self.check or "(empty)")])
 
 
 @dataclass
@@ -2013,15 +2014,15 @@ class RecallTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; goal and plan replace current values, known appends unique facts."
-    SIGNATURE = "Note(goal?, plan?, known?)"
-    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"]}',)
+    DESCRIPTION = "Maintain durable working notes; goal, plan, and check replace current values, known appends unique facts."
+    SIGNATURE = "Note(goal?, plan?, known?, check?)"
+    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"],"check":"pytest passed"}',)
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
         strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
-        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings}, "additionalProperties": False}
+        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings, "check": {"type": "string"}}, "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2031,7 +2032,7 @@ class NoteTool(Tool):
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
             raise ToolError("Note requires named fields")
         data = self.args[0]
-        if unexpected := sorted(set(data) - {"goal", "plan", "known"}):
+        if unexpected := sorted(set(data) - {"goal", "plan", "known", "check"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
         if "goal" in data:
@@ -2047,8 +2048,11 @@ class NoteTool(Tool):
                 raise ToolError("Note known must be an array")
             self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
             changed.append("known")
+        if "check" in data:
+            self.session.state.check = str(data["check"]).strip()
+            changed.append("check")
         if not changed:
-            raise ToolError("Note requires goal, plan, or known")
+            raise ToolError("Note requires goal, plan, known, or check")
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
@@ -2062,6 +2066,8 @@ class NoteTool(Tool):
             known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
                 lines.extend(["known:", *(f"  + {item}" for item in known)])
+        if check := str(data.get("check") or "").strip():
+            lines.append("check -> " + Tool.compact(check, 120))
         return ["\n".join(lines) or "{}"]
 
 
@@ -2091,6 +2097,11 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    CODE_EXTENSIONS: ClassVar[set[str]] = set(
+        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
+        ".swift .toml .ts .tsx .vue .yaml .yml".split()
+    )
+    CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
     @dataclass
     class FileContextItem:
@@ -2145,6 +2156,7 @@ class ContextManager:
             "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
             "Plan:\n" + "\n".join(self.session.state.plan_rows() or ["- (empty; use Note for a short plan)"]),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
+            "Check: " + (self.session.state.check or "(empty)"),
         ]
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
@@ -2242,8 +2254,10 @@ class ContextManager:
             )
 
         paths = sorted((path for path in lines_by_path if lines_by_path[path]), key=lambda path: (-recent(path), path))
+        code_edits = self.recent_code_edits()
+        check_status = self.check_status(code_edits)
         focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
-        if not paths and not omitted and not focus and not actions and not errors:
+        if not paths and not omitted and not focus and not actions and not code_edits and not check_status and not errors:
             return ""
         chunks = ["Read/Edit outputs update this section. Treat listed ranges as current file state."] if paths else []
         if focus:
@@ -2254,6 +2268,10 @@ class ContextManager:
                 chunks.extend(f"- {path} {start}:{end} current" for start, end in self.coverage(lines_by_path[path]))
         if actions:
             chunks.extend(["", "Recent file events:", *actions])
+        if code_edits:
+            chunks.extend(["", "Recent code edits:", *code_edits])
+        if check_status:
+            chunks.extend(["", "Check status:", *check_status])
         if errors:
             chunks.extend(["", "Recent tool errors:", *errors])
         if paths:
@@ -2283,6 +2301,30 @@ class ContextManager:
             f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
             for record in self.session.tool_errors[-5:]
         ]
+
+    def recent_code_edits(self) -> list[str]:
+        rows: dict[str, str] = {}
+        for record in self.session.tool_records[-20:]:
+            if record.name == "Edit":
+                for match in re.finditer(r'<Edit\s+path=(".*?")', record.output):
+                    try:
+                        path = str(json.loads(match.group(1)))
+                    except json.JSONDecodeError:
+                        continue
+                    if self.code_like_path(path):
+                        rows[path] = f"- {record.key} Edit {path}"
+        return list(rows.values())[-8:]
+
+    def check_status(self, code_edits: list[str]) -> list[str]:
+        if not code_edits:
+            return []
+        check = self.session.state.check.strip()
+        return ["- " + check] if check else ["- Code changed recently. Use Note(check=...) after checks, or final must say checks not run."]
+
+    @classmethod
+    def code_like_path(cls, path: str) -> bool:
+        name = os.path.basename(path)
+        return name in cls.CODE_FILENAMES or os.path.splitext(name)[1].lower() in cls.CODE_EXTENSIONS
 
     def coverage(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int]]:
         numbers = sorted(numbered)
@@ -3244,7 +3286,7 @@ FLOW:
 CONTEXT:
 - Trust LATEST FILE STATE from Read/Edit for listed ranges.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, call Note early with goal and a short plan; update plan/known when they change.
+- For multi-step work, call Note early with goal and a short plan; update plan/known/check when they change.
 
 EDITS:
 - Inspect/read before edits.
@@ -3256,7 +3298,8 @@ EDITS:
 
 FINAL:
 - Concise markdown in the user's language.
-- Include changed files and checks when relevant.\
+- Include changed files and checks when relevant.
+- Mention checks run, or say checks not run.\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
