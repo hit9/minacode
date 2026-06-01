@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.8 - 2026-06-01
+
+### Added
+- Added `Ctrl-A` full edit preview in an external pager during approval.
+
+### Changed
+- Compact oversized current turns instead of only prior history.
+- Removed thin internal wrappers without changing behavior.
+
+### Fixed
+- Rejected broad `git add` commands unless explicit file paths are supplied.
+- Stopped exposing the output-language sentinel inside model-visible file state.
+
 ## 0.5.7 - 2026-05-30
 
 ### Changed
