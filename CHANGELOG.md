@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.10 - 2026-06-02
+
+### Added
+- Cached gitignore patterns across tool calls with mtime-based invalidation.
+
+### Changed
+- Clarified Bash tool output limits in its description.
+- Strengthened assistant language prompt to reduce unnecessary `cd` commands.
+- Clarified Git tool description so the model sees it defaults to the cwd from Environment.
+
 ## 0.5.9 - 2026-06-01
 
 ### Changed
