@@ -553,6 +553,7 @@ class Session:
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
+    _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.system_info is None:
@@ -759,12 +760,23 @@ class Tool:
 
     def gitignore_patterns(self, root: str) -> list[str]:
         patterns = []
-        for path in dict.fromkeys([os.path.join(self.session.cwd, ".gitignore"), *([os.path.join(root, ".gitignore")] if os.path.isdir(root) else [])]):
+        cache = self.session._gitignore_cache
+        paths = [os.path.join(self.session.cwd, ".gitignore")]
+        if os.path.isdir(root):
+            paths.append(os.path.join(root, ".gitignore"))
+        for path in dict.fromkeys(paths):
             try:
+                mtime = os.stat(path).st_mtime_ns
+                cached = cache.get(path)
+                if cached is not None and cached[0] == mtime:
+                    patterns.extend(cached[1])
+                    continue
                 with open(path, encoding="utf-8") as file:
-                    patterns.extend(line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!"))
+                    pats = [line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!")]
+                cache[path] = (mtime, pats)
+                patterns.extend(pats)
             except OSError:
-                pass
+                cache.pop(path, None)
         return patterns
 
     def ignored(self, path: str, patterns: list[str]) -> bool:
