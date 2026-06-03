@@ -1746,7 +1746,7 @@ class EditTool(Tool):
 
 class BashTool(Tool):
     NAME = "Bash"
-    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output."
+    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
     EXAMPLE = (
         'Check environment. Example: {"command":"python3 --version"}',
