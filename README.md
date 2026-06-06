@@ -103,6 +103,16 @@ Main fields:
 
 `api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
 
+
+## Tested Providers
+
+The following providers have been tested with nanocode:
+
+- **deepseek**: DeepSeek API
+- **opencode**: OpenCode API
+- **aliyun**: Alibaba Cloud (Tongyi Qianwen) API via Chat Completions
+- **llama.cpp**: Local inference via llama.cpp server
+
 ## Context Design
 
 Each model request is built manually from explicit messages. Stable context comes first, conversation stays as messages, working memory follows, and the latest file state is appended at the end.

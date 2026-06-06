@@ -103,6 +103,15 @@ nanocode --init-config
 
 `api = "auto"` 会根据 provider/model profile 在 Chat Completions 和 Anthropic Messages 之间选择。`prompt_cache_key = "auto"` 会根据 provider、model、workspace 和工具 schema 名称生成稳定 key。
 
+
+## 已测试的 Provider
+
+以下 provider 已在 nanocode 中测试通过：
+
+- **deepseek**: DeepSeek API
+- **opencode**: OpenCode API
+- **aliyun**: 阿里云通义千问 API（Chat Completions）
+- **llama.cpp**: 通过 llama.cpp 服务端本地推理
 ## 上下文设计
 
 每次模型请求都由 nanocode 手动构建成明确的 messages。稳定上下文在前，会话作为 messages 保留，工作记忆随后，最新文件状态放在末尾。
