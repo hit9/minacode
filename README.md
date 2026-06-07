@@ -4,6 +4,8 @@ A small terminal coding agent written in Python.
 
 [简体中文](README.zh-CN.md)
 
+[Chinese blog](https://hit9.dev/post/nanocode)
+
 nanocode is pre-1.0 software. Commands, configuration, and tool behavior may change before a stable release.
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)

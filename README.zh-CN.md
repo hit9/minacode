@@ -4,6 +4,8 @@
 
 [English](README.md)
 
+[中文博客](https://hit9.dev/post/nanocode)
+
 nanocode 仍是 1.0 前的软件。稳定版发布前，命令、配置和工具行为都可能变化。
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
