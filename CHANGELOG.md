@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.11 - 2026-06-12
+
+### Added
+- `InspectCode` gained `refs`, `impls`, `callers`, and `callees` modes, backed by `code-symbol-index` 0.3.0: behavior-classified references, implementor listing, and transitive call-chain walks (`depth`). `refs` hides import/attribute noise by default, with `ref_kind` to filter to an explicit subset or `all_kinds` to show everything; `callees` takes `loose` to include ambiguous cross-module matches; `refs`/`impls` page with `offset`.
+
+### Changed
+- Bumped `code-symbol-index` floor to `>=0.3.0`.
+
 ## 0.5.10 - 2026-06-02
 
 ### Added

@@ -55,7 +55,7 @@ from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
 
-__version__ = "0.5.10"
+__version__ = "0.5.11"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -1447,31 +1447,44 @@ class InspectCodeTool(Tool):
     NAME = "InspectCode"
     MAX_LIMIT: ClassVar[int] = 80
     MAX_OUTLINE_LIMIT: ClassVar[int] = 1000
-    DESCRIPTION = "Use the code index: find returns symbols, inspect returns anchors/members/references, outline returns a file symbol tree."
-    SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?)"
+    MAX_DEPTH: ClassVar[int] = 5
+    MODES: ClassVar[tuple[str, ...]] = ("find", "inspect", "outline", "refs", "impls", "callers", "callees")
+    SYMBOL_MODES: ClassVar[frozenset[str]] = frozenset({"find", "inspect", "refs", "impls", "callers", "callees"})
+    RESOLVE_MODES: ClassVar[frozenset[str]] = frozenset({"inspect", "refs", "impls", "callers", "callees"})
+    CHAIN_MODES: ClassVar[frozenset[str]] = frozenset({"callers", "callees"})
+    OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
+    DESCRIPTION = "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; refs lists classified references; impls lists implementors; callers/callees walk the call chain."
+    SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?,depth?,offset?,all_kinds?,ref_kind?,loose?)"
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
-        'Find exact symbol in a path. Example: {"mode":"find","target":"Session","path":"src","exact_only":true,"limit":10}',
         'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
         'Outline one file; symbol narrows subtree. Example: {"mode":"outline","target":"src/app.py","symbol":"App","limit":300}',
+        'List references; default hides import/attribute noise, ref_kind filters to call|read|write|inherit|type|import|attribute|usage (comma-ok), all_kinds shows everything, offset pages. Example: {"mode":"refs","target":"Tool","ref_kind":"call,write","offset":0}',
+        'List implementors of an interface/base. Example: {"mode":"impls","target":"Tool","kind":"class"}',
+        'Walk transitive callers/callees up to depth; callees loose includes ambiguous cross-module matches. Example: {"mode":"callers","target":"handle_job","depth":3}',
     )
 
     @classmethod
     def params_schema(cls) -> Json:
         props = {
-            "mode": {"type": "string", "enum": ["find", "inspect", "outline"]},
+            "mode": {"type": "string", "enum": list(cls.MODES)},
             "target": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT},
             "kind": {"type": "string"},
             "path": {"type": "string"},
             "symbol": {"type": "string"},
             "exact_only": {"type": "boolean"},
+            "depth": {"type": "integer", "minimum": 1, "maximum": cls.MAX_DEPTH},
+            "offset": {"type": "integer", "minimum": 0},
+            "all_kinds": {"type": "boolean"},
+            "ref_kind": {"type": "string"},
+            "loose": {"type": "boolean"},
         }
         return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        options = {key: payload[key] for key in ("limit", "kind", "path", "symbol", "exact_only") if key in payload}
+        options = {key: payload[key] for key in cls.OPTION_KEYS if key in payload}
         return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
     def call(self) -> str:
@@ -1483,22 +1496,37 @@ class InspectCodeTool(Tool):
         if len(self.args) == 3 and not isinstance(self.args[2], dict):
             raise ToolError("InspectCode options must be an object")
         options = self.args[2] if len(self.args) == 3 else {}
-        if unexpected := sorted(set(options) - {"limit", "kind", "path", "symbol", "exact_only"}):
+        if unexpected := sorted(set(options) - set(self.OPTION_KEYS)):
             raise ToolError("InspectCode unexpected option: " + ", ".join(unexpected))
-        if mode not in {"find", "inspect", "outline"}:
-            raise ToolError("InspectCode mode must be find, inspect, or outline")
+        if mode not in self.MODES:
+            raise ToolError("InspectCode mode must be one of: " + ", ".join(self.MODES))
         if not target:
             raise ToolError("InspectCode target is required")
-        if mode in {"find", "inspect"} and re.search(r"\s", target):
+        if mode in self.SYMBOL_MODES and re.search(r"\s", target):
             raise ToolError("InspectCode symbol target must not contain whitespace")
-        if mode == "inspect" and (target.endswith(".py") or os.path.exists(self.session.resolve_path(target))):
-            raise ToolError("InspectCode inspect target must be a symbol, not a file")
+        if mode in self.RESOLVE_MODES and (target.endswith(".py") or os.path.exists(self.session.resolve_path(target))):
+            raise ToolError(f"InspectCode {mode} target must be a symbol, not a file")
         if mode == "outline" and not os.path.isfile(self.session.resolve_path(target)):
             raise ToolError("InspectCode outline target must be an existing file")
         limit = options.get("limit")
         max_limit = self.MAX_OUTLINE_LIMIT if mode == "outline" else self.MAX_LIMIT
         if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > max_limit):
             raise ToolError(f"InspectCode {mode} limit must be 1..{max_limit}")
+        depth = options.get("depth")
+        if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1 or depth > self.MAX_DEPTH):
+            raise ToolError(f"InspectCode depth must be 1..{self.MAX_DEPTH}")
+        offset = options.get("offset")
+        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
+            raise ToolError("InspectCode offset must be >= 0")
+        ref_kind = options.get("ref_kind")
+        if ref_kind is not None:
+            if not isinstance(ref_kind, str):
+                raise ToolError("InspectCode ref_kind must be a string")
+            if options.get("all_kinds"):
+                raise ToolError("InspectCode ref_kind and all_kinds are mutually exclusive")
+            tokens = [token.strip() for token in ref_kind.split(",") if token.strip()]
+            if unknown := sorted(set(tokens) - csi.REFERENCE_KINDS):
+                raise ToolError("InspectCode unknown ref_kind: " + ", ".join(unknown) + "; valid: " + ", ".join(sorted(csi.REFERENCE_KINDS)))
         index = CodeIndex(self.session)
         if not index.available():
             raise ToolError("code index is not available; run /index")
@@ -1520,6 +1548,16 @@ class InspectCodeTool(Tool):
             return csi.search(target, limit=limit or csi.DEFAULT_SEARCH_LIMIT, **common)
         if mode == "inspect":
             return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, **common)
+        if mode == "refs":
+            ref_kinds = options.get("ref_kind") or ("all" if options.get("all_kinds") else "behavioral")
+            return csi.refs(target, limit=limit or csi.DEFAULT_MAX_REFERENCES, offset=int(options.get("offset") or 0), ref_kinds=ref_kinds, **common)
+        if mode == "impls":
+            return csi.impls(target, limit=limit or csi.DEFAULT_MAX_IMPLEMENTORS, offset=int(options.get("offset") or 0), **common)
+        if mode in self.CHAIN_MODES:
+            depth = int(options.get("depth") or 3)
+            if mode == "callees":
+                return csi.callees(target, limit=limit or csi.DEFAULT_MAX_CALLEES, depth=depth, loose=bool(options.get("loose")), **common)
+            return csi.callers(target, limit=limit or csi.DEFAULT_MAX_CALLERS, depth=depth, **common)
         symbol = options.get("symbol") or None
         return csi.outline(
             target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"

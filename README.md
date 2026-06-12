@@ -15,7 +15,7 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 - **Live turn control**: Add follow-up input while the agent is still working, without losing the current tool flow.
 - **File-state brain**: Reads and edits build a current, line-numbered view of the files that matter now.
 - **Stale-edit protection**: `line:hash` anchors reject edits when the target code has drifted.
-- **Project-aware navigation**: Use the symbol index to jump through outlines, references, and changed files quickly.
+- **Project-aware navigation**: Use the symbol index to jump through outlines, references, implementors, call chains, and changed files quickly.
 - **Recoverable context**: Tool output stays bounded in the prompt, while raw `tr.N` results remain recallable.
 - **Cache-aware context**: Stable sections stay early and noisy working state stays late to improve prompt-cache reuse.
 - **Focused working memory**: `Note` separates goal, plan, and known facts from noisy execution logs.

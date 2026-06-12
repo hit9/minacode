@@ -213,11 +213,19 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(("search", query, kwargs)) or "search ok")
     monkeypatch.setattr(n.csi, "inspect", lambda query, **kwargs: calls.append(("inspect", query, kwargs)) or "inspect ok")
     monkeypatch.setattr(n.csi, "outline", lambda path, **kwargs: calls.append(("outline", path, kwargs)) or "outline ok")
+    monkeypatch.setattr(n.csi, "refs", lambda query, **kwargs: calls.append(("refs", query, kwargs)) or "refs ok")
+    monkeypatch.setattr(n.csi, "impls", lambda query, **kwargs: calls.append(("impls", query, kwargs)) or "impls ok")
+    monkeypatch.setattr(n.csi, "callers", lambda query, **kwargs: calls.append(("callers", query, kwargs)) or "callers ok")
+    monkeypatch.setattr(n.csi, "callees", lambda query, **kwargs: calls.append(("callees", query, kwargs)) or "callees ok")
 
     assert "search ok" in n.InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
     assert "inspect ok" in n.InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
     assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py"]).call()
     assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
+    assert "refs ok" in n.InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call()
+    assert "impls ok" in n.InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call()
+    assert "callers ok" in n.InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call()
+    assert "callees ok" in n.InspectCodeTool(s, ["callees", "Example"]).call()
 
     assert calls[0] == (
         "search",
@@ -239,6 +247,35 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         "sample.py",
         {"root": str(tmp_path), "symbol": None, "max_symbols": 300, "format": "text"},
     )
+    assert calls[4] == (
+        "refs",
+        "Example",
+        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
+         "limit": n.csi.DEFAULT_MAX_REFERENCES, "offset": 5, "ref_kinds": "all"},
+    )
+    assert calls[5] == (
+        "impls",
+        "Example",
+        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text",
+         "limit": n.csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
+    )
+    assert calls[6] == (
+        "callers",
+        "Example",
+        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
+         "limit": n.csi.DEFAULT_MAX_CALLERS, "depth": 2},
+    )
+    assert calls[7] == (
+        "callees",
+        "Example",
+        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
+         "limit": n.csi.DEFAULT_MAX_CALLEES, "depth": 3, "loose": False},
+    )
+
+    assert "refs ok" in n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
+    assert calls[8][2]["ref_kinds"] == "call,write"
+    assert "callees ok" in n.InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call()
+    assert calls[9][2]["loose"] is True
 
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["outline", "missing.py"]).call()
@@ -246,6 +283,14 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         n.InspectCodeTool(s, ["inspect", "sample.py"]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 1001}]).call()
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["refs", "sample.py"]).call()
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["callers", "Example", {"depth": 9}]).call()
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "bogus"}]).call()
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
 
 
 def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
