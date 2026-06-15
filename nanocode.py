@@ -3989,6 +3989,8 @@ FLOW:
 
 CONTEXT:
 - FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
+- FILE STATE is not Memory/Recall; do not call it "full memory" or treat it as old output.
+- Do not re-Read a file/range already present in FILE STATE when it has the needed lines and anchors; proceed to Edit.
 - After a successful Edit, trust FILE STATE and do not re-Read just to verify the edited range.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
 - For multi-step work, call Note early with goal and a short plan; update plan/known/check when they change.
