@@ -3988,7 +3988,8 @@ FLOW:
 - Write every assistant text message as markdown in the latest user's language; do not switch languages unless asked.
 
 CONTEXT:
-- Trust LATEST FILE STATE from Read/Edit for listed ranges.
+- FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
+- After a successful Edit, trust FILE STATE and do not re-Read just to verify the edited range.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
 - For multi-step work, call Note early with goal and a short plan; update plan/known/check when they change.
 
