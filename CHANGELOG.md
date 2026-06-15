@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.12 - 2026-06-15
+
+### Fixed
+- Preserved queued input typed during a running turn and prefilled it into the next prompt instead of dropping it at turn completion.
+
 ## 0.5.11 - 2026-06-12
 
 ### Added
