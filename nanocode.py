@@ -4155,8 +4155,7 @@ Tools:
         except (EOFError, KeyboardInterrupt):
             pass
         finally:
-            if not stop_event.is_set():
-                self.queue_input_text = buffer.text
+            self.queue_input_text = buffer.text
             self.queue_input_active.clear()
             if self.queue_input_app is app:
                 self.queue_input_app = None
@@ -4175,7 +4174,8 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                user_input = self.read_input()
+                user_input = self.read_input(initial_text=self.queue_input_text)
+                self.queue_input_text = ""
             except EOFError:
                 self.emit("")
                 return 0
@@ -4212,7 +4212,6 @@ Tools:
                 if watcher:
                     watcher.join(timeout=1.0)
                 self.queue_input_paused.clear()
-                self.queue_input_text = ""
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending()
                 self.status_bar.stop()
@@ -4271,6 +4270,7 @@ Tools:
         multiline: bool = False,
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
+        initial_text: str = "",
     ) -> str:
         if self.input_history is None:
             return self.input_fn(prompt_text)
@@ -4286,6 +4286,7 @@ Tools:
             enable_history_search=True,
             multiline=multiline,
             accept_handler=accept,
+            document=Document(initial_text, cursor_position=len(initial_text)),
         )
         search_toolbar = SearchToolbar()
         control = BufferControl(
