@@ -3999,6 +3999,8 @@ EDITS:
 - Inspect/read before edits.
 - Patch with Edit line:hash anchors from the newest FILE STATE.
 - After stale-anchor errors or successful edits, discard old anchors for that file/range.
+- If a stale-anchor error includes `current is line:hash|text`, retry Edit with that current anchor; do not Read first.
+- Read after a stale-anchor error only when there is no usable `current is` anchor or surrounding lines are needed.
 - Do not batch multiple Edit calls for the same file; sequence them.
 - Keep edits small/local/reversible; never overwrite unrelated user work.
 - Edit op=create creates files, including empty files.
