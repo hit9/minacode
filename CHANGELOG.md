@@ -1,5 +1,15 @@
 # Changelog
 
+## Pending Version
+
+### Added
+- Added MCP client router support through a single `MCP` tool, with URL-based server configuration, bearer-token environment variable support, asynchronous tool discovery, compact model-visible MCP tool indexes, on-demand tool details, and `/mcp` inspection/refresh commands.
+- Added MCP coverage for result normalization, successful tool calls, context pruning, `/mcp tools NAME`, and missing-server refresh handling.
+
+### Changed
+- Refined the status bar with lowercase `mcp`, right-side loading animation, and semantic per-section colors.
+- Clarified prompt guidance around FILE STATE snapshots, automatic Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed tool-call retries.
+
 ## 0.5.12 - 2026-06-15
 
 ### Fixed
