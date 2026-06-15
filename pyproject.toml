@@ -30,6 +30,7 @@ dependencies = [
     "anthropic>=0.64.0",
     "code-symbol-index>=0.3.0",
     "json-repair",
+    "fastmcp>=3,<4",
     "openai>=2.37.0",
     "prompt-toolkit>=3.0",
     "rich>=13.0",

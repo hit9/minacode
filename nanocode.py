@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import asyncio
 import fnmatch
 import hashlib
 import json
@@ -245,6 +246,7 @@ class Config:
     active_provider: str = "default"
     providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
     data_dir: str = "~/.nanocode"
+    mcp: Json = field(default_factory=dict)
 
     @property
     def provider(self) -> ProviderConfig:
@@ -260,7 +262,7 @@ class Config:
         if active not in providers:
             raise ConfigError(f"provider.active `{active}` does not exist")
         paths = cls.table(data, "paths")
-        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"))
+        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"), mcp=cls.table(data, "mcp"))
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
@@ -343,6 +345,11 @@ max_context_tokens = 128000
 check_updates = true
 update_check_interval_hours = 24
 yolo = false
+
+# [mcp.linear]
+# url = "https://mcp.linear.app/mcp"
+# bearer_token_env_var = "LINEAR_MCP_TOKEN"
+# enabled = true
 """
 
     @classmethod
@@ -493,6 +500,25 @@ class ToolErrorRecord:
 
 
 @dataclass
+class MCPServerConfig:
+    name: str
+    url: str = ""
+    bearer_token_env_var: str = ""
+    env_http_headers: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    error: str = ""
+
+
+@dataclass
+class MCPToolInfo:
+    server: str
+    name: str
+    description: str
+    input_schema: Json
+    annotations: Json = field(default_factory=dict)
+
+
+@dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
         "bash",
@@ -553,11 +579,14 @@ class Session:
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
+    mcp: MCPManager | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
+        if self.mcp is None:
+            self.mcp = MCPManager(self)
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False) -> "Session":
@@ -2144,7 +2173,87 @@ class NoteTool(Tool):
         return ["\n".join(lines) or "{}"]
 
 
+class MCPTool(Tool):
+    NAME = "MCP"
+    DESCRIPTION = "Call or describe external MCP server tools"
+    SIGNATURE = 'MCP(action="call"|"describe", server, tool, arguments={})'
+    MUTATES = True
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["call", "describe"],
+                    "description": '"call" invokes the tool; "describe" returns metadata',
+                },
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name from config",
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Remote MCP tool name",
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Arguments for the remote tool (required for call)",
+                },
+            },
+            "required": ["action", "server", "tool"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def payload(self) -> Json:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("MCP requires named fields")
+        return self.args[0]
+
+    def needs_confirmation(self) -> bool:
+        payload = self.payload()
+        action = payload.get("action", "")
+        if action == "describe":
+            return False
+        if action != "call" or self.session.mcp is None:
+            return False
+        return self.session.mcp.tool_needs_confirmation(str(payload.get("server") or ""), str(payload.get("tool") or ""))
+
+    def short_args(self) -> list[str]:
+        payload = self.payload()
+        action = str(payload.get("action") or "")
+        server = str(payload.get("server") or "")
+        tool_name = str(payload.get("tool") or "")
+        target = (server + "." + tool_name).strip(".")
+        return [part for part in (action, target) if part]
+
+    def call(self) -> str:
+        payload = self.payload()
+        action = payload.get("action", "")
+        server = payload.get("server", "")
+        tool_name = payload.get("tool", "")
+        arguments = payload.get("arguments", {})
+        if action == "call" and not isinstance(arguments, dict):
+            raise ToolError("MCP arguments must be an object")
+
+        mcp = self.session.mcp
+        if mcp is None:
+            raise ToolError("MCP not configured")
+
+        if action == "describe":
+            return mcp.describe_tool(server, tool_name)
+        elif action == "call":
+            return mcp.call_tool(server, tool_name, arguments)
+        else:
+            raise ToolError(f"unknown MCP action: {action}")
+
 TOOLS: tuple[type[Tool], ...] = (
+    MCPTool,
     ReadTool,
     LineCountTool,
     ListTool,
@@ -2170,6 +2279,9 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    MCP_DETAILS_BUDGET: ClassVar[int] = 8_000
+    MCP_DETAILS_MAX_TOOLS: ClassVar[int] = 20
+    MCP_DETAILS_MAX_TOOL_CHARS: ClassVar[int] = 2_000
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
         ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
         ".swift .toml .ts .tsx .vue .yaml .yml".split()
@@ -2195,15 +2307,86 @@ class ContextManager:
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         file_context = self.file_context() or "(empty)"
-        messages = [
+        mcp_tools = self.mcp_tools_context()
+        mcp_details = self.mcp_tool_details()
+
+        messages: list[Json] = [
             {"role": "system", "content": base_system.strip()},
             {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
-            *self.session.messages,
-            *(turn_messages or []),
-            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
-            {"role": "user", "content": "--- FILE STATE ---\n" + file_context},
         ]
+
+        if mcp_tools:
+            messages.append({"role": "user", "content": mcp_tools})
+
+        messages.extend(self.session.messages)
+        messages.extend(turn_messages or [])
+        messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
+
+        if mcp_details:
+            messages.append({"role": "user", "content": mcp_details})
+
+        messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
+
+
+    def mcp_tools_context(self) -> str:
+        if self.session.mcp is None:
+            return ""
+        return self.session.mcp.render_tools_index()
+
+    def mcp_tool_details(self) -> str:
+        items = self.active_mcp_tool_details()
+        if not items:
+            return ""
+
+        chunks: list[str] = []
+        chunks.append("--- MCP TOOL DETAILS ---")
+        chunks.append('Details previously requested with MCP(action="describe").')
+        chunks.append('Use MCP(action="call", server, tool, arguments) to call them.')
+        chunks.append("")
+
+        for _source_order, server, tool, key, body in items:
+            detail_block = f"{server}.{tool} source={key}\n{body}"
+            chunks.append(detail_block)
+            chunks.append("")
+
+        return "\n".join(chunks).strip()
+
+    def active_mcp_tool_details(self) -> list[tuple[int, str, str, str, str]]:
+        details: dict[tuple[str, str], tuple[int, str, str]] = {}
+        for order, record in enumerate(self.session.tool_records):
+            if record.name != "MCP":
+                continue
+            for match in re.finditer(r'<MCPDescribe server=(".*?") tool=(".*?")>(.*?)</MCPDescribe>', record.output, re.DOTALL):
+                try:
+                    server = str(json.loads(match.group(1)))
+                    tool = str(json.loads(match.group(2)))
+                    body = match.group(3).strip()
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                details[(server, tool)] = (order, record.key, body)
+
+        items = sorted((order, server, tool, key, body) for (server, tool), (order, key, body) in details.items())
+        items = items[-self.MCP_DETAILS_MAX_TOOLS :]
+        active: list[tuple[int, str, str, str, str]] = []
+        total_chars = len("--- MCP TOOL DETAILS ---\n") + 160
+        truncated = False
+        for order, server, tool, key, body in items:
+            header = f"{server}.{tool} source={key}"
+            detail_block = f"{header}\n{body}"
+            if len(detail_block) > self.MCP_DETAILS_MAX_TOOL_CHARS:
+                body = body[: max(0, self.MCP_DETAILS_MAX_TOOL_CHARS - len(header) - 24)] + "\n... detail truncated"
+                detail_block = f"{header}\n{body}"
+                truncated = True
+            if total_chars + len(detail_block) + 1 > self.MCP_DETAILS_BUDGET:
+                truncated = True
+                break
+            active.append((order, server, tool, key, body))
+            total_chars += len(detail_block) + 1
+        if truncated and active:
+            order, server, tool, key, body = active[-1]
+            active[-1] = (order, server, tool, key, body + '\n... MCP tool details truncated; use MCP(action="describe", server, tool) again if needed.')
+        return active
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
@@ -2513,6 +2696,9 @@ class ContextManager:
         for offset, record in enumerate(records):
             if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
                 keep.add(record.key)
+        for _order, _server, _tool, key, _body in self.active_mcp_tool_details():
+            keep.add(key)
+
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
 
@@ -2767,6 +2953,391 @@ class EditBatchPlan:
         raise ToolError(f"stale anchor {anchor}; current is {current}")
 
 
+class MCPManager:
+    RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
+    DESCRIBE_DESCRIPTION_LIMIT: ClassVar[int] = 1_000
+    DESCRIBE_ARGUMENT_LIMIT: ClassVar[int] = 50
+    DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.tools: dict[str, list[MCPToolInfo]] = {}
+        self.server_errors: dict[str, str] = {}
+        self._discovered = False
+        self.discovery_status: str = "stale"  # stale | discovering | ready | error
+
+    def parse_configs(self) -> list[MCPServerConfig]:
+        configs: list[MCPServerConfig] = []
+        mcp_config = self.session.config.mcp
+        if isinstance(mcp_config, dict):
+            for name, raw in mcp_config.items():
+                if isinstance(raw, dict):
+                    config = MCPServerConfig(
+                        name=str(name),
+                        url=Config.str(raw, "url"),
+                        bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
+                        enabled=Config.bool(raw, "enabled", True),
+                    )
+                    headers = raw.get("env_http_headers")
+                    if headers is None:
+                        pass
+                    elif isinstance(headers, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in headers.items()):
+                        config.env_http_headers = dict(headers)
+                    else:
+                        config.error = "env_http_headers must be a string map"
+                    configs.append(config)
+        return configs
+
+    def discover_enabled(self) -> None:
+        self.discovery_status = "discovering"
+        try:
+            configs = self.parse_configs()
+            configured = {config.name for config in configs}
+            for name in list(self.tools):
+                if name not in configured:
+                    self.tools.pop(name, None)
+                    self.server_errors.pop(name, None)
+            for config in configs:
+                if not config.enabled:
+                    self.tools.pop(config.name, None)
+                    self.server_errors.pop(config.name, None)
+                    continue
+                self._discover_one(config)
+            self._discovered = True
+            self.discovery_status = "ready"
+        except Exception as error:
+            self.server_errors["-"] = str(error)
+            self.discovery_status = "error"
+
+    def discover_server(self, name: str) -> None:
+        configs = self.parse_configs()
+        config = next((c for c in configs if c.name == name and c.enabled), None)
+        if config is None:
+            self.tools.pop(name, None)
+            self.server_errors[name] = "server not found or disabled"
+            return
+        self._discover_one(config)
+
+    def _discover_one(self, config: MCPServerConfig) -> None:
+        if config.error:
+            self.set_server_error(config.name, config.error)
+            return
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            self.set_server_error(config.name, headers)
+            return
+
+        if not config.url:
+            self.set_server_error(config.name, "url is required")
+            return
+
+        try:
+            tools = asyncio.run(self._list_tools(config.url, headers))
+            self.tools[config.name] = [
+                MCPToolInfo(
+                    server=config.name,
+                    name=t.name,
+                    description=t.description or "",
+                    input_schema=t.inputSchema,
+                    annotations=self.tool_annotations(t),
+                )
+                for t in tools
+            ]
+            self.server_errors.pop(config.name, None)
+        except Exception as e:
+            self.set_server_error(config.name, str(e))
+
+    def set_server_error(self, name: str, error: str) -> None:
+        self.tools.pop(name, None)
+        self.server_errors[name] = error
+
+    @staticmethod
+    def tool_annotations(tool: Any) -> Json:
+        annotations = getattr(tool, "annotations", None)
+        if annotations is None:
+            return {}
+        if isinstance(annotations, dict):
+            return annotations
+        if hasattr(annotations, "model_dump"):
+            data = annotations.model_dump(mode="json", exclude_none=True)
+            return data if isinstance(data, dict) else {}
+        return {}
+
+    def tool_needs_confirmation(self, server: str, tool_name: str) -> bool:
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            return False
+        annotations = info.annotations
+        if annotations.get("readOnlyHint") is True:
+            return False
+        return annotations.get("destructiveHint") is True
+
+    def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
+        return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
+
+    async def _list_tools(self, url: str, headers: dict[str, str]) -> list[Any]:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        async with Client(StreamableHttpTransport(url, headers=headers)) as client:
+            return await client.list_tools()
+
+    def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
+        headers: dict[str, str] = {}
+        if config.bearer_token_env_var:
+            token = os.environ.get(config.bearer_token_env_var)
+            if not token:
+                return f"missing environment variable {config.bearer_token_env_var}"
+            headers["Authorization"] = f"Bearer {token}"
+        if config.env_http_headers:
+            for header_name, env_var in config.env_http_headers.items():
+                value = os.environ.get(env_var)
+                if not value:
+                    return f"missing environment variable {env_var}"
+                if header_name.lower() == "authorization":
+                    return "conflicting Authorization header; use bearer_token_env_var instead"
+                headers[header_name] = value
+        return headers
+
+    def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
+        configs = self.parse_configs()
+        config = next((c for c in configs if c.name == server and c.enabled), None)
+        if config is None:
+            raise ToolError(f"MCP server '{server}' not found")
+        if config.error:
+            raise ToolError(config.error)
+        if not config.url:
+            raise ToolError("url is required")
+
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            raise ToolError(headers)
+
+        if server not in self.tools:
+            self.discover_server(server)
+        if server in self.server_errors:
+            raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+
+        try:
+            result = asyncio.run(self._call_tool(config.url, headers, tool_name, arguments))
+        except Exception as e:
+            raise ToolError(f"MCP call failed: {e}")
+
+        text = self.normalize_result(result)
+        return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
+
+    def normalize_result(self, result: Any) -> str:
+        parts: list[str] = []
+        content = getattr(result, "content", result)
+        items = content if isinstance(content, list) else [content]
+        for item in items:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif item_type == "resource":
+                    parts.append(json.dumps(item.get("resource"), ensure_ascii=False, indent=2))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, indent=2))
+                continue
+            item_type = getattr(item, "type", "")
+            if item_type == "text":
+                parts.append(str(getattr(item, "text", "") or ""))
+            elif item_type == "resource":
+                parts.append(str(getattr(item, "resource", "") or ""))
+            elif hasattr(item, "model_dump"):
+                parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
+            else:
+                parts.append(str(item))
+        text = "\n".join(part for part in parts if part).strip()
+        if len(text) > self.RAW_OUTPUT_LIMIT:
+            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
+        return text
+
+    async def _call_tool(self, url: str, headers: dict[str, str], name: str, arguments: Json) -> Any:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        async with Client(StreamableHttpTransport(url, headers=headers)) as client:
+            return await client.call_tool(name, arguments)
+
+    def describe_tool(self, server: str, tool_name: str) -> str:
+        tools = self.tools.get(server)
+        if tools is None:
+            self.discover_server(server)
+            tools = self.tools.get(server)
+
+        if tools is None:
+            if server in self.server_errors:
+                raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+            raise ToolError(f"MCP server '{server}' not found")
+
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            raise ToolError(f"MCP tool '{tool_name}' not found on server '{server}'")
+
+        return self._render_describe(server, info)
+
+    def _render_describe(self, server: str, info: MCPToolInfo) -> str:
+        schema = info.input_schema or {}
+        lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
+        if info.description:
+            lines.append("<description>")
+            lines.append(self.compact_text(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
+            lines.append("</description>")
+        lines.append("<arguments>")
+        props = schema.get("properties", {})
+        props = props if isinstance(props, dict) else {}
+        required = schema.get("required", [])
+        required = required if isinstance(required, list) else []
+        for index, (name, prop) in enumerate(props.items()):
+            if index >= self.DESCRIBE_ARGUMENT_LIMIT:
+                lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more arguments omitted")
+                break
+            req = "required" if name in required else "optional"
+            prop = prop if isinstance(prop, dict) else {}
+            typ = prop.get("type", "any")
+            desc = self.compact_text(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
+            lines.append(f"- {name} {req} {typ}: {desc}")
+        lines.append("</arguments>")
+        lines.append("<schema_summary>")
+        if props:
+            summary = f"Top-level object with {', '.join(props.keys())}."
+        else:
+            summary = "No arguments."
+        if len(summary) > 200:
+            summary = summary[:197] + "..."
+        lines.append(summary)
+        lines.append("</schema_summary>")
+        lines.append("</MCPDescribe>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def compact_text(text: str, limit: int) -> str:
+        text = " ".join(str(text).split())
+        return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+    def render_tools_index(self) -> str:
+        if not self.tools:
+            return ""
+
+        lines: list[str] = []
+        lines.append("--- MCP TOOLS ---")
+        lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
+        lines.append('Use MCP(action="describe", server, tool) for full details when needed.')
+        lines.append("Format: server.tool(req: type; opt: type) - description")
+        lines.append("")
+
+        configs = self.parse_configs()
+        for config in configs:
+            if not config.enabled or config.name not in self.tools:
+                continue
+            tools = self.tools.get(config.name, [])
+            if not tools:
+                continue
+            name_display = config.name.capitalize()
+            lines.append(f"[{config.name}] {name_display}")
+            for tool in tools:
+                line = self._format_tool_line(config.name, tool)
+                if line:
+                    lines.append(line)
+            lines.append("")
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990] + "\n... MCP tools truncated; use /mcp tools for full list."
+        return text
+
+    def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
+        schema = info.input_schema or {}
+        props = schema.get("properties", {})
+        props = props if isinstance(props, dict) else {}
+        required = schema.get("required", [])
+        required = required if isinstance(required, list) else []
+
+        def _fmt(name: str) -> str:
+            t = props.get(name, {}).get("type", "")
+            return f"{name}: {t}" if t else name
+
+        req_args = [_fmt(k) for k in required if k in props]
+        opt_args = [_fmt(k) for k in props if k not in required]
+
+        if len(req_args) > 8:
+            req_args = req_args[:8] + ["..."]
+        if len(opt_args) > 8:
+            opt_args = opt_args[:8] + ["..."]
+
+        parts = []
+        if req_args:
+            parts.append("(" + ", ".join(req_args))
+        else:
+            parts.append("(")
+        if opt_args:
+            parts.append("; " + ", ".join(opt_args))
+        parts.append(")")
+        args_str = "".join(parts)
+
+        desc = (info.description or "").split("\n")[0].strip()
+        desc = " ".join(desc.split())
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+
+        line = f"{server}.{info.name}{args_str} - {desc}"
+        if len(line) > 200:
+            line = line[:197] + "..."
+        return line
+
+    def render_tool_listing(self, server: str | None = None) -> str:
+        lines: list[str] = []
+        configs = self.parse_configs()
+        for config in configs:
+            if not config.enabled:
+                continue
+            if server and config.name != server:
+                continue
+            name_display = config.name.capitalize()
+            lines.append(f"[{config.name}] {name_display}")
+            if config.name in self.server_errors:
+                lines.append(f"  error: {self.server_errors[config.name]}")
+                continue
+            tools = self.tools.get(config.name, [])
+            if not tools:
+                lines.append("  (no tools discovered)")
+                continue
+            for tool in tools:
+                line = self._format_tool_line(config.name, tool)
+                if line:
+                    lines.append(f"  {line}")
+            lines.append("")
+        return "\n".join(lines) if lines else "(no MCP servers configured)"
+
+    def render_server_status(self) -> str:
+        lines: list[str] = []
+        configs = self.parse_configs()
+        for config in configs:
+            parts = [config.name]
+            if not config.enabled:
+                parts.append("disabled")
+            elif config.name in self.server_errors:
+                parts.append(f"error: {self.server_errors[config.name]}")
+            else:
+                parts.append("enabled")
+                if config.name in self.tools:
+                    parts.append("connected")
+                    parts.append(f"tools={len(self.tools[config.name])}")
+                else:
+                    parts.append("not connected")
+            if config.bearer_token_env_var:
+                parts.append(f"auth=bearer_token_env_var({config.bearer_token_env_var})")
+            if config.env_http_headers:
+                for header_name in config.env_http_headers:
+                    parts.append(f"auth=env_header({header_name})")
+            lines.append("  ".join(parts))
+        return "\n".join(lines) if lines else "(no MCP servers configured)"
+
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -2895,6 +3466,8 @@ class ToolRunner:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
         if not failed and call.name in {"Read", "Edit"}:
             return head + " -> FILE STATE"
+        if not failed and call.name == "MCP" and "<MCPDescribe " in output:
+            return head + " -> MCP TOOL DETAILS"
         rows = [head]
         if failed:
             rows.append("status: failed")
@@ -3577,6 +4150,12 @@ class CommandCompleter(Completer):
             if text.startswith(command):
                 yield from self.matches(values(), text[len(command) :])
                 return
+        if text.startswith("/mcp "):
+            tail = text[len("/mcp ") :]
+            if " " not in tail:
+                yield from self.matches(("tools", "refresh"), tail)
+                return
+
         if text.startswith("/") and " " not in text:
             yield from self.matches(self.COMMANDS, text)
 
@@ -3931,6 +4510,10 @@ class StatusBar:
         parts = [self.session.config.active_provider + "/" + model, reason]
         if self.session.settings.debug:
             parts.append("api " + provider.resolved_api())
+
+        mcp_status = self.mcp_status()
+        if mcp_status:
+            parts.append(mcp_status)
         parts.append("ctx " + str(self.session.state.context_percent) + "%")
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
@@ -3995,6 +4578,14 @@ class StatusBar:
             return "update..."
         return "update " + update.latest if update.newer_than(__version__) else ""
 
+    def mcp_status(self) -> str:
+        status = self.session.mcp.discovery_status
+        if status == "discovering":
+            return "mcp" + self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
+        if status == "error":
+            return "mcp err"
+        return f"mcp {len(self.session.mcp.tools)}" if status == "ready" else ""
+
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
@@ -4023,9 +4614,12 @@ class CommandLoop:
   /reason            Select reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
+  /mcp               Show MCP server status.
+  /mcp tools [NAME]   List MCP tools.
+  /mcp refresh [NAME] Refresh MCP servers.
   /exit, /quit       Exit.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, MCP.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -4171,6 +4765,8 @@ Tools:
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
+        # Async MCP discovery — show nano> immediately, discover in background
+        threading.Thread(target=self.session.mcp.discover_enabled, daemon=True).start()
         UpdateChecker(self.session).start()
         while True:
             try:
@@ -4538,11 +5134,38 @@ Tools:
             "/reason": self.reason,
             "/set": self.set_value,
             "/yolo": self.yolo,
+            "/mcp": self.mcp_command,
         }
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         (self.ui.emit_answer if name == "/status" else self.emit)(output)
         return True, False
+
+    def mcp_command(self, args: str) -> str:
+        mcp = self.session.mcp
+        if mcp is None:
+            return "MCP not configured"
+
+        parts = args.split()
+        if not parts:
+            return mcp.render_server_status()
+
+        sub = parts[0]
+        rest = parts[1:]
+
+        if sub == "tools":
+            server = rest[0] if rest else None
+            return mcp.render_tool_listing(server)
+        elif sub == "refresh":
+            name = rest[0] if rest else ""
+            if name:
+                mcp.discover_server(name)
+            else:
+                mcp.discover_enabled()
+            return mcp.render_server_status()
+        else:
+            return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp refresh [server]"
+
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
         if not query:
