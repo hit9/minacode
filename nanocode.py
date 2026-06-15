@@ -346,9 +346,9 @@ check_updates = true
 update_check_interval_hours = 24
 yolo = false
 
-# [mcp.linear]
-# url = "https://mcp.linear.app/mcp"
-# bearer_token_env_var = "LINEAR_MCP_TOKEN"
+# [mcp.example]
+# url = "https://example.com/mcp"
+# bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
 # enabled = true
 """
 
@@ -4427,6 +4427,19 @@ class ModelRetryShortcut:
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
+    BASE_STYLE: ClassVar[str] = "#e6edf3"
+    SEP_STYLE: ClassVar[str] = "#4b5563"
+    STYLES: ClassVar[dict[str, str]] = {
+        "provider": "#e6edf3",
+        "reason": "#a5b4fc",
+        "debug": "#64748b",
+        "mcp": "#93c5fd",
+        "ctx": "#facc15",
+        "update": "#fb923c",
+        "index": "#94a3b8",
+        "warn": "#fb7185",
+        "runtime": "#c084fc",
+    }
 
     def __init__(self, session: Session):
         self.session = session
@@ -4495,49 +4508,65 @@ class StatusBar:
         return self.fragments(elapsed, sweep=True, show_elapsed=True)
 
     def fragments(self, elapsed: float, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
-        text = self.text(elapsed, show_elapsed=show_elapsed)
+        entries = self.entries(elapsed, show_elapsed=show_elapsed)
+        text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
         if len(text) >= columns:
             text = text[: max(0, columns - 4)] + "..."
-        return self.sweep_fragments(text, elapsed) if sweep else [("ansicyan", text)]
+            return self.sweep_fragments(text, elapsed) if sweep else [(self.BASE_STYLE, text)]
+        return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
     def text(self, elapsed: float, *, show_elapsed: bool) -> str:
+        return " | ".join(text for text, _ in self.entries(elapsed, show_elapsed=show_elapsed))
+
+    def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
         provider = self.session.config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         reason = provider.reasoning
         if self.session.settings.debug:
             reason += "/" + provider.resolved_chat_reasoning()
-        parts = [self.session.config.active_provider + "/" + model, reason]
+        parts = [(self.session.config.active_provider + "/" + model, "provider"), (reason, "reason")]
         if self.session.settings.debug:
-            parts.append("api " + provider.resolved_api())
+            parts.append(("api " + provider.resolved_api(), "debug"))
 
         mcp_status = self.mcp_status()
         if mcp_status:
-            parts.append(mcp_status)
-        parts.append("ctx " + str(self.session.state.context_percent) + "%")
+            parts.append((mcp_status, "mcp"))
+        parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
-            parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
+            parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
         update_status = self.update_status()
         if update_status:
-            parts.append(update_status)
+            parts.append((update_status, "update"))
         index_status = self.index_status()
         if index_status:
-            parts.append("index" + index_status)
+            parts.append(("index" + index_status, "index"))
         if self.session.settings.yolo:
-            parts.append("yolo")
+            parts.append(("yolo", "warn"))
         if show_elapsed:
             parts.extend(
-                ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
+                [
+                    ("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"),
+                    ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
+                ]
             )
         if show_elapsed and self.session.pending_user_inputs:
-            parts.append("+" + str(len(self.session.pending_user_inputs)))
+            parts.append(("+" + str(len(self.session.pending_user_inputs)), "warn"))
         if show_elapsed:
-            parts.append(self.duration(elapsed))
+            parts.append((self.duration(elapsed), "runtime"))
             if self.retry_notice_until > time.monotonic():
-                parts.append("retrying")
+                parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
-                parts.append("ctrl-g retry")
-        return " | ".join(parts)
+                parts.append(("ctrl-g retry", "warn"))
+        return parts
+
+    def styled_fragments(self, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = []
+        for index, (text, role) in enumerate(entries):
+            if index:
+                fragments.append((self.SEP_STYLE, " | "))
+            fragments.append((self.STYLES.get(role, self.BASE_STYLE), text))
+        return fragments or [("", "")]
 
     def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
         if not text:
