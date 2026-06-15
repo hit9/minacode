@@ -3983,6 +3983,7 @@ Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 FLOW:
 - ACT when clear; keep using tools until done.
 - Every turn must call tools or return final; never emit empty content.
+- Do not repeat a failed tool call unchanged unless new information makes retrying meaningful.
 - Prefer built-ins over Bash. Batch independent read-only calls.
 - All assistant text is user-visible, including interim narration before tool calls and final answers.
 - Write every assistant text message as markdown in the latest user's language; do not switch languages unless asked.
