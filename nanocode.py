@@ -229,7 +229,7 @@ class RuntimeSettings:
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False) -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -238,6 +238,7 @@ class RuntimeSettings:
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
+            debug=debug or Config.bool(runtime, "debug", False),
         )
 
 
@@ -349,6 +350,11 @@ yolo = false
 # [mcp.example]
 # url = "https://example.com/mcp"
 # bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
+# enabled = true
+#
+# [mcp.oauth_example]
+# url = "https://example.com/mcp"
+# auth = "oauth"
 # enabled = true
 """
 
@@ -503,10 +509,112 @@ class ToolErrorRecord:
 class MCPServerConfig:
     name: str
     url: str = ""
+    auth: str = ""
     bearer_token_env_var: str = ""
     env_http_headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     error: str = ""
+
+
+class MCPFileTokenStore:
+    DEFAULT_COLLECTION = "default_collection"
+
+    def __init__(self, path: str):
+        self.path = path
+        self.lock = threading.Lock()
+
+    def token_key(self, server_url: str, suffix: str) -> str:
+        return server_url.rstrip("/") + suffix
+
+    def has_server_tokens(self, server_url: str) -> bool:
+        return self.has_key(self.token_key(server_url, "/tokens"), collection="mcp-oauth-token")
+
+    def clear_server(self, server_url: str) -> None:
+        with self.lock:
+            data = self.load()
+            for collection, key in (
+                ("mcp-oauth-token", self.token_key(server_url, "/tokens")),
+                ("mcp-oauth-client-info", self.token_key(server_url, "/client_info")),
+                ("mcp-oauth-token-expiry", self.token_key(server_url, "/token_expiry")),
+            ):
+                data.get(collection, {}).pop(key, None)
+            self.save(data)
+
+    def has_key(self, key: str, *, collection: str | None = None) -> bool:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            entry = self.load().get(collection, {}).get(key)
+            return bool(entry and not self.expired(entry))
+
+    async def get(self, key: str, *, collection: str | None = None) -> Json | None:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            data = self.load()
+            entry = data.get(collection, {}).get(key)
+            if entry is None:
+                return None
+            if self.expired(entry):
+                data.get(collection, {}).pop(key, None)
+                self.save(data)
+                return None
+            value = entry.get("value")
+            return dict(value) if isinstance(value, dict) else None
+
+    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
+        collection = collection or self.DEFAULT_COLLECTION
+        expires_at = time.time() + float(ttl) if ttl is not None else None
+        with self.lock:
+            data = self.load()
+            data.setdefault(collection, {})[key] = {"value": dict(value), "expires_at": expires_at}
+            self.save(data)
+
+    async def delete(self, key: str, *, collection: str | None = None) -> bool:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            data = self.load()
+            removed = data.get(collection, {}).pop(key, None) is not None
+            if removed:
+                self.save(data)
+            return removed
+
+    @staticmethod
+    def expired(entry: Json) -> bool:
+        expires_at = entry.get("expires_at")
+        return isinstance(expires_at, int | float) and expires_at <= time.time()
+
+    def load(self) -> dict[str, dict[str, Json]]:
+        try:
+            with open(self.path, encoding="utf-8") as file:
+                data = json.load(file)
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save(self, data: dict[str, dict[str, Json]]) -> None:
+        directory = os.path.dirname(self.path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+        tmp = self.path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        os.replace(tmp, self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
 
 @dataclass
@@ -589,9 +697,9 @@ class Session:
             self.mcp = MCPManager(self)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False) -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -2955,6 +3063,7 @@ class EditBatchPlan:
 
 class MCPManager:
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
+    DISCOVERY_TIMEOUT: ClassVar[int] = 10
     DESCRIBE_DESCRIPTION_LIMIT: ClassVar[int] = 1_000
     DESCRIBE_ARGUMENT_LIMIT: ClassVar[int] = 50
     DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
@@ -2975,9 +3084,14 @@ class MCPManager:
                     config = MCPServerConfig(
                         name=str(name),
                         url=Config.str(raw, "url"),
+                        auth=Config.str(raw, "auth").lower(),
                         bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
                         enabled=Config.bool(raw, "enabled", True),
                     )
+                    if config.auth not in {"", "oauth"}:
+                        config.error = "auth must be oauth"
+                    if config.auth == "oauth" and config.bearer_token_env_var:
+                        config.error = "auth=oauth conflicts with bearer_token_env_var"
                     headers = raw.get("env_http_headers")
                     if headers is None:
                         pass
@@ -2985,6 +3099,8 @@ class MCPManager:
                         config.env_http_headers = dict(headers)
                     else:
                         config.error = "env_http_headers must be a string map"
+                    if config.auth == "oauth" and any(header.lower() == "authorization" for header in config.env_http_headers):
+                        config.error = "auth=oauth conflicts with env_http_headers.Authorization"
                     configs.append(config)
         return configs
 
@@ -3032,7 +3148,13 @@ class MCPManager:
             return
 
         try:
-            tools = asyncio.run(self._list_tools(config.url, headers))
+            if config.auth == "oauth":
+                if not self.oauth_token_store().has_server_tokens(config.url):
+                    self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
+                    return
+                tools = asyncio.run(self._list_oauth_tools(config, headers))
+            else:
+                tools = asyncio.run(self._list_tools(config.url, headers))
             self.tools[config.name] = [
                 MCPToolInfo(
                     server=config.name,
@@ -3045,11 +3167,23 @@ class MCPManager:
             ]
             self.server_errors.pop(config.name, None)
         except Exception as e:
-            self.set_server_error(config.name, str(e))
+            self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
 
     def set_server_error(self, name: str, error: str) -> None:
         self.tools.pop(name, None)
         self.server_errors[name] = error
+
+    def call_timeout(self) -> int:
+        return max(1, self.session.settings.shell_timeout)
+
+    def discovery_timeout(self) -> int:
+        return min(self.call_timeout(), self.DISCOVERY_TIMEOUT)
+
+    def error_text(self, error: Exception, *, timeout: int | None = None) -> str:
+        if isinstance(error, TimeoutError):
+            return f"timeout after {timeout or self.call_timeout()}s"
+        text = str(error).strip()
+        return text or error.__class__.__name__
 
     @staticmethod
     def tool_annotations(tool: Any) -> Json:
@@ -3075,12 +3209,53 @@ class MCPManager:
     def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
         return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
 
+    def oauth_token_store(self) -> MCPFileTokenStore:
+        return MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
+
+    def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
+        from fastmcp.client.auth import OAuth
+
+        class NanocodeOAuth(OAuth):
+            async def redirect_handler(self, authorization_url: str) -> None:
+                if not interactive:
+                    raise RuntimeError("oauth login required; run /mcp login " + config.name)
+                if notify:
+                    notify("Open this URL to authorize MCP server `" + config.name + "`:\n" + authorization_url)
+                await super().redirect_handler(authorization_url)
+
+        return NanocodeOAuth(
+            token_storage=self.oauth_token_store(),
+            client_name="nanocode",
+            callback_timeout=self.session.settings.shell_timeout,
+        )
+
     async def _list_tools(self, url: str, headers: dict[str, str]) -> list[Any]:
         from fastmcp.client import Client
         from fastmcp.client.transports import StreamableHttpTransport
 
-        async with Client(StreamableHttpTransport(url, headers=headers)) as client:
-            return await client.list_tools()
+        timeout = self.discovery_timeout()
+        async with Client(StreamableHttpTransport(url, headers=headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
+
+    async def _list_oauth_tools(
+        self,
+        config: MCPServerConfig,
+        headers: dict[str, str],
+        *,
+        interactive: bool = False,
+        notify: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.call_timeout() if interactive else self.discovery_timeout()
+        async with Client(
+            StreamableHttpTransport(config.url, headers=headers),
+            auth=self.oauth_client(config, interactive=interactive, notify=notify),
+            timeout=timeout,
+            init_timeout=timeout,
+        ) as client:
+            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
 
     def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
         headers: dict[str, str] = {}
@@ -3095,6 +3270,8 @@ class MCPManager:
                 if not value:
                     return f"missing environment variable {env_var}"
                 if header_name.lower() == "authorization":
+                    if config.auth == "oauth":
+                        return "conflicting Authorization header; use auth=oauth instead"
                     return "conflicting Authorization header; use bearer_token_env_var instead"
                 headers[header_name] = value
         return headers
@@ -3112,6 +3289,8 @@ class MCPManager:
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             raise ToolError(headers)
+        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
 
         if server not in self.tools:
             self.discover_server(server)
@@ -3119,9 +3298,11 @@ class MCPManager:
             raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
 
         try:
-            result = asyncio.run(self._call_tool(config.url, headers, tool_name, arguments))
+            result = asyncio.run(
+                self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config.url, headers, tool_name, arguments)
+            )
         except Exception as e:
-            raise ToolError(f"MCP call failed: {e}")
+            raise ToolError("MCP call failed: " + self.error_text(e))
 
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
@@ -3161,8 +3342,63 @@ class MCPManager:
         from fastmcp.client import Client
         from fastmcp.client.transports import StreamableHttpTransport
 
-        async with Client(StreamableHttpTransport(url, headers=headers)) as client:
-            return await client.call_tool(name, arguments)
+        timeout = self.call_timeout()
+        async with Client(StreamableHttpTransport(url, headers=headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
+
+    async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.call_timeout()
+        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
+
+    def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
+        configs = self.parse_configs()
+        config = next((c for c in configs if c.name == name and c.enabled), None)
+        if config is None:
+            return "MCP server not found or disabled: " + name
+        if config.error:
+            return config.error
+        if config.auth != "oauth":
+            return "MCP server does not use OAuth: " + name
+        if not config.url:
+            return "url is required"
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            return headers
+        try:
+            tools = asyncio.run(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
+        except Exception as error:
+            text = self.error_text(error, timeout=self.call_timeout())
+            self.set_server_error(name, text)
+            return "MCP OAuth login failed for " + name + ": " + text
+        self.tools[name] = [
+            MCPToolInfo(
+                server=name,
+                name=t.name,
+                description=t.description or "",
+                input_schema=t.inputSchema,
+                annotations=self.tool_annotations(t),
+            )
+            for t in tools
+        ]
+        self.server_errors.pop(name, None)
+        self.discovery_status = "ready"
+        return "MCP OAuth login succeeded for " + name + f"; tools={len(self.tools[name])}"
+
+    def logout_server(self, name: str) -> str:
+        configs = self.parse_configs()
+        config = next((c for c in configs if c.name == name), None)
+        if config is None:
+            return "MCP server not found: " + name
+        if config.auth != "oauth":
+            return "MCP server does not use OAuth: " + name
+        self.oauth_token_store().clear_server(config.url)
+        self.tools.pop(name, None)
+        self.server_errors[name] = "oauth login required; run /mcp login " + name
+        return "MCP OAuth tokens cleared for " + name
 
     def describe_tool(self, server: str, tool_name: str) -> str:
         tools = self.tools.get(server)
@@ -3330,6 +3566,8 @@ class MCPManager:
                     parts.append(f"tools={len(self.tools[config.name])}")
                 else:
                     parts.append("not connected")
+            if config.auth:
+                parts.append("auth=" + config.auth)
             if config.bearer_token_env_var:
                 parts.append(f"auth=bearer_token_env_var({config.bearer_token_env_var})")
             if config.env_http_headers:
@@ -4159,7 +4397,7 @@ class CommandCompleter(Completer):
         if text.startswith("/mcp "):
             tail = text[len("/mcp ") :]
             if " " not in tail:
-                yield from self.matches(("tools", "refresh"), tail)
+                yield from self.matches(("tools", "login", "logout", "refresh"), tail)
                 return
 
         if text.startswith("/") and " " not in text:
@@ -4651,6 +4889,8 @@ class CommandLoop:
   /yolo              Toggle tool confirmations.
   /mcp               Show MCP server status.
   /mcp tools [NAME]   List MCP tools.
+  /mcp login NAME     Start OAuth login for a server.
+  /mcp logout NAME    Clear OAuth tokens for a server.
   /mcp refresh [NAME] Refresh MCP servers.
   /exit, /quit       Exit.
 Tools:
@@ -4801,7 +5041,7 @@ Tools:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
-        threading.Thread(target=self.session.mcp.discover_enabled, daemon=True).start()
+        threading.Thread(target=self.discover_mcp, daemon=True).start()
         UpdateChecker(self.session).start()
         while True:
             try:
@@ -4849,6 +5089,22 @@ Tools:
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+
+    def discover_mcp(self) -> None:
+        self.session.mcp.discover_enabled()
+        notice = self.mcp_error_notice()
+        if notice:
+            self.emit(notice)
+
+    def mcp_error_notice(self) -> str:
+        errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error]
+        if not errors:
+            return ""
+        shown = errors if self.session.settings.debug else errors[:3]
+        lines = [f"mcp: {name}: {error}" for name, error in shown]
+        if len(errors) > len(shown):
+            lines.append(f"mcp: {len(errors) - len(shown)} more errors; run /mcp")
+        return "\n".join(lines)
 
     def style(self) -> Style:
         return Style.from_dict(
@@ -5191,6 +5447,14 @@ Tools:
         if sub == "tools":
             server = rest[0] if rest else None
             return mcp.render_tool_listing(server)
+        elif sub == "login":
+            if not rest:
+                return "Usage: /mcp login <server>"
+            return mcp.login_server(rest[0], notify=self.emit)
+        elif sub == "logout":
+            if not rest:
+                return "Usage: /mcp logout <server>"
+            return mcp.logout_server(rest[0])
         elif sub == "refresh":
             name = rest[0] if rest else ""
             if name:
@@ -5199,7 +5463,7 @@ Tools:
                 mcp.discover_enabled()
             return mcp.render_server_status()
         else:
-            return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp refresh [server]"
+            return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
@@ -5707,6 +5971,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -5717,7 +5982,7 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
