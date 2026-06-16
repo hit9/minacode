@@ -8,6 +8,7 @@ import asyncio
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -22,6 +23,7 @@ import threading
 import time
 import tomllib
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -60,6 +62,7 @@ __version__ = "0.5.12"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
+logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 2
@@ -3066,6 +3069,7 @@ class EditBatchPlan:
 class MCPManager:
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
     DISCOVERY_TIMEOUT: ClassVar[int] = 10
+    MAX_DISCOVERY_WORKERS: ClassVar[int] = 8
     DESCRIBE_DESCRIPTION_LIMIT: ClassVar[int] = 1_000
     DESCRIBE_ARGUMENT_LIMIT: ClassVar[int] = 50
     DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
@@ -3074,6 +3078,8 @@ class MCPManager:
         self.session = session
         self.tools: dict[str, list[MCPToolInfo]] = {}
         self.server_errors: dict[str, str] = {}
+        self.server_skips: dict[str, str] = {}
+        self.lock = threading.Lock()
         self._discovered = False
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
 
@@ -3142,16 +3148,27 @@ class MCPManager:
         try:
             configs = self.parse_configs()
             configured = {config.name for config in configs}
-            for name in list(self.tools):
-                if name not in configured:
-                    self.tools.pop(name, None)
-                    self.server_errors.pop(name, None)
+            with self.lock:
+                for name in list(self.tools):
+                    if name not in configured:
+                        self.tools.pop(name, None)
+                        self.server_errors.pop(name, None)
+                        self.server_skips.pop(name, None)
+            discoverable = []
             for config in configs:
                 if not config.enabled:
-                    self.tools.pop(config.name, None)
-                    self.server_errors.pop(config.name, None)
+                    with self.lock:
+                        self.tools.pop(config.name, None)
+                        self.server_errors.pop(config.name, None)
+                        self.server_skips.pop(config.name, None)
                     continue
-                self._discover_one(config)
+                discoverable.append(config)
+            if discoverable:
+                workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
+                    futures = [executor.submit(self._discover_one, config) for config in discoverable]
+                    for future in as_completed(futures):
+                        future.result()
             self._discovered = True
             self.discovery_status = "ready"
         except Exception as error:
@@ -3162,8 +3179,10 @@ class MCPManager:
         configs = self.parse_configs()
         config = next((c for c in configs if c.name == name and c.enabled), None)
         if config is None:
-            self.tools.pop(name, None)
-            self.server_errors[name] = "server not found or disabled"
+            with self.lock:
+                self.tools.pop(name, None)
+                self.server_errors[name] = "server not found or disabled"
+                self.server_skips.pop(name, None)
             return
         self._discover_one(config)
 
@@ -3173,7 +3192,10 @@ class MCPManager:
             return
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
-            self.set_server_error(config.name, headers)
+            if self.can_skip_auth_error(headers):
+                self.set_server_skip(config.name, headers)
+            else:
+                self.set_server_error(config.name, headers)
             return
 
         if not config.url:
@@ -3188,7 +3210,7 @@ class MCPManager:
                 tools = asyncio.run(self._list_oauth_tools(config, headers))
             else:
                 tools = asyncio.run(self._list_tools(config.url, headers))
-            self.tools[config.name] = [
+            tools_info = [
                 MCPToolInfo(
                     server=config.name,
                     name=t.name,
@@ -3198,13 +3220,28 @@ class MCPManager:
                 )
                 for t in tools
             ]
-            self.server_errors.pop(config.name, None)
+            with self.lock:
+                self.tools[config.name] = tools_info
+                self.server_errors.pop(config.name, None)
+                self.server_skips.pop(config.name, None)
         except Exception as e:
             self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
 
     def set_server_error(self, name: str, error: str) -> None:
-        self.tools.pop(name, None)
-        self.server_errors[name] = error
+        with self.lock:
+            self.tools.pop(name, None)
+            self.server_errors[name] = error
+            self.server_skips.pop(name, None)
+
+    def set_server_skip(self, name: str, reason: str) -> None:
+        with self.lock:
+            self.tools.pop(name, None)
+            self.server_errors.pop(name, None)
+            self.server_skips[name] = reason
+
+    @staticmethod
+    def can_skip_auth_error(error: str) -> bool:
+        return error.startswith("missing environment variable ")
 
     def call_timeout(self) -> int:
         return max(1, self.session.settings.shell_timeout)
@@ -3406,7 +3443,7 @@ class MCPManager:
         except Exception as error:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(name, text)
-            return "MCP OAuth login failed for " + name + ": " + text
+            return self.oauth_login_failure(config, text)
         self.tools[name] = [
             MCPToolInfo(
                 server=name,
@@ -3421,6 +3458,16 @@ class MCPManager:
         self.discovery_status = "ready"
         return "MCP OAuth login succeeded for " + name + f"; tools={len(self.tools[name])}"
 
+    @staticmethod
+    def oauth_login_failure(config: MCPServerConfig, error: str) -> str:
+        return "\n".join(
+            [
+                "MCP OAuth login failed for " + config.name + ": " + error,
+                "No authorization URL was provided by the server.",
+                "Open MCP URL: " + config.url,
+            ]
+        )
+
     def logout_server(self, name: str) -> str:
         configs = self.parse_configs()
         config = next((c for c in configs if c.name == name), None)
@@ -3429,8 +3476,10 @@ class MCPManager:
         if config.auth != "oauth":
             return "MCP server does not use OAuth: " + name
         self.oauth_token_store().clear_server(config.url)
-        self.tools.pop(name, None)
-        self.server_errors[name] = "oauth login required; run /mcp login " + name
+        with self.lock:
+            self.tools.pop(name, None)
+            self.server_errors[name] = "oauth login required; run /mcp login " + name
+            self.server_skips.pop(name, None)
         return "MCP OAuth tokens cleared for " + name
 
     def describe_tool(self, server: str, tool_name: str) -> str:
@@ -3574,6 +3623,10 @@ class MCPManager:
                 lines.append("| error |  | " + self.markdown_cell(self.server_errors[config.name]) + " |")
                 sections.append("\n".join(lines))
                 continue
+            if config.name in self.server_skips:
+                lines.append("| skipped |  | " + self.markdown_cell(self.server_skips[config.name]) + " |")
+                sections.append("\n".join(lines))
+                continue
             tools = self.tools.get(config.name, [])
             if not tools:
                 lines.append("| (none) |  | no tools discovered |")
@@ -3595,6 +3648,8 @@ class MCPManager:
                 status = "disabled"
             elif config.name in self.server_errors:
                 status = "error: " + self.server_errors[config.name]
+            elif config.name in self.server_skips:
+                status = "skipped: " + self.server_skips[config.name]
             else:
                 if config.name in self.tools:
                     status = "connected"
@@ -4410,9 +4465,17 @@ class CommandCompleter(Completer):
         "runtime.check_updates": ("on", "off", "true", "false"),
     }
 
-    def __init__(self, providers: Callable[[], tuple[str, ...]] = tuple, models: Callable[[], tuple[str, ...]] = tuple):
+    def __init__(
+        self,
+        providers: Callable[[], tuple[str, ...]] = tuple,
+        models: Callable[[], tuple[str, ...]] = tuple,
+        mcp_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_oauth_servers: Callable[[], tuple[str, ...]] = tuple,
+    ):
         self.providers = providers
         self.models = models
+        self.mcp_servers = mcp_servers
+        self.mcp_oauth_servers = mcp_oauth_servers
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -4438,6 +4501,13 @@ class CommandCompleter(Completer):
             tail = text[len("/mcp ") :]
             if " " not in tail:
                 yield from self.matches(("tools", "login", "logout", "refresh"), tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub in {"login", "logout"}:
+                yield from self.matches(self.mcp_oauth_servers(), value)
+                return
+            if sub in {"tools", "refresh"}:
+                yield from self.matches(self.mcp_servers(), value)
                 return
 
         if text.startswith("/") and " " not in text:
@@ -4965,7 +5035,10 @@ Tools:
         else:
             self.input_history = None
         self.input_completer = CommandCompleter(
-            providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models
+            providers=lambda: tuple(sorted(self.session.config.providers)),
+            models=lambda: self.session.config.provider.available_models,
+            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled),
+            mcp_oauth_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled and config.auth == "oauth"),
         )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
@@ -5142,7 +5215,11 @@ Tools:
             self.emit(notice)
 
     def mcp_error_notice(self) -> str:
-        errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error]
+        errors = [
+            (name, error)
+            for name, error in sorted(self.session.mcp.server_errors.items())
+            if error and not error.startswith("oauth login required")
+        ]
         if not errors:
             return ""
         shown = errors if self.session.settings.debug else errors[:3]

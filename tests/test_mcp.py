@@ -1,6 +1,8 @@
 """Tests for nanocode MCP client integration."""
+import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -236,6 +238,40 @@ class TestMCPManagerDiscovery:
         s.mcp.discover_enabled()
         assert s.mcp.discovery_status == "ready"
         assert s.mcp.server_errors.get("test") is not None
+
+    def test_discover_enabled_skips_missing_bearer_env(self, monkeypatch):
+        """Missing bearer_token_env_var skips discovery without an error log."""
+        monkeypatch.delenv("MISSING_TOKEN", raising=False)
+        raw = mcp_cfg(bearer_token_env_var="MISSING_TOKEN")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        s.mcp.discover_enabled()
+
+        assert "test" not in s.mcp.server_errors
+        assert "test" in s.mcp.server_skips
+        assert "missing environment variable MISSING_TOKEN" in s.mcp.render_server_status()
+
+    def test_discover_enabled_loads_servers_in_parallel(self, monkeypatch):
+        """Multiple enabled servers are discovered in parallel."""
+        raw = {
+            "mcp": {
+                "a": {"url": "http://a/mcp"},
+                "b": {"url": "http://b/mcp"},
+            }
+        }
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def fake_list(url, headers):
+            await asyncio.sleep(0.1)
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+        started = time.monotonic()
+        s.mcp.discover_enabled()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.18
+        assert s.mcp.discovery_status == "ready"
 
     def test_tools_are_cached_after_discovery(self, monkeypatch):
         """Listed tools are cached after discovery."""
@@ -796,6 +832,21 @@ class TestMCPCommands:
         assert "### `test`" in result
         assert "echo" in result
 
+    def test_mcp_login_failure_includes_mcp_url(self, monkeypatch):
+        """/mcp login shows a fallback URL when OAuth does not provide one."""
+        raw = mcp_cfg(auth="oauth")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def fake_login(config, headers, *, interactive=False, notify=None):
+            raise RuntimeError("Unexpected content type: text/html")
+
+        monkeypatch.setattr(s.mcp, "_list_oauth_tools", fake_login)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        result = loop.mcp_command("login test")
+
+        assert "Unexpected content type: text/html" in result
+        assert "Open MCP URL: http://localhost:9999/mcp" in result
+
     def test_mcp_refresh_invokes_discovery(self, monkeypatch):
         """/mcp refresh calls discover_enabled."""
         raw = mcp_cfg()
@@ -866,6 +917,30 @@ class TestMCPTabCompletion:
         texts = [c.text for c in completions]
         assert "tools" not in texts
         assert "refresh" in texts
+
+    def test_mcp_login_completion_uses_oauth_servers(self):
+        """/mcp login completes only OAuth server names."""
+        completer = n.CommandCompleter(
+            mcp_servers=lambda: ("plain", "oauthOne"),
+            mcp_oauth_servers=lambda: ("oauthOne",),
+        )
+        from prompt_toolkit.document import Document
+
+        completions = list(completer.get_completions(Document("/mcp login "), None))
+        texts = [c.text for c in completions]
+        assert texts == ["oauthOne"]
+
+    def test_mcp_tools_completion_uses_all_servers(self):
+        """/mcp tools completes all MCP server names."""
+        completer = n.CommandCompleter(
+            mcp_servers=lambda: ("plain", "oauthOne"),
+            mcp_oauth_servers=lambda: ("oauthOne",),
+        )
+        from prompt_toolkit.document import Document
+
+        completions = list(completer.get_completions(Document("/mcp tools o"), None))
+        texts = [c.text for c in completions]
+        assert texts == ["oauthOne"]
 
 
 # ---------------------------------------------------------------------------

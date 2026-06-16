@@ -11,6 +11,10 @@
 - Refined the status bar with lowercase `mcp`, right-side loading animation, and semantic per-section colors.
 - Show MCP discovery progress in the status bar while servers are loading.
 - Render `/mcp` server and tool listings as Markdown tables for clearer terminal display.
+- Load configured MCP servers in parallel during discovery.
+- Include the MCP endpoint URL when OAuth login fails before an authorization URL is available.
+- Suppress duplicate FastMCP OAuth URL logs and omit OAuth-login-required notices from startup MCP error logs.
+- Skip MCP server discovery without startup error logs when bearer-token environment variables are missing.
 - Clarified prompt guidance around FILE STATE snapshots, automatic Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed tool-call retries.
 
 ## 0.5.12 - 2026-06-15
