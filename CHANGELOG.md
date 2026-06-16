@@ -5,7 +5,7 @@
 ### Added
 - Added MCP client router support through a single `MCP` tool, with URL-based server configuration, bearer-token environment variable support, OAuth login/logout with persistent tokens, asynchronous tool discovery, compact model-visible MCP tool indexes, on-demand tool details, and `/mcp` inspection/refresh commands.
 - Added MCP coverage for result normalization, successful tool calls, context pruning, `/mcp tools NAME`, and missing-server refresh handling.
-- Added bounded MCP connection timeouts, concise MCP connection-failure logs, and a `--debug` flag for starting with debug mode enabled.
+- Added bounded MCP connection timeouts, concise MCP connection-failure logs, a `--debug` flag for starting with debug mode enabled, and a `--mcp` selector for choosing MCP servers by name glob.
 
 ### Changed
 - Refined the status bar with lowercase `mcp`, right-side loading animation, and semantic per-section colors.

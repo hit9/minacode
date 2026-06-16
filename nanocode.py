@@ -225,11 +225,12 @@ class RuntimeSettings:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     check_updates: bool = True
     update_check_interval_hours: int = 24
+    mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False) -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -237,6 +238,7 @@ class RuntimeSettings:
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
+            mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             debug=debug or Config.bool(runtime, "debug", False),
         )
@@ -697,9 +699,9 @@ class Session:
             self.mcp = MCPManager(self)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False) -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug, mcp_selector=mcp_selector))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -3102,7 +3104,38 @@ class MCPManager:
                     if config.auth == "oauth" and any(header.lower() == "authorization" for header in config.env_http_headers):
                         config.error = "auth=oauth conflicts with env_http_headers.Authorization"
                     configs.append(config)
-        return configs
+        return self.select_configs(configs)
+
+    def select_configs(self, configs: list[MCPServerConfig]) -> list[MCPServerConfig]:
+        selector = self.session.settings.mcp_selector.strip()
+        if not selector:
+            return configs
+
+        by_name = {config.name: config for config in configs}
+        selected: set[str] = set()
+        started = False
+        for raw in selector.split(","):
+            rule = raw.strip()
+            if not rule:
+                continue
+            exclude = rule.startswith("!")
+            pattern = rule[1:].strip() if exclude else rule
+            if not pattern:
+                continue
+            if pattern == "none":
+                selected.clear()
+                started = True
+                continue
+            matches = set(by_name) if pattern == "all" else {name for name in by_name if fnmatch.fnmatchcase(name, pattern)}
+            if exclude:
+                if not started:
+                    selected = set(by_name)
+                    started = True
+                selected.difference_update(matches)
+            else:
+                selected.update(matches)
+                started = True
+        return [config for config in configs if config.name in selected] if started else configs
 
     def discover_enabled(self) -> None:
         self.discovery_status = "discovering"
@@ -4893,6 +4926,8 @@ class CommandLoop:
   /mcp logout NAME    Clear OAuth tokens for a server.
   /mcp refresh [NAME] Refresh MCP servers.
   /exit, /quit       Exit.
+CLI:
+  --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
 Tools:
   Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, MCP.
 """
@@ -5705,7 +5740,7 @@ Tools:
             ),
             (
                 "runtime",
-                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`",
+                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`",
             ),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
@@ -5972,6 +6007,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -5982,7 +6018,7 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
