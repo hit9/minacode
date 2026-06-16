@@ -2353,7 +2353,16 @@ class MCPTool(Tool):
         server = str(payload.get("server") or "")
         tool_name = str(payload.get("tool") or "")
         target = (server + "." + tool_name).strip(".")
-        return [part for part in (action, target) if part]
+        parts = [part for part in (action, target) if part]
+        arguments = payload.get("arguments")
+        if action == "call" and isinstance(arguments, dict) and arguments:
+            parts.append(self.format_call_args(arguments))
+        return parts
+
+    @staticmethod
+    def format_call_args(arguments: Json) -> str:
+        rendered = ", ".join(f"{key}={Tool.compact(value, 60)}" for key, value in arguments.items())
+        return "(" + rendered + ")"
 
     def call(self) -> str:
         payload = self.payload()
@@ -3873,7 +3882,7 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix))
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix, elapsed=elapsed))
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
@@ -3951,7 +3960,7 @@ class ToolRunner:
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(
-        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = ""
+        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = "", elapsed: float | None = None
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
@@ -3960,7 +3969,44 @@ class ToolRunner:
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
+        elif call.name == "MCP":
+            summary = self.mcp_result_summary(call, output, elapsed)
+            if summary:
+                lines.append("  " + summary)
         return "\n".join(lines)
+
+    def mcp_result_summary(self, call: ToolCall, output: str, elapsed: float | None) -> str:
+        if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":
+            return ""
+        inner = output
+        match = re.match(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$", output)
+        if match:
+            inner = match.group(1).strip()
+        if not inner:
+            shape = "empty"
+        else:
+            try:
+                data = json.loads(inner)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+            if isinstance(data, list):
+                shape = f"{len(data)} items"
+            elif isinstance(data, dict):
+                shape = f"{len(data)} fields"
+            else:
+                shape = f"{inner.count(chr(10)) + 1} lines"
+        parts = [f"{shape}, {self.human_size(len(inner))}"]
+        if elapsed is not None:
+            parts.append(f"{elapsed:.1f}s")
+        return "→ " + " · ".join(parts)
+
+    @staticmethod
+    def human_size(num_bytes: int) -> str:
+        if num_bytes < 1024:
+            return f"{num_bytes}B"
+        if num_bytes < 1024 * 1024:
+            return f"{num_bytes / 1024:.1f}KB"
+        return f"{num_bytes / (1024 * 1024):.1f}MB"
 
     @staticmethod
     def with_batch_suffix(text: str, suffix: str) -> str:
