@@ -63,6 +63,10 @@ __version__ = "0.5.12"
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
+# Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
+# actionable "oauth login required" message; suppress this logger's ERROR-level
+# traceback spam (incl. the RuntimeError nanocode raises as control flow).
+logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 2
