@@ -549,6 +549,12 @@ class MCPFileTokenStore:
                 data.get(collection, {}).pop(key, None)
             self.save(data)
 
+    def clear_client_info(self, server_url: str) -> None:
+        with self.lock:
+            data = self.load()
+            data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
+            self.save(data)
+
     def has_key(self, key: str, *, collection: str | None = None) -> bool:
         collection = collection or self.DEFAULT_COLLECTION
         with self.lock:
@@ -3442,6 +3448,10 @@ class MCPManager:
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             return headers
+        # Drop any stale client registration so the fresh authorization uses a client
+        # whose registered redirect_uri matches this run's callback port. Reusing a
+        # client registered against an earlier random port yields invalid_request.
+        self.oauth_token_store().clear_client_info(config.url)
         try:
             tools = asyncio.run(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
         except Exception as error:
