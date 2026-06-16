@@ -392,9 +392,8 @@ class TestServerStatusRendering:
 
         status = s.mcp.render_server_status()
         assert "test" in status
-        assert "enabled" in status
         assert "connected" in status
-        assert "tools=1" in status
+        assert "| `test` | connected | 1 |" in status
         # No secrets leaked
         assert "localhost" not in status
 
@@ -421,7 +420,8 @@ class TestServerStatusRendering:
         s.mcp.discover_enabled()
 
         listing = s.mcp.render_tool_listing()
-        assert "[test]" in listing
+        assert "### `test`" in listing
+        assert "| tool | args | description |" in listing
         assert "echo" in listing
 
     def test_render_tool_listing_specific_server(self, monkeypatch):
@@ -434,8 +434,8 @@ class TestServerStatusRendering:
         s.mcp.discover_enabled()
 
         listing = s.mcp.render_tool_listing("a")
-        assert "[a]" in listing
-        assert "[b]" not in listing
+        assert "### `a`" in listing
+        assert "### `b`" not in listing
 
     def test_render_tool_listing_no_servers(self):
         """No servers returns placeholder."""
@@ -533,14 +533,29 @@ class TestStatusBarMCPStatus:
         assert bar.mcp_status() == ""
 
     def test_discovering_shows_spinner(self, monkeypatch):
-        """Discovering status → spinner + 'MCP'."""
+        """Discovering status → loaded/total + spinner."""
         s = n.Session(cwd="/tmp")
         s.mcp.discovery_status = "discovering"
         bar = n.StatusBar(s)
         monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
         status = bar.mcp_status()
         # First spinner char
-        assert status == "mcp" + bar.INDEX_SPINNER[0]
+        assert status == "mcp 0/0" + bar.INDEX_SPINNER[0]
+
+    def test_discovering_shows_loaded_and_total(self, monkeypatch):
+        """Discovering status includes loaded and configured server counts."""
+        raw = {
+            "mcp": {
+                "a": {"url": "http://a/mcp"},
+                "b": {"url": "http://b/mcp"},
+            }
+        }
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.discovery_status = "discovering"
+        s.mcp.tools["a"] = [mcp_tool_info("a", "echo")]
+        bar = n.StatusBar(s)
+        monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
+        assert bar.mcp_status() == "mcp 1/2" + bar.INDEX_SPINNER[0]
 
     def test_ready_shows_server_count(self, monkeypatch):
         """Ready status → 'MCP N' where N is server count."""
@@ -760,7 +775,7 @@ class TestMCPCommands:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("")
         assert "test" in result
-        assert "tools=1" in result
+        assert "| `test` | connected | 1 |" in result
 
     def test_mcp_tools_shows_listing(self, monkeypatch):
         """/mcp tools returns tool listing."""
@@ -778,7 +793,7 @@ class TestMCPCommands:
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("tools")
-        assert "[test]" in result
+        assert "### `test`" in result
         assert "echo" in result
 
     def test_mcp_refresh_invokes_discovery(self, monkeypatch):
@@ -1099,8 +1114,8 @@ class TestMCPCommandsByName:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("tools a")
 
-        assert "[a]" in result
-        assert "[b]" not in result
+        assert "### `a`" in result
+        assert "### `b`" not in result
         assert "tool" in result
 
 

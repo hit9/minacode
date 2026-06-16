@@ -3521,6 +3521,18 @@ class MCPManager:
         return text
 
     def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
+        args_str = self._tool_args_summary(info)
+        desc = (info.description or "").split("\n")[0].strip()
+        desc = " ".join(desc.split())
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+
+        line = f"{server}.{info.name}{args_str} - {desc}"
+        if len(line) > 200:
+            line = line[:197] + "..."
+        return line
+
+    def _tool_args_summary(self, info: MCPToolInfo) -> str:
         schema = info.input_schema or {}
         props = schema.get("properties", {})
         props = props if isinstance(props, dict) else {}
@@ -3547,67 +3559,62 @@ class MCPManager:
         if opt_args:
             parts.append("; " + ", ".join(opt_args))
         parts.append(")")
-        args_str = "".join(parts)
-
-        desc = (info.description or "").split("\n")[0].strip()
-        desc = " ".join(desc.split())
-        if len(desc) > 80:
-            desc = desc[:77] + "..."
-
-        line = f"{server}.{info.name}{args_str} - {desc}"
-        if len(line) > 200:
-            line = line[:197] + "..."
-        return line
+        return "".join(parts)
 
     def render_tool_listing(self, server: str | None = None) -> str:
-        lines: list[str] = []
+        sections: list[str] = []
         configs = self.parse_configs()
         for config in configs:
             if not config.enabled:
                 continue
             if server and config.name != server:
                 continue
-            name_display = config.name.capitalize()
-            lines.append(f"[{config.name}] {name_display}")
+            lines = [f"### `{config.name}`", "", "| tool | args | description |", "| --- | --- | --- |"]
             if config.name in self.server_errors:
-                lines.append(f"  error: {self.server_errors[config.name]}")
+                lines.append("| error |  | " + self.markdown_cell(self.server_errors[config.name]) + " |")
+                sections.append("\n".join(lines))
                 continue
             tools = self.tools.get(config.name, [])
             if not tools:
-                lines.append("  (no tools discovered)")
+                lines.append("| (none) |  | no tools discovered |")
+                sections.append("\n".join(lines))
                 continue
             for tool in tools:
-                line = self._format_tool_line(config.name, tool)
-                if line:
-                    lines.append(f"  {line}")
-            lines.append("")
-        return "\n".join(lines) if lines else "(no MCP servers configured)"
+                args_str = self._tool_args_summary(tool)
+                desc = self.compact_text((tool.description or "").split("\n")[0].strip(), 80)
+                lines.append("| `" + self.markdown_cell(tool.name) + "` | `" + self.markdown_cell(args_str) + "` | " + self.markdown_cell(desc or "-") + " |")
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections) if sections else "(no MCP servers configured)"
 
     def render_server_status(self) -> str:
-        lines: list[str] = []
+        lines: list[str] = ["| server | status | tools | auth |", "| --- | --- | ---: | --- |"]
         configs = self.parse_configs()
         for config in configs:
-            parts = [config.name]
+            tools = ""
             if not config.enabled:
-                parts.append("disabled")
+                status = "disabled"
             elif config.name in self.server_errors:
-                parts.append(f"error: {self.server_errors[config.name]}")
+                status = "error: " + self.server_errors[config.name]
             else:
-                parts.append("enabled")
                 if config.name in self.tools:
-                    parts.append("connected")
-                    parts.append(f"tools={len(self.tools[config.name])}")
+                    status = "connected"
+                    tools = str(len(self.tools[config.name]))
                 else:
-                    parts.append("not connected")
+                    status = "not connected"
+            auth = []
             if config.auth:
-                parts.append("auth=" + config.auth)
+                auth.append(config.auth)
             if config.bearer_token_env_var:
-                parts.append(f"auth=bearer_token_env_var({config.bearer_token_env_var})")
+                auth.append("bearer_token_env_var(" + config.bearer_token_env_var + ")")
             if config.env_http_headers:
                 for header_name in config.env_http_headers:
-                    parts.append(f"auth=env_header({header_name})")
-            lines.append("  ".join(parts))
-        return "\n".join(lines) if lines else "(no MCP servers configured)"
+                    auth.append("env_header(" + header_name + ")")
+            lines.append("| `" + self.markdown_cell(config.name) + "` | " + self.markdown_cell(status) + " | " + self.markdown_cell(tools or "-") + " | " + self.markdown_cell(", ".join(auth) or "-") + " |")
+        return "\n".join(lines) if len(lines) > 2 else "(no MCP servers configured)"
+
+    @staticmethod
+    def markdown_cell(text: str) -> str:
+        return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
 
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
@@ -4887,7 +4894,10 @@ class StatusBar:
     def mcp_status(self) -> str:
         status = self.session.mcp.discovery_status
         if status == "discovering":
-            return "mcp" + self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
+            spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
+            loaded = len(self.session.mcp.tools)
+            total = len(self.session.mcp.parse_configs())
+            return f"mcp {loaded}/{total}{spinner}"
         if status == "error":
             return "mcp err"
         return f"mcp {len(self.session.mcp.tools)}" if status == "ready" else ""
@@ -5464,7 +5474,7 @@ Tools:
         }
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
-        (self.ui.emit_answer if name == "/status" else self.emit)(output)
+        (self.ui.emit_answer if name in {"/status", "/mcp"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:

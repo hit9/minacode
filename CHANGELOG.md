@@ -9,6 +9,8 @@
 
 ### Changed
 - Refined the status bar with lowercase `mcp`, right-side loading animation, and semantic per-section colors.
+- Show MCP discovery progress in the status bar while servers are loading.
+- Render `/mcp` server and tool listings as Markdown tables for clearer terminal display.
 - Clarified prompt guidance around FILE STATE snapshots, automatic Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed tool-call retries.
 
 ## 0.5.12 - 2026-06-15
