@@ -3553,7 +3553,8 @@ class MCPManager:
         return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
     def render_tools_index(self) -> str:
-        if not self.tools:
+        configs = [c for c in self.parse_configs() if c.enabled]
+        if not configs:
             return ""
 
         lines: list[str] = []
@@ -3563,12 +3564,11 @@ class MCPManager:
         lines.append("Format: server.tool(req: type; opt: type) - description")
         lines.append("")
 
-        configs = self.parse_configs()
+        pending: list[str] = []
         for config in configs:
-            if not config.enabled or config.name not in self.tools:
-                continue
             tools = self.tools.get(config.name, [])
             if not tools:
+                pending.append(f"- {config.name}: {self._pending_status(config)}")
                 continue
             name_display = config.name.capitalize()
             lines.append(f"[{config.name}] {name_display}")
@@ -3578,10 +3578,77 @@ class MCPManager:
                     lines.append(line)
             lines.append("")
 
+        if pending:
+            lines.append("Configured servers not yet available (they exist — do not assume otherwise):")
+            lines.extend(pending)
+            lines.append("")
+
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:3990] + "\n... MCP tools truncated; use /mcp tools for full list."
         return text
+
+    def _pending_status(self, config: MCPServerConfig) -> str:
+        if config.name in self.server_errors:
+            return self.server_errors[config.name]
+        if config.name in self.server_skips:
+            return "skipped: " + self.server_skips[config.name]
+        if self.discovery_status == "discovering":
+            return "discovering — tools not loaded yet; retry shortly"
+        return "not connected"
+
+    MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
+
+    def server_tool_names(self, server: str) -> tuple[str, ...]:
+        return tuple(tool.name for tool in self.tools.get(server, []))
+
+    def resolve_mentions(self, text: str) -> str:
+        configs = {config.name: config for config in self.parse_configs() if config.enabled}
+        if not configs:
+            return ""
+        lower = {name.lower(): name for name in configs}
+        seen: set[tuple[str, str]] = set()
+        blocks: list[str] = []
+        for raw_server, raw_tool in self.MENTION_PATTERN.findall(text):
+            name = raw_server if raw_server in configs else lower.get(raw_server.lower())
+            if name is None:  # not a configured server — leave the literal @token alone
+                continue
+            key = (name, raw_tool)
+            if key in seen:
+                continue
+            seen.add(key)
+            blocks.append(self._mention_block(name, raw_tool))
+        if not blocks:
+            return ""
+        header = [
+            "--- MCP MENTIONS ---",
+            'The user explicitly referenced these MCP servers/tools. Prefer them via MCP(action="call", ...) unless clearly irrelevant.',
+            "",
+        ]
+        return "\n".join(header + blocks).strip()
+
+    def _mention_block(self, server: str, tool: str) -> str:
+        if server not in self.tools and self.discovery_status != "discovering":
+            self.discover_server(server)
+        if server in self.server_errors:
+            return f"[{server}] unavailable: {self.server_errors[server]}"
+        if server in self.server_skips:
+            return f"[{server}] skipped: {self.server_skips[server]}"
+        tools = self.tools.get(server, [])
+        if not tools:
+            return f"[{server}] {self._pending_status(next(c for c in self.parse_configs() if c.name == server))}"
+        if tool:
+            info = self.tool_info(server, tool)
+            if info is not None:
+                return self._render_describe(server, info)
+            available = ", ".join(t.name for t in tools) or "(none)"
+            return f"[{server}] tool '{tool}' not found; available: {available}"
+        lines = [f"[{server}] {server.capitalize()}"]
+        for info in tools:
+            line = self._format_tool_line(server, info)
+            if line:
+                lines.append(line)
+        return "\n".join(lines)
 
     def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
         args_str = self._tool_args_summary(info)
@@ -4371,6 +4438,10 @@ FINAL:
         self.session.state.turn_tool_calls = 0
         tool_batches = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
+        if self.session.mcp is not None:
+            mentions = self.session.mcp.resolve_mentions(user_input)
+            if mentions:
+                turn_messages.append({"role": "user", "content": mentions})
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
@@ -4485,11 +4556,13 @@ class CommandCompleter(Completer):
         models: Callable[[], tuple[str, ...]] = tuple,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_oauth_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
     ):
         self.providers = providers
         self.models = models
         self.mcp_servers = mcp_servers
         self.mcp_oauth_servers = mcp_oauth_servers
+        self.mcp_tools = mcp_tools
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -4523,6 +4596,15 @@ class CommandCompleter(Completer):
             if sub in {"tools", "refresh"}:
                 yield from self.matches(self.mcp_servers(), value)
                 return
+
+        at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
+        if at_match:
+            server_part, dot, tool_part = at_match.group(1).partition(".")
+            if dot:
+                yield from self.matches(self.mcp_tools(server_part), tool_part)
+            else:
+                yield from self.matches(self.mcp_servers(), server_part)
+            return
 
         if text.startswith("/") and " " not in text:
             yield from self.matches(self.COMMANDS, text)
@@ -5020,6 +5102,8 @@ class CommandLoop:
   /mcp logout NAME    Clear OAuth tokens for a server.
   /mcp refresh [NAME] Refresh MCP servers.
   /exit, /quit       Exit.
+Mentions:
+  @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
 Tools:
@@ -5053,6 +5137,7 @@ Tools:
             models=lambda: self.session.config.provider.available_models,
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled),
             mcp_oauth_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled and config.auth == "oauth"),
+            mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
         )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
