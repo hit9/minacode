@@ -5494,11 +5494,11 @@ Tools:
             return mcp.render_tool_listing(server)
         elif sub == "login":
             if not rest:
-                return "Usage: /mcp login <server>"
+                return "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"
             return mcp.login_server(rest[0], notify=self.emit)
         elif sub == "logout":
             if not rest:
-                return "Usage: /mcp logout <server>"
+                return "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"
             return mcp.logout_server(rest[0])
         elif sub == "refresh":
             name = rest[0] if rest else ""
