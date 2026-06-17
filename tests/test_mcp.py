@@ -695,7 +695,7 @@ class TestMCPContextBlocks:
 
     def test_mcp_in_context_order(self):
         """MCP TOOLS appears after ENVIRONMENT, MCP DETAILS before FILE STATE."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         desc = '<MCPDescribe server="test" tool="echo">\n<description>\nOK</description>\n</MCPDescribe>'
         s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
@@ -857,7 +857,7 @@ class TestMCPCommands:
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("refresh")
-        assert s.mcp._discovered is True
+        assert s.mcp.discovery_status == "ready"
 
     def test_mcp_refresh_specific_server(self, monkeypatch):
         """/mcp refresh NAME calls discover_server."""
