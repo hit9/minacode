@@ -3099,7 +3099,6 @@ class MCPManager:
         self.server_errors: dict[str, str] = {}
         self.server_skips: dict[str, str] = {}
         self.lock = threading.Lock()
-        self._discovered = False
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
 
     def parse_configs(self) -> list[MCPServerConfig]:
@@ -3188,7 +3187,6 @@ class MCPManager:
                     futures = [executor.submit(self._discover_one, config) for config in discoverable]
                     for future in as_completed(futures):
                         future.result()
-            self._discovered = True
             self.discovery_status = "ready"
         except Exception as error:
             self.server_errors["-"] = str(error)
