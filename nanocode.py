@@ -1662,14 +1662,9 @@ class InspectCodeTool(Tool):
             raise ToolError("InspectCode outline target must be an existing file")
         limit = options.get("limit")
         max_limit = self.MAX_OUTLINE_LIMIT if mode == "outline" else self.MAX_LIMIT
-        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > max_limit):
-            raise ToolError(f"InspectCode {mode} limit must be 1..{max_limit}")
-        depth = options.get("depth")
-        if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1 or depth > self.MAX_DEPTH):
-            raise ToolError(f"InspectCode depth must be 1..{self.MAX_DEPTH}")
-        offset = options.get("offset")
-        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
-            raise ToolError("InspectCode offset must be >= 0")
+        self._check_int_option(limit, 1, max_limit, f"InspectCode {mode} limit must be 1..{max_limit}")
+        self._check_int_option(options.get("depth"), 1, self.MAX_DEPTH, f"InspectCode depth must be 1..{self.MAX_DEPTH}")
+        self._check_int_option(options.get("offset"), 0, None, "InspectCode offset must be >= 0")
         ref_kind = options.get("ref_kind")
         if ref_kind is not None:
             if not isinstance(ref_kind, str):
@@ -1687,6 +1682,13 @@ class InspectCodeTool(Tool):
         except csi.CodeSymbolIndexError as error:
             return self.process_result("InspectCodeToolResult", 1, "", str(error))
         return self.process_result("InspectCodeToolResult", 0, str(output), "")
+
+    @staticmethod
+    def _check_int_option(value: Any, low: int, high: int | None, message: str) -> None:
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int) or value < low or (high is not None and value > high):
+            raise ToolError(message)
 
     def inspect_text(self, mode: str, target: str, options: Json, limit: int | None) -> str:
         common = {
@@ -3227,16 +3229,7 @@ class MCPManager:
                 tools = asyncio.run(self._list_oauth_tools(config, headers))
             else:
                 tools = asyncio.run(self._list_tools(config.url, headers))
-            tools_info = [
-                MCPToolInfo(
-                    server=config.name,
-                    name=t.name,
-                    description=t.description or "",
-                    input_schema=t.inputSchema,
-                    annotations=self.tool_annotations(t),
-                )
-                for t in tools
-            ]
+            tools_info = self._tools_info(config.name, tools)
             with self.lock:
                 self.tools[config.name] = tools_info
                 self.server_errors.pop(config.name, None)
@@ -3271,6 +3264,18 @@ class MCPManager:
             return f"timeout after {timeout or self.call_timeout()}s"
         text = str(error).strip()
         return text or error.__class__.__name__
+
+    def _tools_info(self, server: str, tools: Any) -> list[MCPToolInfo]:
+        return [
+            MCPToolInfo(
+                server=server,
+                name=t.name,
+                description=t.description or "",
+                input_schema=t.inputSchema,
+                annotations=self.tool_annotations(t),
+            )
+            for t in tools
+        ]
 
     @staticmethod
     def tool_annotations(tool: Any) -> Json:
@@ -3465,16 +3470,7 @@ class MCPManager:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(name, text)
             return self.oauth_login_failure(config, text)
-        self.tools[name] = [
-            MCPToolInfo(
-                server=name,
-                name=t.name,
-                description=t.description or "",
-                input_schema=t.inputSchema,
-                annotations=self.tool_annotations(t),
-            )
-            for t in tools
-        ]
+        self.tools[name] = self._tools_info(name, tools)
         self.server_errors.pop(name, None)
         self.discovery_status = "ready"
         return "MCP OAuth login succeeded for " + name + f"; tools={len(self.tools[name])}"
@@ -5262,14 +5258,7 @@ Tools:
             self.queue_input_text = parts[-1]
             buffer.reset(Document(self.queue_input_text))
 
-        app = Application(
-            layout=Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window), bindings)
         self.queue_input_app = app
         self.queue_input_active.set()
 
@@ -5401,6 +5390,16 @@ Tools:
             dont_extend_height=True,
         )
 
+    def _make_app(self, layout: Layout, bindings: KeyBindings) -> Application:
+        return Application(
+            layout=layout,
+            key_bindings=bindings,
+            full_screen=False,
+            style=self.style(),
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
+        )
+
     def run_input_app(self, app: Application) -> Any:
         self.pause_queue_input()
         try:
@@ -5509,14 +5508,7 @@ Tools:
             HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
-        app = Application(
-            layout=Layout(root, focused_element=input_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
         return text
@@ -5909,14 +5901,7 @@ Tools:
         state["selected"] = options.index(current) if current in options else 0
         content = FormattedTextControl(fragments, focusable=True)
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = Application(
-            layout=Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
