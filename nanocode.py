@@ -2561,6 +2561,8 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
+        index_status = self.session.state.code_index_status or "missing"
+        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         return "\n".join(
             [
                 f"- cwd: {info.cwd}",
@@ -2568,6 +2570,7 @@ class ContextManager:
                 f"- arch: {info.arch}",
                 f"- shell_timeout: {self.session.settings.shell_timeout}s",
                 "- detected_commands: " + (", ".join(info.commands) or "(none)"),
+                f"- code_index: {index_status} (InspectCode usable: {index_usable})",
             ]
         )
 
@@ -4442,6 +4445,11 @@ FLOW:
 - Prefer built-ins over Bash. Batch independent read-only calls.
 - All assistant text is user-visible, including interim narration before tool calls and final answers.
 - Write every assistant text message as markdown in the latest user's language; do not switch languages unless asked.
+
+SEARCH/NAV (narrowest tool wins):
+- InspectCode = symbol graph: defs, refs, impls, callers/callees, outline. Use for where/who/what on a symbol, not grep.
+- Search = free text; Find = paths; Read = known ranges.
+- If Environment code_index is not usable, use Search/Read.
 
 CONTEXT:
 - FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
