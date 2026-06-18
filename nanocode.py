@@ -57,6 +57,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.rule import Rule
 
 __version__ = "0.5.12"
 
@@ -4671,6 +4672,7 @@ class UiPrinter:
             self.emit(text)
             return
         assert self.console is not None
+        self.console.print(Rule(style="bright_black", characters="─"))
         self.console.print(Markdown(text))
 
     def segments(self, text: str) -> list[tuple[str, str]]:
@@ -5310,6 +5312,7 @@ Tools:
                 return 0
             if handled:
                 continue
+            self.emit("")
             started = time.monotonic()
             stop_input = threading.Event()
             watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
