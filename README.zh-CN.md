@@ -19,6 +19,7 @@ nanocode 仍是 1.0 前的软件。稳定版发布前，命令、配置和工具
 - **可恢复上下文**：prompt 中的工具输出保持有界，原始 `tr.N` 结果仍可按需召回。
 - **缓存友好上下文**：稳定内容靠前，嘈杂的工作状态靠后，提高 prompt cache 复用率。
 - **聚焦工作记忆**：`Note` 把 goal、plan、known facts 从嘈杂执行日志中拆出来。
+- **MCP 集成**：连接远程（HTTP）或本地（stdio）的 Model Context Protocol 服务器并调用其工具。
 - **终端优先工作流**：模型选择、历史搜索、确认、实时命令输出、追加输入和状态展示都在一个 CLI 内完成。
 
 ## 安装
@@ -66,6 +67,7 @@ nanocode
 - `/debug [on|off]`：切换模型 I/O debug trace。
 - `/compact`：立即压缩上下文。
 - `/index [force]`：同步或重建代码符号索引。
+- `/mcp [tools|login|logout|refresh] ...`：管理 MCP 服务器和工具。
 - `/provider [NAME]`：显示或设置 provider。
 - `/model [MODEL]`：显示或设置模型。
 - `/reason`：选择 reasoning effort。
@@ -83,6 +85,7 @@ nanocode
 - Shell：`Bash`, `Git`。
 - 工具结果：`Recall`。
 - 工作笔记：`Note`。
+- MCP：`MCP` 调用已配置 MCP 服务器上的工具。
 
 `Read`、`Search` 和 `InspectCode` 会在合适时返回行锚点。`Edit` 使用当前 `line:hash` 锚点拒绝过期编辑。
 
@@ -105,6 +108,42 @@ nanocode --init-config
 
 `api = "auto"` 会根据 provider/model profile 在 Chat Completions 和 Anthropic Messages 之间选择。`prompt_cache_key = "auto"` 会根据 provider、model、workspace 和工具 schema 名称生成稳定 key。
 
+## MCP
+
+nanocode 可连接 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，并通过 `MCP` 工具暴露其工具。每个服务器配置在 `[mcp.<name>]` 下，且只能二选一：`url`（远程）或 `command`（本地）。
+
+通过 streamable HTTP 的远程服务器：
+
+```toml
+[mcp.example]
+url = "https://example.com/mcp"
+bearer_token_env_var = "EXAMPLE_MCP_TOKEN"  # 可选；发送 Authorization: Bearer
+enabled = true
+
+[mcp.oauth_example]
+url = "https://example.com/mcp"
+auth = "oauth"                              # 通过 /mcp login <server> 在浏览器登录
+enabled = true
+```
+
+通过 stdio 的本地服务器（作为子进程启动）：
+
+```toml
+[mcp.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+env = { SOME_TOKEN = "value" }              # 可选；会合并到继承的环境变量之上
+enabled = true
+```
+
+HTTP 鉴权选项（`auth`、`bearer_token_env_var`、`env_http_headers`）只对 `url` 服务器生效。`env_http_headers` 把 header 名映射到存放其值的环境变量。
+
+运行时管理服务器：
+
+- `/mcp`：列出已配置服务器及连接状态。
+- `/mcp tools [server]`：列出已发现的工具。
+- `/mcp refresh [server]`：重新发现服务器。
+- `/mcp login <server>` / `/mcp logout <server>`：OAuth 登录和登出。
 
 ## 已测试的 Provider
 

@@ -19,6 +19,7 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 - **Recoverable context**: Tool output stays bounded in the prompt, while raw `tr.N` results remain recallable.
 - **Cache-aware context**: Stable sections stay early and noisy working state stays late to improve prompt-cache reuse.
 - **Focused working memory**: `Note` separates goal, plan, and known facts from noisy execution logs.
+- **MCP integration**: Connect to remote (HTTP) or local (stdio) Model Context Protocol servers and call their tools.
 - **Terminal-first workflow**: Model selection, history search, confirmations, live command output, appended input, and status all stay in one CLI.
 
 ## Install
@@ -66,6 +67,7 @@ During a running turn, the `+>` prompt accepts follow-up input for the next mode
 - `/debug [on|off]`: toggle model I/O debug traces.
 - `/compact`: compact context now.
 - `/index [force]`: sync or rebuild the code symbol index.
+- `/mcp [tools|login|logout|refresh] ...`: manage MCP servers and tools.
 - `/provider [NAME]`: show or set provider.
 - `/model [MODEL]`: show or set model.
 - `/reason`: choose reasoning effort.
@@ -83,6 +85,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
+- MCP: `MCP` calls tools on configured MCP servers.
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
@@ -105,6 +108,42 @@ Main fields:
 
 `api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
 
+## MCP
+
+nanocode connects to [Model Context Protocol](https://modelcontextprotocol.io) servers and exposes their tools through the `MCP` tool. Configure each server under `[mcp.<name>]`. A server is either `url` (remote) or `command` (local), never both.
+
+Remote server over streamable HTTP:
+
+```toml
+[mcp.example]
+url = "https://example.com/mcp"
+bearer_token_env_var = "EXAMPLE_MCP_TOKEN"  # optional; sends Authorization: Bearer
+enabled = true
+
+[mcp.oauth_example]
+url = "https://example.com/mcp"
+auth = "oauth"                              # browser login via /mcp login <server>
+enabled = true
+```
+
+Local server over stdio (launched as a subprocess):
+
+```toml
+[mcp.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+env = { SOME_TOKEN = "value" }              # optional; merged over the inherited environment
+enabled = true
+```
+
+The HTTP auth options (`auth`, `bearer_token_env_var`, `env_http_headers`) apply to `url` servers only. `env_http_headers` maps a header name to the environment variable holding its value.
+
+Manage servers at runtime:
+
+- `/mcp`: list configured servers and connection status.
+- `/mcp tools [server]`: list discovered tools.
+- `/mcp refresh [server]`: rediscover servers.
+- `/mcp login <server>` / `/mcp logout <server>`: OAuth login and logout.
 
 ## Tested Providers
 
