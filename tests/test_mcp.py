@@ -131,6 +131,38 @@ class TestConfigParsing:
         assert cfg.env_http_headers == {"X-Key": "KEY_VAR"}
 
 
+class TestStdioConfig:
+    def test_parse_stdio_server(self):
+        """command/args/env are parsed for a stdio server."""
+        cfg = parse_one({"mcp": {"x": {"command": "npx", "args": ["-y", "srv"], "env": {"A": "b"}}}})
+        assert cfg.command == "npx"
+        assert cfg.args == ("-y", "srv")
+        assert cfg.env == {"A": "b"}
+        assert cfg.error == ""
+
+    def test_url_and_command_mutually_exclusive(self):
+        """Providing both url and command is an error; so is neither."""
+        assert "exactly one" in parse_one({"mcp": {"x": {"url": "http://x/mcp", "command": "npx"}}}).error
+        assert "exactly one" in parse_one({"mcp": {"x": {"enabled": True}}}).error
+
+    def test_stdio_rejects_http_auth(self):
+        """stdio servers cannot use HTTP auth/headers."""
+        assert parse_one({"mcp": {"x": {"command": "npx", "auth": "oauth"}}}).error
+        assert parse_one({"mcp": {"x": {"command": "npx", "bearer_token_env_var": "T"}}}).error
+
+    def test_bad_args_type(self):
+        """Non-string-list args sets an error."""
+        assert "args must be a string list" in parse_one({"mcp": {"x": {"command": "npx", "args": "nope"}}}).error
+
+    def test_transport_selection(self):
+        """_transport builds a stdio transport for command servers, http otherwise."""
+        from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict({"mcp": {"x": {"command": "npx", "args": ["srv"]}}}))
+        assert isinstance(s.mcp._transport(s.mcp.parse_configs()[0], {}), StdioTransport)
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        assert isinstance(s.mcp._transport(s.mcp.parse_configs()[0], {}), StreamableHttpTransport)
+
+
 # ---------------------------------------------------------------------------
 # MCPManager header/auth building
 # ---------------------------------------------------------------------------

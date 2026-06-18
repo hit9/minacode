@@ -366,6 +366,12 @@ yolo = false
 # url = "https://example.com/mcp"
 # auth = "oauth"
 # enabled = true
+#
+# [mcp.stdio_example]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = { EXAMPLE = "value" }
+# enabled = true
 """
 
     @classmethod
@@ -519,6 +525,9 @@ class ToolErrorRecord:
 class MCPServerConfig:
     name: str
     url: str = ""
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
     auth: str = ""
     bearer_token_env_var: str = ""
     env_http_headers: dict[str, str] = field(default_factory=dict)
@@ -3116,10 +3125,29 @@ class MCPManager:
                     config = MCPServerConfig(
                         name=str(name),
                         url=Config.str(raw, "url"),
+                        command=Config.str(raw, "command"),
                         auth=Config.str(raw, "auth").lower(),
                         bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
                         enabled=Config.bool(raw, "enabled", True),
                     )
+                    args = raw.get("args")
+                    if args is None:
+                        pass
+                    elif isinstance(args, list) and all(isinstance(item, str) for item in args):
+                        config.args = tuple(args)
+                    else:
+                        config.error = "args must be a string list"
+                    env = raw.get("env")
+                    if env is None:
+                        pass
+                    elif isinstance(env, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
+                        config.env = dict(env)
+                    else:
+                        config.error = "env must be a string map"
+                    if bool(config.url) == bool(config.command):
+                        config.error = "exactly one of url or command is required"
+                    elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
+                        config.error = "command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers"
                     if config.auth not in {"", "oauth"}:
                         config.error = "auth must be oauth"
                     if config.auth == "oauth" and config.bearer_token_env_var:
@@ -3221,10 +3249,6 @@ class MCPManager:
                 self.set_server_error(config.name, headers)
             return
 
-        if not config.url:
-            self.set_server_error(config.name, "url is required")
-            return
-
         try:
             if config.auth == "oauth":
                 if not self.oauth_token_store().has_server_tokens(config.url):
@@ -3232,7 +3256,7 @@ class MCPManager:
                     return
                 tools = asyncio.run(self._list_oauth_tools(config, headers))
             else:
-                tools = asyncio.run(self._list_tools(config.url, headers))
+                tools = asyncio.run(self._list_tools(config, headers))
             tools_info = self._tools_info(config.name, tools)
             with self.lock:
                 self.tools[config.name] = tools_info
@@ -3325,12 +3349,21 @@ class MCPManager:
             callback_timeout=self.session.settings.shell_timeout,
         )
 
-    async def _list_tools(self, url: str, headers: dict[str, str]) -> list[Any]:
+    def _transport(self, config: MCPServerConfig, headers: dict[str, str]) -> Any:
+        from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+
+        if config.command:
+            # The MCP SDK replaces (not merges) the subprocess environment when env is set,
+            # so layer the configured vars over the inherited environment to keep PATH etc.
+            env = {**os.environ, **config.env} if config.env else None
+            return StdioTransport(command=config.command, args=list(config.args), env=env)
+        return StreamableHttpTransport(config.url, headers=headers)
+
+    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
         from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
 
         timeout = self.discovery_timeout()
-        async with Client(StreamableHttpTransport(url, headers=headers), timeout=timeout, init_timeout=timeout) as client:
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
             return await asyncio.wait_for(client.list_tools(), timeout=timeout)
 
     async def _list_oauth_tools(
@@ -3379,8 +3412,6 @@ class MCPManager:
             raise ToolError(f"MCP server '{server}' not found")
         if config.error:
             raise ToolError(config.error)
-        if not config.url:
-            raise ToolError("url is required")
 
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
@@ -3395,7 +3426,7 @@ class MCPManager:
 
         try:
             result = asyncio.run(
-                self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config.url, headers, tool_name, arguments)
+                self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config, headers, tool_name, arguments)
             )
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e))
@@ -3434,12 +3465,11 @@ class MCPManager:
             text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
         return text
 
-    async def _call_tool(self, url: str, headers: dict[str, str], name: str, arguments: Json) -> Any:
+    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
         from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
 
         timeout = self.call_timeout()
-        async with Client(StreamableHttpTransport(url, headers=headers), timeout=timeout, init_timeout=timeout) as client:
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
             return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
 
     async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
