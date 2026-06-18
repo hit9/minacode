@@ -4,7 +4,9 @@
 
 ### Added
 - Added MCP client router support through a single `MCP` tool, with URL-based server configuration, bearer-token environment variable support, OAuth login/logout with persistent tokens, asynchronous tool discovery, compact model-visible MCP tool indexes, on-demand tool details, and `/mcp` inspection/refresh commands.
-- Added MCP coverage for result normalization, successful tool calls, context pruning, `/mcp tools NAME`, and missing-server refresh handling.
+- Added local stdio MCP servers via `command`/`args`/`env`, alongside the existing streamable-HTTP transport; each server is `url` or `command`, and stdio servers reject the HTTP-only auth options.
+- Added `@server` and `@server.tool` mentions in user input that inject a server's tool list or a tool's details into the turn, force discovery of undiscovered servers, report login/errors inline, and tab-complete server and tool names.
+- Added MCP coverage for result normalization, successful tool calls, context pruning, `/mcp tools NAME`, missing-server refresh handling, and stdio config parsing/validation.
 - Added bounded MCP connection timeouts, concise MCP connection-failure logs, a `--debug` flag for starting with debug mode enabled, and a `--mcp` selector for choosing MCP servers by name glob.
 
 ### Changed
@@ -15,6 +17,10 @@
 - Include the MCP endpoint URL when OAuth login fails before an authorization URL is available.
 - Suppress duplicate FastMCP OAuth URL logs and omit OAuth-login-required notices from startup MCP error logs.
 - Skip MCP server discovery without startup error logs when bearer-token environment variables are missing.
+- List all enabled MCP servers in the model-visible index, adding a "not yet available" section for servers that are still discovering, need login, or errored, so the model never assumes a configured server is absent.
+- Enriched MCP tool-call logging with compact `key=value` arguments in the header (also shown in the approval preview), a success result summary (shape and payload size), and round-trip latency.
+- Steered the agent toward `InspectCode` for symbol navigation with a `SEARCH/NAV` prompt section, and surfaced the code-index status in the Environment context so it knows when the tool is usable.
+- Separated each round with a blank line after the user input and a rule before the agent's answer.
 - Clarified prompt guidance around FILE STATE snapshots, automatic Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed tool-call retries.
 
 ## 0.5.12 - 2026-06-15
