@@ -1,6 +1,6 @@
 # Changelog
 
-## Pending Version
+## 0.6.0 - 2026-06-18
 
 ### Added
 - Added MCP client router support through a single `MCP` tool, with URL-based server configuration, bearer-token environment variable support, OAuth login/logout with persistent tokens, asynchronous tool discovery, compact model-visible MCP tool indexes, on-demand tool details, and `/mcp` inspection/refresh commands.
