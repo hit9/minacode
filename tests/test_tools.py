@@ -365,8 +365,8 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    note = runner.short_call(n.ToolCall("m", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
-    assert note == "Note goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
+    note = runner.short_call(n.ToolCall("m", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "new fact"]}]))
+    assert note == "Note set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + new fact"
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -422,7 +422,7 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert n.ModelClient.tool_payload("Note", {"goal": "ship"}) == [{"goal": "ship"}]
+    assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
 
 
 def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
@@ -432,14 +432,34 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("note", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
+    runner.run([n.ToolCall("note", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "pytest"]}])])
 
     assert s.state.goal == "ship"
     assert s.state.plan == ["inspect", "patch"]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
-    assert output == ["goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
+    assert output == ["set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + pytest"]
 
+
+def test_note_tool_replace_known(tmp_path):
+    s = session(tmp_path)
+    s.state.known = ["old fact"]
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    # short_args 输出
+    short = runner.short_call(n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
+    assert short == "Note replace_known:\n  new fact a\n  new fact b"
+
+    # 实际执行 replace_known
+    output = []
+    runner.output_fn = output.append
+    runner.run([n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
+    assert s.state.known == ["new fact a", "new fact b"]  # old fact 被完全替换
+    assert output == ["replace_known:\n  new fact a\n  new fact b"]
+
+    # 再次 replace_known 为空的场景
+    runner.run([n.ToolCall("n", "Note", [{"replace_known": []}])])
+    assert s.state.known == []
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)

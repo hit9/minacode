@@ -1,5 +1,13 @@
 # Changelog
 
+
+## 0.6.1 - 2026-06-19
+
+### Changed
+- Renamed `Note` fields: `goal` → `set_goal`, `plan` → `replace_plan`, `known` → `append_known`; removed `check`; added `replace_known` for full replacement of known facts.
+
+### Added
+- New Note field `replace_known` that completely replaces the known list, with test coverage.
 ## 0.6.0 - 2026-06-18
 
 ### Added

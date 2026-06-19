@@ -2299,15 +2299,15 @@ class RecallTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; goal, plan, and check replace current values, known appends unique facts."
-    SIGNATURE = "Note(goal?, plan?, known?, check?)"
-    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"],"check":"pytest passed"}',)
+    DESCRIPTION = "Maintain durable working notes; set_goal and replace_plan replace current values, append_known appends, replace_known replaces all known facts."
+    SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?)"
+    EXAMPLE = ('Set memory. Example: {"set_goal":"ship parser fix","replace_plan":["inspect parser","patch bug"],"append_known":["tests use pytest"]}',)
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
         strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
-        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings, "check": {"type": "string"}}, "additionalProperties": False}
+        return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings}, "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2317,42 +2317,46 @@ class NoteTool(Tool):
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
             raise ToolError("Note requires named fields")
         data = self.args[0]
-        if unexpected := sorted(set(data) - {"goal", "plan", "known", "check"}):
+        if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
-        if "goal" in data:
-            self.session.state.goal = str(data["goal"]).strip()
-            changed.append("goal")
-        if "plan" in data:
-            if not isinstance(data["plan"], list):
-                raise ToolError("Note plan must be an array")
-            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["plan"] if AgentState.plan_text(str(item))]
-            changed.append("plan")
-        if "known" in data:
-            if not isinstance(data["known"], list):
-                raise ToolError("Note known must be an array")
-            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
-            changed.append("known")
-        if "check" in data:
-            self.session.state.check = str(data["check"]).strip()
-            changed.append("check")
+        if "set_goal" in data:
+            self.session.state.goal = str(data["set_goal"]).strip()
+            changed.append("set_goal")
+        if "replace_plan" in data:
+            if not isinstance(data["replace_plan"], list):
+                raise ToolError("Note replace_plan must be an array")
+            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["replace_plan"] if AgentState.plan_text(str(item))]
+            changed.append("replace_plan")
+        if "append_known" in data:
+            if not isinstance(data["append_known"], list):
+                raise ToolError("Note append_known must be an array")
+            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["append_known"] if str(item).strip())]))
+            changed.append("append_known")
+        if "replace_known" in data:
+            if not isinstance(data["replace_known"], list):
+                raise ToolError("Note replace_known must be an array")
+            self.session.state.known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
+            changed.append("replace_known")
         if not changed:
-            raise ToolError("Note requires goal, plan, known, or check")
+            raise ToolError("Note requires set_goal, replace_plan, append_known, or replace_known")
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
         data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
         lines = []
-        if goal := str(data.get("goal") or "").strip():
-            lines.append("goal -> " + Tool.compact(goal, 120))
-        if isinstance(data.get("plan"), list):
-            lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["plan"], status=True) if row != "- (empty)")])
-        if isinstance(data.get("known"), list):
-            known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
+        if goal := str(data.get("set_goal") or "").strip():
+            lines.append("set_goal -> " + Tool.compact(goal, 120))
+        if isinstance(data.get("replace_plan"), list):
+            lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True) if row != "- (empty)")])
+        if isinstance(data.get("append_known"), list):
+            known = [Tool.compact(item, 120) for item in data["append_known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
-                lines.extend(["known:", *(f"  + {item}" for item in known)])
-        if check := str(data.get("check") or "").strip():
-            lines.append("check -> " + Tool.compact(check, 120))
+                lines.extend(["append_known:", *(f"  + {item}" for item in known)])
+        if isinstance(data.get("replace_known"), list):
+            known = [Tool.compact(item, 120) for item in data["replace_known"] if str(item).strip()]
+            if known:
+                lines.extend(["replace_known:", *(f"  {item}" for item in known)])
         return ["\n".join(lines) or "{}"]
 
 
