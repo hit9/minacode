@@ -31,9 +31,11 @@
 - Separated each round with a blank line after the user input and a rule before the agent's answer.
 - Clarified prompt guidance around FILE STATE snapshots, automatic Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed tool-call retries.
 - Tightened the system prompt's tool-choice guidance to prefer `Edit` for file changes, `Read` for known file ranges, `Search` for text lookup, and `InspectCode` for symbol navigation.
+- Added current git branch to Environment context while keeping branch-specific data out of the stable system prompt.
 
 ### Fixed
 - Expanded `Edit` no-op errors with current target-range content when anchored edits produce no changes, so agents can distinguish already-applied edits from wrong replacement content.
+- Guarded git branch safety so yolo mode cannot auto-approve branch-changing commands, and git commits refuse to run after the branch changes from the session start.
 
 ## 0.5.12 - 2026-06-15
 

@@ -701,6 +701,7 @@ class SystemInfo:
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
+    initial_git_branch: str = ""
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     messages: list[Json] = field(default_factory=list)
@@ -718,6 +719,8 @@ class Session:
     def __post_init__(self) -> None:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
+        if not self.initial_git_branch:
+            self.initial_git_branch = self.git_branch(self.cwd)
         if self.mcp is None:
             self.mcp = MCPManager(self)
 
@@ -741,6 +744,24 @@ class Session:
             return os.path.commonpath([os.path.realpath(self.cwd), os.path.realpath(path)]) == os.path.realpath(self.cwd)
         except ValueError:
             return False
+
+    def git_branch(self, cwd: str | None = None) -> str:
+        if self.system_info is not None and "git" not in self.system_info.commands:
+            return ""
+        git = "git" if self.system_info is not None else shutil.which("git")
+        if not git:
+            return ""
+        try:
+            proc = subprocess.run(
+                [git, "branch", "--show-current"],
+                cwd=cwd or self.cwd,
+                text=True,
+                capture_output=True,
+                timeout=max(1, min(5, self.settings.shell_timeout)),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
@@ -2169,6 +2190,7 @@ class GitTool(Tool):
         git = shutil.which("git")
         if not git:
             raise ToolError("git not found")
+        self.validate_branch_safety(args, cwd)
         try:
             proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
             return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
@@ -2193,6 +2215,29 @@ class GitTool(Tool):
             raise ToolError("Git requires arguments")
         self.validate_add(args, cwd)
         return args, cwd
+
+    def validate_branch_safety(self, args: list[str], cwd: str) -> None:
+        if self.changes_branch(args) and self.session.settings.yolo:
+            raise ToolError("branch-changing git commands require explicit confirmation; yolo cannot auto-approve them")
+        if args[0] != "commit":
+            return
+        current = self.session.git_branch(cwd)
+        initial = self.session.initial_git_branch
+        if initial and current and current != initial:
+            raise ToolError(f"refusing git commit because branch changed from {initial} to {current}")
+        if current in {"main", "master"} and self.session.settings.yolo:
+            raise ToolError(f"refusing git commit on {current} in yolo mode; explicit confirmation is required")
+
+    def changes_branch(self, args: list[str]) -> bool:
+        if args[0] == "switch":
+            return True
+        if args[0] == "checkout":
+            return "--" not in args[1:]
+        if args[0] != "branch":
+            return False
+        if any(arg in {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"} for arg in args[1:]):
+            return True
+        return any(arg == "--" or not arg.startswith("-") for arg in args[1:])
 
     def validate_add(self, args: list[str], cwd: str) -> None:
         if args[0] != "add":
@@ -2624,16 +2669,17 @@ class ContextManager:
         info = self.session.system_info
         index_status = self.session.state.code_index_status or "missing"
         index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
-        return "\n".join(
-            [
-                f"- cwd: {info.cwd}",
-                f"- os: {info.os}",
-                f"- arch: {info.arch}",
-                f"- shell_timeout: {self.session.settings.shell_timeout}s",
-                "- detected_commands: " + (", ".join(info.commands) or "(none)"),
-                f"- code_index: {index_status} (InspectCode usable: {index_usable})",
-            ]
-        )
+        rows = [
+            f"- cwd: {info.cwd}",
+            f"- os: {info.os}",
+            f"- arch: {info.arch}",
+            f"- shell_timeout: {self.session.settings.shell_timeout}s",
+            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
+            f"- code_index: {index_status} (InspectCode usable: {index_usable})",
+        ]
+        if branch := self.session.git_branch(self.session.cwd):
+            rows.append(f"- git_branch: {branch}")
+        return "\n".join(rows)
 
     def file_context(self) -> str:
         lines_by_path, omitted = self.active_file_lines()
@@ -4537,6 +4583,8 @@ FLOW:
 - Each turn must call tools or return final; never emit empty content.
 - Do not repeat a failed tool call unchanged unless new information makes retrying meaningful.
 - Prefer built-ins over Bash. Batch independent read-only calls.
+- Do not switch/create/delete git branches unless the user explicitly asks.
+- Before committing, check the branch; stop if it changed since task start.
 - All assistant text is user-visible markdown in the latest user's language.
 
 TOOL CHOICE:

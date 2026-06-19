@@ -229,6 +229,29 @@ def test_bash_and_git_behaviors(tmp_path):
     assert n.GitTool(s, ["commit"]).needs_confirmation()
 
 
+def test_git_yolo_refuses_branch_changes_without_explicit_confirmation(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.shutil, "which", lambda name: "/usr/bin/git" if name == "git" else None)
+
+    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
+        n.GitTool(s, ["switch", "feature"]).call()
+
+    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
+        n.GitTool(s, ["branch", "-D", "feature"]).call()
+
+
+def test_git_commit_refuses_when_branch_changed_since_session_start(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    s = session(tmp_path)
+    subprocess.run(["git", "switch", "-c", "other"], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    with pytest.raises(n.ToolError, match="branch changed from .* to other"):
+        n.GitTool(s, ["commit", "-m", "blocked"]).call()
+
+
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("class Example:\n    pass\n", encoding="utf-8")
