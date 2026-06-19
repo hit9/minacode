@@ -1738,6 +1738,14 @@ class Edit:
     new: str = ""
 
 
+@dataclass
+class EditApplyResult:
+    content: str
+    changes: list[tuple[int, int, int, int]]
+    replacements: list[tuple[int, int, list[str]]]
+    replace_all: bool = False
+
+
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
@@ -1772,28 +1780,28 @@ class EditTool(Tool):
         return [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
-        path, original, created, new_content, changes = self.build()
-        if new_content == original and not created:
-            raise ToolError("edit produced no changes")
+        path, original, created, result = self.build()
+        if result.content == original and not created:
+            raise ToolError(self.no_changes_error(original, result))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
-            file.write(new_content)
+            file.write(result.content)
         return "\n".join(
             [
                 f"<Edit path={json.dumps(self.session.relpath(path))}>",
                 self.file_stat(path),
-                self.diff(path, original, new_content).rstrip(),
-                self.edit_context(new_content, changes),
+                self.diff(path, original, result.content).rstrip(),
+                self.edit_context(result.content, result.changes),
                 "</Edit>",
             ]
         )
 
     def preview(self) -> str:
-        path, original, _created, new_content, _changes = self.build()
-        if new_content == original and os.path.exists(path):
-            raise ToolError("edit produced no changes")
-        return self.diff(path, original, new_content) or f"Edit({path})"
+        path, original, _created, result = self.build()
+        if result.content == original and os.path.exists(path):
+            raise ToolError(self.no_changes_error(original, result))
+        return self.diff(path, original, result.content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
         path, _edits = self.parse()
@@ -1846,7 +1854,7 @@ class EditTool(Tool):
             )
         return path, edits
 
-    def build(self) -> tuple[str, str, bool, str, list[tuple[int, int, int, int]]]:
+    def build(self) -> tuple[str, str, bool, EditApplyResult]:
         path, edits = self.parse()
         creating = edits[0].op == "create"
         if os.path.exists(path):
@@ -1862,13 +1870,13 @@ class EditTool(Tool):
             original, created = "", True
         else:
             raise ToolError("file does not exist; use op=create to create it")
-        new_content, changes = self.apply(original, edits)
-        return path, original, created, new_content, changes
+        result = self.apply(original, edits)
+        return path, original, created, result
 
-    def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
+    def apply(self, original: str, edits: list[Edit]) -> EditApplyResult:
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
-            return "".join(lines), [(0, 0, 0, len(lines))]
+            return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [])
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -1879,7 +1887,7 @@ class EditTool(Tool):
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            return content, [(0, 0, 0, len(content.splitlines(True)))]
+            return EditApplyResult(content, [(0, 0, 0, len(content.splitlines(True)))], [], True)
         lines = original.splitlines(True)
         replacements = []
         for edit in edits:
@@ -1911,7 +1919,47 @@ class EditTool(Tool):
             clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
             changes.append((new_start, clear_end, new_start, new_end))
             delta += len(replacement) - (end - start)
-        return "".join(new_lines), changes
+        return EditApplyResult("".join(new_lines), changes, replacements)
+
+    def no_changes_error(self, original: str, result: EditApplyResult) -> str:
+        return self.no_changes_error_from_lines(original.splitlines(True), result.replacements, result.replace_all)
+
+    @classmethod
+    def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
+        prefix = "edit produced no changes"
+        if replace_all:
+            return prefix + "; replace_all result is identical to current file"
+        if not replacements:
+            return prefix
+        matching = [(start, end) for start, end, replacement in replacements if lines[start:end] == replacement]
+        if len(matching) != len(replacements):
+            return prefix + "; edits cancel out; check requested content"
+        return prefix + "; requested content already matches target range\n" + cls.format_current_ranges(lines, matching)
+
+    @classmethod
+    def format_current_ranges(cls, lines: list[str], ranges: list[tuple[int, int]]) -> str:
+        out = ["<current-target-ranges hashline-numbered>"]
+        shown_lines = 0
+        range_index = -1
+        for range_index, (start, end) in enumerate(ranges[:3]):
+            out.append(f"<target start={start} end={end}>")
+            if start == end:
+                out.append("(empty range)")
+            else:
+                for index in range(start, end):
+                    if shown_lines >= 12:
+                        out.append("...")
+                        break
+                    line = lines[index]
+                    out.append(f"{index}:{ReadTool.line_hash(line)}|{line.rstrip(chr(10))}")
+                    shown_lines += 1
+            out.append("</target>")
+            if shown_lines >= 12:
+                break
+        if len(ranges) > range_index + 1:
+            out.append("...")
+        out.append("</current-target-ranges>")
+        return "\n".join(out)
 
     def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
         lines = content.splitlines(True)
@@ -2941,6 +2989,13 @@ class EditBatchPlan:
             return None
 
     @dataclass
+    class ApplyResult:
+        lines: list["EditBatchPlan.Line"]
+        changes: list[tuple[int, int, int, int]]
+        replacements: list[tuple[int, int, list[str]]]
+        replace_all: bool = False
+
+    @dataclass
     class PlannedEdit:
         path: str
         before: str
@@ -2995,12 +3050,13 @@ class EditBatchPlan:
         path, edits = tool.parse()
         state = self.file_state(path, edits[0].op == "create")
         before, created = state.text(), not state.exists
-        lines, changes = self.apply(tool, state, edits)
-        after = "".join(line.text for line in lines)
+        before_lines = [line.text for line in state.lines]
+        result = self.apply(tool, state, edits)
+        after = "".join(line.text for line in result.lines)
         if after == before and not created:
-            raise ToolError("edit produced no changes")
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, changes)
-        state.lines, state.exists = lines, True
+            raise ToolError(EditTool.no_changes_error_from_lines(before_lines, result.replacements, result.replace_all))
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes)
+        state.lines, state.exists = result.lines, True
 
     def file_state(self, path: str, creating: bool) -> FileState:
         if path in self.files:
@@ -3026,10 +3082,10 @@ class EditBatchPlan:
         self.files[path] = state
         return state
 
-    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> tuple[list[Line], list[tuple[int, int, int, int]]]:
+    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> ApplyResult:
         if edits[0].op == "create":
             lines = self.new_lines(tool.content_lines(edits[0].content, False))
-            return lines, [(0, 0, 0, len(lines))]
+            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [])
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -3041,20 +3097,24 @@ class EditBatchPlan:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
             lines = [self.Line(line, None) for line in content.splitlines(True)]
-            return lines, [(0, 0, 0, len(lines))]
+            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [], True)
 
-        replacements = []
+        replacements: list[tuple[int, int, list[EditBatchPlan.Line]]] = []
+        target_replacements: list[tuple[int, int, list[str]]] = []
         for edit in edits:
             start = self.resolve_anchor(state, edit.start)
             if edit.op in {"replace", "delete"}:
                 end = self.resolve_anchor(state, edit.end)
                 if end < start:
                     raise ToolError("end anchor is before start anchor")
-                replacement = [] if edit.op == "delete" else self.new_lines(tool.content_lines(edit.content, end + 1 < len(state.lines)))
-                replacements.append((start, end + 1, replacement))
+                replacement_text = [] if edit.op == "delete" else tool.content_lines(edit.content, end + 1 < len(state.lines))
+                replacements.append((start, end + 1, self.new_lines(replacement_text)))
+                target_replacements.append((start, end + 1, replacement_text))
             elif edit.op in {"insert_before", "insert_after"}:
                 index = start if edit.op == "insert_before" else start + 1
-                replacements.append((index, index, self.new_lines(tool.content_lines(edit.content, index < len(state.lines)))))
+                replacement_text = tool.content_lines(edit.content, index < len(state.lines))
+                replacements.append((index, index, self.new_lines(replacement_text)))
+                target_replacements.append((index, index, replacement_text))
             else:
                 raise ToolError("unknown edit op")
 
@@ -3067,7 +3127,7 @@ class EditBatchPlan:
         lines = list(state.lines)
         for start, end, replacement in sorted(replacements, reverse=True):
             lines[start:end] = replacement
-        return lines, self.changes(replacements)
+        return self.ApplyResult(lines, self.changes(replacements), target_replacements)
 
     @staticmethod
     def new_lines(lines: list[str]) -> list[Line]:
@@ -4470,16 +4530,17 @@ Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 
 FLOW:
 - ACT when clear; keep using tools until done.
-- Every turn must call tools or return final; never emit empty content.
+- Each turn must call tools or return final; never emit empty content.
 - Do not repeat a failed tool call unchanged unless new information makes retrying meaningful.
 - Prefer built-ins over Bash. Batch independent read-only calls.
-- All assistant text is user-visible, including interim narration before tool calls and final answers.
-- Write every assistant text message as markdown in the latest user's language; do not switch languages unless asked.
+- All assistant text is user-visible markdown in the latest user's language.
 
-SEARCH/NAV (narrowest tool wins):
-- InspectCode = symbol graph: defs, refs, impls, callers/callees, outline. Use for where/who/what on a symbol, not grep.
-- Search = free text; Find = paths; Read = known ranges.
-- If Environment code_index is not usable, use Search/Read.
+TOOL CHOICE:
+- Edit writes files. Use Edit for file changes; keep patches small.
+- Read reads known files/ranges and returns line:hash anchors.
+- Search finds text/patterns in files; Find finds paths.
+- InspectCode navigates code symbols: defs, refs, impls, callers/callees, outline.
+- If code_index is unavailable, use Search/Read.
 
 CONTEXT:
 - FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
@@ -4495,6 +4556,8 @@ EDITS:
 - After stale-anchor errors or successful edits, discard old anchors for that file/range.
 - If a stale-anchor error includes `current is line:hash|text`, retry Edit with that current anchor; do not Read first.
 - Read after a stale-anchor error only when there is no usable `current is` anchor or surrounding lines are needed.
+- If `edit produced no changes` includes current target ranges, compare them with your intended change: stop if the file is already correct, otherwise retry with corrected content.
+- Read after `edit produced no changes` only when the error lacks enough current target content or surrounding lines are needed.
 - Do not batch multiple Edit calls for the same file; sequence them.
 - Keep edits small/local/reversible; never overwrite unrelated user work.
 - Edit op=create creates files, including empty files.

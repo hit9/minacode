@@ -175,6 +175,31 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
     assert "current is 0:" + n.ReadTool.line_hash("old\n") + "|old" in str(error.value)
 
 
+def test_edit_no_change_reports_current_target_range(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError) as error:
+        n.EditTool(s, ["note.txt", [{"op": "replace", "start": anchor(0, "old\n"), "end": anchor(0, "old\n"), "content": "old\n"}]]).call()
+
+    message = str(error.value)
+    assert "edit produced no changes; requested content already matches target range" in message
+    assert "<current-target-ranges hashline-numbered>" in message
+    assert "0:" + n.ReadTool.line_hash("old\n") + "|old" in message
+
+
+def test_edit_no_change_replace_all_reports_identical_file(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError) as error:
+        n.EditTool(s, ["note.txt", [{"op": "replace_all", "old": "old", "new": "old"}]]).call()
+
+    assert str(error.value) == "edit produced no changes; replace_all result is identical to current file"
+
+
 def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     s = session(tmp_path)
     tool = n.EditTool(s, ["script.py", [{"op": "create", "content": "print(1)\\nprint(2)\\n"}]])
@@ -697,6 +722,23 @@ def test_batch_edit_stale_anchor_reports_current_line(tmp_path, monkeypatch):
 
     assert s.tool_errors
     assert "current is 1:" + n.ReadTool.line_hash("b\n") + "|b" in s.tool_errors[0].error
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_batch_edit_no_change_reports_current_target_range(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("noop", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "b\n"}]])])
+
+    assert s.tool_errors
+    message = s.tool_errors[0].error
+    assert "edit produced no changes; requested content already matches target range" in message
+    assert "1:" + n.ReadTool.line_hash("b\n") + "|b" in message
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
