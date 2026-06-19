@@ -2351,7 +2351,7 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        strings = {"type": "array", "items": {"type": "string"}}
         return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings}, "additionalProperties": False}
 
     @classmethod
@@ -2365,26 +2365,32 @@ class NoteTool(Tool):
         if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
+        goal = self.session.state.goal
+        plan = list(self.session.state.plan)
+        known = list(self.session.state.known)
         if "set_goal" in data:
-            self.session.state.goal = str(data["set_goal"]).strip()
+            goal = str(data["set_goal"]).strip()
             changed.append("set_goal")
         if "replace_plan" in data:
             if not isinstance(data["replace_plan"], list):
-                raise ToolError("Note replace_plan must be an array")
-            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["replace_plan"] if AgentState.plan_text(str(item))]
+                raise ToolError('Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}')
+            plan = [AgentState.plan_text(str(item)) for item in data["replace_plan"] if AgentState.plan_text(str(item))]
             changed.append("replace_plan")
         if "append_known" in data:
             if not isinstance(data["append_known"], list):
-                raise ToolError("Note append_known must be an array")
-            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["append_known"] if str(item).strip())]))
+                raise ToolError('Note append_known must be an array of strings, e.g. {"append_known":["tests use pytest"]}')
+            known = list(dict.fromkeys([*known, *(str(item).strip() for item in data["append_known"] if str(item).strip())]))
             changed.append("append_known")
         if "replace_known" in data:
             if not isinstance(data["replace_known"], list):
-                raise ToolError("Note replace_known must be an array")
-            self.session.state.known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
+                raise ToolError('Note replace_known must be an array of strings, e.g. {"replace_known":["fact"]}')
+            known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
             changed.append("replace_known")
         if not changed:
             raise ToolError("Note requires set_goal, replace_plan, append_known, or replace_known")
+        self.session.state.goal = goal
+        self.session.state.plan = plan
+        self.session.state.known = known
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
@@ -4600,7 +4606,7 @@ CONTEXT:
 - Do not re-Read a file/range already present in FILE STATE when it has the needed lines and anchors; proceed to Edit.
 - After a successful Edit, trust FILE STATE and do not re-Read just to verify the edited range.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, call Note early with goal and a short plan; update plan/known/check when they change.
+- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item.
 
 EDITS:
 - Inspect/read before edits.

@@ -26,6 +26,7 @@ def test_system_prompt_prefers_targeted_builtin_tools():
     assert "- InspectCode navigates code symbols: defs, refs, impls, callers/callees, outline." in prompt
     assert "- Do not switch/create/delete git branches unless the user explicitly asks." in prompt
     assert "- Before committing, check the branch; stop if it changed since task start." in prompt
+    assert "- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item." in prompt
 
 
 def test_model_messages_are_ordered_context_messages(tmp_path):

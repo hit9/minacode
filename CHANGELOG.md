@@ -5,9 +5,14 @@
 
 ### Changed
 - Renamed `Note` fields: `goal` → `set_goal`, `plan` → `replace_plan`, `known` → `append_known`; removed `check`; added `replace_known` for full replacement of known facts.
+- Aligned `Note` schemas and prompt guidance so `replace_plan`, `append_known`, and `replace_known` are always arrays and can be empty when replacing state.
 
 ### Added
 - New Note field `replace_known` that completely replaces the known list, with test coverage.
+
+### Fixed
+- Made `Note` updates transactional, so invalid fields no longer partially mutate session notes before returning a tool error.
+
 ## 0.6.0 - 2026-06-18
 
 ### Added

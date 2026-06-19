@@ -408,6 +408,10 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     read_params = n.ReadTool.schema()["function"]["parameters"]
     assert {"path", "ranges", "files"} <= set(read_params["properties"])
 
+    note_params = n.NoteTool.schema()["function"]["parameters"]
+    assert "minItems" not in note_params["properties"]["replace_plan"]
+    assert "minItems" not in note_params["properties"]["replace_known"]
+
     find_params = n.FindTool.schema()["function"]["parameters"]
     assert {"name", "queries"} <= set(find_params["properties"])
     find_item = find_params["properties"]["queries"]["items"]
@@ -462,6 +466,21 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
     assert output == ["set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + pytest"]
+
+
+def test_note_tool_validates_before_mutating_state(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "old goal"
+    s.state.plan = ["old plan"]
+    s.state.known = ["old fact"]
+
+    with pytest.raises(n.ToolError) as error:
+        n.NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
+
+    assert str(error.value) == 'Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}'
+    assert s.state.goal == "old goal"
+    assert s.state.plan == ["old plan"]
+    assert s.state.known == ["old fact"]
 
 
 def test_note_tool_replace_known(tmp_path):
