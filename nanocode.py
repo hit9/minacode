@@ -4601,12 +4601,16 @@ TOOL CHOICE:
 - If code_index is unavailable, use Search/Read.
 
 CONTEXT:
+- Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
+- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item.
+
+FILE STATE:
 - FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
+- Use FILE STATE as your working view for visible file content and Edit anchors.
+- FILE STATE may be partial; Read when needed lines, hashes, or surrounding context are absent.
 - FILE STATE is not Memory/Recall; do not call it "full memory" or treat it as old output.
 - Do not re-Read a file/range already present in FILE STATE when it has the needed lines and anchors; proceed to Edit.
 - After a successful Edit, trust FILE STATE and do not re-Read just to verify the edited range.
-- Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item.
 
 EDITS:
 - Inspect/read before edits.

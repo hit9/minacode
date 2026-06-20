@@ -6,6 +6,7 @@
 ### Changed
 - Renamed `Note` fields: `goal` → `set_goal`, `plan` → `replace_plan`, `known` → `append_known`; removed `check`; added `replace_known` for full replacement of known facts.
 - Aligned `Note` schemas and prompt guidance so `replace_plan`, `append_known`, and `replace_known` are always arrays and can be empty when replacing state.
+- Split FILE STATE into its own prompt section and clarified it as the working view for visible file content and Edit anchors, while noting it may be partial.
 
 ### Added
 - New Note field `replace_known` that completely replaces the known list, with test coverage.
