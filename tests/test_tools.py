@@ -503,6 +503,19 @@ def test_note_tool_replace_known(tmp_path):
     runner.run([n.ToolCall("n", "Note", [{"replace_known": []}])])
     assert s.state.known == []
 
+def test_note_tool_set_check(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    short = runner.short_call(n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
+    assert short == "Note set_check -> pytest -q passed"
+
+    output = []
+    runner.output_fn = output.append
+    runner.run([n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
+    assert s.state.check == "pytest -q passed"
+    assert output == ["set_check -> pytest -q passed"]
+
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "code.txt"

@@ -523,14 +523,30 @@ class TestMCPToolConfirmation:
         assert tool.needs_confirmation() is False
 
     def test_call_requires_confirmation(self, monkeypatch):
-        """MCP(action='call') → confirmation needed by default."""
+        """MCP(action='call') on an undiscovered tool → confirmation needed by default."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
         tool = n.MCPTool(s, [payload])
-        # No annotations → default destructiveHint=False → no confirmation
-        # Actually need to check: needs_confirmation uses tool_needs_confirmation
-        # which returns False if no info found or no destructiveHint
+        # No info yet (not discovered) → confirm by default
+        assert tool.needs_confirmation() is True
+
+    def test_call_without_annotations_requires_confirmation(self, monkeypatch):
+        """A discovered tool with no annotations → confirmation needed by default."""
+        raw = mcp_cfg()
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={})]
+        payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
+        tool = n.MCPTool(s, [payload])
+        assert tool.needs_confirmation() is True
+
+    def test_call_with_non_destructive_hint_no_confirmation(self, monkeypatch):
+        """destructiveHint=false → no confirmation needed."""
+        raw = mcp_cfg()
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"destructiveHint": False})]
+        payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
+        tool = n.MCPTool(s, [payload])
         assert tool.needs_confirmation() is False
 
     def test_call_with_readonly_hint_no_confirmation(self, monkeypatch):

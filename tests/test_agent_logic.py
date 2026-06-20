@@ -26,7 +26,7 @@ def test_system_prompt_prefers_targeted_builtin_tools():
     assert "- InspectCode navigates code symbols: defs, refs, impls, callers/callees, outline." in prompt
     assert "- Do not switch/create/delete git branches unless the user explicitly asks." in prompt
     assert "- Before committing, check the branch; stop if it changed since task start." in prompt
-    assert "- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item." in prompt
+    assert "- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item; record verification with set_check." in prompt
     assert "\nFILE STATE:\n" in prompt
     assert "- Use FILE STATE as your working view for visible file content and Edit anchors." in prompt
     assert "- FILE STATE may be partial; Read when needed lines, hashes, or surrounding context are absent." in prompt

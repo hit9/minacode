@@ -2344,15 +2344,15 @@ class RecallTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; set_goal and replace_plan replace current values, append_known appends, replace_known replaces all known facts."
-    SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?)"
-    EXAMPLE = ('Set memory. Example: {"set_goal":"ship parser fix","replace_plan":["inspect parser","patch bug"],"append_known":["tests use pytest"]}',)
+    DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts."
+    SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
+    EXAMPLE = ('Set memory. Example: {"set_goal":"ship parser fix","replace_plan":["inspect parser","patch bug"],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',)
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
         strings = {"type": "array", "items": {"type": "string"}}
-        return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings}, "additionalProperties": False}
+        return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings, "set_check": {"type": "string"}}, "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2362,15 +2362,19 @@ class NoteTool(Tool):
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
             raise ToolError("Note requires named fields")
         data = self.args[0]
-        if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known"}):
+        if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
         goal = self.session.state.goal
         plan = list(self.session.state.plan)
         known = list(self.session.state.known)
+        check = self.session.state.check
         if "set_goal" in data:
             goal = str(data["set_goal"]).strip()
             changed.append("set_goal")
+        if "set_check" in data:
+            check = str(data["set_check"]).strip()
+            changed.append("set_check")
         if "replace_plan" in data:
             if not isinstance(data["replace_plan"], list):
                 raise ToolError('Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}')
@@ -2387,10 +2391,11 @@ class NoteTool(Tool):
             known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
             changed.append("replace_known")
         if not changed:
-            raise ToolError("Note requires set_goal, replace_plan, append_known, or replace_known")
+            raise ToolError("Note requires set_goal, replace_plan, append_known, replace_known, or set_check")
         self.session.state.goal = goal
         self.session.state.plan = plan
         self.session.state.known = known
+        self.session.state.check = check
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
@@ -2398,6 +2403,8 @@ class NoteTool(Tool):
         lines = []
         if goal := str(data.get("set_goal") or "").strip():
             lines.append("set_goal -> " + Tool.compact(goal, 120))
+        if check := str(data.get("set_check") or "").strip():
+            lines.append("set_check -> " + Tool.compact(check, 120))
         if isinstance(data.get("replace_plan"), list):
             lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True) if row != "- (empty)")])
         if isinstance(data.get("append_known"), list):
@@ -2494,10 +2501,9 @@ class MCPTool(Tool):
 
         if action == "describe":
             return mcp.describe_tool(server, tool_name)
-        elif action == "call":
+        if action == "call":
             return mcp.call_tool(server, tool_name, arguments)
-        else:
-            raise ToolError(f"unknown MCP action: {action}")
+        raise ToolError(f"unknown MCP action: {action}")
 
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
@@ -2831,7 +2837,7 @@ class ContextManager:
         if not code_edits:
             return []
         check = self.session.state.check.strip()
-        return ["- " + check] if check else ["- Code changed recently. Use Note(check=...) after checks, or final must say checks not run."]
+        return ["- " + check] if check else ["- Code changed recently. Use Note(set_check=...) after checks, or final must say checks not run."]
 
     @classmethod
     def code_like_path(cls, path: str) -> bool:
@@ -3231,8 +3237,23 @@ class MCPManager:
         self.server_skips: dict[str, str] = {}
         self.lock = threading.Lock()
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
+        self._configs_cache: list[MCPServerConfig] | None = None
 
     def parse_configs(self) -> list[MCPServerConfig]:
+        # Config and selector are immutable for the session, so parse once and reuse.
+        if self._configs_cache is None:
+            self._configs_cache = self._parse_configs()
+        return self._configs_cache
+
+    @staticmethod
+    def _string_list(value: Any) -> tuple[str, ...] | None:
+        return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
+
+    @staticmethod
+    def _string_map(value: Any) -> dict[str, str] | None:
+        return dict(value) if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else None
+
+    def _parse_configs(self) -> list[MCPServerConfig]:
         configs: list[MCPServerConfig] = []
         mcp_config = self.session.config.mcp
         if isinstance(mcp_config, dict):
@@ -3246,20 +3267,16 @@ class MCPManager:
                         bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
                         enabled=Config.bool(raw, "enabled", True),
                     )
-                    args = raw.get("args")
-                    if args is None:
-                        pass
-                    elif isinstance(args, list) and all(isinstance(item, str) for item in args):
-                        config.args = tuple(args)
-                    else:
-                        config.error = "args must be a string list"
-                    env = raw.get("env")
-                    if env is None:
-                        pass
-                    elif isinstance(env, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
-                        config.env = dict(env)
-                    else:
-                        config.error = "env must be a string map"
+                    if (args := raw.get("args")) is not None:
+                        if (parsed := self._string_list(args)) is not None:
+                            config.args = parsed
+                        else:
+                            config.error = "args must be a string list"
+                    if (env := raw.get("env")) is not None:
+                        if (parsed := self._string_map(env)) is not None:
+                            config.env = parsed
+                        else:
+                            config.error = "env must be a string map"
                     if bool(config.url) == bool(config.command):
                         config.error = "exactly one of url or command is required"
                     elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
@@ -3268,13 +3285,11 @@ class MCPManager:
                         config.error = "auth must be oauth"
                     if config.auth == "oauth" and config.bearer_token_env_var:
                         config.error = "auth=oauth conflicts with bearer_token_env_var"
-                    headers = raw.get("env_http_headers")
-                    if headers is None:
-                        pass
-                    elif isinstance(headers, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in headers.items()):
-                        config.env_http_headers = dict(headers)
-                    else:
-                        config.error = "env_http_headers must be a string map"
+                    if (headers := raw.get("env_http_headers")) is not None:
+                        if (parsed := self._string_map(headers)) is not None:
+                            config.env_http_headers = parsed
+                        else:
+                            config.error = "env_http_headers must be a string map"
                     if config.auth == "oauth" and any(header.lower() == "authorization" for header in config.env_http_headers):
                         config.error = "auth=oauth conflicts with env_http_headers.Authorization"
                     configs.append(config)
@@ -3311,6 +3326,14 @@ class MCPManager:
                 started = True
         return [config for config in configs if config.name in selected] if started else configs
 
+    def find_config(self, name: str, *, enabled_only: bool = True) -> "MCPServerConfig | None":
+        return next((c for c in self.parse_configs() if c.name == name and (c.enabled or not enabled_only)), None)
+
+    def _forget_locked(self, name: str) -> None:
+        self.tools.pop(name, None)
+        self.server_errors.pop(name, None)
+        self.server_skips.pop(name, None)
+
     def discover_enabled(self) -> None:
         self.discovery_status = "discovering"
         try:
@@ -3319,16 +3342,12 @@ class MCPManager:
             with self.lock:
                 for name in list(self.tools):
                     if name not in configured:
-                        self.tools.pop(name, None)
-                        self.server_errors.pop(name, None)
-                        self.server_skips.pop(name, None)
+                        self._forget_locked(name)
             discoverable = []
             for config in configs:
                 if not config.enabled:
                     with self.lock:
-                        self.tools.pop(config.name, None)
-                        self.server_errors.pop(config.name, None)
-                        self.server_skips.pop(config.name, None)
+                        self._forget_locked(config.name)
                     continue
                 discoverable.append(config)
             if discoverable:
@@ -3339,17 +3358,16 @@ class MCPManager:
                         future.result()
             self.discovery_status = "ready"
         except Exception as error:
-            self.server_errors["-"] = str(error)
+            with self.lock:
+                self.server_errors["-"] = str(error)
             self.discovery_status = "error"
 
     def discover_server(self, name: str) -> None:
-        configs = self.parse_configs()
-        config = next((c for c in configs if c.name == name and c.enabled), None)
+        config = self.find_config(name)
         if config is None:
             with self.lock:
-                self.tools.pop(name, None)
+                self._forget_locked(name)
                 self.server_errors[name] = "server not found or disabled"
-                self.server_skips.pop(name, None)
             return
         self._discover_one(config)
 
@@ -3383,14 +3401,12 @@ class MCPManager:
 
     def set_server_error(self, name: str, error: str) -> None:
         with self.lock:
-            self.tools.pop(name, None)
+            self._forget_locked(name)
             self.server_errors[name] = error
-            self.server_skips.pop(name, None)
 
     def set_server_skip(self, name: str, reason: str) -> None:
         with self.lock:
-            self.tools.pop(name, None)
-            self.server_errors.pop(name, None)
+            self._forget_locked(name)
             self.server_skips[name] = reason
 
     @staticmethod
@@ -3436,11 +3452,11 @@ class MCPManager:
     def tool_needs_confirmation(self, server: str, tool_name: str) -> bool:
         info = self.tool_info(server, tool_name)
         if info is None:
-            return False
+            return True
         annotations = info.annotations
         if annotations.get("readOnlyHint") is True:
             return False
-        return annotations.get("destructiveHint") is True
+        return annotations.get("destructiveHint") is not False
 
     def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
         return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
@@ -3522,8 +3538,7 @@ class MCPManager:
         return headers
 
     def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
-        configs = self.parse_configs()
-        config = next((c for c in configs if c.name == server and c.enabled), None)
+        config = self.find_config(server)
         if config is None:
             raise ToolError(f"MCP server '{server}' not found")
         if config.error:
@@ -3597,8 +3612,7 @@ class MCPManager:
             return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
 
     def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
-        configs = self.parse_configs()
-        config = next((c for c in configs if c.name == name and c.enabled), None)
+        config = self.find_config(name)
         if config is None:
             return "MCP server not found or disabled: " + name
         if config.error:
@@ -3620,10 +3634,12 @@ class MCPManager:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(name, text)
             return self.oauth_login_failure(config, text)
-        self.tools[name] = self._tools_info(name, tools)
-        self.server_errors.pop(name, None)
+        tools_info = self._tools_info(name, tools)
+        with self.lock:
+            self.tools[name] = tools_info
+            self.server_errors.pop(name, None)
         self.discovery_status = "ready"
-        return "MCP OAuth login succeeded for " + name + f"; tools={len(self.tools[name])}"
+        return "MCP OAuth login succeeded for " + name + f"; tools={len(tools_info)}"
 
     @staticmethod
     def oauth_login_failure(config: MCPServerConfig, error: str) -> str:
@@ -3636,17 +3652,15 @@ class MCPManager:
         )
 
     def logout_server(self, name: str) -> str:
-        configs = self.parse_configs()
-        config = next((c for c in configs if c.name == name), None)
+        config = self.find_config(name, enabled_only=False)
         if config is None:
             return "MCP server not found: " + name
         if config.auth != "oauth":
             return "MCP server does not use OAuth: " + name
         self.oauth_token_store().clear_server(config.url)
         with self.lock:
-            self.tools.pop(name, None)
+            self._forget_locked(name)
             self.server_errors[name] = "oauth login required; run /mcp login " + name
-            self.server_skips.pop(name, None)
         return "MCP OAuth tokens cleared for " + name
 
     def describe_tool(self, server: str, tool_name: str) -> str:
@@ -3671,7 +3685,7 @@ class MCPManager:
         lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
         if info.description:
             lines.append("<description>")
-            lines.append(self.compact_text(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
+            lines.append(Tool.compact(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
             lines.append("</description>")
         lines.append("<arguments>")
         props = schema.get("properties", {})
@@ -3685,7 +3699,7 @@ class MCPManager:
             req = "required" if name in required else "optional"
             prop = prop if isinstance(prop, dict) else {}
             typ = prop.get("type", "any")
-            desc = self.compact_text(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
+            desc = Tool.compact(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
             lines.append(f"- {name} {req} {typ}: {desc}")
         lines.append("</arguments>")
         lines.append("<schema_summary>")
@@ -3699,11 +3713,6 @@ class MCPManager:
         lines.append("</schema_summary>")
         lines.append("</MCPDescribe>")
         return "\n".join(lines)
-
-    @staticmethod
-    def compact_text(text: str, limit: int) -> str:
-        text = " ".join(str(text).split())
-        return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
     def render_tools_index(self) -> str:
         configs = [c for c in self.parse_configs() if c.enabled]
@@ -3721,7 +3730,7 @@ class MCPManager:
         for config in configs:
             tools = self.tools.get(config.name, [])
             if not tools:
-                pending.append(f"- {config.name}: {self._pending_status(config)}")
+                pending.append(f"- {config.name}: {self._pending_status(config.name)}")
                 continue
             name_display = config.name.capitalize()
             lines.append(f"[{config.name}] {name_display}")
@@ -3741,11 +3750,18 @@ class MCPManager:
             text = text[:3990] + "\n... MCP tools truncated; use /mcp tools for full list."
         return text
 
-    def _pending_status(self, config: MCPServerConfig) -> str:
-        if config.name in self.server_errors:
-            return self.server_errors[config.name]
-        if config.name in self.server_skips:
-            return "skipped: " + self.server_skips[config.name]
+    def server_issue(self, name: str) -> tuple[str, str] | None:
+        """Classify a server's failure state as (kind, message); error takes precedence over skip."""
+        if (error := self.server_errors.get(name)) is not None:
+            return "error", error
+        if (skip := self.server_skips.get(name)) is not None:
+            return "skipped", skip
+        return None
+
+    def _pending_status(self, name: str) -> str:
+        if issue := self.server_issue(name):
+            kind, message = issue
+            return message if kind == "error" else "skipped: " + message
         if self.discovery_status == "discovering":
             return "discovering — tools not loaded yet; retry shortly"
         return "not connected"
@@ -3783,13 +3799,12 @@ class MCPManager:
     def _mention_block(self, server: str, tool: str) -> str:
         if server not in self.tools and self.discovery_status != "discovering":
             self.discover_server(server)
-        if server in self.server_errors:
-            return f"[{server}] unavailable: {self.server_errors[server]}"
-        if server in self.server_skips:
-            return f"[{server}] skipped: {self.server_skips[server]}"
+        if issue := self.server_issue(server):
+            kind, message = issue
+            return f"[{server}] {'unavailable' if kind == 'error' else 'skipped'}: {message}"
         tools = self.tools.get(server, [])
         if not tools:
-            return f"[{server}] {self._pending_status(next(c for c in self.parse_configs() if c.name == server))}"
+            return f"[{server}] {self._pending_status(server)}"
         if tool:
             info = self.tool_info(server, tool)
             if info is not None:
@@ -3853,12 +3868,9 @@ class MCPManager:
             if server and config.name != server:
                 continue
             lines = [f"### `{config.name}`", "", "| tool | args | description |", "| --- | --- | --- |"]
-            if config.name in self.server_errors:
-                lines.append("| error |  | " + self.markdown_cell(self.server_errors[config.name]) + " |")
-                sections.append("\n".join(lines))
-                continue
-            if config.name in self.server_skips:
-                lines.append("| skipped |  | " + self.markdown_cell(self.server_skips[config.name]) + " |")
+            if issue := self.server_issue(config.name):
+                kind, message = issue
+                lines.append(f"| {kind} |  | " + self.markdown_cell(message) + " |")
                 sections.append("\n".join(lines))
                 continue
             tools = self.tools.get(config.name, [])
@@ -3868,7 +3880,7 @@ class MCPManager:
                 continue
             for tool in tools:
                 args_str = self._tool_args_summary(tool)
-                desc = self.compact_text((tool.description or "").split("\n")[0].strip(), 80)
+                desc = Tool.compact((tool.description or "").split("\n")[0].strip(), 80)
                 lines.append("| `" + self.markdown_cell(tool.name) + "` | `" + self.markdown_cell(args_str) + "` | " + self.markdown_cell(desc or "-") + " |")
             sections.append("\n".join(lines))
         return "\n\n".join(sections) if sections else "(no MCP servers configured)"
@@ -3880,10 +3892,8 @@ class MCPManager:
             tools = ""
             if not config.enabled:
                 status = "disabled"
-            elif config.name in self.server_errors:
-                status = "error: " + self.server_errors[config.name]
-            elif config.name in self.server_skips:
-                status = "skipped: " + self.server_skips[config.name]
+            elif issue := self.server_issue(config.name):
+                status = issue[0] + ": " + issue[1]
             else:
                 if config.name in self.tools:
                     status = "connected"
@@ -4315,7 +4325,7 @@ class ModelClient:
         prompt = """
 Compact the nanocode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
-Use keys: summary, goal, plan, known.
+Use keys: summary, goal, plan, known, check.
 Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
@@ -4602,7 +4612,7 @@ TOOL CHOICE:
 
 CONTEXT:
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item.
+- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item; record verification with set_check.
 
 FILE STATE:
 - FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
@@ -5171,9 +5181,6 @@ class StatusBar:
             return self.sweep_fragments(text, elapsed) if sweep else [(self.BASE_STYLE, text)]
         return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
-    def text(self, elapsed: float, *, show_elapsed: bool) -> str:
-        return " | ".join(text for text, _ in self.entries(elapsed, show_elapsed=show_elapsed))
-
     def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
         provider = self.session.config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
@@ -5263,6 +5270,8 @@ class StatusBar:
         return "update " + update.latest if update.newer_than(__version__) else ""
 
     def mcp_status(self) -> str:
+        if self.session.mcp is None:
+            return ""
         status = self.session.mcp.discovery_status
         if status == "discovering":
             spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
