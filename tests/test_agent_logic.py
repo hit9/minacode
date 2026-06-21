@@ -679,6 +679,62 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
 
     assert s.pending_user_inputs == []
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
+
+
+
+def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
+    """pending_user_inputs comes first, then queue_input_text."""
+    s = session(tmp_path)
+    s.pending_user_inputs.append("first pending")
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "second queued"
+
+    loop.run()
+
+    assert s.pending_user_inputs == []
+    assert loop.queue_input_text == ""
+    joined = "\n".join(msg.get("content", "") for msg in s.messages if msg.get("role") == "user")
+    assert "first pending" in joined
+    assert "second queued" in joined
+    assert joined.index("first pending") < joined.index("second queued")
+
+
+def test_queued_blank_text_is_cleared(tmp_path):
+    """Blank queue_input_text is cleared but does not auto-submit."""
+    s = session(tmp_path)
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "   "
+
+    loop.run()
+
+    assert loop.queue_input_text == ""
+    # blank text did not auto-submit (no user message with spaces-only content)
+    assert not any(
+        msg.get("content", "").strip() == "" and msg.get("role") == "user"
+        for msg in s.messages
+    )
 def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)

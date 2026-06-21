@@ -5946,6 +5946,17 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.01)
 
+
+    def drain_queued_input(self) -> str:
+        """Return queued user input, or empty string if nothing queued."""
+        texts = []
+        if self.session.pending_user_inputs:
+            texts.extend(text for text in self.session.pending_user_inputs if text.strip())
+            self.session.pending_user_inputs.clear()
+        if self.queue_input_text.strip():
+            texts.append(self.queue_input_text)
+        self.queue_input_text = ""
+        return "\n".join(texts)
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         self.session.clean_expired_snapshots()
@@ -5956,17 +5967,7 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                texts = []
-                if self.session.pending_user_inputs:
-                    texts.extend(text for text in self.session.pending_user_inputs if text.strip())
-                    self.session.pending_user_inputs.clear()
-                if self.queue_input_text.strip():
-                    texts.append(self.queue_input_text)
-                self.queue_input_text = ""
-                if texts:
-                    user_input = "\n".join(texts)
-                else:
-                    user_input = self.read_input(initial_text="")
+                user_input = self.drain_queued_input() or self.read_input(initial_text="")
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
