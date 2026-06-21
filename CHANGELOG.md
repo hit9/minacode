@@ -23,6 +23,9 @@
 - Changed the resume marker to an internal system message so it does not affect latest-user compaction behavior.
 - Report resume/load errors as CLI errors instead of uncaught exceptions.
 
+- Auto-submit queued input at round end: `queue_input_text` (typed but not confirmed) and unconsumed `pending_user_inputs` both get drained and submitted as the next user input; extracted as `CommandLoop.drain_queued_input()`.
+- Clear blank `queue_input_text` even when it contains only whitespace, preventing stale whitespace from lingering in the input area.
+
 ## 0.6.3 - 2026-06-21
 
 ### Added
