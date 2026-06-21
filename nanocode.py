@@ -59,7 +59,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -235,6 +235,7 @@ class RuntimeSettings:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     check_updates: bool = True
     update_check_interval_hours: int = 24
+    session_retention_days: int = 7
     mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
@@ -248,6 +249,7 @@ class RuntimeSettings:
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
+            session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             debug=debug or Config.bool(runtime, "debug", False),
@@ -357,6 +359,7 @@ max_agent_steps = 200
 max_context_tokens = 128000
 check_updates = true
 update_check_interval_hours = 24
+session_retention_days = 7
 yolo = false
 
 # [mcp.example]
@@ -702,6 +705,311 @@ class SystemInfo:
         )
 
 
+class SessionSnapshotCodec:
+    @staticmethod
+    def digest(value: Any) -> str:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def marker(cls, session: "Session") -> Json:
+        messages = cls.persistable_messages(session.messages)
+        records = [cls.tool_record(record) for record in session.tool_records]
+        errors = [cls.tool_error(error) for error in session.tool_errors]
+        return {
+            "messages_len": len(messages),
+            "messages_digest": cls.digest(messages),
+            "tool_counter": session.tool_counter,
+            "tool_records_len": len(records),
+            "tool_records_digest": cls.digest(records),
+            "tool_errors_len": len(errors),
+            "tool_errors_digest": cls.digest(errors),
+        }
+
+    @staticmethod
+    def tool_record(record: ToolResultRecord) -> Json:
+        return {"key": record.key, "name": record.name, "args": record.args, "output": record.output, "note": record.note}
+
+    @staticmethod
+    def tool_error(error: ToolErrorRecord) -> Json:
+        return {"key": error.key, "name": error.name, "args": error.args, "error": error.error}
+
+    @classmethod
+    def has_content(cls, session: "Session") -> bool:
+        state = session.state
+        return any(
+            (
+                bool(cls.persistable_messages(session.messages)),
+                bool(session.tool_records),
+                bool(session.tool_errors),
+                bool(state.goal or state.plan or state.known or state.check or state.summary),
+            )
+        )
+
+    @staticmethod
+    def is_internal_message(message: Json) -> bool:
+        return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
+
+    @classmethod
+    def persistable_messages(cls, messages: list[Json]) -> list[Json]:
+        return [message for message in messages if not cls.is_internal_message(message)]
+
+    @staticmethod
+    def state(state: AgentState) -> Json:
+        return {
+            "goal": state.goal,
+            "plan": state.plan,
+            "known": state.known,
+            "check": state.check,
+            "summary": state.summary,
+        }
+
+    @staticmethod
+    def usage(usage: ModelUsage) -> Json:
+        return {
+            "calls": usage.calls,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
+            "last_total_tokens": usage.last_total_tokens,
+        }
+
+    @classmethod
+    def snapshot(cls, session: "Session") -> Json:
+        return {
+            "uid": session.uid,
+            "cwd": session.cwd,
+            "messages": cls.persistable_messages(session.messages),
+            "state": cls.state(session.state),
+            "usage": cls.usage(session.usage),
+            "tool_counter": session.tool_counter,
+            "tool_records": [cls.tool_record(record) for record in session.tool_records],
+            "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
+        }
+
+    @classmethod
+    def delta(cls, session: "Session", saved: Json) -> Json:
+        delta: Json = {
+            "tool_counter": session.tool_counter,
+            "usage": cls.usage(session.usage),
+            "state": cls.state(session.state),
+        }
+        cls.add_sequence_delta(delta, "messages", cls.persistable_messages(session.messages), saved, "messages_len", "messages_digest")
+        cls.add_sequence_delta(
+            delta,
+            "tool_records",
+            [cls.tool_record(record) for record in session.tool_records],
+            saved,
+            "tool_records_len",
+            "tool_records_digest",
+        )
+        cls.add_sequence_delta(
+            delta,
+            "tool_errors",
+            [cls.tool_error(error) for error in session.tool_errors],
+            saved,
+            "tool_errors_len",
+            "tool_errors_digest",
+        )
+        return delta
+
+    @classmethod
+    def add_sequence_delta(cls, delta: Json, key: str, current: list[Any], saved: Json, len_key: str, digest_key: str) -> None:
+        last_len = saved.get(len_key, 0)
+        if cls.digest(current[:last_len]) == saved.get(digest_key):
+            if len(current) > last_len:
+                delta[key] = current[last_len:]
+        elif cls.digest(current) != saved.get(digest_key):
+            delta[key + "_replace"] = current
+
+    @classmethod
+    def merge(cls, data: Json, delta: Json) -> None:
+        cls.merge_sequence(data, delta, "messages")
+        cls.merge_sequence(data, delta, "tool_records")
+        cls.merge_sequence(data, delta, "tool_errors")
+        # Backward compatibility for snapshots written before tool_results became derived.
+        if "tool_results_replace" in delta:
+            data["tool_results"] = delta["tool_results_replace"]
+        if "tool_results" in delta:
+            data.setdefault("tool_results", {}).update(delta["tool_results"])
+        if "tool_counter" in delta:
+            data["tool_counter"] = delta["tool_counter"]
+        if "usage" in delta:
+            data["usage"] = delta["usage"]
+        if "state" in delta:
+            data["state"] = delta["state"]
+
+    @staticmethod
+    def merge_sequence(data: Json, delta: Json, key: str) -> None:
+        replace_key = key + "_replace"
+        if replace_key in delta:
+            data[key] = delta[replace_key]
+        if key in delta:
+            data.setdefault(key, []).extend(delta[key])
+
+    @staticmethod
+    def model_usage(data: Json) -> ModelUsage:
+        usage = ModelUsage()
+        usage.calls = data.get("calls", 0)
+        usage.prompt_tokens = data.get("prompt_tokens", 0)
+        usage.completion_tokens = data.get("completion_tokens", 0)
+        usage.total_tokens = data.get("total_tokens", 0)
+        usage.cached_prompt_tokens = data.get("cached_prompt_tokens", 0)
+        usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
+        usage.last_total_tokens = data.get("last_total_tokens", 0)
+        return usage
+
+    @staticmethod
+    def tool_records(data: list[Json]) -> list[ToolResultRecord]:
+        return [
+            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", ""))
+            for rec in data
+        ]
+
+    @staticmethod
+    def tool_errors(data: list[Json]) -> list[ToolErrorRecord]:
+        return [
+            ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", ""))
+            for err in data
+        ]
+
+
+class SessionSnapshotStore:
+    def __init__(self, session: "Session"):
+        self.session = session
+
+    def save(self) -> str:
+        if not self.session._snapshot_saved and not SessionSnapshotCodec.has_content(self.session):
+            return ""
+        path = self.session.data_path("sessions", self.session.uid + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not self.session._snapshot_saved:
+            self.write_jsonl(path, SessionSnapshotCodec.snapshot(self.session), mode="w")
+        else:
+            self.write_jsonl(path, SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved), mode="a")
+        self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
+        with open(self.session.data_path("latest"), "w", encoding="utf-8") as file:
+            file.write(self.session.uid)
+        return self.session.uid
+
+    @staticmethod
+    def write_jsonl(path: str, data: Json, *, mode: str) -> None:
+        with open(path, mode, encoding="utf-8") as file:
+            file.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+    @classmethod
+    def clean_expired(cls, session: "Session") -> int:
+        days = session.settings.session_retention_days
+        if days <= 0:
+            return 0
+        sessions_dir = session.data_path("sessions")
+        try:
+            entries = list(os.scandir(sessions_dir))
+        except FileNotFoundError:
+            return 0
+        except OSError:
+            return 0
+        cutoff = time.time() - days * 86400
+        removed_latest, removed = False, 0
+        for entry in entries:
+            if not entry.name.endswith(".jsonl") or not entry.is_file():
+                continue
+            uid = entry.name[:-6]
+            if uid == session.uid:
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                os.unlink(entry.path)
+                removed += 1
+                removed_latest = removed_latest or cls.latest_uid(session.config.data_dir) == uid
+            except OSError:
+                continue
+        if removed_latest:
+            cls.clear_latest(session.config.data_dir)
+        return removed
+
+    @classmethod
+    def latest_uid(cls, data_dir: str) -> str:
+        try:
+            with open(cls.path_for(data_dir, "latest"), encoding="utf-8") as file:
+                return file.read().strip()
+        except OSError:
+            return ""
+
+    @classmethod
+    def clear_latest(cls, data_dir: str) -> None:
+        try:
+            os.unlink(cls.path_for(data_dir, "latest"))
+        except OSError:
+            pass
+
+    @classmethod
+    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
+        if config is None:
+            config = Config.from_dict(ConfigFile.load())
+        if settings is None:
+            settings = RuntimeSettings()
+        uid = cls.resolve_uid(uid, config.data_dir)
+        data = cls.read_merged(cls.path_for(config.data_dir, "sessions", uid + ".jsonl"), uid)
+        tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
+        tool_results = {record.key: record.output for record in tool_records}
+        tool_results.update(data.get("tool_results", {}))
+        session = Session(
+            cwd=data.get("cwd", os.getcwd()),
+            config=config,
+            settings=settings,
+            messages=SessionSnapshotCodec.persistable_messages(data.get("messages", [])),
+            state=AgentState(**data.get("state", {})),
+            usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
+            tool_counter=data.get("tool_counter", 0),
+            tool_results=tool_results,
+            tool_records=tool_records,
+            tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
+            uid=data.get("uid", uid),
+            resumed=True,
+        )
+        session.messages.append({"role": "system", "content": f"[Session resumed: uid={session.uid}]"})
+        session._snapshot_saved = SessionSnapshotCodec.marker(session)
+        return session
+
+    @classmethod
+    def resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
+        if uid not in {"latest", "last"}:
+            return uid
+        resolved = cls.latest_uid(data_dir)
+        if not resolved and not os.path.exists(cls.path_for(data_dir, "latest")):
+            raise NanocodeError("No latest session to resume; start a new session instead")
+        if not resolved:
+            raise NanocodeError("Latest session file is empty")
+        return resolved
+
+    @classmethod
+    def read_merged(cls, path: str, uid: str) -> Json:
+        if not os.path.exists(path):
+            raise NanocodeError(f"Session snapshot not found: {uid} at {path}")
+        merged = None
+        with open(path, encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                if merged is None:
+                    merged = parsed
+                else:
+                    SessionSnapshotCodec.merge(merged, parsed)
+        if merged is None:
+            raise NanocodeError(f"Empty session file: {path}")
+        return merged
+
+    @staticmethod
+    def path_for(data_dir: str, *parts: str) -> str:
+        return os.path.abspath(os.path.join(os.path.expanduser(data_dir), *parts))
+
+
 @dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
@@ -720,8 +1028,13 @@ class Session:
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
+    uid: str = ""
+    resumed: bool = False
+    _snapshot_saved: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.uid:
+            self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
         if not self.expected_git_branch:
@@ -795,6 +1108,20 @@ class Session:
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
+
+    def save_snapshot(self) -> str:
+        return SessionSnapshotStore(self).save()
+
+    def clean_expired_snapshots(self) -> int:
+        return SessionSnapshotStore.clean_expired(self)
+
+    @classmethod
+    def _resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
+        return SessionSnapshotStore.resolve_uid(uid, data_dir)
+
+    @classmethod
+    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
+        return SessionSnapshotStore.load(uid, config=config, settings=settings)
 
 
 class UpdateChecker:
@@ -4902,7 +5229,6 @@ class CommandCompleter(Completer):
         "runtime.max_context_tokens",
         "runtime.shell_timeout",
         "runtime.check_updates",
-        "runtime.update_check_interval_hours",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -5477,6 +5803,7 @@ Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
+  --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
   Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
 """
@@ -5619,18 +5946,35 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.01)
 
+
+    def drain_queued_input(self) -> str:
+        """Return queued user input, or empty string if nothing queued."""
+        texts = []
+        if self.session.pending_user_inputs:
+            texts.extend(text for text in self.session.pending_user_inputs if text.strip())
+            self.session.pending_user_inputs.clear()
+        if self.queue_input_text.strip():
+            texts.append(self.queue_input_text)
+        self.queue_input_text = ""
+        return "\n".join(texts)
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        self.session.clean_expired_snapshots()
+        self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
         threading.Thread(target=self.discover_mcp, daemon=True).start()
         UpdateChecker(self.session).start()
         while True:
             try:
-                user_input = self.read_input(initial_text=self.queue_input_text)
-                self.queue_input_text = ""
+                user_input = self.drain_queued_input()
+                if not user_input:
+                    user_input = self.read_input(initial_text="")
+                elif self.input_history is not None:
+                    self.input_history.append_string(user_input)
             except EOFError:
                 self.emit("")
+                self.save_and_emit_resume()
                 return 0
             except KeyboardInterrupt:
                 self.emit("Cancelled")
@@ -5672,6 +6016,85 @@ Tools:
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+            self.session.save_snapshot()
+
+    def render_resumed_session(self) -> None:
+        if not self.session.resumed:
+            return
+        self.session.resumed = False
+        messages = [message for message in self.session.messages if self.should_render_resumed_message(message)]
+        if not messages:
+            return
+        self.emit(f"Restored session: {self.session.uid}")
+        tool_record_index = 0
+        for message in messages:
+            tool_record_index = self.render_transcript_message(message, tool_record_index)
+
+    @staticmethod
+    def is_resume_marker(message: Json) -> bool:
+        return SessionSnapshotCodec.is_internal_message(message)
+
+    def should_render_resumed_message(self, message: Json) -> bool:
+        if self.is_resume_marker(message):
+            return False
+        return message.get("role") != "tool"
+
+    def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
+        role = str(message.get("role") or "")
+        content = str(message.get("content") or "").strip()
+        if role == "assistant" and content:
+            self.emit("assistant:")
+            self.ui.emit_answer(content)
+        if role == "assistant":
+            return self.render_transcript_tool_calls(message, tool_record_index)
+        if role == "user" and content:
+            self.emit("user:")
+            self.emit(content)
+        return tool_record_index
+
+    def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            return tool_record_index
+        for raw in raw_calls:
+            call = self.transcript_tool_call(raw)
+            if call is None:
+                continue
+            record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
+            self.emit(self.agent.tools.finish_display(call, record.key if record else "", "", failed=False))
+        return tool_record_index
+
+    @staticmethod
+    def transcript_tool_call(raw: Any) -> ToolCall | None:
+        if not isinstance(raw, dict):
+            return None
+        function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+        name = str(function.get("name") or "")
+        if not name:
+            return None
+        arguments = function.get("arguments")
+        try:
+            payload = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
+        except json.JSONDecodeError:
+            payload = {}
+        return ToolCall(id=str(raw.get("id") or ""), name=name, args=ModelClient.tool_payload(name, payload))
+
+    def transcript_tool_record(self, call: ToolCall, tool_record_index: int) -> tuple[ToolResultRecord | None, int]:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is not None and not tool_class.STORES_RESULT:
+            return None, tool_record_index
+        records = self.session.tool_records
+        while tool_record_index < len(records):
+            record = records[tool_record_index]
+            tool_record_index += 1
+            if record.name == call.name:
+                return record, tool_record_index
+        return None, tool_record_index
+
+    def save_and_emit_resume(self) -> None:
+        uid = self.session.save_snapshot()
+        if uid:
+            self.emit(f"Resume with: nanocode --resume {uid}")
 
     def discover_mcp(self) -> None:
         self.session.mcp.discover_enabled()
@@ -5998,6 +6421,7 @@ Tools:
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
+            self.save_and_emit_resume()
             return True, True
         if not text.startswith("/"):
             return False, False
@@ -6330,6 +6754,7 @@ Tools:
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
+            ("session", "`" + self.session.uid + "`"),
             (
                 "model",
                 f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`",
@@ -6389,6 +6814,7 @@ Tools:
                 f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
                 f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
                 f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
+                f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
                 f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
             ]
@@ -6591,8 +7017,6 @@ Tools:
                 runtime.check_updates = Config.bool({key: value}, key)
                 if runtime.check_updates:
                     UpdateChecker(self.session).start()
-            elif key == "runtime.update_check_interval_hours":
-                runtime.update_check_interval_hours = max(1, int(value))
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
             elif key == "runtime.max_context_tokens":
@@ -6613,6 +7037,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
+    parser.add_argument("--resume", default="", nargs="?", const="latest",
+                        help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -6623,11 +7049,22 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
+        if args.resume:
+            data = ConfigFile.load(args.config)
+            session = Session.load_snapshot(
+                args.resume,
+                config=Config.from_dict(data),
+                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp),
+            )
+        else:
+            session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
+    except NanocodeError as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

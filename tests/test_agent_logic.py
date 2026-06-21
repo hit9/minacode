@@ -634,6 +634,107 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         reader.close()
 
 
+
+def test_queued_text_auto_submits_at_round_end(tmp_path):
+    """queue_input_text set during agent run is auto-submitted as next input."""
+    s = session(tmp_path)
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "auto instruction"
+
+    loop.run()
+
+    assert loop.queue_input_text == ""
+    assert any("auto instruction" in msg.get("content", "") for msg in s.messages)
+
+
+def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
+    """Unconsumed pending_user_inputs are auto-submitted as next input."""
+    s = session(tmp_path)
+    s.pending_user_inputs.append("leftover instruction")
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+
+    loop.run()
+
+    assert s.pending_user_inputs == []
+    assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
+
+
+
+def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
+    """pending_user_inputs comes first, then queue_input_text."""
+    s = session(tmp_path)
+    s.pending_user_inputs.append("first pending")
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "second queued"
+
+    loop.run()
+
+    assert s.pending_user_inputs == []
+    assert loop.queue_input_text == ""
+    joined = "\n".join(msg.get("content", "") for msg in s.messages if msg.get("role") == "user")
+    assert "first pending" in joined
+    assert "second queued" in joined
+    assert joined.index("first pending") < joined.index("second queued")
+
+
+def test_queued_blank_text_is_cleared(tmp_path):
+    """Blank queue_input_text is cleared but does not auto-submit."""
+    s = session(tmp_path)
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "   "
+
+    loop.run()
+
+    assert loop.queue_input_text == ""
+    # blank text did not auto-submit (no user message with spaces-only content)
+    assert not any(
+        msg.get("content", "").strip() == "" and msg.get("role") == "user"
+        for msg in s.messages
+    )
 def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
@@ -709,6 +810,75 @@ def test_memory_command_shows_durable_memory(tmp_path):
     assert "summary" not in prompt_memory
     assert "- inspect" in prompt_memory
     assert "[~]" not in prompt_memory
+
+
+def test_exit_command_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+
+
+def test_empty_exit_does_not_print_resume_command(tmp_path):
+    s = session(tmp_path)
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output == []
+    assert not os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+
+
+def test_resumed_session_does_not_render_tool_results(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "need tool",
+                "tool_calls": [{"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": arguments}}],
+            },
+            {"role": "tool", "tool_call_id": "tc.1", "content": "raw tool result"},
+            {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
+        ]
+    )
+    s.tool_records.append(n.ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw tool result", "a.py 0:1"))
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert s.resumed is False
+    assert f"Restored session: {s.uid}" in text
+    assert "hello" in text
+    assert "need tool" in text
+    assert "tool Read a.py 0:1 -> tr.1" in text
+    assert "tool:" not in text
+    assert "raw tool result" not in text
+
+
+def test_eof_exit_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
+
+    assert loop.run() == 0
+
+    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):

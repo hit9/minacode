@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.4 - 2026-06-21
+
+### Added
+- Added JSONL session persistence with append-only deltas for the normal save path and `nanocode --resume [UID]` for restoring saved sessions.
+- Added a `latest` session pointer and a resume command hint printed when nanocode exits.
+- Added `nanocode --resume last` as an alias for resuming the latest saved session.
+- Render restored session history once on resume without re-running tools or commands.
+- Show the active session id in `/status`.
+- Added session persistence coverage for snapshot/delta save/load, `latest`, usage/state/tool record roundtrips, missing snapshots, and exit resume hints.
+
+### Changed
+- Kept persisted session snapshots focused on necessary recovery data only, deriving runtime tool-result lookup state from saved tool records instead of storing config, settings, timestamps, git branch, or other rebuildable runtime data.
+- Skip first-save persistence for sessions with no recoverable content, avoiding empty snapshots and stale `latest` pointers.
+- Delete session files older than the configurable `runtime.session_retention_days` retention window on startup; the default is `7` days.
+- Treat retention and update-check interval settings as config-file policy rather than `/set` runtime mutations.
+- Split session snapshot encoding/merging from JSONL file storage, keeping `Session` as a thin owner of runtime state.
+- Resume now applies the current config/runtime flags (`--config`, `--yolo`, `--debug`, `--mcp`) while loading only conversation state from the snapshot.
+
+### Fixed
+- Fixed command dispatch so ordinary non-command input reaches the agent instead of being treated as an unknown slash command.
+- Changed the resume marker to an internal system message so it does not affect latest-user compaction behavior.
+- Report resume/load errors as CLI errors instead of uncaught exceptions.
+
+- Auto-submit queued input at round end: `queue_input_text` (typed but not confirmed) and unconsumed `pending_user_inputs` both get drained and submitted as the next user input; extracted as `CommandLoop.drain_queued_input()`.
+- Clear blank `queue_input_text` even when it contains only whitespace, preventing stale whitespace from lingering in the input area.
+
+- Record auto-submitted queued input in CLI history via `FileHistory.append_string()`, so previously-queued text appears in prompt history like any manually typed input.
+
 ## 0.6.3 - 2026-06-21
 
 ### Added
