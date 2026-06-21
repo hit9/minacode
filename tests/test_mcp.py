@@ -196,6 +196,15 @@ class TestMCPManagerHeaders:
         headers = s.mcp._build_mcp_headers(config)
         assert headers == {"X-Custom": "xyz"}
 
+    def test_authorization_env_http_header_success(self, monkeypatch):
+        """Authorization is allowed via env_http_headers when it is the only auth source."""
+        monkeypatch.setenv("AUTH_VAL", "Bearer custom")
+        raw = mcp_cfg(env_http_headers={"Authorization": "AUTH_VAL"})
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        config = s.mcp.parse_configs()[0]
+        headers = s.mcp._build_mcp_headers(config)
+        assert headers == {"Authorization": "Bearer custom"}
+
     def test_env_http_headers_missing_var(self, monkeypatch):
         """Missing env_http_headers env var returns error string."""
         monkeypatch.delenv("MISSING_HEADER_VAL", raising=False)
@@ -243,6 +252,24 @@ class TestMCPManagerDiscovery:
         s = session("/tmp")
         assert s.mcp.parse_configs() == []
         assert s.mcp.tools == {}
+
+    def test_async_runner_reuses_one_loop(self):
+        """MCP async work is scheduled onto one manager-owned event loop."""
+        s = session("/tmp")
+
+        async def loop_id():
+            return id(asyncio.get_running_loop())
+
+        assert s.mcp.run_async(loop_id()) == s.mcp.run_async(loop_id())
+
+    def test_oauth_token_store_is_shared_for_manager(self, tmp_path):
+        """Token storage keeps one store and one lock per token file path."""
+        s = session(tmp_path)
+        store = s.mcp.oauth_token_store()
+        same_path_store = n.MCPFileTokenStore(store.path)
+
+        assert s.mcp.oauth_token_store() is store
+        assert same_path_store.lock is store.lock
 
     def test_discover_enabled_stale_to_discovering(self, monkeypatch):
         """discover_enabled sets status to discovering then ready."""
@@ -930,6 +957,16 @@ class TestMCPCommands:
         result = loop.mcp_command("bad_subcommand")
         assert "Unknown" in result
 
+    def test_mcp_subcommands_reject_extra_args(self):
+        """MCP subcommands do not silently ignore extra args."""
+        s = n.Session(cwd="/tmp")
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+
+        assert loop.mcp_command("tools a b") == "Usage: /mcp tools [server]"
+        assert loop.mcp_command("login a b").startswith("Usage: /mcp login")
+        assert loop.mcp_command("logout a b").startswith("Usage: /mcp logout")
+        assert loop.mcp_command("refresh a b") == "Usage: /mcp refresh [server]"
+
     def test_no_mcp_config(self):
         """No MCP config returns message."""
         s = n.Session(cwd="/tmp")
@@ -1159,6 +1196,22 @@ class TestCallToolSuccess:
         result = s.mcp.call_tool("test", "multi", {})
         assert "part one" in result
         assert "part two" in result
+
+    def test_call_from_running_event_loop(self, monkeypatch):
+        """Synchronous call_tool still works when the caller already has an event loop."""
+        raw = mcp_cfg()
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def fake_call(config, headers, name, arguments):
+            return {"type": "text", "text": "ok"}
+
+        async def run_call():
+            return s.mcp.call_tool("test", "echo", {})
+
+        monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+
+        assert "ok" in asyncio.run(run_call())
 
 
 # ---------------------------------------------------------------------------

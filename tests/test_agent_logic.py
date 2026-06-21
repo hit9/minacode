@@ -20,6 +20,7 @@ def call(name, args):
 def test_system_prompt_prefers_targeted_builtin_tools():
     prompt = n.Agent.SYSTEM_PROMPT
 
+    assert "TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP." in prompt
     assert "- Edit writes files. Use Edit for file changes; keep patches small." in prompt
     assert "- Read reads known files/ranges and returns line:hash anchors." in prompt
     assert "- Search finds text/patterns in files; Find finds paths." in prompt

@@ -537,10 +537,13 @@ class MCPServerConfig:
 
 class MCPFileTokenStore:
     DEFAULT_COLLECTION = "default_collection"
+    _locks: ClassVar[dict[str, threading.Lock]] = {}
+    _locks_guard: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self, path: str):
-        self.path = path
-        self.lock = threading.Lock()
+        self.path = os.path.abspath(os.path.expanduser(path))
+        with self._locks_guard:
+            self.lock = self._locks.setdefault(self.path, threading.Lock())
 
     def token_key(self, server_url: str, suffix: str) -> str:
         return server_url.rstrip("/") + suffix
@@ -3241,6 +3244,10 @@ class MCPManager:
         self.lock = threading.Lock()
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
         self._configs_cache: list[MCPServerConfig] | None = None
+        self._oauth_token_store = MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._loop_lock = threading.Lock()
 
     def parse_configs(self) -> list[MCPServerConfig]:
         # Config and selector are immutable for the session, so parse once and reuse.
@@ -3396,9 +3403,9 @@ class MCPManager:
                 if not self.oauth_token_store().has_server_tokens(config.url):
                     self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
                     return
-                tools = asyncio.run(self._list_oauth_tools(config, headers))
+                tools = self.run_async(self._list_oauth_tools(config, headers))
             else:
-                tools = asyncio.run(self._list_tools(config, headers))
+                tools = self.run_async(self._list_tools(config, headers))
             tools_info = self._tools_info(config.name, tools)
             with self.lock:
                 self.tools[config.name] = tools_info
@@ -3470,7 +3477,31 @@ class MCPManager:
         return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
 
     def oauth_token_store(self) -> MCPFileTokenStore:
-        return MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
+        return self._oauth_token_store
+
+    def _async_loop(self) -> asyncio.AbstractEventLoop:
+        with self._loop_lock:
+            if self._loop is not None and self._loop.is_running():
+                return self._loop
+            ready = threading.Event()
+            holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def run() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                holder["loop"] = loop
+                ready.set()
+                loop.run_forever()
+                loop.close()
+
+            self._loop_thread = threading.Thread(target=run, name="mcp-async", daemon=True)
+            self._loop_thread.start()
+            ready.wait()
+            self._loop = holder["loop"]
+            return self._loop
+
+    def run_async(self, coroutine: Any) -> Any:
+        return asyncio.run_coroutine_threadsafe(coroutine, self._async_loop()).result()
 
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
         from fastmcp.client.auth import OAuth
@@ -3541,7 +3572,8 @@ class MCPManager:
                 if header_name.lower() == "authorization":
                     if config.auth == "oauth":
                         return "conflicting Authorization header; use auth=oauth instead"
-                    return "conflicting Authorization header; use bearer_token_env_var instead"
+                    if any(name.lower() == "authorization" for name in headers):
+                        return "conflicting Authorization header; use only one authorization source"
                 headers[header_name] = value
         return headers
 
@@ -3564,7 +3596,7 @@ class MCPManager:
             raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
 
         try:
-            result = asyncio.run(
+            result = self.run_async(
                 self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config, headers, tool_name, arguments)
             )
         except Exception as e:
@@ -3637,7 +3669,7 @@ class MCPManager:
         # client registered against an earlier random port yields invalid_request.
         self.oauth_token_store().clear_client_info(config.url)
         try:
-            tools = asyncio.run(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
+            tools = self.run_async(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
         except Exception as error:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(name, text)
@@ -4599,7 +4631,7 @@ class Agent:
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
 
-TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
+TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP.
 Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 
 FLOW:
@@ -5885,17 +5917,21 @@ Tools:
         rest = parts[1:]
 
         if sub == "tools":
+            if len(rest) > 1:
+                return "Usage: /mcp tools [server]"
             server = rest[0] if rest else None
             return mcp.render_tool_listing(server)
         if sub == "login":
-            if not rest:
+            if len(rest) != 1:
                 return "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"
             return mcp.login_server(rest[0], notify=self.emit)
         if sub == "logout":
-            if not rest:
+            if len(rest) != 1:
                 return "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"
             return mcp.logout_server(rest[0])
         if sub == "refresh":
+            if len(rest) > 1:
+                return "Usage: /mcp refresh [server]"
             name = rest[0] if rest else ""
             if name:
                 mcp.discover_server(name)
