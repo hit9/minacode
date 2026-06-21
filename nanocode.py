@@ -2205,6 +2205,10 @@ class GitTool(Tool):
         self.validate_branch_safety(args, cwd)
         try:
             proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
+            # After any successful git command, refresh initial_git_branch so that
+            # subsequent commits on a legitimately-switched branch are not rejected.
+            if proc.returncode == 0:
+                self.session.initial_git_branch = self.session.git_branch(cwd)
             return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired as error:
             return self.process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "\ntimeout")

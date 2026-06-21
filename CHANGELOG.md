@@ -11,6 +11,7 @@
 - Made MCP OAuth token storage reuse one store and shared path lock to avoid concurrent token file writes racing each other.
 - Allowed `env_http_headers.Authorization` when it is the only configured authorization source.
 - Rejected extra `/mcp` subcommand arguments instead of silently ignoring them.
+- Refreshed `initial_git_branch` after every successful Git tool command so that commits on a legitimately-switched feature branch are not rejected.
 
 ## 0.6.1 - 2026-06-19
 
