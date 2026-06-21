@@ -251,22 +251,35 @@ def test_git_commit_refuses_when_branch_changed_since_session_start(tmp_path):
     with pytest.raises(n.ToolError, match="branch changed from .* to other"):
         n.GitTool(s, ["commit", "-m", "blocked"]).call()
 
-def test_initial_git_branch_refreshed_after_successful_git_command(tmp_path):
+def test_expected_git_branch_refreshed_only_after_tool_branch_switch(tmp_path):
     if not shutil.which("git"):
         pytest.skip("git unavailable")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "README.md").write_text("# test\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
     s = session(tmp_path)
-    initial = s.initial_git_branch
+    initial = s.expected_git_branch
     assert initial  # e.g., "master" or "main"
 
-    subprocess.run(["git", "switch", "-c", "other"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    assert s.initial_git_branch == initial  # not yet updated
-
+    # A read-only git command does not move the baseline.
     n.GitTool(s, ["status", "--short"]).call()
-    assert s.initial_git_branch == "other"  # refreshed by the fix
+    assert s.expected_git_branch == initial
+
+    # A tool-driven branch switch refreshes the baseline to the new branch.
+    n.GitTool(s, ["switch", "-c", "other"]).call()
+    assert s.expected_git_branch == "other"
+
+    # An external switch is NOT reflected by a later read-only command: the baseline
+    # stays put so validate_branch_safety still guards commits against surprise switches.
+    subprocess.run(["git", "switch", initial], cwd=tmp_path, check=True, capture_output=True, text=True)
+    n.GitTool(s, ["status", "--short"]).call()
+    assert s.expected_git_branch == "other"
 
 
-def test_git_commit_allowed_after_branch_refresh(tmp_path):
+def test_git_commit_allowed_after_tool_branch_switch(tmp_path):
     if not shutil.which("git"):
         pytest.skip("git unavailable")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
@@ -277,11 +290,10 @@ def test_git_commit_allowed_after_branch_refresh(tmp_path):
     subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
 
     s = session(tmp_path)
-    subprocess.run(["git", "switch", "-c", "feature"], cwd=tmp_path, check=True, capture_output=True, text=True)
 
-    # Run a successful git command first — this refreshes initial_git_branch
-    n.GitTool(s, ["status", "--short"]).call()
-    assert s.initial_git_branch == "feature"
+    # Switch branch via the tool — this refreshes expected_git_branch.
+    n.GitTool(s, ["switch", "-c", "feature"]).call()
+    assert s.expected_git_branch == "feature"
 
     # Now commit should succeed
     (tmp_path / "feature.txt").write_text("hello\n")

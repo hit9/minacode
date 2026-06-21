@@ -81,6 +81,8 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
     "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
 }
 SELECTION_BACK = object()
+SELECTION_FREE_TEXT = object()
+DISMISSED = "(The user dismissed the question without answering.)"
 
 
 class NanocodeError(Exception):
@@ -704,7 +706,7 @@ class SystemInfo:
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
-    initial_git_branch: str = ""
+    expected_git_branch: str = ""
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     messages: list[Json] = field(default_factory=list)
@@ -722,8 +724,8 @@ class Session:
     def __post_init__(self) -> None:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
-        if not self.initial_git_branch:
-            self.initial_git_branch = self.git_branch(self.cwd)
+        if not self.expected_git_branch:
+            self.expected_git_branch = self.git_branch(self.cwd)
         if self.mcp is None:
             self.mcp = MCPManager(self)
 
@@ -2184,7 +2186,7 @@ class GitTool(Tool):
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
         argv = payload.get("argv")
-        if not argv or not isinstance(argv, list) or not argv:
+        if not isinstance(argv, list) or not argv:
             raise ToolError(
                 "Git requires a non-empty 'argv' list. "
                 'Signature: Git(argv=[command,...], cwd?)  '
@@ -2205,10 +2207,11 @@ class GitTool(Tool):
         self.validate_branch_safety(args, cwd)
         try:
             proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
-            # After any successful git command, refresh initial_git_branch so that
-            # subsequent commits on a legitimately-switched branch are not rejected.
-            if proc.returncode == 0:
-                self.session.initial_git_branch = self.session.git_branch(cwd)
+            # When the user has nanocode switch branches, update expected_git_branch to the new
+            # branch so later commits are not rejected. Gate on branch-changing commands only: an
+            # unexpected (external) switch should still trip validate_branch_safety on commit.
+            if proc.returncode == 0 and self.changes_branch(args):
+                self.session.expected_git_branch = self.session.git_branch(cwd)
             return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired as error:
             return self.process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "\ntimeout")
@@ -2238,9 +2241,9 @@ class GitTool(Tool):
         if args[0] != "commit":
             return
         current = self.session.git_branch(cwd)
-        initial = self.session.initial_git_branch
-        if initial and current and current != initial:
-            raise ToolError(f"refusing git commit because branch changed from {initial} to {current}")
+        expected = self.session.expected_git_branch
+        if expected and current and current != expected:
+            raise ToolError(f"refusing git commit because branch changed from {expected} to {current}")
         if current in {"main", "master"} and self.session.settings.yolo:
             raise ToolError(f"refusing git commit on {current} in yolo mode; explicit confirmation is required")
 
@@ -2436,7 +2439,6 @@ class NoteTool(Tool):
         return ["\n".join(lines) or "{}"]
 
 
-
 class QuestionTool(Tool):
     NAME = "Question"
     DESCRIPTION = "Ask the user a clarifying question and wait for their answer. Use when: the intent is genuinely ambiguous with different valid outcomes, a design choice affects the codebase's external shape (module structure, public API, naming), or prioritization is needed. Do NOT ask about trivial internal details (variable names, formatting), things you can determine from context (check Read/InspectCode/Bash first), or anything already specified. If a reasonable choice exists, proceed without asking."
@@ -2451,7 +2453,6 @@ class QuestionTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        strings = {"type": "array", "items": {"type": "string"}}
         return {
             "type": "object",
             "properties": {
@@ -6058,7 +6059,14 @@ Tools:
         labels: dict[str, str],
         current: str,
         disabled: set[str],
+        *,
+        preview_fn: Callable[[str], str] | None = None,
+        free_text: bool = False,
     ) -> str | object | None:
+        FREE_TEXT = "\x00free_text"
+        if free_text and self.interactive_input:
+            choices = (*choices, FREE_TEXT)
+            labels = {**labels, FREE_TEXT: "Type freely..."}
         state = {"query": "", "selected": 0, "search": False}
         searching = Condition(lambda: bool(state["search"]))
 
@@ -6102,6 +6110,13 @@ Tools:
                 if selected:
                     parts.append(("[SetCursorPosition]", ""))
                 parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
+            if preview_fn and options:
+                sel = int(state["selected"])
+                preview_text = preview_fn(options[sel]) if 0 <= sel < len(options) else ""
+                if preview_text:
+                    parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
+                    for line in preview_text.splitlines():
+                        parts.append(("class:choice.preview", "  │ " + line + "\n"))
             if state["search"]:
                 parts.append(("", "/" + query))
             return parts
@@ -6153,7 +6168,8 @@ Tools:
                 return
             options = enabled()
             if options:
-                event.app.exit(result=options[int(state["selected"])])
+                choice = options[int(state["selected"])]
+                event.app.exit(result=SELECTION_FREE_TEXT if choice == FREE_TEXT else choice)
 
         @bindings.add("c-c", eager=True)
         @bindings.add("<sigint>", eager=True)
@@ -6194,191 +6210,35 @@ Tools:
         choices: list[str] | None,
         previews: list[str] | None,
     ) -> str:
-        """Interactive question with choice navigation, dynamic preview, and free-text fallback."""
+        """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
         if not choices or not self.interactive_input:
             return self.read_input(question)
 
-        # Render question with Rich markdown before interactive UI
+        # Render the question (markdown) above the interactive selector.
         if self.ui.color:
             self.ui.console.print(Markdown(question))
         else:
             self.emit(question + "\n")
 
-        choices_tuple = tuple(choices)
-        previews_list = previews or []
-        FREE_TEXT = "__type_freely__"
-        FREE_TEXT_LABEL = "Type freely..."
-        all_choices = (*choices_tuple, FREE_TEXT) if self.interactive_input else choices_tuple
-        disabled: set[str] = set()
-
-        state = {"query": "", "selected": 0, "search": False}
-        searching = Condition(lambda: bool(state["search"]))
-
-        def enabled() -> tuple[str, ...]:
-            return tuple(
-                c for c in self.visible_choices(all_choices, {}, disabled, str(state["query"]))
-                if c not in disabled
-            )
-
-        def clamp() -> None:
-            opts = enabled()
-            state["selected"] = min(max(int(state["selected"]), 0), len(opts) - 1) if opts else 0
-
-        def move(event, delta: int) -> None:
-            opts = enabled()
-            if opts:
-                state["selected"] = min(max(int(state["selected"]) + delta, 0), len(opts) - 1)
-            event.app.invalidate()
-
-        def fragments():
-            query = str(state["query"])
-            visible = self.visible_choices(all_choices, {}, disabled, query)
-            opts = enabled()
-            clamp()
-            suffix = (" /" + query) if query else ""
-            if query and not state["search"]:
-                suffix += " (filtered)"
-            parts: list[tuple[str, str]] = [
-                ("class:choice.title", "Select:" + suffix + "\n"),
-                ("class:choice.disabled", "  j/k move, / search, Enter select, Esc back\n"),
-            ]
-            if query and not opts:
-                parts.append(("class:choice.disabled", "  no matches\n"))
-                return parts
-            number = 0
-            for choice in visible:
-                label = choice if choice != FREE_TEXT else FREE_TEXT_LABEL
-                if choice in disabled:
-                    parts.append(("class:choice.disabled", "  " + label + "\n"))
-                    continue
-                number += 1
-                selected = number - 1 == int(state["selected"])
-                style = "class:choice.selected" if selected else ""
-                if selected:
-                    parts.append(("[SetCursorPosition]", ""))
-                marker = "> " if selected else "  "
-                parts.append((style, f"{marker}{number:2d}. {label}\n"))
-
-            # --- Dynamic preview for current selection ---
-            sel_idx = int(state["selected"])
-            if opts and 0 <= sel_idx < len(opts):
-                selected_choice = opts[sel_idx]
-                if selected_choice != FREE_TEXT and previews_list:
-                    try:
-                        choice_idx = choices_tuple.index(selected_choice)
-                        if choice_idx < len(previews_list) and previews_list[choice_idx]:
-                            preview_text = previews_list[choice_idx]
-                            parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
-                            for line in preview_text.splitlines():
-                                parts.append(("class:choice.preview", "  │ " + line + "\n"))
-                    except ValueError:
-                        pass
-
-            if state["search"]:
-                parts.append(("", "/" + query))
-            return parts
-
-        bindings = KeyBindings()
-
-        @bindings.add("j", filter=~searching, eager=True)
-        @bindings.add("down", eager=True)
-        def _j(event):
-            move(event, 1)
-
-        @bindings.add("k", filter=~searching, eager=True)
-        @bindings.add("up", eager=True)
-        def _k(event):
-            move(event, -1)
-
-        @bindings.add("/", eager=True)
-        def _search(event):
-            state["search"] = True
-            state["query"] = ""
-            state["selected"] = 0
-            event.app.invalidate()
-
-        @bindings.add("backspace", filter=searching, eager=True)
-        @bindings.add("c-h", filter=searching, eager=True)
-        def _backspace(event):
-            state["query"] = str(state["query"])[:-1]
-            state["selected"] = 0
-            event.app.invalidate()
-
-        @bindings.add("escape", eager=True)
-        def _escape(event):
-            if state["search"]:
-                state["search"] = False
-                event.app.invalidate()
-                return
-            if state["query"]:
-                state["query"] = ""
-                state["selected"] = 0
-                event.app.invalidate()
-                return
-            event.app.exit(result=SELECTION_BACK)
-
-        @bindings.add("enter", eager=True)
-        def _enter(event):
-            if state["search"]:
-                state["search"] = False
-                event.app.invalidate()
-                return
-            opts = enabled()
-            clamp()
-            idx = int(state["selected"])
-            if 0 <= idx < len(opts):
-                choice = opts[idx]
-                if choice == FREE_TEXT:
-                    event.app.exit(result="__TYPE_FREELY__")
-                else:
-                    event.app.exit(result=choice)
-
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):
-            event.app.exit(exception=KeyboardInterrupt())
-
-        for number in range(1, 10):
-            @bindings.add(str(number), eager=True)
-            def _digit(event, number=number):
-                if state["search"]:
-                    state["query"] = str(state["query"]) + event.data
-                    state["selected"] = 0
-                    event.app.invalidate()
-                    return
-                opts = enabled()
-                if number <= len(opts):
-                    state["selected"] = number - 1
-                    event.app.invalidate()
-
-        @bindings.add(Keys.Any, filter=searching)
-        def _typed(event):
-            if event.data and event.data not in "\r\n":
-                state["query"] = str(state["query"]) + event.data
-                state["selected"] = 0
-                event.app.invalidate()
-
-        content = FormattedTextControl(fragments, focusable=True)
-        question_window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([question_window, self.status_window()]), focused_element=question_window), bindings)
-        result = self.run_input_app(app)
-
-        if result is SELECTION_BACK:
-            return question
-        if result == "__TYPE_FREELY__":
+        preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
+        result = self.choice_application(
+            "Select:", tuple(choices), {}, "", set(),
+            preview_fn=lambda choice: preview_map.get(choice, ""),
+            free_text=True,
+        )
+        if result is SELECTION_FREE_TEXT:
             return self.read_input(question + " (type freely)")
         if isinstance(result, str):
             return result
-        return question
-
+        return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
     def question_interaction(
         self, question: str, choices: list[str] | None, previews: list[str] | None
     ) -> str:
         """Entry point for Question tool — shows the chosen answer in CLI after selection."""
         result = self.question_application(question, choices, previews)
-        # Emit the selected choice text (free-text is already shown by read_input)
-        if result and result != question and choices and result in choices:
+        # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
+        if choices and result in choices:
             self.emit(result + "\n")
         return result
 

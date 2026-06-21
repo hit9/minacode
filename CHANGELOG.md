@@ -4,15 +4,15 @@
 
 ### Added
 - Added `Question` tool that pauses the agent to ask the user for clarification when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Supports structured choices with optional dynamic previews.
-- Wired `Question` tool into the interactive selection flow via `question_application()` with `j`/`k` navigation, `Ctrl+P` pager preview, Rich markdown rendering of the question text, and free-text fallback.
-- Emit the selected choice or free-text answer in CLI after the interactive selector closes, providing clear feedback to the user.
+- Wired `Question` tool into the shared interactive selector with `j`/`k` navigation, dynamic per-choice preview, Rich markdown rendering of the question text, and a free-text fallback.
+- Echo the selected choice in the CLI after the interactive selector closes, giving clear feedback on what was chosen.
 
 ### Changed
 - Refined `Question` tool DESCRIPTION, SYSTEM_PROMPT usage guidance, and README with clear principles: question only when intent is truly ambiguous, design affects external shape, or prioritization is needed. Skip internal details, contextually-determinable items, and already-specified matters.
 
 ### Fixed
 - GitTool: validate non-empty `argv` in `payload_args` with a clear error message when the model sends an empty command list.
-- Refresh `initial_git_branch` after every successful Git tool command so that commits on a legitimately-switched feature branch are not rejected.
+- Update the tracked commit-target branch (renamed `initial_git_branch` → `expected_git_branch`) after a tool-driven branch switch so commits on a branch nanocode switched to are not rejected, while still guarding against unexpected external switches.
 
 ## 0.6.2 - 2026-06-21
 
