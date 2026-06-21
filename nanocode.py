@@ -6003,7 +6003,7 @@ Tools:
         if not self.session.resumed:
             return
         self.session.resumed = False
-        messages = [message for message in self.session.messages if not self.is_resume_marker(message)]
+        messages = [message for message in self.session.messages if self.should_render_resumed_message(message)]
         if not messages:
             return
         self.emit(f"Restored session: {self.session.uid}")
@@ -6014,6 +6014,11 @@ Tools:
     def is_resume_marker(message: Json) -> bool:
         return SessionSnapshotCodec.is_internal_message(message)
 
+    def should_render_resumed_message(self, message: Json) -> bool:
+        if self.is_resume_marker(message):
+            return False
+        return message.get("role") != "tool"
+
     def render_transcript_message(self, message: Json) -> None:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
@@ -6022,9 +6027,6 @@ Tools:
         if role == "assistant":
             self.emit("assistant:")
             self.ui.emit_answer(content)
-        elif role == "tool":
-            self.emit("tool:")
-            self.emit(content)
         elif role == "user":
             self.emit("user:")
             self.emit(content)

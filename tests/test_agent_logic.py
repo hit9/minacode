@@ -736,6 +736,31 @@ def test_empty_exit_does_not_print_resume_command(tmp_path):
     assert not os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
+def test_resumed_session_does_not_render_tool_results(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "need tool"},
+            {"role": "tool", "content": "raw tool result"},
+            {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
+        ]
+    )
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert s.resumed is False
+    assert f"Restored session: {s.uid}" in text
+    assert "hello" in text
+    assert "need tool" in text
+    assert "tool:" not in text
+    assert "raw tool result" not in text
+
+
 def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
