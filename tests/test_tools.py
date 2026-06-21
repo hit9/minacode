@@ -251,6 +251,56 @@ def test_git_commit_refuses_when_branch_changed_since_session_start(tmp_path):
     with pytest.raises(n.ToolError, match="branch changed from .* to other"):
         n.GitTool(s, ["commit", "-m", "blocked"]).call()
 
+def test_expected_git_branch_refreshed_only_after_tool_branch_switch(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "README.md").write_text("# test\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    s = session(tmp_path)
+    initial = s.expected_git_branch
+    assert initial  # e.g., "master" or "main"
+
+    # A read-only git command does not move the baseline.
+    n.GitTool(s, ["status", "--short"]).call()
+    assert s.expected_git_branch == initial
+
+    # A tool-driven branch switch refreshes the baseline to the new branch.
+    n.GitTool(s, ["switch", "-c", "other"]).call()
+    assert s.expected_git_branch == "other"
+
+    # An external switch is NOT reflected by a later read-only command: the baseline
+    # stays put so validate_branch_safety still guards commits against surprise switches.
+    subprocess.run(["git", "switch", initial], cwd=tmp_path, check=True, capture_output=True, text=True)
+    n.GitTool(s, ["status", "--short"]).call()
+    assert s.expected_git_branch == "other"
+
+
+def test_git_commit_allowed_after_tool_branch_switch(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "README.md").write_text("# test\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    s = session(tmp_path)
+
+    # Switch branch via the tool — this refreshes expected_git_branch.
+    n.GitTool(s, ["switch", "-c", "feature"]).call()
+    assert s.expected_git_branch == "feature"
+
+    # Now commit should succeed
+    (tmp_path / "feature.txt").write_text("hello\n")
+    n.GitTool(s, ["add", "feature.txt"]).call()
+    result = n.GitTool(s, ["commit", "-m", "feat: add feature.txt"]).call()
+    assert "<GitToolResult>" in result
+    assert "feature.txt" in result or "insertion" in result or "changed" in result
 
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -1067,3 +1117,243 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
     assert patterns == ["keep.txt"]
 
     assert s.tool_errors == []
+
+# ---------------------------------------------------------------------------
+# QuestionTool
+# ---------------------------------------------------------------------------
+
+
+def _q(*items):
+    """Wrap question item dicts into the Question tool payload args."""
+    return [{"questions": list(items)}]
+
+
+def test_question_tool_schema():
+    """params_schema requires a questions array of question objects, strict."""
+    schema = n.QuestionTool.params_schema()
+    assert schema["type"] == "object"
+    assert schema["required"] == ["questions"]
+    assert schema["additionalProperties"] is False
+    questions = schema["properties"]["questions"]
+    assert questions["type"] == "array"
+    assert questions["minItems"] == 1
+    item = questions["items"]
+    assert item["required"] == ["question"]
+    assert item["additionalProperties"] is False
+    props = item["properties"]
+    assert props["question"]["type"] == "string"
+    assert props["choices"]["items"]["type"] == "string"
+    assert props["previews"]["items"]["type"] == "string"
+    assert props["recommended"]["type"] == "integer"
+
+
+def test_question_tool_registered():
+    """QuestionTool is in TOOLS and TOOL_REGISTRY."""
+    assert n.QuestionTool.NAME == "Question"
+    assert n.TOOL_REGISTRY["Question"] is n.QuestionTool
+
+
+def test_question_tool_call_basic(tmp_path):
+    """call() returns question text when question_fn is None."""
+    s = session(tmp_path)
+    assert n.QuestionTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
+
+
+def test_question_tool_call_with_choices(tmp_path):
+    """call() accepts choices and returns fallback question text."""
+    s = session(tmp_path)
+    assert n.QuestionTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
+
+
+def test_question_tool_call_with_choices_and_previews(tmp_path):
+    """call() accepts choices + previews."""
+    s = session(tmp_path)
+    tool = n.QuestionTool(s, _q({
+        "question": "Which?",
+        "choices": ["A", "B"],
+        "previews": ["Preview A", "Preview B"],
+    }))
+    assert tool.call() == "Which?"
+
+
+def test_question_tool_call_invokes_callback(tmp_path):
+    """call() invokes question_fn with question/choices/previews/recommended."""
+    s = session(tmp_path)
+    calls = []
+
+    def fake_fn(spec, position):
+        calls.append((spec, position))
+        return "user chose B"
+
+    tool = n.QuestionTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
+    tool.question_fn = fake_fn
+    result = tool.call()
+    assert result == "user chose B"
+    (spec, position) = calls[0]
+    assert (spec.question, spec.choices, spec.previews, spec.recommended) == ("A or B?", ["A", "B"], ["PA", "PB"], 1)
+    assert position == ""  # a single question carries no position indicator
+
+
+def test_question_tool_call_multiple_questions(tmp_path):
+    """call() asks each question in sequence and labels the combined answers."""
+    s = session(tmp_path)
+    asked = []
+
+    def fake_fn(spec, position):
+        asked.append((spec.question, position))
+        return {"Runtime?": "Node", "Name?": "core"}[spec.question]
+
+    tool = n.QuestionTool(s, _q(
+        {"question": "Runtime?", "choices": ["Node", "Deno"]},
+        {"question": "Name?"},
+    ))
+    tool.question_fn = fake_fn
+    result = tool.call()
+    assert asked == [("Runtime?", "1/2"), ("Name?", "2/2")]  # sequential, with position
+    assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
+
+
+def test_question_tool_validates_batch_before_asking(tmp_path):
+    """A malformed later question raises before any question is asked."""
+    s = session(tmp_path)
+    asked = []
+
+    def fake_fn(spec, position):
+        asked.append(spec.question)
+        return "x"
+
+    tool = n.QuestionTool(s, _q(
+        {"question": "First?", "choices": ["A"]},
+        {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
+    ))
+    tool.question_fn = fake_fn
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        tool.call()
+    assert asked == []  # validation happens up front, so nothing was asked
+
+
+def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
+    """call() passes choices/previews/recommended as None when not provided."""
+    s = session(tmp_path)
+    calls = []
+
+    def fake_fn(spec, position):
+        calls.append((spec, position))
+        return "free text answer"
+
+    tool = n.QuestionTool(s, _q({"question": "Name?"}))
+    tool.question_fn = fake_fn
+    assert tool.call() == "free text answer"
+    (spec, position) = calls[0]
+    assert spec.choices is None
+    assert spec.previews is None
+    assert spec.recommended is None
+    assert position == ""
+
+
+def test_question_tool_call_empty_question_raises(tmp_path):
+    """call() raises ToolError for empty/missing question text."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
+        n.QuestionTool(s, _q({"question": ""})).call()
+    with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
+        n.QuestionTool(s, _q({})).call()
+
+
+def test_question_tool_call_empty_list_raises(tmp_path):
+    """call() raises ToolError when questions list is missing or empty."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
+        n.QuestionTool(s, [{"questions": []}]).call()
+    with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
+        n.QuestionTool(s, [{}]).call()
+
+
+def test_question_tool_call_invalid_args_raises(tmp_path):
+    """call() raises ToolError for malformed top-level args."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="Question requires named fields"):
+        n.QuestionTool(s, ["just a string"]).call()
+    with pytest.raises(n.ToolError, match="Question requires named fields"):
+        n.QuestionTool(s, []).call()
+
+
+def test_question_tool_call_invalid_choices_raises(tmp_path):
+    """call() validates choices type."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="Question choices must be a list of strings"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
+    with pytest.raises(n.ToolError, match="Question choices must be a list of strings"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
+
+
+def test_question_tool_call_invalid_previews_raises(tmp_path):
+    """call() validates previews type and length."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="Question previews must be a list of strings"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
+    with pytest.raises(n.ToolError, match="Question previews must match choices length"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
+
+
+def test_question_tool_call_no_previews_with_choices(tmp_path):
+    """call() allows choices without previews."""
+    s = session(tmp_path)
+    assert n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
+
+
+def test_question_tool_call_invalid_recommended_raises(tmp_path):
+    """call() validates recommended is an in-range choice index."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
+
+
+def test_question_tool_short_args(tmp_path):
+    """short_args() shows the first question and a count of the rest."""
+    s = session(tmp_path)
+    tool = n.QuestionTool(s, _q({"question": "Which approach should I use?"}))
+    args = tool.short_args()
+    assert len(args) == 1
+    assert "Which approach" in args[0]
+    assert "more" not in args[0]
+    multi = n.QuestionTool(s, _q({"question": "First?"}, {"question": "Second?"}))
+    assert "(+1 more)" in multi.short_args()[0]
+    assert len(n.QuestionTool(s, []).short_args()) == 1
+
+
+def test_question_tool_wired_in_tool_runner(tmp_path):
+    """ToolRunner injects question_fn into QuestionTool instances."""
+    s = session(tmp_path)
+    ctx = n.ContextManager(s)
+    captured = []
+
+    def fake_question_fn(spec, position):
+        captured.append((spec, position))
+        return "test answer"
+
+    runner = n.ToolRunner(s, ctx, output_fn=lambda text: None)
+    runner.question_fn = fake_question_fn
+    results = runner.run([n.ToolCall("q", "Question", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
+    assert len(results) == 1
+    assert results[0]["tool_call_id"] == "q"
+    assert results[0]["role"] == "tool"
+    assert "test answer" in results[0]["content"]
+    (spec, position) = captured[0]
+    assert (spec.question, spec.choices, spec.recommended, position) == ("A or B?", ["A", "B"], 0, "")
+
+def test_question_tool_schema_strict(tmp_path):
+    """schema() enforces additionalProperties=False at both levels."""
+    schema = n.QuestionTool.schema()
+    params = schema["function"]["parameters"]
+    assert params["additionalProperties"] is False
+    assert "questions" in params["properties"]
+    item = params["properties"]["questions"]["items"]
+    assert item["additionalProperties"] is False
+    assert "question" in item["properties"]
+    assert "choices" in item["properties"]
+    assert "previews" in item["properties"]

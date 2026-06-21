@@ -59,7 +59,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -81,6 +81,8 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
     "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
 }
 SELECTION_BACK = object()
+SELECTION_FREE_TEXT = object()
+DISMISSED = "(The user dismissed the question without answering.)"
 
 
 class NanocodeError(Exception):
@@ -704,7 +706,7 @@ class SystemInfo:
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
-    initial_git_branch: str = ""
+    expected_git_branch: str = ""
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     messages: list[Json] = field(default_factory=list)
@@ -722,8 +724,8 @@ class Session:
     def __post_init__(self) -> None:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
-        if not self.initial_git_branch:
-            self.initial_git_branch = self.git_branch(self.cwd)
+        if not self.expected_git_branch:
+            self.expected_git_branch = self.git_branch(self.cwd)
         if self.mcp is None:
             self.mcp = MCPManager(self)
 
@@ -2183,7 +2185,14 @@ class GitTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        argv = list(payload.get("argv") or [])
+        argv = payload.get("argv")
+        if not isinstance(argv, list) or not argv:
+            raise ToolError(
+                "Git requires a non-empty 'argv' list. "
+                'Signature: Git(argv=[command,...], cwd?)  '
+                'Example: {"argv":["status","--short"]}'
+            )
+        argv = [str(a) for a in argv]
         return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
     def needs_confirmation(self) -> bool:
@@ -2198,6 +2207,11 @@ class GitTool(Tool):
         self.validate_branch_safety(args, cwd)
         try:
             proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
+            # When the user has nanocode switch branches, update expected_git_branch to the new
+            # branch so later commits are not rejected. Gate on branch-changing commands only: an
+            # unexpected (external) switch should still trip validate_branch_safety on commit.
+            if proc.returncode == 0 and self.changes_branch(args):
+                self.session.expected_git_branch = self.session.git_branch(cwd)
             return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
         except subprocess.TimeoutExpired as error:
             return self.process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "\ntimeout")
@@ -2227,9 +2241,9 @@ class GitTool(Tool):
         if args[0] != "commit":
             return
         current = self.session.git_branch(cwd)
-        initial = self.session.initial_git_branch
-        if initial and current and current != initial:
-            raise ToolError(f"refusing git commit because branch changed from {initial} to {current}")
+        expected = self.session.expected_git_branch
+        if expected and current and current != expected:
+            raise ToolError(f"refusing git commit because branch changed from {expected} to {current}")
         if current in {"main", "master"} and self.session.settings.yolo:
             raise ToolError(f"refusing git commit on {current} in yolo mode; explicit confirmation is required")
 
@@ -2425,6 +2439,118 @@ class NoteTool(Tool):
         return ["\n".join(lines) or "{}"]
 
 
+@dataclass(frozen=True)
+class QuestionSpec:
+    """One validated question the model wants to ask the user."""
+
+    question: str
+    choices: list[str] | None = None
+    previews: list[str] | None = None
+    recommended: int | None = None
+
+
+class QuestionTool(Tool):
+    NAME = "Question"
+    DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
+    SIGNATURE = 'Question(questions=[{question, choices?, previews?, recommended?}, ...])'
+    EXAMPLE = (
+        'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
+        'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
+    )
+    MUTATES = False
+    STORES_RESULT = True
+    question_fn: Callable[[QuestionSpec, str], str] | None = None
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Questions to ask, one after another",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "The question to ask the user"},
+                            "choices": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional predefined choices the user can pick from",
+                            },
+                            "previews": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional preview text per choice, shown as the user navigates",
+                            },
+                            "recommended": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Optional 0-based index of the recommended choice; pre-selected and marked",
+                            },
+                        },
+                        "required": ["question"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["questions"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def call(self) -> str:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Question requires named fields")
+        questions = self.args[0].get("questions")
+        if not isinstance(questions, list) or not questions:
+            raise ToolError("Question requires a non-empty 'questions' list")
+        # Validate the whole batch up front, so a malformed later question never strands the
+        # user after they have already answered earlier ones.
+        prepared: list[QuestionSpec] = []
+        for item in questions:
+            if not isinstance(item, dict):
+                raise ToolError("each question must be an object with a 'question' field")
+            question = str(item.get("question", "")).strip()
+            if not question:
+                raise ToolError("each question requires a 'question' field")
+            choices = item.get("choices")
+            previews = item.get("previews")
+            recommended = item.get("recommended")
+            if choices is not None:
+                if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
+                    raise ToolError("Question choices must be a list of strings")
+                if previews is not None:
+                    if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
+                        raise ToolError("Question previews must be a list of strings")
+                    if len(previews) != len(choices):
+                        raise ToolError("Question previews must match choices length")
+            if recommended is not None and (
+                isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
+            ):
+                raise ToolError("Question recommended must be a valid 0-based choice index")
+            prepared.append(QuestionSpec(question, choices, previews, recommended))
+        total = len(prepared)
+        answers: list[tuple[str, str]] = []
+        for index, spec in enumerate(prepared):
+            position = f"{index + 1}/{total}" if total > 1 else ""
+            answers.append((spec.question, self.question_fn(spec, position) if self.question_fn else spec.question))
+        if len(answers) == 1:
+            return answers[0][1]
+        return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
+
+    def short_args(self) -> list[str]:
+        questions = self.args[0].get("questions") if self.args and isinstance(self.args[0], dict) else None
+        if not isinstance(questions, list) or not questions:
+            return [""]
+        first = str((questions[0] or {}).get("question", "") or "").strip() if isinstance(questions[0], dict) else ""
+        label = Tool.compact(first, 80)
+        return [label + (f" (+{len(questions) - 1} more)" if len(questions) > 1 else "")]
+
 class MCPTool(Tool):
     NAME = "MCP"
     DESCRIPTION = "Call or describe external MCP server tools"
@@ -2525,6 +2651,7 @@ TOOLS: tuple[type[Tool], ...] = (
     GitTool,
     RecallTool,
     NoteTool,
+    QuestionTool,
 )
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
@@ -3967,6 +4094,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
+        self.question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
@@ -4026,6 +4154,8 @@ class ToolRunner:
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started, approved, display = time.monotonic(), False, None
+        if isinstance(tool, QuestionTool):
+            tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
             if plan_error:
@@ -4634,11 +4764,12 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP.
+- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note Question MCP.
 - Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; InspectCode navigates symbols when available.
 - Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
+- Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
 
 FLOW:
 - Act when clear; keep using tools until done, or return a final answer.
@@ -5347,7 +5478,7 @@ Mentions:
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, MCP.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -5386,6 +5517,7 @@ Tools:
         self.agent.tools.preview_full_fn = lambda text: setattr(self, "approval_full_preview", text)
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.question_fn = self.question_interaction
 
     @staticmethod
     def exit_app(app: Application) -> None:
@@ -5570,6 +5702,7 @@ Tools:
                 "choice.title": "ansicyan bold",
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
+                "choice.preview": "ansigreen italic",
                 "completion-menu": "noreverse bg:default",
                 "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
@@ -5975,7 +6108,14 @@ Tools:
         labels: dict[str, str],
         current: str,
         disabled: set[str],
+        *,
+        preview_fn: Callable[[str], str] | None = None,
+        free_text: bool = False,
     ) -> str | object | None:
+        FREE_TEXT = "\x00free_text"
+        if free_text and self.interactive_input:
+            choices = (*choices, FREE_TEXT)
+            labels = {**labels, FREE_TEXT: "Type freely..."}
         state = {"query": "", "selected": 0, "search": False}
         searching = Condition(lambda: bool(state["search"]))
 
@@ -6019,6 +6159,13 @@ Tools:
                 if selected:
                     parts.append(("[SetCursorPosition]", ""))
                 parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
+            if preview_fn and options:
+                sel = int(state["selected"])
+                preview_text = preview_fn(options[sel]) if 0 <= sel < len(options) else ""
+                if preview_text:
+                    parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
+                    for line in preview_text.splitlines():
+                        parts.append(("class:choice.preview", "  │ " + line + "\n"))
             if state["search"]:
                 parts.append(("", "/" + query))
             return parts
@@ -6070,7 +6217,8 @@ Tools:
                 return
             options = enabled()
             if options:
-                event.app.exit(result=options[int(state["selected"])])
+                choice = options[int(state["selected"])]
+                event.app.exit(result=SELECTION_FREE_TEXT if choice == FREE_TEXT else choice)
 
         @bindings.add("c-c", eager=True)
         @bindings.add("<sigint>", eager=True)
@@ -6104,6 +6252,47 @@ Tools:
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
+
+    def question_application(self, spec: QuestionSpec, position: str = "") -> str:
+        """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
+        choices = spec.choices
+        # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
+        # markdown — no separate styled line, hence no ANSI escapes to mangle.
+        prompt = f"({position}) {spec.question}" if position else spec.question
+        if not choices or not self.interactive_input:
+            return self.read_input(prompt)
+
+        if self.ui.color:
+            self.ui.console.print(Markdown(prompt))
+        else:
+            self.emit(prompt + "\n")
+
+        # An optional recommended choice is pre-selected (via current) and marked (via labels),
+        # reusing the selector's existing machinery.
+        labels, current = {}, ""
+        if spec.recommended is not None and 0 <= spec.recommended < len(choices):
+            current = choices[spec.recommended]
+            labels = {current: current + " (recommended)"}
+        previews = spec.previews
+        preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
+        result = self.choice_application(
+            "Select:", tuple(choices), labels, current, set(),
+            preview_fn=lambda choice: preview_map.get(choice, ""),
+            free_text=True,
+        )
+        if result is SELECTION_FREE_TEXT:
+            return self.read_input(spec.question + " (type freely)")
+        if isinstance(result, str):
+            return result
+        return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
+
+    def question_interaction(self, spec: QuestionSpec, position: str = "") -> str:
+        """Entry point for Question tool — shows the chosen answer in CLI after selection."""
+        result = self.question_application(spec, position)
+        # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
+        if spec.choices and result in spec.choices:
+            self.emit(result + "\n")
+        return result
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model

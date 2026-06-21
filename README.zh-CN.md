@@ -85,6 +85,7 @@ nanocode
 - Shell：`Bash`, `Git`。
 - 工具结果：`Recall`。
 - 工作笔记：`Note`。
+- 询问用户：`Question` 在意图真正歧义时向用户提一个或多个问题（可选 choices、previews、recommended）。
 - MCP：`MCP` 调用已配置 MCP 服务器上的工具。
 
 `Read`、`Search` 和 `InspectCode` 会在合适时返回行锚点。`Edit` 使用当前 `line:hash` 锚点拒绝过期编辑。

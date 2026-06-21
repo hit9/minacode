@@ -85,6 +85,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
+- Ask the user: `Question` asks one or more questions (optional choices, previews, recommended) when intent is genuinely ambiguous.
 - MCP: `MCP` calls tools on configured MCP servers.
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
