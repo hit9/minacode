@@ -150,6 +150,16 @@ def test_load_with_latest_alias(tmp_path):
     assert s2.uid == s.uid
 
 
+def test_load_with_last_alias(tmp_path):
+    """load_snapshot with uid='last' resolves from the latest pointer file."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot("last", config=s.config)
+    assert s2.uid == s.uid
+
+
 def test_load_appends_resume_marker(tmp_path):
     """After load, the session has a resume marker message at the end."""
     s = session_with_data_dir(tmp_path)
@@ -314,6 +324,12 @@ def test_resolve_uid_missing_latest_file(tmp_path):
     """Resolving 'latest' when no latest file exists raises NanocodeError."""
     with pytest.raises(n.NanocodeError, match="No latest session to resume"):
         n.Session._resolve_uid("latest", data_dir=str(tmp_path))
+
+
+def test_resolve_uid_missing_last_file(tmp_path):
+    """Resolving 'last' when no latest file exists raises NanocodeError."""
+    with pytest.raises(n.NanocodeError, match="No latest session to resume"):
+        n.Session._resolve_uid("last", data_dir=str(tmp_path))
 
 
 def test_resolve_uid_passthrough_normal_uid(tmp_path):

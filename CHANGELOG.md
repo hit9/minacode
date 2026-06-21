@@ -5,6 +5,7 @@
 ### Added
 - Added JSONL session persistence with append-only deltas for the normal save path and `nanocode --resume [UID]` for restoring saved sessions.
 - Added a `latest` session pointer and a resume command hint printed when nanocode exits.
+- Added `nanocode --resume last` as an alias for resuming the latest saved session.
 - Render restored session history once on resume without re-running tools or commands.
 - Show the active session id in `/status`.
 - Added session persistence coverage for snapshot/delta save/load, `latest`, usage/state/tool record roundtrips, missing snapshots, and exit resume hints.
@@ -13,6 +14,7 @@
 - Kept persisted session snapshots focused on necessary recovery data only, deriving runtime tool-result lookup state from saved tool records instead of storing config, settings, timestamps, git branch, or other rebuildable runtime data.
 - Skip first-save persistence for sessions with no recoverable content, avoiding empty snapshots and stale `latest` pointers.
 - Delete session files older than the configurable `runtime.session_retention_days` retention window on startup; the default is `7` days.
+- Treat retention and update-check interval settings as config-file policy rather than `/set` runtime mutations.
 - Split session snapshot encoding/merging from JSONL file storage, keeping `Session` as a thin owner of runtime state.
 - Resume now applies the current config/runtime flags (`--config`, `--yolo`, `--debug`, `--mcp`) while loading only conversation state from the snapshot.
 

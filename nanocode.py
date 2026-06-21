@@ -972,7 +972,7 @@ class SessionSnapshotStore:
 
     @classmethod
     def resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
-        if uid != "latest":
+        if uid not in {"latest", "last"}:
             return uid
         resolved = cls.latest_uid(data_dir)
         if not resolved and not os.path.exists(cls.path_for(data_dir, "latest")):
@@ -5224,7 +5224,6 @@ class CommandCompleter(Completer):
         "runtime.max_context_tokens",
         "runtime.shell_timeout",
         "runtime.check_updates",
-        "runtime.update_check_interval_hours",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -5799,7 +5798,7 @@ Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
-  --resume [UID]             Resume a saved session; defaults to latest.
+  --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
   Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
 """
@@ -6956,8 +6955,6 @@ Tools:
                 runtime.check_updates = Config.bool({key: value}, key)
                 if runtime.check_updates:
                     UpdateChecker(self.session).start()
-            elif key == "runtime.update_check_interval_hours":
-                runtime.update_check_interval_hours = max(1, int(value))
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
             elif key == "runtime.max_context_tokens":
@@ -6979,7 +6976,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument("--resume", default="", nargs="?", const="latest",
-                        help='Resume a session by UID, or "latest" for most recent')
+                        help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
