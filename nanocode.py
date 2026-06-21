@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import asyncio
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -21,6 +23,7 @@ import threading
 import time
 import tomllib
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -54,11 +57,17 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.rule import Rule
 
-__version__ = "0.5.12"
+__version__ = "0.6.1"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
+logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
+# Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
+# actionable "oauth login required" message; suppress this logger's ERROR-level
+# traceback spam (incl. the RuntimeError nanocode raises as control flow).
+logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 2
@@ -224,11 +233,12 @@ class RuntimeSettings:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     check_updates: bool = True
     update_check_interval_hours: int = 24
+    mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False) -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -236,7 +246,9 @@ class RuntimeSettings:
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
+            mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
+            debug=debug or Config.bool(runtime, "debug", False),
         )
 
 
@@ -245,6 +257,7 @@ class Config:
     active_provider: str = "default"
     providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
     data_dir: str = "~/.nanocode"
+    mcp: Json = field(default_factory=dict)
 
     @property
     def provider(self) -> ProviderConfig:
@@ -260,7 +273,7 @@ class Config:
         if active not in providers:
             raise ConfigError(f"provider.active `{active}` does not exist")
         paths = cls.table(data, "paths")
-        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"))
+        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"), mcp=cls.table(data, "mcp"))
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
@@ -343,6 +356,22 @@ max_context_tokens = 128000
 check_updates = true
 update_check_interval_hours = 24
 yolo = false
+
+# [mcp.example]
+# url = "https://example.com/mcp"
+# bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
+# enabled = true
+#
+# [mcp.oauth_example]
+# url = "https://example.com/mcp"
+# auth = "oauth"
+# enabled = true
+#
+# [mcp.stdio_example]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = { EXAMPLE = "value" }
+# enabled = true
 """
 
     @classmethod
@@ -493,6 +522,139 @@ class ToolErrorRecord:
 
 
 @dataclass
+class MCPServerConfig:
+    name: str
+    url: str = ""
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+    auth: str = ""
+    bearer_token_env_var: str = ""
+    env_http_headers: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    error: str = ""
+
+
+class MCPFileTokenStore:
+    DEFAULT_COLLECTION = "default_collection"
+    _locks: ClassVar[dict[str, threading.Lock]] = {}
+    _locks_guard: ClassVar[threading.Lock] = threading.Lock()
+
+    def __init__(self, path: str):
+        self.path = os.path.abspath(os.path.expanduser(path))
+        with self._locks_guard:
+            self.lock = self._locks.setdefault(self.path, threading.Lock())
+
+    def token_key(self, server_url: str, suffix: str) -> str:
+        return server_url.rstrip("/") + suffix
+
+    def has_server_tokens(self, server_url: str) -> bool:
+        return self.has_key(self.token_key(server_url, "/tokens"), collection="mcp-oauth-token")
+
+    def clear_server(self, server_url: str) -> None:
+        with self.lock:
+            data = self.load()
+            for collection, key in (
+                ("mcp-oauth-token", self.token_key(server_url, "/tokens")),
+                ("mcp-oauth-client-info", self.token_key(server_url, "/client_info")),
+                ("mcp-oauth-token-expiry", self.token_key(server_url, "/token_expiry")),
+            ):
+                data.get(collection, {}).pop(key, None)
+            self.save(data)
+
+    def clear_client_info(self, server_url: str) -> None:
+        with self.lock:
+            data = self.load()
+            data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
+            self.save(data)
+
+    def has_key(self, key: str, *, collection: str | None = None) -> bool:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            entry = self.load().get(collection, {}).get(key)
+            return bool(entry and not self.expired(entry))
+
+    async def get(self, key: str, *, collection: str | None = None) -> Json | None:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            data = self.load()
+            entry = data.get(collection, {}).get(key)
+            if entry is None:
+                return None
+            if self.expired(entry):
+                data.get(collection, {}).pop(key, None)
+                self.save(data)
+                return None
+            value = entry.get("value")
+            return dict(value) if isinstance(value, dict) else None
+
+    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
+        collection = collection or self.DEFAULT_COLLECTION
+        expires_at = time.time() + float(ttl) if ttl is not None else None
+        with self.lock:
+            data = self.load()
+            data.setdefault(collection, {})[key] = {"value": dict(value), "expires_at": expires_at}
+            self.save(data)
+
+    async def delete(self, key: str, *, collection: str | None = None) -> bool:
+        collection = collection or self.DEFAULT_COLLECTION
+        with self.lock:
+            data = self.load()
+            removed = data.get(collection, {}).pop(key, None) is not None
+            if removed:
+                self.save(data)
+            return removed
+
+    @staticmethod
+    def expired(entry: Json) -> bool:
+        expires_at = entry.get("expires_at")
+        return isinstance(expires_at, int | float) and expires_at <= time.time()
+
+    def load(self) -> dict[str, dict[str, Json]]:
+        try:
+            with open(self.path, encoding="utf-8") as file:
+                data = json.load(file)
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save(self, data: dict[str, dict[str, Json]]) -> None:
+        directory = os.path.dirname(self.path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+        tmp = self.path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        os.replace(tmp, self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+
+
+@dataclass
+class MCPToolInfo:
+    server: str
+    name: str
+    description: str
+    input_schema: Json
+    annotations: Json = field(default_factory=dict)
+
+
+@dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
         "bash",
@@ -542,6 +704,7 @@ class SystemInfo:
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
+    initial_git_branch: str = ""
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     messages: list[Json] = field(default_factory=list)
@@ -553,16 +716,21 @@ class Session:
     tool_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
+    mcp: MCPManager | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
+        if not self.initial_git_branch:
+            self.initial_git_branch = self.git_branch(self.cwd)
+        if self.mcp is None:
+            self.mcp = MCPManager(self)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False) -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug, mcp_selector=mcp_selector))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -579,6 +747,26 @@ class Session:
             return os.path.commonpath([os.path.realpath(self.cwd), os.path.realpath(path)]) == os.path.realpath(self.cwd)
         except ValueError:
             return False
+
+    def git_branch(self, cwd: str | None = None) -> str:
+        # Read live each call: a few tens of ms is negligible against a model request, and it is
+        # the only way to reflect an external `git checkout` (caching it would go stale silently).
+        if self.system_info is not None and "git" not in self.system_info.commands:
+            return ""
+        git = "git" if self.system_info is not None else shutil.which("git")
+        if not git:
+            return ""
+        try:
+            proc = subprocess.run(
+                [git, "branch", "--show-current"],
+                cwd=cwd or self.cwd,
+                text=True,
+                capture_output=True,
+                timeout=max(1, min(5, self.settings.shell_timeout)),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
@@ -1510,14 +1698,9 @@ class InspectCodeTool(Tool):
             raise ToolError("InspectCode outline target must be an existing file")
         limit = options.get("limit")
         max_limit = self.MAX_OUTLINE_LIMIT if mode == "outline" else self.MAX_LIMIT
-        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > max_limit):
-            raise ToolError(f"InspectCode {mode} limit must be 1..{max_limit}")
-        depth = options.get("depth")
-        if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1 or depth > self.MAX_DEPTH):
-            raise ToolError(f"InspectCode depth must be 1..{self.MAX_DEPTH}")
-        offset = options.get("offset")
-        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
-            raise ToolError("InspectCode offset must be >= 0")
+        self._check_int_option(limit, 1, max_limit, f"InspectCode {mode} limit must be 1..{max_limit}")
+        self._check_int_option(options.get("depth"), 1, self.MAX_DEPTH, f"InspectCode depth must be 1..{self.MAX_DEPTH}")
+        self._check_int_option(options.get("offset"), 0, None, "InspectCode offset must be >= 0")
         ref_kind = options.get("ref_kind")
         if ref_kind is not None:
             if not isinstance(ref_kind, str):
@@ -1535,6 +1718,13 @@ class InspectCodeTool(Tool):
         except csi.CodeSymbolIndexError as error:
             return self.process_result("InspectCodeToolResult", 1, "", str(error))
         return self.process_result("InspectCodeToolResult", 0, str(output), "")
+
+    @staticmethod
+    def _check_int_option(value: Any, low: int, high: int | None, message: str) -> None:
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int) or value < low or (high is not None and value > high):
+            raise ToolError(message)
 
     def inspect_text(self, mode: str, target: str, options: Json, limit: int | None) -> str:
         common = {
@@ -1574,6 +1764,14 @@ class Edit:
     new: str = ""
 
 
+@dataclass
+class EditApplyResult:
+    content: str
+    changes: list[tuple[int, int, int, int]]
+    replacements: list[tuple[int, int, list[str]]]
+    replace_all: bool = False
+
+
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
@@ -1608,28 +1806,28 @@ class EditTool(Tool):
         return [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
-        path, original, created, new_content, changes = self.build()
-        if new_content == original and not created:
-            raise ToolError("edit produced no changes")
+        path, original, created, result = self.build()
+        if result.content == original and not created:
+            raise ToolError(self.no_changes_error(original, result))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
-            file.write(new_content)
+            file.write(result.content)
         return "\n".join(
             [
                 f"<Edit path={json.dumps(self.session.relpath(path))}>",
                 self.file_stat(path),
-                self.diff(path, original, new_content).rstrip(),
-                self.edit_context(new_content, changes),
+                self.diff(path, original, result.content).rstrip(),
+                self.edit_context(result.content, result.changes),
                 "</Edit>",
             ]
         )
 
     def preview(self) -> str:
-        path, original, _created, new_content, _changes = self.build()
-        if new_content == original and os.path.exists(path):
-            raise ToolError("edit produced no changes")
-        return self.diff(path, original, new_content) or f"Edit({path})"
+        path, original, _created, result = self.build()
+        if result.content == original and os.path.exists(path):
+            raise ToolError(self.no_changes_error(original, result))
+        return self.diff(path, original, result.content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
         path, _edits = self.parse()
@@ -1682,7 +1880,7 @@ class EditTool(Tool):
             )
         return path, edits
 
-    def build(self) -> tuple[str, str, bool, str, list[tuple[int, int, int, int]]]:
+    def build(self) -> tuple[str, str, bool, EditApplyResult]:
         path, edits = self.parse()
         creating = edits[0].op == "create"
         if os.path.exists(path):
@@ -1698,13 +1896,13 @@ class EditTool(Tool):
             original, created = "", True
         else:
             raise ToolError("file does not exist; use op=create to create it")
-        new_content, changes = self.apply(original, edits)
-        return path, original, created, new_content, changes
+        result = self.apply(original, edits)
+        return path, original, created, result
 
-    def apply(self, original: str, edits: list[Edit]) -> tuple[str, list[tuple[int, int, int, int]]]:
+    def apply(self, original: str, edits: list[Edit]) -> EditApplyResult:
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
-            return "".join(lines), [(0, 0, 0, len(lines))]
+            return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [])
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -1715,7 +1913,7 @@ class EditTool(Tool):
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            return content, [(0, 0, 0, len(content.splitlines(True)))]
+            return EditApplyResult(content, [(0, 0, 0, len(content.splitlines(True)))], [], True)
         lines = original.splitlines(True)
         replacements = []
         for edit in edits:
@@ -1747,7 +1945,47 @@ class EditTool(Tool):
             clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
             changes.append((new_start, clear_end, new_start, new_end))
             delta += len(replacement) - (end - start)
-        return "".join(new_lines), changes
+        return EditApplyResult("".join(new_lines), changes, replacements)
+
+    def no_changes_error(self, original: str, result: EditApplyResult) -> str:
+        return self.no_changes_error_from_lines(original.splitlines(True), result.replacements, result.replace_all)
+
+    @classmethod
+    def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
+        prefix = "edit produced no changes"
+        if replace_all:
+            return prefix + "; replace_all result is identical to current file"
+        if not replacements:
+            return prefix
+        matching = [(start, end) for start, end, replacement in replacements if lines[start:end] == replacement]
+        if len(matching) != len(replacements):
+            return prefix + "; edits cancel out; check requested content"
+        return prefix + "; requested content already matches target range\n" + cls.format_current_ranges(lines, matching)
+
+    @classmethod
+    def format_current_ranges(cls, lines: list[str], ranges: list[tuple[int, int]]) -> str:
+        out = ["<current-target-ranges hashline-numbered>"]
+        shown_lines = 0
+        range_index = -1
+        for range_index, (start, end) in enumerate(ranges[:3]):
+            out.append(f"<target start={start} end={end}>")
+            if start == end:
+                out.append("(empty range)")
+            else:
+                for index in range(start, end):
+                    if shown_lines >= 12:
+                        out.append("...")
+                        break
+                    line = lines[index]
+                    out.append(f"{index}:{ReadTool.line_hash(line)}|{line.rstrip(chr(10))}")
+                    shown_lines += 1
+            out.append("</target>")
+            if shown_lines >= 12:
+                break
+        if len(ranges) > range_index + 1:
+            out.append("...")
+        out.append("</current-target-ranges>")
+        return "\n".join(out)
 
     def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
         lines = content.splitlines(True)
@@ -1957,6 +2195,7 @@ class GitTool(Tool):
         git = shutil.which("git")
         if not git:
             raise ToolError("git not found")
+        self.validate_branch_safety(args, cwd)
         try:
             proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
             return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
@@ -1981,6 +2220,31 @@ class GitTool(Tool):
             raise ToolError("Git requires arguments")
         self.validate_add(args, cwd)
         return args, cwd
+
+    def validate_branch_safety(self, args: list[str], cwd: str) -> None:
+        if self.changes_branch(args) and self.session.settings.yolo:
+            raise ToolError("branch-changing git commands require explicit confirmation; yolo cannot auto-approve them")
+        if args[0] != "commit":
+            return
+        current = self.session.git_branch(cwd)
+        initial = self.session.initial_git_branch
+        if initial and current and current != initial:
+            raise ToolError(f"refusing git commit because branch changed from {initial} to {current}")
+        if current in {"main", "master"} and self.session.settings.yolo:
+            raise ToolError(f"refusing git commit on {current} in yolo mode; explicit confirmation is required")
+
+    def changes_branch(self, args: list[str]) -> bool:
+        if args[0] == "switch":
+            return True
+        if args[0] == "checkout":
+            # Conservatively treat any `git checkout` without a `--` path separator as
+            # branch/ref-changing; `git checkout -- <path>` (file restore) is exempt.
+            return "--" not in args[1:]
+        if args[0] != "branch":
+            return False
+        if any(arg in {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"} for arg in args[1:]):
+            return True
+        return any(arg == "--" or not arg.startswith("-") for arg in args[1:])
 
     def validate_add(self, args: list[str], cwd: str) -> None:
         if args[0] != "add":
@@ -2087,15 +2351,15 @@ class RecallTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; goal, plan, and check replace current values, known appends unique facts."
-    SIGNATURE = "Note(goal?, plan?, known?, check?)"
-    EXAMPLE = ('Set memory. Example: {"goal":"ship parser fix","plan":["inspect parser","patch bug"],"known":["tests use pytest"],"check":"pytest passed"}',)
+    DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts."
+    SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
+    EXAMPLE = ('Set memory. Example: {"set_goal":"ship parser fix","replace_plan":["inspect parser","patch bug"],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',)
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
-        strings = {"type": "array", "items": {"type": "string"}, "minItems": 1}
-        return {"type": "object", "properties": {"goal": {"type": "string"}, "plan": strings, "known": strings, "check": {"type": "string"}}, "additionalProperties": False}
+        strings = {"type": "array", "items": {"type": "string"}}
+        return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings, "set_check": {"type": "string"}}, "additionalProperties": False}
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2105,46 +2369,151 @@ class NoteTool(Tool):
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
             raise ToolError("Note requires named fields")
         data = self.args[0]
-        if unexpected := sorted(set(data) - {"goal", "plan", "known", "check"}):
+        if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
-        if "goal" in data:
-            self.session.state.goal = str(data["goal"]).strip()
-            changed.append("goal")
-        if "plan" in data:
-            if not isinstance(data["plan"], list):
-                raise ToolError("Note plan must be an array")
-            self.session.state.plan = [AgentState.plan_text(str(item)) for item in data["plan"] if AgentState.plan_text(str(item))]
-            changed.append("plan")
-        if "known" in data:
-            if not isinstance(data["known"], list):
-                raise ToolError("Note known must be an array")
-            self.session.state.known = list(dict.fromkeys([*self.session.state.known, *(str(item).strip() for item in data["known"] if str(item).strip())]))
-            changed.append("known")
-        if "check" in data:
-            self.session.state.check = str(data["check"]).strip()
-            changed.append("check")
+        goal = self.session.state.goal
+        plan = list(self.session.state.plan)
+        known = list(self.session.state.known)
+        check = self.session.state.check
+        if "set_goal" in data:
+            goal = str(data["set_goal"]).strip()
+            changed.append("set_goal")
+        if "set_check" in data:
+            check = str(data["set_check"]).strip()
+            changed.append("set_check")
+        if "replace_plan" in data:
+            if not isinstance(data["replace_plan"], list):
+                raise ToolError('Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}')
+            plan = [AgentState.plan_text(str(item)) for item in data["replace_plan"] if AgentState.plan_text(str(item))]
+            changed.append("replace_plan")
+        if "append_known" in data:
+            if not isinstance(data["append_known"], list):
+                raise ToolError('Note append_known must be an array of strings, e.g. {"append_known":["tests use pytest"]}')
+            known = list(dict.fromkeys([*known, *(str(item).strip() for item in data["append_known"] if str(item).strip())]))
+            changed.append("append_known")
+        if "replace_known" in data:
+            if not isinstance(data["replace_known"], list):
+                raise ToolError('Note replace_known must be an array of strings, e.g. {"replace_known":["fact"]}')
+            known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
+            changed.append("replace_known")
         if not changed:
-            raise ToolError("Note requires goal, plan, known, or check")
+            raise ToolError("Note requires set_goal, replace_plan, append_known, replace_known, or set_check")
+        self.session.state.goal = goal
+        self.session.state.plan = plan
+        self.session.state.known = known
+        self.session.state.check = check
         return "Updated memory: " + ", ".join(changed)
 
     def short_args(self) -> list[str]:
         data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
         lines = []
-        if goal := str(data.get("goal") or "").strip():
-            lines.append("goal -> " + Tool.compact(goal, 120))
-        if isinstance(data.get("plan"), list):
-            lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["plan"], status=True) if row != "- (empty)")])
-        if isinstance(data.get("known"), list):
-            known = [Tool.compact(item, 120) for item in data["known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
+        if goal := str(data.get("set_goal") or "").strip():
+            lines.append("set_goal -> " + Tool.compact(goal, 120))
+        if check := str(data.get("set_check") or "").strip():
+            lines.append("set_check -> " + Tool.compact(check, 120))
+        if isinstance(data.get("replace_plan"), list):
+            lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True) if row != "- (empty)")])
+        if isinstance(data.get("append_known"), list):
+            known = [Tool.compact(item, 120) for item in data["append_known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
-                lines.extend(["known:", *(f"  + {item}" for item in known)])
-        if check := str(data.get("check") or "").strip():
-            lines.append("check -> " + Tool.compact(check, 120))
+                lines.extend(["append_known:", *(f"  + {item}" for item in known)])
+        if isinstance(data.get("replace_known"), list):
+            known = [Tool.compact(item, 120) for item in data["replace_known"] if str(item).strip()]
+            if known:
+                lines.extend(["replace_known:", *(f"  {item}" for item in known)])
         return ["\n".join(lines) or "{}"]
 
 
+class MCPTool(Tool):
+    NAME = "MCP"
+    DESCRIPTION = "Call or describe external MCP server tools"
+    SIGNATURE = 'MCP(action="call"|"describe", server, tool, arguments={})'
+    MUTATES = True
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["call", "describe"],
+                    "description": '"call" invokes the tool; "describe" returns metadata',
+                },
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name from config",
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Remote MCP tool name",
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Arguments for the remote tool (required for call)",
+                },
+            },
+            "required": ["action", "server", "tool"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def payload(self) -> Json:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("MCP requires named fields")
+        return self.args[0]
+
+    def needs_confirmation(self) -> bool:
+        payload = self.payload()
+        action = payload.get("action", "")
+        if action == "describe":
+            return False
+        if action != "call" or self.session.mcp is None:
+            return False
+        return self.session.mcp.tool_needs_confirmation(str(payload.get("server") or ""), str(payload.get("tool") or ""))
+
+    def short_args(self) -> list[str]:
+        payload = self.payload()
+        action = str(payload.get("action") or "")
+        server = str(payload.get("server") or "")
+        tool_name = str(payload.get("tool") or "")
+        target = (server + "." + tool_name).strip(".")
+        parts = [part for part in (action, target) if part]
+        arguments = payload.get("arguments")
+        if action == "call" and isinstance(arguments, dict) and arguments:
+            parts.append(self.format_call_args(arguments))
+        return parts
+
+    @staticmethod
+    def format_call_args(arguments: Json) -> str:
+        rendered = ", ".join(f"{key}={Tool.compact(value, 60)}" for key, value in arguments.items())
+        return "(" + rendered + ")"
+
+    def call(self) -> str:
+        payload = self.payload()
+        action = payload.get("action", "")
+        server = payload.get("server", "")
+        tool_name = payload.get("tool", "")
+        arguments = payload.get("arguments", {})
+        if action == "call" and not isinstance(arguments, dict):
+            raise ToolError("MCP arguments must be an object")
+
+        mcp = self.session.mcp
+        if mcp is None:
+            raise ToolError("MCP not configured")
+
+        if action == "describe":
+            return mcp.describe_tool(server, tool_name)
+        if action == "call":
+            return mcp.call_tool(server, tool_name, arguments)
+        raise ToolError(f"unknown MCP action: {action}")
+
 TOOLS: tuple[type[Tool], ...] = (
+    MCPTool,
     ReadTool,
     LineCountTool,
     ListTool,
@@ -2170,6 +2539,9 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    MCP_DETAILS_BUDGET: ClassVar[int] = 8_000
+    MCP_DETAILS_MAX_TOOLS: ClassVar[int] = 20
+    MCP_DETAILS_MAX_TOOL_CHARS: ClassVar[int] = 2_000
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
         ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
         ".swift .toml .ts .tsx .vue .yaml .yml".split()
@@ -2195,15 +2567,85 @@ class ContextManager:
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         file_context = self.file_context() or "(empty)"
-        messages = [
+        mcp_tools = self.mcp_tools_context()
+        mcp_details = self.mcp_tool_details()
+
+        messages: list[Json] = [
             {"role": "system", "content": base_system.strip()},
             {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
-            *self.session.messages,
-            *(turn_messages or []),
-            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
-            {"role": "user", "content": "--- FILE STATE ---\n" + file_context},
         ]
+
+        if mcp_tools:
+            messages.append({"role": "user", "content": mcp_tools})
+
+        messages.extend(self.session.messages)
+        messages.extend(turn_messages or [])
+        messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
+
+        if mcp_details:
+            messages.append({"role": "user", "content": mcp_details})
+
+        messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
+
+    def mcp_tools_context(self) -> str:
+        if self.session.mcp is None:
+            return ""
+        return self.session.mcp.render_tools_index()
+
+    def mcp_tool_details(self) -> str:
+        items = self.active_mcp_tool_details()
+        if not items:
+            return ""
+
+        chunks: list[str] = []
+        chunks.append("--- MCP TOOL DETAILS ---")
+        chunks.append('Details previously requested with MCP(action="describe").')
+        chunks.append('Use MCP(action="call", server, tool, arguments) to call them.')
+        chunks.append("")
+
+        for _source_order, server, tool, key, body in items:
+            detail_block = f"{server}.{tool} source={key}\n{body}"
+            chunks.append(detail_block)
+            chunks.append("")
+
+        return "\n".join(chunks).strip()
+
+    def active_mcp_tool_details(self) -> list[tuple[int, str, str, str, str]]:
+        details: dict[tuple[str, str], tuple[int, str, str]] = {}
+        for order, record in enumerate(self.session.tool_records):
+            if record.name != "MCP":
+                continue
+            for match in re.finditer(r'<MCPDescribe server=(".*?") tool=(".*?")>(.*?)</MCPDescribe>', record.output, re.DOTALL):
+                try:
+                    server = str(json.loads(match.group(1)))
+                    tool = str(json.loads(match.group(2)))
+                    body = match.group(3).strip()
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                details[(server, tool)] = (order, record.key, body)
+
+        items = sorted((order, server, tool, key, body) for (server, tool), (order, key, body) in details.items())
+        items = items[-self.MCP_DETAILS_MAX_TOOLS :]
+        active: list[tuple[int, str, str, str, str]] = []
+        total_chars = len("--- MCP TOOL DETAILS ---\n") + 160
+        truncated = False
+        for order, server, tool, key, body in items:
+            header = f"{server}.{tool} source={key}"
+            detail_block = f"{header}\n{body}"
+            if len(detail_block) > self.MCP_DETAILS_MAX_TOOL_CHARS:
+                body = body[: max(0, self.MCP_DETAILS_MAX_TOOL_CHARS - len(header) - 24)] + "\n... detail truncated"
+                detail_block = f"{header}\n{body}"
+                truncated = True
+            if total_chars + len(detail_block) + 1 > self.MCP_DETAILS_BUDGET:
+                truncated = True
+                break
+            active.append((order, server, tool, key, body))
+            total_chars += len(detail_block) + 1
+        if truncated and active:
+            order, server, tool, key, body = active[-1]
+            active[-1] = (order, server, tool, key, body + '\n... MCP tool details truncated; use MCP(action="describe", server, tool) again if needed.')
+        return active
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
@@ -2243,15 +2685,19 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
-        return "\n".join(
-            [
-                f"- cwd: {info.cwd}",
-                f"- os: {info.os}",
-                f"- arch: {info.arch}",
-                f"- shell_timeout: {self.session.settings.shell_timeout}s",
-                "- detected_commands: " + (", ".join(info.commands) or "(none)"),
-            ]
-        )
+        index_status = self.session.state.code_index_status or "missing"
+        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
+        rows = [
+            f"- cwd: {info.cwd}",
+            f"- os: {info.os}",
+            f"- arch: {info.arch}",
+            f"- shell_timeout: {self.session.settings.shell_timeout}s",
+            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
+            f"- code_index: {index_status} (InspectCode usable: {index_usable})",
+        ]
+        if branch := self.session.git_branch(self.session.cwd):
+            rows.append(f"- git_branch: {branch}")
+        return "\n".join(rows)
 
     def file_context(self) -> str:
         lines_by_path, omitted = self.active_file_lines()
@@ -2397,7 +2843,7 @@ class ContextManager:
         if not code_edits:
             return []
         check = self.session.state.check.strip()
-        return ["- " + check] if check else ["- Code changed recently. Use Note(check=...) after checks, or final must say checks not run."]
+        return ["- " + check] if check else ["- Code changed recently. Use Note(set_check=...) after checks, or final must say checks not run."]
 
     @classmethod
     def code_like_path(cls, path: str) -> bool:
@@ -2513,6 +2959,9 @@ class ContextManager:
         for offset, record in enumerate(records):
             if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
                 keep.add(record.key)
+        for _order, _server, _tool, key, _body in self.active_mcp_tool_details():
+            keep.add(key)
+
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
 
@@ -2608,6 +3057,13 @@ class EditBatchPlan:
             return None
 
     @dataclass
+    class ApplyResult:
+        lines: list["EditBatchPlan.Line"]
+        changes: list[tuple[int, int, int, int]]
+        replacements: list[tuple[int, int, list[str]]]
+        replace_all: bool = False
+
+    @dataclass
     class PlannedEdit:
         path: str
         before: str
@@ -2662,12 +3118,13 @@ class EditBatchPlan:
         path, edits = tool.parse()
         state = self.file_state(path, edits[0].op == "create")
         before, created = state.text(), not state.exists
-        lines, changes = self.apply(tool, state, edits)
-        after = "".join(line.text for line in lines)
+        before_lines = [line.text for line in state.lines]
+        result = self.apply(tool, state, edits)
+        after = "".join(line.text for line in result.lines)
         if after == before and not created:
-            raise ToolError("edit produced no changes")
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, changes)
-        state.lines, state.exists = lines, True
+            raise ToolError(EditTool.no_changes_error_from_lines(before_lines, result.replacements, result.replace_all))
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes)
+        state.lines, state.exists = result.lines, True
 
     def file_state(self, path: str, creating: bool) -> FileState:
         if path in self.files:
@@ -2693,10 +3150,10 @@ class EditBatchPlan:
         self.files[path] = state
         return state
 
-    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> tuple[list[Line], list[tuple[int, int, int, int]]]:
+    def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> ApplyResult:
         if edits[0].op == "create":
             lines = self.new_lines(tool.content_lines(edits[0].content, False))
-            return lines, [(0, 0, 0, len(lines))]
+            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [])
         if any(edit.op == "replace_all" for edit in edits):
             if any(edit.op != "replace_all" for edit in edits):
                 raise ToolError("replace_all cannot be mixed with anchored edits")
@@ -2708,20 +3165,24 @@ class EditBatchPlan:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
             lines = [self.Line(line, None) for line in content.splitlines(True)]
-            return lines, [(0, 0, 0, len(lines))]
+            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [], True)
 
-        replacements = []
+        replacements: list[tuple[int, int, list[EditBatchPlan.Line]]] = []
+        target_replacements: list[tuple[int, int, list[str]]] = []
         for edit in edits:
             start = self.resolve_anchor(state, edit.start)
             if edit.op in {"replace", "delete"}:
                 end = self.resolve_anchor(state, edit.end)
                 if end < start:
                     raise ToolError("end anchor is before start anchor")
-                replacement = [] if edit.op == "delete" else self.new_lines(tool.content_lines(edit.content, end + 1 < len(state.lines)))
-                replacements.append((start, end + 1, replacement))
+                replacement_text = [] if edit.op == "delete" else tool.content_lines(edit.content, end + 1 < len(state.lines))
+                replacements.append((start, end + 1, self.new_lines(replacement_text)))
+                target_replacements.append((start, end + 1, replacement_text))
             elif edit.op in {"insert_before", "insert_after"}:
                 index = start if edit.op == "insert_before" else start + 1
-                replacements.append((index, index, self.new_lines(tool.content_lines(edit.content, index < len(state.lines)))))
+                replacement_text = tool.content_lines(edit.content, index < len(state.lines))
+                replacements.append((index, index, self.new_lines(replacement_text)))
+                target_replacements.append((index, index, replacement_text))
             else:
                 raise ToolError("unknown edit op")
 
@@ -2734,7 +3195,7 @@ class EditBatchPlan:
         lines = list(state.lines)
         for start, end, replacement in sorted(replacements, reverse=True):
             lines[start:end] = replacement
-        return lines, self.changes(replacements)
+        return self.ApplyResult(lines, self.changes(replacements), target_replacements)
 
     @staticmethod
     def new_lines(lines: list[str]) -> list[Line]:
@@ -2766,6 +3227,735 @@ class EditBatchPlan:
         current = f"{index}:{ReadTool.line_hash(state.lines[index].text)}|{state.lines[index].text.rstrip()}" if index < len(state.lines) else "out of range"
         raise ToolError(f"stale anchor {anchor}; current is {current}")
 
+
+class MCPManager:
+    RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
+    DISCOVERY_TIMEOUT: ClassVar[int] = 10
+    MAX_DISCOVERY_WORKERS: ClassVar[int] = 8
+    DESCRIBE_DESCRIPTION_LIMIT: ClassVar[int] = 1_000
+    DESCRIBE_ARGUMENT_LIMIT: ClassVar[int] = 50
+    DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.tools: dict[str, list[MCPToolInfo]] = {}
+        self.server_errors: dict[str, str] = {}
+        self.server_skips: dict[str, str] = {}
+        self.lock = threading.Lock()
+        self.discovery_status: str = "stale"  # stale | discovering | ready | error
+        self._configs_cache: list[MCPServerConfig] | None = None
+        self._oauth_token_store = MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._loop_lock = threading.Lock()
+
+    def parse_configs(self) -> list[MCPServerConfig]:
+        # Config and selector are immutable for the session, so parse once and reuse.
+        if self._configs_cache is None:
+            self._configs_cache = self._parse_configs()
+        return self._configs_cache
+
+    @staticmethod
+    def _string_list(value: Any) -> tuple[str, ...] | None:
+        return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
+
+    @staticmethod
+    def _string_map(value: Any) -> dict[str, str] | None:
+        return dict(value) if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else None
+
+    def _parse_configs(self) -> list[MCPServerConfig]:
+        mcp_config = self.session.config.mcp
+        if not isinstance(mcp_config, dict):
+            return []
+        configs = [self._parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
+        return self.select_configs(configs)
+
+    def _parse_config(self, name: str, raw: Json) -> MCPServerConfig:
+        config = MCPServerConfig(
+            name=name,
+            url=Config.str(raw, "url"),
+            command=Config.str(raw, "command"),
+            auth=Config.str(raw, "auth").lower(),
+            bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
+            enabled=Config.bool(raw, "enabled", True),
+        )
+        self._read_config_field(raw, config, "args", self._string_list, "args must be a string list")
+        self._read_config_field(raw, config, "env", self._string_map, "env must be a string map")
+        self._read_config_field(raw, config, "env_http_headers", self._string_map, "env_http_headers must be a string map")
+        if bool(config.url) == bool(config.command):
+            self._config_error(config, "exactly one of url or command is required")
+        elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
+            self._config_error(config, "command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
+        if config.auth not in {"", "oauth"}:
+            self._config_error(config, "auth must be oauth")
+        if config.auth == "oauth" and config.bearer_token_env_var:
+            self._config_error(config, "auth=oauth conflicts with bearer_token_env_var")
+        if config.auth == "oauth" and self._has_header(config.env_http_headers, "authorization"):
+            self._config_error(config, "auth=oauth conflicts with env_http_headers.Authorization")
+        return config
+
+    @staticmethod
+    def _config_error(config: MCPServerConfig, message: str) -> None:
+        if not config.error:
+            config.error = message
+
+    def _read_config_field(self, raw: Json, config: MCPServerConfig, key: str, parse: Callable[[Any], Any], error: str) -> None:
+        if (value := raw.get(key)) is None:
+            return
+        parsed = parse(value)
+        if parsed is None:
+            self._config_error(config, error)
+        else:
+            setattr(config, key, parsed)
+
+    @staticmethod
+    def _has_header(headers: dict[str, str], name: str) -> bool:
+        return any(header.lower() == name.lower() for header in headers)
+
+    def select_configs(self, configs: list[MCPServerConfig]) -> list[MCPServerConfig]:
+        selector = self.session.settings.mcp_selector.strip()
+        if not selector:
+            return configs
+
+        by_name = {config.name: config for config in configs}
+        selected: set[str] = set()
+        started = False
+        for raw in selector.split(","):
+            rule = raw.strip()
+            if not rule:
+                continue
+            exclude = rule.startswith("!")
+            pattern = rule[1:].strip() if exclude else rule
+            if not pattern:
+                continue
+            if pattern == "none":
+                selected.clear()
+                started = True
+                continue
+            matches = set(by_name) if pattern == "all" else {name for name in by_name if fnmatch.fnmatchcase(name, pattern)}
+            if exclude:
+                if not started:
+                    selected = set(by_name)
+                    started = True
+                selected.difference_update(matches)
+            else:
+                selected.update(matches)
+                started = True
+        return [config for config in configs if config.name in selected] if started else configs
+
+    def find_config(self, name: str, *, enabled_only: bool = True) -> "MCPServerConfig | None":
+        return next((c for c in self.parse_configs() if c.name == name and (c.enabled or not enabled_only)), None)
+
+    def _forget_locked(self, name: str) -> None:
+        self.tools.pop(name, None)
+        self.server_errors.pop(name, None)
+        self.server_skips.pop(name, None)
+
+    def discover_enabled(self) -> None:
+        self.discovery_status = "discovering"
+        try:
+            configs = self.parse_configs()
+            configured = {config.name for config in configs}
+            with self.lock:
+                for name in list(self.tools):
+                    if name not in configured:
+                        self._forget_locked(name)
+            discoverable = []
+            for config in configs:
+                if not config.enabled:
+                    with self.lock:
+                        self._forget_locked(config.name)
+                    continue
+                discoverable.append(config)
+            if discoverable:
+                workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
+                    futures = [executor.submit(self._discover_one, config) for config in discoverable]
+                    for future in as_completed(futures):
+                        future.result()
+            self.discovery_status = "ready"
+        except Exception as error:
+            with self.lock:
+                self.server_errors["-"] = str(error)
+            self.discovery_status = "error"
+
+    def discover_server(self, name: str) -> None:
+        config = self.find_config(name)
+        if config is None:
+            with self.lock:
+                self._forget_locked(name)
+                self.server_errors[name] = "server not found or disabled"
+            return
+        self._discover_one(config)
+
+    def _discover_one(self, config: MCPServerConfig) -> None:
+        if config.error:
+            self.set_server_error(config.name, config.error)
+            return
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            if self.can_skip_auth_error(headers):
+                self.set_server_skip(config.name, headers)
+            else:
+                self.set_server_error(config.name, headers)
+            return
+
+        try:
+            if config.auth == "oauth":
+                if not self.oauth_token_store().has_server_tokens(config.url):
+                    self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
+                    return
+                tools = self.run_async(self._list_oauth_tools(config, headers))
+            else:
+                tools = self.run_async(self._list_tools(config, headers))
+            tools_info = self._tools_info(config.name, tools)
+            with self.lock:
+                self.tools[config.name] = tools_info
+                self.server_errors.pop(config.name, None)
+                self.server_skips.pop(config.name, None)
+        except Exception as e:
+            self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
+
+    def set_server_error(self, name: str, error: str) -> None:
+        with self.lock:
+            self._forget_locked(name)
+            self.server_errors[name] = error
+
+    def set_server_skip(self, name: str, reason: str) -> None:
+        with self.lock:
+            self._forget_locked(name)
+            self.server_skips[name] = reason
+
+    @staticmethod
+    def can_skip_auth_error(error: str) -> bool:
+        return error.startswith("missing environment variable ")
+
+    def call_timeout(self) -> int:
+        return max(1, self.session.settings.shell_timeout)
+
+    def discovery_timeout(self) -> int:
+        return min(self.call_timeout(), self.DISCOVERY_TIMEOUT)
+
+    def error_text(self, error: Exception, *, timeout: int | None = None) -> str:
+        if isinstance(error, TimeoutError):
+            return f"timeout after {timeout or self.call_timeout()}s"
+        text = str(error).strip()
+        return text or error.__class__.__name__
+
+    def _tools_info(self, server: str, tools: Any) -> list[MCPToolInfo]:
+        return [
+            MCPToolInfo(
+                server=server,
+                name=t.name,
+                description=t.description or "",
+                input_schema=t.inputSchema,
+                annotations=self.tool_annotations(t),
+            )
+            for t in tools
+        ]
+
+    @staticmethod
+    def tool_annotations(tool: Any) -> Json:
+        annotations = getattr(tool, "annotations", None)
+        if annotations is None:
+            return {}
+        if isinstance(annotations, dict):
+            return annotations
+        if hasattr(annotations, "model_dump"):
+            data = annotations.model_dump(mode="json", exclude_none=True)
+            return data if isinstance(data, dict) else {}
+        return {}
+
+    def tool_needs_confirmation(self, server: str, tool_name: str) -> bool:
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            return True
+        annotations = info.annotations
+        if annotations.get("readOnlyHint") is True:
+            return False
+        return annotations.get("destructiveHint") is not False
+
+    def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
+        return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
+
+    def oauth_token_store(self) -> MCPFileTokenStore:
+        return self._oauth_token_store
+
+    def _async_loop(self) -> asyncio.AbstractEventLoop:
+        with self._loop_lock:
+            if self._loop is not None and self._loop.is_running():
+                return self._loop
+            ready = threading.Event()
+            holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def run() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                holder["loop"] = loop
+                ready.set()
+                loop.run_forever()
+                loop.close()
+
+            self._loop_thread = threading.Thread(target=run, name="mcp-async", daemon=True)
+            self._loop_thread.start()
+            ready.wait()
+            self._loop = holder["loop"]
+            return self._loop
+
+    def run_async(self, coroutine: Any) -> Any:
+        return asyncio.run_coroutine_threadsafe(coroutine, self._async_loop()).result()
+
+    def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
+        from fastmcp.client.auth import OAuth
+
+        class NanocodeOAuth(OAuth):
+            async def redirect_handler(self, authorization_url: str) -> None:
+                if not interactive:
+                    raise RuntimeError("oauth login required; run /mcp login " + config.name)
+                if notify:
+                    notify("Open this URL to authorize MCP server `" + config.name + "`:\n" + authorization_url)
+                await super().redirect_handler(authorization_url)
+
+        return NanocodeOAuth(
+            token_storage=self.oauth_token_store(),
+            client_name="nanocode",
+            callback_timeout=self.session.settings.shell_timeout,
+        )
+
+    def _transport(self, config: MCPServerConfig, headers: dict[str, str]) -> Any:
+        from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+
+        if config.command:
+            # The MCP SDK replaces (not merges) the subprocess environment when env is set,
+            # so layer the configured vars over the inherited environment to keep PATH etc.
+            env = {**os.environ, **config.env} if config.env else None
+            return StdioTransport(command=config.command, args=list(config.args), env=env)
+        return StreamableHttpTransport(config.url, headers=headers)
+
+    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+        from fastmcp.client import Client
+
+        timeout = self.discovery_timeout()
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
+
+    async def _list_oauth_tools(
+        self,
+        config: MCPServerConfig,
+        headers: dict[str, str],
+        *,
+        interactive: bool = False,
+        notify: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.call_timeout() if interactive else self.discovery_timeout()
+        async with Client(
+            StreamableHttpTransport(config.url, headers=headers),
+            auth=self.oauth_client(config, interactive=interactive, notify=notify),
+            timeout=timeout,
+            init_timeout=timeout,
+        ) as client:
+            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
+
+    def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
+        headers: dict[str, str] = {}
+        if config.bearer_token_env_var:
+            token = os.environ.get(config.bearer_token_env_var)
+            if not token:
+                return f"missing environment variable {config.bearer_token_env_var}"
+            headers["Authorization"] = f"Bearer {token}"
+        if config.env_http_headers:
+            for header_name, env_var in config.env_http_headers.items():
+                value = os.environ.get(env_var)
+                if not value:
+                    return f"missing environment variable {env_var}"
+                if header_name.lower() == "authorization":
+                    if config.auth == "oauth":
+                        return "conflicting Authorization header; use auth=oauth instead"
+                    if self._has_header(headers, "authorization"):
+                        return "conflicting Authorization header; use only one authorization source"
+                headers[header_name] = value
+        return headers
+
+    def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
+        config = self.find_config(server)
+        if config is None:
+            raise ToolError(f"MCP server '{server}' not found")
+        if config.error:
+            raise ToolError(config.error)
+
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            raise ToolError(headers)
+        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
+
+        if server not in self.tools:
+            self.discover_server(server)
+        if server in self.server_errors:
+            raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+
+        try:
+            result = self.run_async(
+                self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config, headers, tool_name, arguments)
+            )
+        except Exception as e:
+            raise ToolError("MCP call failed: " + self.error_text(e))
+
+        text = self.normalize_result(result)
+        return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
+
+    def normalize_result(self, result: Any) -> str:
+        parts: list[str] = []
+        content = getattr(result, "content", result)
+        items = content if isinstance(content, list) else [content]
+        for item in items:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif item_type == "resource":
+                    parts.append(json.dumps(item.get("resource"), ensure_ascii=False, indent=2))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, indent=2))
+                continue
+            item_type = getattr(item, "type", "")
+            if item_type == "text":
+                parts.append(str(getattr(item, "text", "") or ""))
+            elif item_type == "resource":
+                parts.append(str(getattr(item, "resource", "") or ""))
+            elif hasattr(item, "model_dump"):
+                parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
+            else:
+                parts.append(str(item))
+        text = "\n".join(part for part in parts if part).strip()
+        if len(text) > self.RAW_OUTPUT_LIMIT:
+            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
+        return text
+
+    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
+        from fastmcp.client import Client
+
+        timeout = self.call_timeout()
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
+
+    async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.call_timeout()
+        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
+
+    def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
+        config = self.find_config(name)
+        if config is None:
+            return "MCP server not found or disabled: " + name
+        if config.error:
+            return config.error
+        if config.auth != "oauth":
+            return "MCP server does not use OAuth: " + name
+        if not config.url:
+            return "url is required"
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            return headers
+        # Drop any stale client registration so the fresh authorization uses a client
+        # whose registered redirect_uri matches this run's callback port. Reusing a
+        # client registered against an earlier random port yields invalid_request.
+        self.oauth_token_store().clear_client_info(config.url)
+        try:
+            tools = self.run_async(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
+        except Exception as error:
+            text = self.error_text(error, timeout=self.call_timeout())
+            self.set_server_error(name, text)
+            return self.oauth_login_failure(config, text)
+        tools_info = self._tools_info(name, tools)
+        with self.lock:
+            self.tools[name] = tools_info
+            self.server_errors.pop(name, None)
+        self.discovery_status = "ready"
+        return "MCP OAuth login succeeded for " + name + f"; tools={len(tools_info)}"
+
+    @staticmethod
+    def oauth_login_failure(config: MCPServerConfig, error: str) -> str:
+        return "\n".join(
+            [
+                "MCP OAuth login failed for " + config.name + ": " + error,
+                "No authorization URL was provided by the server.",
+                "Open MCP URL: " + config.url,
+            ]
+        )
+
+    def logout_server(self, name: str) -> str:
+        config = self.find_config(name, enabled_only=False)
+        if config is None:
+            return "MCP server not found: " + name
+        if config.auth != "oauth":
+            return "MCP server does not use OAuth: " + name
+        self.oauth_token_store().clear_server(config.url)
+        with self.lock:
+            self._forget_locked(name)
+            self.server_errors[name] = "oauth login required; run /mcp login " + name
+        return "MCP OAuth tokens cleared for " + name
+
+    def describe_tool(self, server: str, tool_name: str) -> str:
+        tools = self.tools.get(server)
+        if tools is None:
+            self.discover_server(server)
+            tools = self.tools.get(server)
+
+        if tools is None:
+            if server in self.server_errors:
+                raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+            raise ToolError(f"MCP server '{server}' not found")
+
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            raise ToolError(f"MCP tool '{tool_name}' not found on server '{server}'")
+
+        return self._render_describe(server, info)
+
+    def _render_describe(self, server: str, info: MCPToolInfo) -> str:
+        schema = info.input_schema or {}
+        lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
+        if info.description:
+            lines.append("<description>")
+            lines.append(Tool.compact(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
+            lines.append("</description>")
+        lines.append("<arguments>")
+        props = schema.get("properties", {})
+        props = props if isinstance(props, dict) else {}
+        required = schema.get("required", [])
+        required = required if isinstance(required, list) else []
+        for index, (name, prop) in enumerate(props.items()):
+            if index >= self.DESCRIBE_ARGUMENT_LIMIT:
+                lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more arguments omitted")
+                break
+            req = "required" if name in required else "optional"
+            prop = prop if isinstance(prop, dict) else {}
+            typ = prop.get("type", "any")
+            desc = Tool.compact(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
+            lines.append(f"- {name} {req} {typ}: {desc}")
+        lines.append("</arguments>")
+        lines.append("<schema_summary>")
+        if props:
+            summary = f"Top-level object with {', '.join(props.keys())}."
+        else:
+            summary = "No arguments."
+        if len(summary) > 200:
+            summary = summary[:197] + "..."
+        lines.append(summary)
+        lines.append("</schema_summary>")
+        lines.append("</MCPDescribe>")
+        return "\n".join(lines)
+
+    def render_tools_index(self) -> str:
+        configs = [c for c in self.parse_configs() if c.enabled]
+        if not configs:
+            return ""
+
+        lines: list[str] = []
+        lines.append("--- MCP TOOLS ---")
+        lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
+        lines.append('Use MCP(action="describe", server, tool) for full details when needed.')
+        lines.append("Format: server.tool(req: type; opt: type) - description")
+        lines.append("")
+
+        pending: list[str] = []
+        for config in configs:
+            tools = self.tools.get(config.name, [])
+            if not tools:
+                pending.append(f"- {config.name}: {self._pending_status(config.name)}")
+                continue
+            name_display = config.name.capitalize()
+            lines.append(f"[{config.name}] {name_display}")
+            for tool in tools:
+                line = self._format_tool_line(config.name, tool)
+                if line:
+                    lines.append(line)
+            lines.append("")
+
+        if pending:
+            lines.append("Configured servers not yet available (they exist — do not assume otherwise):")
+            lines.extend(pending)
+            lines.append("")
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990] + "\n... MCP tools truncated; use /mcp tools for full list."
+        return text
+
+    def server_issue(self, name: str) -> tuple[str, str] | None:
+        """Classify a server's failure state as (kind, message); error takes precedence over skip."""
+        if (error := self.server_errors.get(name)) is not None:
+            return "error", error
+        if (skip := self.server_skips.get(name)) is not None:
+            return "skipped", skip
+        return None
+
+    def _pending_status(self, name: str) -> str:
+        if issue := self.server_issue(name):
+            kind, message = issue
+            return message if kind == "error" else "skipped: " + message
+        if self.discovery_status == "discovering":
+            return "discovering — tools not loaded yet; retry shortly"
+        return "not connected"
+
+    MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
+
+    def server_tool_names(self, server: str) -> tuple[str, ...]:
+        return tuple(tool.name for tool in self.tools.get(server, []))
+
+    def resolve_mentions(self, text: str) -> str:
+        configs = {config.name: config for config in self.parse_configs() if config.enabled}
+        if not configs:
+            return ""
+        lower = {name.lower(): name for name in configs}
+        seen: set[tuple[str, str]] = set()
+        blocks: list[str] = []
+        for raw_server, raw_tool in self.MENTION_PATTERN.findall(text):
+            name = raw_server if raw_server in configs else lower.get(raw_server.lower())
+            if name is None:  # not a configured server — leave the literal @token alone
+                continue
+            key = (name, raw_tool)
+            if key in seen:
+                continue
+            seen.add(key)
+            blocks.append(self._mention_block(name, raw_tool))
+        if not blocks:
+            return ""
+        header = [
+            "--- MCP MENTIONS ---",
+            'The user explicitly referenced these MCP servers/tools. Prefer them via MCP(action="call", ...) unless clearly irrelevant.',
+            "",
+        ]
+        return "\n".join(header + blocks).strip()
+
+    def _mention_block(self, server: str, tool: str) -> str:
+        if server not in self.tools and self.discovery_status != "discovering":
+            self.discover_server(server)
+        if issue := self.server_issue(server):
+            kind, message = issue
+            return f"[{server}] {'unavailable' if kind == 'error' else 'skipped'}: {message}"
+        tools = self.tools.get(server, [])
+        if not tools:
+            return f"[{server}] {self._pending_status(server)}"
+        if tool:
+            info = self.tool_info(server, tool)
+            if info is not None:
+                return self._render_describe(server, info)
+            available = ", ".join(t.name for t in tools) or "(none)"
+            return f"[{server}] tool '{tool}' not found; available: {available}"
+        lines = [f"[{server}] {server.capitalize()}"]
+        for info in tools:
+            line = self._format_tool_line(server, info)
+            if line:
+                lines.append(line)
+        return "\n".join(lines)
+
+    def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
+        args_str = self._tool_args_summary(info)
+        desc = (info.description or "").split("\n")[0].strip()
+        desc = " ".join(desc.split())
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+
+        line = f"{server}.{info.name}{args_str} - {desc}"
+        if len(line) > 200:
+            line = line[:197] + "..."
+        return line
+
+    def _tool_args_summary(self, info: MCPToolInfo) -> str:
+        schema = info.input_schema or {}
+        props = schema.get("properties", {})
+        props = props if isinstance(props, dict) else {}
+        required = schema.get("required", [])
+        required = required if isinstance(required, list) else []
+
+        def _fmt(name: str) -> str:
+            t = props.get(name, {}).get("type", "")
+            return f"{name}: {t}" if t else name
+
+        req_args = [_fmt(k) for k in required if k in props]
+        opt_args = [_fmt(k) for k in props if k not in required]
+
+        if len(req_args) > 8:
+            req_args = req_args[:8] + ["..."]
+        if len(opt_args) > 8:
+            opt_args = opt_args[:8] + ["..."]
+
+        parts = []
+        if req_args:
+            parts.append("(" + ", ".join(req_args))
+        else:
+            parts.append("(")
+        if opt_args:
+            parts.append("; " + ", ".join(opt_args))
+        parts.append(")")
+        return "".join(parts)
+
+    def render_tool_listing(self, server: str | None = None) -> str:
+        sections: list[str] = []
+        configs = self.parse_configs()
+        for config in configs:
+            if not config.enabled:
+                continue
+            if server and config.name != server:
+                continue
+            lines = [f"### `{config.name}`", "", "| tool | args | description |", "| --- | --- | --- |"]
+            if issue := self.server_issue(config.name):
+                kind, message = issue
+                lines.append(f"| {kind} |  | " + self.markdown_cell(message) + " |")
+                sections.append("\n".join(lines))
+                continue
+            tools = self.tools.get(config.name, [])
+            if not tools:
+                lines.append("| (none) |  | no tools discovered |")
+                sections.append("\n".join(lines))
+                continue
+            for tool in tools:
+                args_str = self._tool_args_summary(tool)
+                desc = Tool.compact((tool.description or "").split("\n")[0].strip(), 80)
+                lines.append("| `" + self.markdown_cell(tool.name) + "` | `" + self.markdown_cell(args_str) + "` | " + self.markdown_cell(desc or "-") + " |")
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections) if sections else "(no MCP servers configured)"
+
+    def render_server_status(self) -> str:
+        lines: list[str] = ["| server | status | tools | auth |", "| --- | --- | ---: | --- |"]
+        configs = self.parse_configs()
+        for config in configs:
+            tools = ""
+            if not config.enabled:
+                status = "disabled"
+            elif issue := self.server_issue(config.name):
+                status = issue[0] + ": " + issue[1]
+            else:
+                if config.name in self.tools:
+                    status = "connected"
+                    tools = str(len(self.tools[config.name]))
+                else:
+                    status = "not connected"
+            auth = []
+            if config.auth:
+                auth.append(config.auth)
+            if config.bearer_token_env_var:
+                auth.append("bearer_token_env_var(" + config.bearer_token_env_var + ")")
+            if config.env_http_headers:
+                for header_name in config.env_http_headers:
+                    auth.append("env_header(" + header_name + ")")
+            lines.append("| `" + self.markdown_cell(config.name) + "` | " + self.markdown_cell(status) + " | " + self.markdown_cell(tools or "-") + " | " + self.markdown_cell(", ".join(auth) or "-") + " |")
+        return "\n".join(lines) if len(lines) > 2 else "(no MCP servers configured)"
+
+    @staticmethod
+    def markdown_cell(text: str) -> str:
+        return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
 
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
@@ -2888,13 +4078,15 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix))
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix, elapsed=elapsed))
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
         if not failed and call.name in {"Read", "Edit"}:
             return head + " -> FILE STATE"
+        if not failed and call.name == "MCP" and "<MCPDescribe " in output:
+            return head + " -> MCP TOOL DETAILS"
         rows = [head]
         if failed:
             rows.append("status: failed")
@@ -2964,7 +4156,7 @@ class ToolRunner:
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(
-        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = ""
+        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = "", elapsed: float | None = None
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
@@ -2973,7 +4165,44 @@ class ToolRunner:
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
+        elif call.name == "MCP":
+            summary = self.mcp_result_summary(call, output, elapsed)
+            if summary:
+                lines.append("  " + summary)
         return "\n".join(lines)
+
+    def mcp_result_summary(self, call: ToolCall, output: str, elapsed: float | None) -> str:
+        if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":
+            return ""
+        inner = output
+        match = re.match(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$", output)
+        if match:
+            inner = match.group(1).strip()
+        if not inner:
+            shape = "empty"
+        else:
+            try:
+                data = json.loads(inner)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+            if isinstance(data, list):
+                shape = f"{len(data)} items"
+            elif isinstance(data, dict):
+                shape = f"{len(data)} fields"
+            else:
+                shape = f"{inner.count(chr(10)) + 1} lines"
+        parts = [f"{shape}, {self.human_size(len(inner))}"]
+        if elapsed is not None:
+            parts.append(f"{elapsed:.1f}s")
+        return "→ " + " · ".join(parts)
+
+    @staticmethod
+    def human_size(num_bytes: int) -> str:
+        if num_bytes < 1024:
+            return f"{num_bytes}B"
+        if num_bytes < 1024 * 1024:
+            return f"{num_bytes / 1024:.1f}KB"
+        return f"{num_bytes / (1024 * 1024):.1f}MB"
 
     @staticmethod
     def with_batch_suffix(text: str, suffix: str) -> str:
@@ -3138,7 +4367,7 @@ class ModelClient:
         prompt = """
 Compact the nanocode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
-Use keys: summary, goal, plan, known.
+Use keys: summary, goal, plan, known, check.
 Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
@@ -3404,25 +4633,45 @@ class Agent:
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
 
-TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note.
+TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP.
 Use EXACT tool names and named parameters. Obey each tool DESCRIPTION/SIGNATURE.
 
 FLOW:
 - ACT when clear; keep using tools until done.
-- Every turn must call tools or return final; never emit empty content.
+- Each turn must call tools or return final; never emit empty content.
+- Do not repeat a failed tool call unchanged unless new information makes retrying meaningful.
 - Prefer built-ins over Bash. Batch independent read-only calls.
-- All assistant text is user-visible, including interim narration before tool calls and final answers.
-- Write every assistant text message as markdown in the latest user's language; do not switch languages unless asked.
+- Do not switch/create/delete git branches unless the user explicitly asks.
+- Before committing, check the branch; stop if it changed since task start.
+- All assistant text is user-visible markdown in the latest user's language.
+
+TOOL CHOICE:
+- Edit writes files. Use Edit for file changes; keep patches small.
+- Read reads known files/ranges and returns line:hash anchors.
+- Search finds text/patterns in files; Find finds paths.
+- InspectCode navigates code symbols: defs, refs, impls, callers/callees, outline.
+- If code_index is unavailable, use Search/Read.
 
 CONTEXT:
-- Trust LATEST FILE STATE from Read/Edit for listed ranges.
 - Recall bounded tr.N only when needed; prefer FILE STATE over old outputs.
-- For multi-step work, call Note early with goal and a short plan; update plan/known/check when they change.
+- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item; record verification with set_check.
+
+FILE STATE:
+- FILE STATE is the current snapshot for listed ranges; Read and Edit refresh it automatically.
+- Use FILE STATE as your working view for visible file content and Edit anchors.
+- FILE STATE may be partial; Read when needed lines, hashes, or surrounding context are absent.
+- FILE STATE is not Memory/Recall; do not call it "full memory" or treat it as old output.
+- Do not re-Read a file/range already present in FILE STATE when it has the needed lines and anchors; proceed to Edit.
+- After a successful Edit, trust FILE STATE and do not re-Read just to verify the edited range.
 
 EDITS:
 - Inspect/read before edits.
 - Patch with Edit line:hash anchors from the newest FILE STATE.
 - After stale-anchor errors or successful edits, discard old anchors for that file/range.
+- If a stale-anchor error includes `current is line:hash|text`, retry Edit with that current anchor; do not Read first.
+- Read after a stale-anchor error only when there is no usable `current is` anchor or surrounding lines are needed.
+- If `edit produced no changes` includes current target ranges, compare them with your intended change: stop if the file is already correct, otherwise retry with corrected content.
+- Read after `edit produced no changes` only when the error lacks enough current target content or surrounding lines are needed.
 - Do not batch multiple Edit calls for the same file; sequence them.
 - Keep edits small/local/reversible; never overwrite unrelated user work.
 - Edit op=create creates files, including empty files.
@@ -3445,6 +4694,10 @@ FINAL:
         self.session.state.turn_tool_calls = 0
         tool_batches = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
+        if self.session.mcp is not None:
+            mentions = self.session.mcp.resolve_mentions(user_input)
+            if mentions:
+                turn_messages.append({"role": "user", "content": mentions})
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
@@ -3553,9 +4806,19 @@ class CommandCompleter(Completer):
         "runtime.check_updates": ("on", "off", "true", "false"),
     }
 
-    def __init__(self, providers: Callable[[], tuple[str, ...]] = tuple, models: Callable[[], tuple[str, ...]] = tuple):
+    def __init__(
+        self,
+        providers: Callable[[], tuple[str, ...]] = tuple,
+        models: Callable[[], tuple[str, ...]] = tuple,
+        mcp_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_oauth_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
+    ):
         self.providers = providers
         self.models = models
+        self.mcp_servers = mcp_servers
+        self.mcp_oauth_servers = mcp_oauth_servers
+        self.mcp_tools = mcp_tools
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -3577,6 +4840,28 @@ class CommandCompleter(Completer):
             if text.startswith(command):
                 yield from self.matches(values(), text[len(command) :])
                 return
+        if text.startswith("/mcp "):
+            tail = text[len("/mcp ") :]
+            if " " not in tail:
+                yield from self.matches(("tools", "login", "logout", "refresh"), tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub in {"login", "logout"}:
+                yield from self.matches(self.mcp_oauth_servers(), value)
+                return
+            if sub in {"tools", "refresh"}:
+                yield from self.matches(self.mcp_servers(), value)
+                return
+
+        at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
+        if at_match:
+            server_part, dot, tool_part = at_match.group(1).partition(".")
+            if dot:
+                yield from self.matches(self.mcp_tools(server_part), tool_part)
+            else:
+                yield from self.matches(self.mcp_servers(), server_part)
+            return
+
         if text.startswith("/") and " " not in text:
             yield from self.matches(self.COMMANDS, text)
 
@@ -3602,6 +4887,7 @@ class UiPrinter:
             self.emit(text)
             return
         assert self.console is not None
+        self.console.print(Rule(style="bright_black", characters="─"))
         self.console.print(Markdown(text))
 
     def segments(self, text: str) -> list[tuple[str, str]]:
@@ -3848,6 +5134,19 @@ class ModelRetryShortcut:
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
+    BASE_STYLE: ClassVar[str] = "#e6edf3"
+    SEP_STYLE: ClassVar[str] = "#4b5563"
+    STYLES: ClassVar[dict[str, str]] = {
+        "provider": "#e6edf3",
+        "reason": "#a5b4fc",
+        "debug": "#64748b",
+        "mcp": "#93c5fd",
+        "ctx": "#facc15",
+        "update": "#fb923c",
+        "index": "#94a3b8",
+        "warn": "#fb7185",
+        "runtime": "#c084fc",
+    }
 
     def __init__(self, session: Session):
         self.session = session
@@ -3916,45 +5215,62 @@ class StatusBar:
         return self.fragments(elapsed, sweep=True, show_elapsed=True)
 
     def fragments(self, elapsed: float, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
-        text = self.text(elapsed, show_elapsed=show_elapsed)
+        entries = self.entries(elapsed, show_elapsed=show_elapsed)
+        text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
         if len(text) >= columns:
             text = text[: max(0, columns - 4)] + "..."
-        return self.sweep_fragments(text, elapsed) if sweep else [("ansicyan", text)]
+            return self.sweep_fragments(text, elapsed) if sweep else [(self.BASE_STYLE, text)]
+        return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
-    def text(self, elapsed: float, *, show_elapsed: bool) -> str:
+    def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
         provider = self.session.config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         reason = provider.reasoning
         if self.session.settings.debug:
             reason += "/" + provider.resolved_chat_reasoning()
-        parts = [self.session.config.active_provider + "/" + model, reason]
+        parts = [(self.session.config.active_provider + "/" + model, "provider"), (reason, "reason")]
         if self.session.settings.debug:
-            parts.append("api " + provider.resolved_api())
-        parts.append("ctx " + str(self.session.state.context_percent) + "%")
+            parts.append(("api " + provider.resolved_api(), "debug"))
+
+        mcp_status = self.mcp_status()
+        if mcp_status:
+            parts.append((mcp_status, "mcp"))
+        parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
-            parts.append("cache " + str(self.session.usage.cached_prompt_tokens))
+            parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
         update_status = self.update_status()
         if update_status:
-            parts.append(update_status)
+            parts.append((update_status, "update"))
         index_status = self.index_status()
         if index_status:
-            parts.append("index" + index_status)
+            parts.append(("index" + index_status, "index"))
         if self.session.settings.yolo:
-            parts.append("yolo")
+            parts.append(("yolo", "warn"))
         if show_elapsed:
             parts.extend(
-                ["step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "tools " + str(self.session.state.turn_tool_calls)]
+                [
+                    ("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"),
+                    ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
+                ]
             )
         if show_elapsed and self.session.pending_user_inputs:
-            parts.append("+" + str(len(self.session.pending_user_inputs)))
+            parts.append(("+" + str(len(self.session.pending_user_inputs)), "warn"))
         if show_elapsed:
-            parts.append(self.duration(elapsed))
+            parts.append((self.duration(elapsed), "runtime"))
             if self.retry_notice_until > time.monotonic():
-                parts.append("retrying")
+                parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
-                parts.append("ctrl-g retry")
-        return " | ".join(parts)
+                parts.append(("ctrl-g retry", "warn"))
+        return parts
+
+    def styled_fragments(self, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = []
+        for index, (text, role) in enumerate(entries):
+            if index:
+                fragments.append((self.SEP_STYLE, " | "))
+            fragments.append((self.STYLES.get(role, self.BASE_STYLE), text))
+        return fragments or [("", "")]
 
     def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
         if not text:
@@ -3995,6 +5311,19 @@ class StatusBar:
             return "update..."
         return "update " + update.latest if update.newer_than(__version__) else ""
 
+    def mcp_status(self) -> str:
+        if self.session.mcp is None:
+            return ""
+        status = self.session.mcp.discovery_status
+        if status == "discovering":
+            spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
+            loaded = len(self.session.mcp.tools)
+            total = sum(1 for config in self.session.mcp.parse_configs() if config.enabled)
+            return f"mcp {loaded}/{total}{spinner}"
+        if status == "error":
+            return "mcp err"
+        return f"mcp {len(self.session.mcp.tools)}" if status == "ready" else ""
+
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
@@ -4008,6 +5337,13 @@ class CommandLoop:
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
+    MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
+        "tools": (0, 1, "Usage: /mcp tools [server]"),
+        "login": (1, 1, "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"),
+        "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
+        "refresh": (0, 1, "Usage: /mcp refresh [server]"),
+    }
+    MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
   /help              Show this help.
@@ -4023,9 +5359,18 @@ class CommandLoop:
   /reason            Select reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
+  /mcp               Show MCP server status.
+  /mcp tools [NAME]   List MCP tools.
+  /mcp login NAME     Start OAuth login for a server.
+  /mcp logout NAME    Clear OAuth tokens for a server.
+  /mcp refresh [NAME] Refresh MCP servers.
   /exit, /quit       Exit.
+Mentions:
+  @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
+CLI:
+  --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, MCP.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -4051,7 +5396,11 @@ Tools:
         else:
             self.input_history = None
         self.input_completer = CommandCompleter(
-            providers=lambda: tuple(sorted(self.session.config.providers)), models=lambda: self.session.config.provider.available_models
+            providers=lambda: tuple(sorted(self.session.config.providers)),
+            models=lambda: self.session.config.provider.available_models,
+            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled),
+            mcp_oauth_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled and config.auth == "oauth"),
+            mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
         )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
@@ -4132,14 +5481,7 @@ Tools:
             self.queue_input_text = parts[-1]
             buffer.reset(Document(self.queue_input_text))
 
-        app = Application(
-            layout=Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window), bindings)
         self.queue_input_app = app
         self.queue_input_active.set()
 
@@ -4171,6 +5513,8 @@ Tools:
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         CodeIndex(self.session).refresh_existing_async()
+        # Async MCP discovery — show nano> immediately, discover in background
+        threading.Thread(target=self.discover_mcp, daemon=True).start()
         UpdateChecker(self.session).start()
         while True:
             try:
@@ -4189,6 +5533,7 @@ Tools:
                 return 0
             if handled:
                 continue
+            self.emit("")
             started = time.monotonic()
             stop_input = threading.Event()
             watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
@@ -4219,6 +5564,26 @@ Tools:
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
 
+    def discover_mcp(self) -> None:
+        self.session.mcp.discover_enabled()
+        notice = self.mcp_error_notice()
+        if notice:
+            self.emit(notice)
+
+    def mcp_error_notice(self) -> str:
+        errors = [
+            (name, error)
+            for name, error in sorted(self.session.mcp.server_errors.items())
+            if error and not error.startswith("oauth login required")
+        ]
+        if not errors:
+            return ""
+        shown = errors if self.session.settings.debug else errors[:3]
+        lines = [f"mcp: {name}: {error}" for name, error in shown]
+        if len(errors) > len(shown):
+            lines.append(f"mcp: {len(errors) - len(shown)} more errors; run /mcp")
+        return "\n".join(lines)
+
     def style(self) -> Style:
         return Style.from_dict(
             {
@@ -4247,6 +5612,16 @@ Tools:
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
+        )
+
+    def _make_app(self, layout: Layout, bindings: KeyBindings) -> Application:
+        return Application(
+            layout=layout,
+            key_bindings=bindings,
+            full_screen=False,
+            style=self.style(),
+            refresh_interval=StatusBar.INTERVAL,
+            erase_when_done=True,
         )
 
     def run_input_app(self, app: Application) -> Any:
@@ -4357,14 +5732,7 @@ Tools:
             HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
-        app = Application(
-            layout=Layout(root, focused_element=input_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
         return text
@@ -4538,11 +5906,46 @@ Tools:
             "/reason": self.reason,
             "/set": self.set_value,
             "/yolo": self.yolo,
+            "/mcp": self.mcp_command,
         }
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
-        (self.ui.emit_answer if name == "/status" else self.emit)(output)
+        (self.ui.emit_answer if name in {"/status", "/mcp"} else self.emit)(output)
         return True, False
+
+    def mcp_command(self, args: str) -> str:
+        mcp = self.session.mcp
+        if mcp is None:
+            return "MCP not configured"
+
+        parts = args.split()
+        if not parts:
+            return mcp.render_server_status()
+
+        sub = parts[0]
+        rest = parts[1:]
+        command = self.MCP_COMMANDS.get(sub)
+        if command is None:
+            return f"Unknown /mcp subcommand: {sub}. {self.MCP_HELP}"
+        min_args, max_args, usage = command
+        if not min_args <= len(rest) <= max_args:
+            return usage
+
+        if sub == "tools":
+            server = rest[0] if rest else None
+            return mcp.render_tool_listing(server)
+        if sub == "login":
+            return mcp.login_server(rest[0], notify=self.emit)
+        if sub == "logout":
+            return mcp.logout_server(rest[0])
+        if sub == "refresh":
+            name = rest[0] if rest else ""
+            if name:
+                mcp.discover_server(name)
+            else:
+                mcp.discover_enabled()
+            return mcp.render_server_status()
+        raise AssertionError("unreachable MCP subcommand")
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
         if not query:
@@ -4722,14 +6125,7 @@ Tools:
         state["selected"] = options.index(current) if current in options else 0
         content = FormattedTextControl(fragments, focusable=True)
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = Application(
-            layout=Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window),
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-        )
+        app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
@@ -4783,7 +6179,7 @@ Tools:
             ),
             (
                 "runtime",
-                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; max steps `{self.session.settings.max_steps}`",
+                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`",
             ),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
@@ -5049,6 +6445,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -5059,7 +6457,7 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo)
+        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)

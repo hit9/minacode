@@ -175,6 +175,31 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
     assert "current is 0:" + n.ReadTool.line_hash("old\n") + "|old" in str(error.value)
 
 
+def test_edit_no_change_reports_current_target_range(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError) as error:
+        n.EditTool(s, ["note.txt", [{"op": "replace", "start": anchor(0, "old\n"), "end": anchor(0, "old\n"), "content": "old\n"}]]).call()
+
+    message = str(error.value)
+    assert "edit produced no changes; requested content already matches target range" in message
+    assert "<current-target-ranges hashline-numbered>" in message
+    assert "0:" + n.ReadTool.line_hash("old\n") + "|old" in message
+
+
+def test_edit_no_change_replace_all_reports_identical_file(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(n.ToolError) as error:
+        n.EditTool(s, ["note.txt", [{"op": "replace_all", "old": "old", "new": "old"}]]).call()
+
+    assert str(error.value) == "edit produced no changes; replace_all result is identical to current file"
+
+
 def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     s = session(tmp_path)
     tool = n.EditTool(s, ["script.py", [{"op": "create", "content": "print(1)\\nprint(2)\\n"}]])
@@ -202,6 +227,29 @@ def test_bash_and_git_behaviors(tmp_path):
     assert str(tmp_path) in git
     assert not n.GitTool(s, ["status"]).needs_confirmation()
     assert n.GitTool(s, ["commit"]).needs_confirmation()
+
+
+def test_git_yolo_refuses_branch_changes_without_explicit_confirmation(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.shutil, "which", lambda name: "/usr/bin/git" if name == "git" else None)
+
+    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
+        n.GitTool(s, ["switch", "feature"]).call()
+
+    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
+        n.GitTool(s, ["branch", "-D", "feature"]).call()
+
+
+def test_git_commit_refuses_when_branch_changed_since_session_start(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    s = session(tmp_path)
+    subprocess.run(["git", "switch", "-c", "other"], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    with pytest.raises(n.ToolError, match="branch changed from .* to other"):
+        n.GitTool(s, ["commit", "-m", "blocked"]).call()
 
 
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
@@ -340,8 +388,8 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    note = runner.short_call(n.ToolCall("m", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "new fact"]}]))
-    assert note == "Note goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
+    note = runner.short_call(n.ToolCall("m", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "new fact"]}]))
+    assert note == "Note set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + new fact"
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -359,6 +407,10 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     read_params = n.ReadTool.schema()["function"]["parameters"]
     assert {"path", "ranges", "files"} <= set(read_params["properties"])
+
+    note_params = n.NoteTool.schema()["function"]["parameters"]
+    assert "minItems" not in note_params["properties"]["replace_plan"]
+    assert "minItems" not in note_params["properties"]["replace_known"]
 
     find_params = n.FindTool.schema()["function"]["parameters"]
     assert {"name", "queries"} <= set(find_params["properties"])
@@ -397,7 +449,7 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert n.ModelClient.tool_payload("Note", {"goal": "ship"}) == [{"goal": "ship"}]
+    assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
 
 
 def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
@@ -407,14 +459,62 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("note", "Note", [{"goal": "ship", "plan": ["inspect", "patch"], "known": ["existing", "pytest"]}])])
+    runner.run([n.ToolCall("note", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "pytest"]}])])
 
     assert s.state.goal == "ship"
     assert s.state.plan == ["inspect", "patch"]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
-    assert output == ["goal -> ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
+    assert output == ["set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + pytest"]
 
+
+def test_note_tool_validates_before_mutating_state(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "old goal"
+    s.state.plan = ["old plan"]
+    s.state.known = ["old fact"]
+
+    with pytest.raises(n.ToolError) as error:
+        n.NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
+
+    assert str(error.value) == 'Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}'
+    assert s.state.goal == "old goal"
+    assert s.state.plan == ["old plan"]
+    assert s.state.known == ["old fact"]
+
+
+def test_note_tool_replace_known(tmp_path):
+    s = session(tmp_path)
+    s.state.known = ["old fact"]
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    # short_args 输出
+    short = runner.short_call(n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
+    assert short == "Note replace_known:\n  new fact a\n  new fact b"
+
+    # 实际执行 replace_known
+    output = []
+    runner.output_fn = output.append
+    runner.run([n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
+    assert s.state.known == ["new fact a", "new fact b"]  # old fact 被完全替换
+    assert output == ["replace_known:\n  new fact a\n  new fact b"]
+
+    # 再次 replace_known 为空的场景
+    runner.run([n.ToolCall("n", "Note", [{"replace_known": []}])])
+    assert s.state.known == []
+
+def test_note_tool_set_check(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    short = runner.short_call(n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
+    assert short == "Note set_check -> pytest -q passed"
+
+    output = []
+    runner.output_fn = output.append
+    runner.run([n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
+    assert s.state.check == "pytest -q passed"
+    assert output == ["set_check -> pytest -q passed"]
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)
@@ -697,6 +797,23 @@ def test_batch_edit_stale_anchor_reports_current_line(tmp_path, monkeypatch):
 
     assert s.tool_errors
     assert "current is 1:" + n.ReadTool.line_hash("b\n") + "|b" in s.tool_errors[0].error
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_batch_edit_no_change_reports_current_target_range(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("noop", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "b\n"}]])])
+
+    assert s.tool_errors
+    message = s.tool_errors[0].error
+    assert "edit produced no changes; requested content already matches target range" in message
+    assert "1:" + n.ReadTool.line_hash("b\n") + "|b" in message
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
