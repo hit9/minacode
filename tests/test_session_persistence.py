@@ -1,4 +1,6 @@
 import json
+import os
+import time
 
 import pytest
 
@@ -336,3 +338,37 @@ def test_jsonl_file_is_append_only(tmp_path):
     assert "messages" not in lines[1]
     assert "tool_records" not in lines[2]
     assert "tool_results" not in lines[3]
+
+
+def test_runtime_session_retention_defaults_to_seven_days():
+    settings = n.RuntimeSettings.from_dict({})
+
+    assert settings.session_retention_days == 7
+
+
+def test_clean_expired_sessions_removes_old_files_and_latest(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    old = session_with_data_dir(tmp_path)
+    old.messages.append({"role": "user", "content": "old"})
+    old.save_snapshot()
+    old_path = tmp_path / "sessions" / f"{old.uid}.jsonl"
+    stale_time = time.time() - 8 * 86400
+    os.utime(old_path, (stale_time, stale_time))
+
+    assert s.clean_expired_snapshots() == 1
+
+    assert not old_path.exists()
+    assert not (tmp_path / "latest").exists()
+
+
+def test_clean_expired_sessions_skips_current_session(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "current"})
+    s.save_snapshot()
+    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
+    stale_time = time.time() - 8 * 86400
+    os.utime(path, (stale_time, stale_time))
+
+    assert s.clean_expired_snapshots() == 0
+
+    assert path.exists()

@@ -235,6 +235,7 @@ class RuntimeSettings:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     check_updates: bool = True
     update_check_interval_hours: int = 24
+    session_retention_days: int = 7
     mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
@@ -248,6 +249,7 @@ class RuntimeSettings:
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
+            session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             debug=debug or Config.bool(runtime, "debug", False),
@@ -357,6 +359,7 @@ max_agent_steps = 200
 max_context_tokens = 128000
 check_updates = true
 update_check_interval_hours = 24
+session_retention_days = 7
 yolo = false
 
 # [mcp.example]
@@ -892,6 +895,53 @@ class SessionSnapshotStore:
             file.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     @classmethod
+    def clean_expired(cls, session: "Session") -> int:
+        days = session.settings.session_retention_days
+        if days <= 0:
+            return 0
+        sessions_dir = session.data_path("sessions")
+        try:
+            entries = list(os.scandir(sessions_dir))
+        except FileNotFoundError:
+            return 0
+        except OSError:
+            return 0
+        cutoff = time.time() - days * 86400
+        removed_latest, removed = False, 0
+        for entry in entries:
+            if not entry.name.endswith(".jsonl") or not entry.is_file():
+                continue
+            uid = entry.name[:-6]
+            if uid == session.uid:
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                os.unlink(entry.path)
+                removed += 1
+                removed_latest = removed_latest or cls.latest_uid(session.config.data_dir) == uid
+            except OSError:
+                continue
+        if removed_latest:
+            cls.clear_latest(session.config.data_dir)
+        return removed
+
+    @classmethod
+    def latest_uid(cls, data_dir: str) -> str:
+        try:
+            with open(cls.path_for(data_dir, "latest"), encoding="utf-8") as file:
+                return file.read().strip()
+        except OSError:
+            return ""
+
+    @classmethod
+    def clear_latest(cls, data_dir: str) -> None:
+        try:
+            os.unlink(cls.path_for(data_dir, "latest"))
+        except OSError:
+            pass
+
+    @classmethod
     def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
         if config is None:
             config = Config.from_dict(ConfigFile.load())
@@ -924,13 +974,9 @@ class SessionSnapshotStore:
     def resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
         if uid != "latest":
             return uid
-        try:
-            with open(cls.path_for(data_dir, "latest"), encoding="utf-8") as file:
-                resolved = file.read().strip()
-        except FileNotFoundError:
+        resolved = cls.latest_uid(data_dir)
+        if not resolved and not os.path.exists(cls.path_for(data_dir, "latest")):
             raise NanocodeError("No latest session to resume; start a new session instead")
-        except OSError as error:
-            raise NanocodeError(f"Cannot read latest session: {error}")
         if not resolved:
             raise NanocodeError("Latest session file is empty")
         return resolved
@@ -1060,6 +1106,9 @@ class Session:
 
     def save_snapshot(self) -> str:
         return SessionSnapshotStore(self).save()
+
+    def clean_expired_snapshots(self) -> int:
+        return SessionSnapshotStore.clean_expired(self)
 
     @classmethod
     def _resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
@@ -5895,6 +5944,7 @@ Tools:
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        self.session.clean_expired_snapshots()
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
@@ -6703,6 +6753,7 @@ Tools:
                 f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
                 f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
                 f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
+                f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
                 f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
             ]
