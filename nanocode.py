@@ -6194,6 +6194,12 @@ Tools:
         if not choices or not self.interactive_input:
             return self.read_input(question)
 
+        # Render question with Rich markdown before interactive UI
+        if self.ui.color:
+            self.ui.console.print(Markdown(question))
+        else:
+            self.emit(question + "\n")
+
         choices_tuple = tuple(choices)
         previews_list = previews or []
         FREE_TEXT = "__type_freely__"
@@ -6229,7 +6235,7 @@ Tools:
             if query and not state["search"]:
                 suffix += " (filtered)"
             parts: list[tuple[str, str]] = [
-                ("class:choice.title", question + suffix + "\n"),
+                ("class:choice.title", "Select:" + suffix + "\n"),
                 ("class:choice.disabled", "  j/k move, / search, Enter select, Esc back\n"),
             ]
             if query and not opts:
