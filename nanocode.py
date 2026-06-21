@@ -5956,8 +5956,17 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                user_input = self.read_input(initial_text=self.queue_input_text)
-                self.queue_input_text = ""
+                texts = []
+                if self.queue_input_text.strip():
+                    texts.append(self.queue_input_text)
+                    self.queue_input_text = ""
+                if self.session.pending_user_inputs:
+                    texts.extend(self.session.pending_user_inputs)
+                    self.session.pending_user_inputs.clear()
+                if texts:
+                    user_input = "\n".join(texts)
+                else:
+                    user_input = self.read_input(initial_text="")
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
