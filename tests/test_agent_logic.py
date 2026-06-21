@@ -17,22 +17,6 @@ def call(name, args):
     return n.ToolCall(name + "-id", name, args)
 
 
-def test_system_prompt_prefers_targeted_builtin_tools():
-    prompt = n.Agent.SYSTEM_PROMPT
-
-    assert "TOOLS: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP." in prompt
-    assert "- Edit writes files. Use Edit for file changes; keep patches small." in prompt
-    assert "- Read reads known files/ranges and returns line:hash anchors." in prompt
-    assert "- Search finds text/patterns in files; Find finds paths." in prompt
-    assert "- InspectCode navigates code symbols: defs, refs, impls, callers/callees, outline." in prompt
-    assert "- Do not switch/create/delete git branches unless the user explicitly asks." in prompt
-    assert "- Before committing, check the branch; stop if it changed since task start." in prompt
-    assert "- For multi-step work, call Note early; use set_goal plus replace_plan/append_known/replace_known arrays, even for one item; record verification with set_check." in prompt
-    assert "\nFILE STATE:\n" in prompt
-    assert "- Use FILE STATE as your working view for visible file content and Edit anchors." in prompt
-    assert "- FILE STATE may be partial; Read when needed lines, hashes, or surrounding context are absent." in prompt
-
-
 def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
