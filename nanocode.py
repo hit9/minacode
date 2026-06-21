@@ -59,7 +59,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -746,6 +746,8 @@ class Session:
             return False
 
     def git_branch(self, cwd: str | None = None) -> str:
+        # Read live each call: a few tens of ms is negligible against a model request, and it is
+        # the only way to reflect an external `git checkout` (caching it would go stale silently).
         if self.system_info is not None and "git" not in self.system_info.commands:
             return ""
         git = "git" if self.system_info is not None else shutil.which("git")
@@ -2232,6 +2234,8 @@ class GitTool(Tool):
         if args[0] == "switch":
             return True
         if args[0] == "checkout":
+            # Conservatively treat any `git checkout` without a `--` path separator as
+            # branch/ref-changing; `git checkout -- <path>` (file restore) is exempt.
             return "--" not in args[1:]
         if args[0] != "branch":
             return False
@@ -2580,7 +2584,6 @@ class ContextManager:
 
         messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
-
 
     def mcp_tools_context(self) -> str:
         if self.session.mcp is None:
@@ -3267,31 +3270,36 @@ class MCPManager:
                         bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
                         enabled=Config.bool(raw, "enabled", True),
                     )
+                    def fail(message: str, config: MCPServerConfig = config) -> None:
+                        # First error wins, so the most relevant message is not clobbered by a later check.
+                        if not config.error:
+                            config.error = message
+
                     if (args := raw.get("args")) is not None:
                         if (parsed := self._string_list(args)) is not None:
                             config.args = parsed
                         else:
-                            config.error = "args must be a string list"
+                            fail("args must be a string list")
                     if (env := raw.get("env")) is not None:
                         if (parsed := self._string_map(env)) is not None:
                             config.env = parsed
                         else:
-                            config.error = "env must be a string map"
-                    if bool(config.url) == bool(config.command):
-                        config.error = "exactly one of url or command is required"
-                    elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
-                        config.error = "command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers"
-                    if config.auth not in {"", "oauth"}:
-                        config.error = "auth must be oauth"
-                    if config.auth == "oauth" and config.bearer_token_env_var:
-                        config.error = "auth=oauth conflicts with bearer_token_env_var"
+                            fail("env must be a string map")
                     if (headers := raw.get("env_http_headers")) is not None:
                         if (parsed := self._string_map(headers)) is not None:
                             config.env_http_headers = parsed
                         else:
-                            config.error = "env_http_headers must be a string map"
+                            fail("env_http_headers must be a string map")
+                    if bool(config.url) == bool(config.command):
+                        fail("exactly one of url or command is required")
+                    elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
+                        fail("command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
+                    if config.auth not in {"", "oauth"}:
+                        fail("auth must be oauth")
+                    if config.auth == "oauth" and config.bearer_token_env_var:
+                        fail("auth=oauth conflicts with bearer_token_env_var")
                     if config.auth == "oauth" and any(header.lower() == "authorization" for header in config.env_http_headers):
-                        config.error = "auth=oauth conflicts with env_http_headers.Authorization"
+                        fail("auth=oauth conflicts with env_http_headers.Authorization")
                     configs.append(config)
         return self.select_configs(configs)
 
@@ -5276,7 +5284,7 @@ class StatusBar:
         if status == "discovering":
             spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
             loaded = len(self.session.mcp.tools)
-            total = len(self.session.mcp.parse_configs())
+            total = sum(1 for config in self.session.mcp.parse_configs() if config.enabled)
             return f"mcp {loaded}/{total}{spinner}"
         if status == "error":
             return "mcp err"
@@ -5879,24 +5887,22 @@ Tools:
         if sub == "tools":
             server = rest[0] if rest else None
             return mcp.render_tool_listing(server)
-        elif sub == "login":
+        if sub == "login":
             if not rest:
                 return "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"
             return mcp.login_server(rest[0], notify=self.emit)
-        elif sub == "logout":
+        if sub == "logout":
             if not rest:
                 return "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"
             return mcp.logout_server(rest[0])
-        elif sub == "refresh":
+        if sub == "refresh":
             name = rest[0] if rest else ""
             if name:
                 mcp.discover_server(name)
             else:
                 mcp.discover_enabled()
             return mcp.render_server_status()
-        else:
-            return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
-
+        return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
         if not query:
