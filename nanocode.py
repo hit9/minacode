@@ -2183,7 +2183,14 @@ class GitTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        argv = list(payload.get("argv") or [])
+        argv = payload.get("argv")
+        if not argv or not isinstance(argv, list) or not argv:
+            raise ToolError(
+                "Git requires a non-empty 'argv' list. "
+                'Signature: Git(argv=[command,...], cwd?)  '
+                'Example: {"argv":["status","--short"]}'
+            )
+        argv = [str(a) for a in argv]
         return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
     def needs_confirmation(self) -> bool:
