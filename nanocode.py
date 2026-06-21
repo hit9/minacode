@@ -2425,6 +2425,71 @@ class NoteTool(Tool):
         return ["\n".join(lines) or "{}"]
 
 
+
+class QuestionTool(Tool):
+    NAME = "Question"
+    DESCRIPTION = "Ask the user a question and wait for a response. Use when the instruction is ambiguous, when a decision is needed, or when more context is required from the user."
+    SIGNATURE = 'Question(question, choices?, previews?)'
+    EXAMPLE = (
+        'Ask with choices and previews. Example: {"question":"Which approach?","choices":["Refactor","Rewrite","Keep"],"previews":["Extract to module +87 -12","Rewrite from scratch","No changes"]}',
+        'Open-ended question. Example: {"question":"What should I name this module?"}',
+    )
+    MUTATES = False
+    STORES_RESULT = True
+    question_fn: Callable[[str, list[str] | None, list[str] | None], str] | None = None
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        strings = {"type": "array", "items": {"type": "string"}}
+        return {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The question to ask the user"},
+                "choices": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional predefined choices the user can pick from",
+                },
+                "previews": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional preview text for each choice, shown as the user navigates",
+                },
+            },
+            "required": ["question"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def call(self) -> str:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Question requires named fields")
+        data = self.args[0]
+        question = str(data.get("question", "")).strip()
+        if not question:
+            raise ToolError("Question requires a 'question' field")
+        choices = data.get("choices")
+        previews = data.get("previews")
+        if choices is not None:
+            if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
+                raise ToolError("Question choices must be a list of strings")
+            if previews is not None:
+                if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
+                    raise ToolError("Question previews must be a list of strings")
+                if len(previews) != len(choices):
+                    raise ToolError("Question previews must match choices length")
+        if self.question_fn:
+            return self.question_fn(question, choices, previews)
+        return question
+
+    def short_args(self) -> list[str]:
+        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        question = str(data.get("question", "") or "").strip()
+        return [Tool.compact(question, 80)]
+
 class MCPTool(Tool):
     NAME = "MCP"
     DESCRIPTION = "Call or describe external MCP server tools"
@@ -2525,6 +2590,7 @@ TOOLS: tuple[type[Tool], ...] = (
     GitTool,
     RecallTool,
     NoteTool,
+    QuestionTool,
 )
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
@@ -3967,6 +4033,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
+        self.question_fn: Callable[[str, list[str] | None, list[str] | None], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
@@ -4026,6 +4093,8 @@ class ToolRunner:
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started, approved, display = time.monotonic(), False, None
+        if isinstance(tool, QuestionTool):
+            tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
             if plan_error:
@@ -4634,11 +4703,12 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note MCP.
+- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note Question MCP.
 - Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; InspectCode navigates symbols when available.
 - Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
+- Question/ask: Question asks the user a question and waits for their answer before continuing.
 
 FLOW:
 - Act when clear; keep using tools until done, or return a final answer.
@@ -5347,7 +5417,7 @@ Mentions:
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, MCP.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
@@ -5386,6 +5456,7 @@ Tools:
         self.agent.tools.preview_full_fn = lambda text: setattr(self, "approval_full_preview", text)
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.question_fn = self.question_interaction
 
     @staticmethod
     def exit_app(app: Application) -> None:
@@ -5570,6 +5641,7 @@ Tools:
                 "choice.title": "ansicyan bold",
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
+                "choice.preview": "ansigreen italic",
                 "completion-menu": "noreverse bg:default",
                 "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
@@ -6104,6 +6176,190 @@ Tools:
         choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
+
+    def question_application(
+        self,
+        question: str,
+        choices: list[str] | None,
+        previews: list[str] | None,
+    ) -> str:
+        """Interactive question with choice navigation, dynamic preview, and free-text fallback."""
+        if not choices or not self.interactive_input:
+            return self.read_input(question)
+
+        choices_tuple = tuple(choices)
+        previews_list = previews or []
+        FREE_TEXT = "__type_freely__"
+        FREE_TEXT_LABEL = "Type freely..."
+        all_choices = (*choices_tuple, FREE_TEXT) if self.interactive_input else choices_tuple
+        disabled: set[str] = set()
+
+        state = {"query": "", "selected": 0, "search": False}
+        searching = Condition(lambda: bool(state["search"]))
+
+        def enabled() -> tuple[str, ...]:
+            return tuple(
+                c for c in self.visible_choices(all_choices, {}, disabled, str(state["query"]))
+                if c not in disabled
+            )
+
+        def clamp() -> None:
+            opts = enabled()
+            state["selected"] = min(max(int(state["selected"]), 0), len(opts) - 1) if opts else 0
+
+        def move(event, delta: int) -> None:
+            opts = enabled()
+            if opts:
+                state["selected"] = min(max(int(state["selected"]) + delta, 0), len(opts) - 1)
+            event.app.invalidate()
+
+        def fragments():
+            query = str(state["query"])
+            visible = self.visible_choices(all_choices, {}, disabled, query)
+            opts = enabled()
+            clamp()
+            suffix = (" /" + query) if query else ""
+            if query and not state["search"]:
+                suffix += " (filtered)"
+            parts: list[tuple[str, str]] = [
+                ("class:choice.title", question + suffix + "\n"),
+                ("class:choice.disabled", "  j/k move, / search, Enter select, Esc back\n"),
+            ]
+            if query and not opts:
+                parts.append(("class:choice.disabled", "  no matches\n"))
+                return parts
+            number = 0
+            for choice in visible:
+                label = choice if choice != FREE_TEXT else FREE_TEXT_LABEL
+                if choice in disabled:
+                    parts.append(("class:choice.disabled", "  " + label + "\n"))
+                    continue
+                number += 1
+                selected = number - 1 == int(state["selected"])
+                style = "class:choice.selected" if selected else ""
+                if selected:
+                    parts.append(("[SetCursorPosition]", ""))
+                marker = "> " if selected else "  "
+                parts.append((style, f"{marker}{number:2d}. {label}\n"))
+
+            # --- Dynamic preview for current selection ---
+            sel_idx = int(state["selected"])
+            if opts and 0 <= sel_idx < len(opts):
+                selected_choice = opts[sel_idx]
+                if selected_choice != FREE_TEXT and previews_list:
+                    try:
+                        choice_idx = choices_tuple.index(selected_choice)
+                        if choice_idx < len(previews_list) and previews_list[choice_idx]:
+                            preview_text = previews_list[choice_idx]
+                            parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
+                            for line in preview_text.splitlines():
+                                parts.append(("class:choice.preview", "  │ " + line + "\n"))
+                    except ValueError:
+                        pass
+
+            if state["search"]:
+                parts.append(("", "/" + query))
+            return parts
+
+        bindings = KeyBindings()
+
+        @bindings.add("j", filter=~searching, eager=True)
+        @bindings.add("down", eager=True)
+        def _j(event):
+            move(event, 1)
+
+        @bindings.add("k", filter=~searching, eager=True)
+        @bindings.add("up", eager=True)
+        def _k(event):
+            move(event, -1)
+
+        @bindings.add("/", eager=True)
+        def _search(event):
+            state["search"] = True
+            state["query"] = ""
+            state["selected"] = 0
+            event.app.invalidate()
+
+        @bindings.add("backspace", filter=searching, eager=True)
+        @bindings.add("c-h", filter=searching, eager=True)
+        def _backspace(event):
+            state["query"] = str(state["query"])[:-1]
+            state["selected"] = 0
+            event.app.invalidate()
+
+        @bindings.add("escape", eager=True)
+        def _escape(event):
+            if state["search"]:
+                state["search"] = False
+                event.app.invalidate()
+                return
+            if state["query"]:
+                state["query"] = ""
+                state["selected"] = 0
+                event.app.invalidate()
+                return
+            event.app.exit(result=SELECTION_BACK)
+
+        @bindings.add("enter", eager=True)
+        def _enter(event):
+            if state["search"]:
+                state["search"] = False
+                event.app.invalidate()
+                return
+            opts = enabled()
+            clamp()
+            idx = int(state["selected"])
+            if 0 <= idx < len(opts):
+                choice = opts[idx]
+                if choice == FREE_TEXT:
+                    event.app.exit(result="__TYPE_FREELY__")
+                else:
+                    event.app.exit(result=choice)
+
+        @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
+        def _ctrl_c(event):
+            event.app.exit(exception=KeyboardInterrupt())
+
+        for number in range(1, 10):
+            @bindings.add(str(number), eager=True)
+            def _digit(event, number=number):
+                if state["search"]:
+                    state["query"] = str(state["query"]) + event.data
+                    state["selected"] = 0
+                    event.app.invalidate()
+                    return
+                opts = enabled()
+                if number <= len(opts):
+                    state["selected"] = number - 1
+                    event.app.invalidate()
+
+        @bindings.add(Keys.Any, filter=searching)
+        def _typed(event):
+            if event.data and event.data not in "\r\n":
+                state["query"] = str(state["query"]) + event.data
+                state["selected"] = 0
+                event.app.invalidate()
+
+        content = FormattedTextControl(fragments, focusable=True)
+        question_window = Window(content, dont_extend_height=True, wrap_lines=False)
+        app = self._make_app(Layout(HSplit([question_window, self.status_window()]), focused_element=question_window), bindings)
+        result = self.run_input_app(app)
+
+        if result is SELECTION_BACK:
+            return question
+        if result == "__TYPE_FREELY__":
+            return self.read_input(question + " (type freely)")
+        if isinstance(result, str):
+            return result
+        return question
+
+
+    def question_interaction(
+        self, question: str, choices: list[str] | None, previews: list[str] | None
+    ) -> str:
+        """Entry point for Question tool — delegates to interactive choice UI or plain input."""
+        return self.question_application(question, choices, previews)
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model
