@@ -1,0 +1,371 @@
+import json
+import os
+
+import pytest
+
+import nanocode as n
+
+
+# ── helpers ──
+
+
+def session_with_data_dir(tmp_path):
+    """Session targeting tmp_path as data_dir (avoids touching ~/.nanocode)."""
+    return n.Session(
+        cwd=str(tmp_path),
+        config=n.Config(data_dir=str(tmp_path)),
+    )
+
+
+def read_jsonl(path) -> list[dict]:
+    """Read all JSON lines from a JSONL file."""
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+# ── init line ──
+
+
+def test_first_save_writes_init_line(tmp_path):
+    """First save writes a single init line with full snapshot data."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.store_tool_result("Read", ["foo.py"], "# content")
+    s.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert len(lines) == 1
+    init = lines[0]
+    assert init["uid"] == s.uid
+    assert init["messages"] == [{"role": "user", "content": "hello"}]
+    assert init["tool_results"] == {"tr.1": "# content"}
+    assert init["tool_counter"] == 1
+    assert "usage" in init
+    assert "state" in init
+    assert "created_at" in init
+    assert "updated_at" in init
+    # Config and settings are NOT stored in the snapshot
+    assert "config" not in init
+    assert "settings" not in init
+
+def test_latest_pointer_created_on_first_save(tmp_path):
+    """First save creates the latest pointer file."""
+    s = session_with_data_dir(tmp_path)
+    s.save_snapshot()
+
+    latest_path = tmp_path / "latest"
+    assert latest_path.exists()
+    assert latest_path.read_text().strip() == s.uid
+
+
+# ── delta lines ──
+
+
+def test_second_save_writes_delta_with_only_new_data(tmp_path):
+    """Second save appends a delta line containing only new messages and tool results."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "first"})
+    s.store_tool_result("Read", ["a.py"], "# a")
+    s.save_snapshot()  # init
+
+    s.messages.append({"role": "assistant", "content": "reply"})
+    s.store_tool_result("Search", ["pat"], "result")
+    s.save_snapshot()  # delta
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert len(lines) == 2
+    delta = lines[1]
+    # Only new data in delta
+    assert delta["messages"] == [{"role": "assistant", "content": "reply"}]
+    assert delta["tool_results"] == {"tr.2": "result"}
+    assert "tr.1" not in delta.get("tool_results", {})
+    assert delta["tool_counter"] == 2
+
+
+def test_delta_omits_messages_when_nothing_new(tmp_path):
+    """Delta line omits the messages key when no new messages."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()  # init
+
+    # No new messages
+    s.save_snapshot()  # delta
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    delta = lines[1]
+    assert "messages" not in delta
+
+
+def test_delta_omits_tool_results_when_nothing_new(tmp_path):
+    """Delta line omits tool_results when no new tool calls."""
+    s = session_with_data_dir(tmp_path)
+    s.store_tool_result("Bash", ["pwd"], "/home")
+    s.save_snapshot()  # init
+
+    s.messages.append({"role": "user", "content": "more"})
+    s.save_snapshot()  # delta
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    delta = lines[1]
+    assert "messages" in delta
+    assert "tool_results" not in delta  # No new tool calls since init
+
+
+# ── load / merge ──
+
+
+def test_load_merges_init_and_deltas(tmp_path):
+    """load_snapshot reads and merges all lines, returning the full session state."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "q1"})
+    s.store_tool_result("Read", ["f.py"], "# f")
+    s.save_snapshot()  # init
+
+    s.messages.append({"role": "assistant", "content": "a1"})
+    s.store_tool_result("Search", ["pat"], "found")
+    s.save_snapshot()  # delta
+
+    s.messages.append({"role": "user", "content": "q2"})
+    s.save_snapshot()  # delta (no new tool results)
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    # All messages across all lines
+    assert [m["content"] for m in s2.messages[:3]] == ["q1", "a1", "q2"]
+    # Fourth message is resume marker
+    assert s2.messages[3]["content"].startswith("[Session resumed:")
+    # All tool results
+    assert s2.tool_results["tr.1"] == "# f"
+    assert s2.tool_results["tr.2"] == "found"
+    assert s2.tool_counter == 2
+
+
+def test_load_preserves_uid_and_created_at(tmp_path):
+    """load_snapshot preserves the original uid and created_at."""
+    s = session_with_data_dir(tmp_path)
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.uid == s.uid
+    assert s2._created_at == s._created_at
+
+
+def test_load_with_latest_alias(tmp_path):
+    """load_snapshot with uid='latest' resolves from the latest pointer file."""
+    s = session_with_data_dir(tmp_path)
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot("latest", config=s.config)
+    assert s2.uid == s.uid
+
+
+def test_load_appends_resume_marker(tmp_path):
+    """After load, the session has a resume marker message at the end."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert len(s2.messages) == 2  # hello + resume marker
+    assert s2.messages[-1]["content"].startswith(f"[Session resumed: uid={s.uid}]")
+
+
+def test_save_after_load_produces_a_delta(tmp_path):
+    """Save after load appends a delta (not re-init)."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()  # init (line 1)
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    # s2 now has messages = [hello, resume_marker]
+    s2.messages.append({"role": "assistant", "content": "post-resume"})
+    s2.save_snapshot()  # delta (line 2)
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert len(lines) == 2
+    delta = lines[1]
+    # The delta should contain the post-resume message, NOT the resume marker
+    # (resume marker was already in s2 when _snapshot_saved was set by load)
+    assert delta["messages"] == [{"role": "assistant", "content": "post-resume"}]
+
+
+def test_empty_session_save_and_load(tmp_path):
+    """A session with no messages and no tool calls can be saved and loaded."""
+    s = session_with_data_dir(tmp_path)
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.uid == s.uid
+    # Only the resume marker
+    assert len(s2.messages) == 1
+    assert s2.messages[0]["content"].startswith("[Session resumed:")
+    assert s2.tool_counter == 0
+    assert len(s2.tool_records) == 0
+
+
+# ── tool state roundtrip ──
+
+
+def test_tool_results_roundtrip(tmp_path):
+    """Tool results survive save/load."""
+    s = session_with_data_dir(tmp_path)
+    s.store_tool_result("Bash", ["echo hi"], "hi")
+    s.store_tool_result("Read", ["f.py"], "code")
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.tool_results["tr.1"] == "hi"
+    assert s2.tool_results["tr.2"] == "code"
+
+
+def test_tool_records_roundtrip(tmp_path):
+    """Tool records survive save/load."""
+    s = session_with_data_dir(tmp_path)
+    s.store_tool_result("Bash", ["pwd"], "/tmp")
+    s.store_tool_result("Search", ["x"], "match")
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert len(s2.tool_records) == 2
+    assert s2.tool_records[0].key == "tr.1"
+    assert s2.tool_records[0].name == "Bash"
+    assert s2.tool_records[0].output == "/tmp"
+    assert s2.tool_records[1].key == "tr.2"
+    assert s2.tool_records[1].name == "Search"
+
+
+def test_tool_errors_roundtrip(tmp_path):
+    """Tool errors survive save/load."""
+    s = session_with_data_dir(tmp_path)
+    s.record_tool_error("tr.1", "Bash", ["bad"], "command not found")
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert len(s2.tool_errors) == 1
+    assert s2.tool_errors[0].key == "tr.1"
+    assert s2.tool_errors[0].error == "command not found"
+
+
+# ── usage roundtrip ──
+
+
+def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
+    """All usage fields (including prompt_tokens/completion_tokens) survive save/load."""
+    s = session_with_data_dir(tmp_path)
+    s.usage.calls = 3
+    s.usage.prompt_tokens = 100
+    s.usage.completion_tokens = 50
+    s.usage.total_tokens = 150
+    s.usage.cached_prompt_tokens = 20
+    s.usage.last_cached_prompt_tokens = 5
+    s.usage.last_total_tokens = 60
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.usage.calls == 3
+    assert s2.usage.prompt_tokens == 100
+    assert s2.usage.completion_tokens == 50
+    assert s2.usage.total_tokens == 150
+    assert s2.usage.cached_prompt_tokens == 20
+    assert s2.usage.last_cached_prompt_tokens == 5
+    assert s2.usage.last_total_tokens == 60
+
+
+# ── state roundtrip ──
+
+
+def test_agent_state_roundtrip(tmp_path):
+    """Agent state (goal, plan, known, check, summary) survives save/load."""
+    s = session_with_data_dir(tmp_path)
+    s.state.goal = "fix bug"
+    s.state.plan = ["step 1", "step 2"]
+    s.state.known = ["file at src/a.py"]
+    s.state.check = "assert x == 1"
+    s.state.summary = "working on it"
+    s.save_snapshot()
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.state.goal == "fix bug"
+    assert s2.state.plan == ["step 1", "step 2"]
+    assert s2.state.known == ["file at src/a.py"]
+    assert s2.state.check == "assert x == 1"
+    assert s2.state.summary == "working on it"
+
+
+
+# ── multiple deltas ──
+
+
+def test_multiple_deltas_accumulate_correctly(tmp_path):
+    """Multiple delta saves accumulate data correctly."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "m1"})
+    s.save_snapshot()  # init
+    s.messages.append({"role": "assistant", "content": "a1"})
+    s.save_snapshot()  # delta 1
+    s.messages.append({"role": "user", "content": "m2"})
+    s.save_snapshot()  # delta 2
+    s.messages.append({"role": "assistant", "content": "a2"})
+    s.save_snapshot()  # delta 3
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    contents = [m["content"] for m in s2.messages if not m["content"].startswith("[Session resumed:")]
+    assert contents == ["m1", "a1", "m2", "a2"]
+
+
+def test_multiple_deltas_with_tool_calls(tmp_path):
+    """Tool calls across multiple deltas accumulate correctly."""
+    s = session_with_data_dir(tmp_path)
+    s.store_tool_result("Read", ["a.py"], "# a")
+    s.save_snapshot()  # init: tr.1
+    s.store_tool_result("Search", ["pat"], "hit")
+    s.save_snapshot()  # delta 1: tr.2
+    s.store_tool_result("Bash", ["pwd"], "/tmp")
+    s.save_snapshot()  # delta 2: tr.3
+
+    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    assert s2.tool_results["tr.1"] == "# a"
+    assert s2.tool_results["tr.2"] == "hit"
+    assert s2.tool_results["tr.3"] == "/tmp"
+    assert s2.tool_counter == 3
+    assert len(s2.tool_records) == 3
+
+
+# ── error handling ──
+
+
+def test_load_missing_snapshot_raises_error(tmp_path):
+    """Loading a non-existent session raises NanocodeError."""
+    with pytest.raises(n.NanocodeError, match="Session snapshot not found"):
+        n.Session.load_snapshot("nonexistent-uid", config=n.Config(data_dir=str(tmp_path)))
+
+
+def test_resolve_uid_missing_latest_file(tmp_path):
+    """Resolving 'latest' when no latest file exists raises NanocodeError."""
+    with pytest.raises(n.NanocodeError, match="No latest session to resume"):
+        n.Session._resolve_uid("latest", data_dir=str(tmp_path))
+
+
+def test_resolve_uid_passthrough_normal_uid(tmp_path):
+    """Resolving a normal uid (not 'latest') returns it as-is."""
+    result = n.Session._resolve_uid("my-uid", data_dir=str(tmp_path))
+    assert result == "my-uid"
+
+
+# ── JSONL format integrity ──
+
+
+def test_jsonl_file_is_append_only(tmp_path):
+    """Multiple saves only add lines, never rewrite the file."""
+    s = session_with_data_dir(tmp_path)
+    s.save_snapshot()  # l1
+    s.save_snapshot()  # l2
+    s.save_snapshot()  # l3
+    s.save_snapshot()  # l4
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert len(lines) == 4
+    # First line has all fields (init)
+    assert "uid" in lines[0]
+    assert "updated_at" in lines[1]
+    assert "updated_at" in lines[2]
+    assert "updated_at" in lines[3]

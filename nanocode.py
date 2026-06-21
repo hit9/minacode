@@ -720,8 +720,15 @@ class Session:
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
+    uid: str = ""
+    _created_at: str = ""
+    _snapshot_saved: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.uid:
+            self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
+        if not self._created_at:
+            self._created_at = datetime.now().isoformat()
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
         if not self.expected_git_branch:
@@ -796,7 +803,222 @@ class Session:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 
+    @staticmethod
+    def _record_key_counter(key: str) -> int:
+        """Extract the numeric counter from a tr.N key, or return 0."""
+        if key.startswith("tr."):
+            try:
+                return int(key[3:])
+            except ValueError:
+                pass
+        return 0
+    def _serialize_state(self) -> Json:
+        return {
+            "goal": self.state.goal,
+            "plan": self.state.plan,
+            "known": self.state.known,
+            "check": self.state.check,
+            "summary": self.state.summary,
+        }
 
+    def _serialize_usage(self) -> Json:
+        return {
+            "calls": self.usage.calls,
+            "prompt_tokens": self.usage.prompt_tokens,
+            "completion_tokens": self.usage.completion_tokens,
+            "total_tokens": self.usage.total_tokens,
+            "cached_prompt_tokens": self.usage.cached_prompt_tokens,
+            "last_cached_prompt_tokens": self.usage.last_cached_prompt_tokens,
+            "last_total_tokens": self.usage.last_total_tokens,
+        }
+
+
+    def _build_snapshot(self) -> Json:
+        """Build the full snapshot dict (used for the first JSONL line)."""
+        return {
+            "uid": self.uid,
+            "created_at": self._created_at,
+            "updated_at": datetime.now().isoformat(),
+            "cwd": self.cwd,
+            "git_branch": self.git_branch(self.cwd),
+            "messages": self.messages,
+            "state": self._serialize_state(),
+            "usage": self._serialize_usage(),
+            "tool_counter": self.tool_counter,
+            "tool_results": self.tool_results,
+            "tool_records": [
+                {"key": r.key, "name": r.name, "args": r.args, "output": r.output, "note": r.note}
+                for r in self.tool_records
+            ],
+            "tool_errors": [
+                {"key": e.key, "name": e.name, "args": e.args, "error": e.error}
+                for e in self.tool_errors
+            ],
+        }
+
+    def _build_delta(self) -> Json:
+        """Build a delta dict: only new/changed data since the last save."""
+        saved = self._snapshot_saved
+        delta: Json = {
+            "updated_at": datetime.now().isoformat(),
+            "tool_counter": self.tool_counter,
+            "usage": self._serialize_usage(),
+            "state": self._serialize_state(),
+        }
+        msg_len = len(self.messages)
+        last_msg_len = saved.get("messages_len", 0)
+        if msg_len > last_msg_len:
+            delta["messages"] = self.messages[last_msg_len:]
+        last_counter = saved.get("tool_counter", 0)
+        new_results = {
+            k: v for k, v in self.tool_results.items()
+            if self._record_key_counter(k) > last_counter
+        }
+        if new_results:
+            delta["tool_results"] = new_results
+        new_records = [
+            {"key": r.key, "name": r.name, "args": r.args, "output": r.output, "note": r.note}
+            for r in self.tool_records
+            if self._record_key_counter(r.key) > last_counter
+        ]
+        if new_records:
+            delta["tool_records"] = new_records
+        new_errors = [
+            {"key": e.key, "name": e.name, "args": e.args, "error": e.error}
+            for e in self.tool_errors
+            if self._record_key_counter(e.key) > last_counter
+        ]
+        if new_errors:
+            delta["tool_errors"] = new_errors
+        return delta
+
+    def save_snapshot(self) -> str:
+        """Append one JSON line to sessions/<uid>.jsonl.
+        First line = full init snapshot; subsequent lines = deltas (only new/changed data)."""
+        path = self.data_path("sessions", self.uid + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not self._snapshot_saved:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self._build_snapshot(), ensure_ascii=False) + "\n")
+        else:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(self._build_delta(), ensure_ascii=False) + "\n")
+        self._snapshot_saved = {
+            "messages_len": len(self.messages),
+            "tool_counter": self.tool_counter,
+        }
+        latest_path = self.data_path("latest")
+        with open(latest_path, "w", encoding="utf-8") as f:
+            f.write(self.uid)
+        return self.uid
+
+    @staticmethod
+    def _merge_delta_into(data: Json, delta: Json) -> None:
+        """Merge a delta dict into the running data dict (mutates in place)."""
+        if "messages" in delta:
+            data.setdefault("messages", []).extend(delta["messages"])
+        if "tool_results" in delta:
+            data.setdefault("tool_results", {}).update(delta["tool_results"])
+        if "tool_records" in delta:
+            data.setdefault("tool_records", []).extend(delta["tool_records"])
+        if "tool_errors" in delta:
+            data.setdefault("tool_errors", []).extend(delta["tool_errors"])
+        if "tool_counter" in delta:
+            data["tool_counter"] = delta["tool_counter"]
+        if "usage" in delta:
+            data["usage"] = delta["usage"]
+        if "state" in delta:
+            data["state"] = delta["state"]
+
+    @classmethod
+    def _resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
+        """Resolve 'latest' to the actual UID from the latest file."""
+        if uid != "latest":
+            return uid
+        latest_path = os.path.join(os.path.expanduser(data_dir), "latest")
+        try:
+            with open(latest_path) as f:
+                resolved = f.read().strip()
+                if not resolved:
+                    raise NanocodeError("Latest session file is empty")
+                return resolved
+        except FileNotFoundError:
+            raise NanocodeError("No latest session to resume; start a new session instead")
+        except OSError as e:
+            raise NanocodeError(f"Cannot read latest session: {e}")
+
+    @classmethod
+    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
+        """Load a session from a snapshot JSONL file by UID (or 'latest' alias)."""
+        if config is None:
+            data = ConfigFile.load()
+            config = Config.from_dict(data)
+        if settings is None:
+            settings = RuntimeSettings()
+        uid = cls._resolve_uid(uid, config.data_dir)
+        path = os.path.join(os.path.expanduser(config.data_dir), "sessions", uid + ".jsonl")
+        if not os.path.exists(path):
+            raise NanocodeError(f"Session snapshot not found: {uid} at {path}")
+        # Read all lines: first = init, rest = deltas
+        merged = None
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                if merged is None:
+                    merged = parsed
+                else:
+                    cls._merge_delta_into(merged, parsed)
+        if merged is None:
+            raise NanocodeError(f"Empty session file: {path}")
+        data = merged
+        cfg = config
+        s = settings
+        state = AgentState(**data["state"])
+        # Rebuild ModelUsage
+        usage = ModelUsage()
+        ud = data["usage"]
+        usage.calls = ud.get("calls", 0)
+        usage.prompt_tokens = ud.get("prompt_tokens", 0)
+        usage.completion_tokens = ud.get("completion_tokens", 0)
+        usage.total_tokens = ud.get("total_tokens", 0)
+        usage.cached_prompt_tokens = ud.get("cached_prompt_tokens", 0)
+        usage.last_cached_prompt_tokens = ud.get("last_cached_prompt_tokens", 0)
+        usage.last_total_tokens = ud.get("last_total_tokens", 0)
+        session = cls(
+            cwd=data.get("cwd", os.getcwd()),
+            config=cfg,
+            settings=s,
+            messages=data.get("messages", []),
+            state=state,
+            usage=usage,
+            tool_counter=data.get("tool_counter", 0),
+            tool_results=data.get("tool_results", {}),
+            tool_records=[
+                ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", ""))
+                for rec in data.get("tool_records", [])
+            ],
+            tool_errors=[
+                ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", ""))
+                for err in data.get("tool_errors", [])
+            ],
+            uid=data.get("uid", uid),
+            _created_at=data.get("created_at", ""),
+        )
+        # Append a resume marker BEFORE setting _snapshot_saved
+        session.messages.append({
+            "role": "user",
+            "content": f"[Session resumed: uid={session.uid}]"
+        })
+        # Mark snapshot_saved so the next save produces a proper delta
+        session._snapshot_saved = {
+            "messages_len": len(session.messages),
+            "tool_counter": session.tool_counter,
+        }
+
+        return session
 class UpdateChecker:
     PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
     CACHE_FILE = "update.json"
@@ -5672,6 +5894,7 @@ Tools:
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+            self.session.save_snapshot()
 
     def discover_mcp(self) -> None:
         self.session.mcp.discover_enabled()
@@ -5998,8 +6221,8 @@ Tools:
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
+            self.session.save_snapshot()
             return True, True
-        if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
         handlers = {
@@ -6613,6 +6836,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
+    parser.add_argument("--resume", default="", nargs="?", const="latest",
+                        help='Resume a session by UID, or "latest" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -6623,7 +6848,10 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
+        if args.resume:
+            session = Session.load_snapshot(args.resume)
+        else:
+            session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
