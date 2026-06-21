@@ -2439,6 +2439,16 @@ class NoteTool(Tool):
         return ["\n".join(lines) or "{}"]
 
 
+@dataclass(frozen=True)
+class QuestionSpec:
+    """One validated question the model wants to ask the user."""
+
+    question: str
+    choices: list[str] | None = None
+    previews: list[str] | None = None
+    recommended: int | None = None
+
+
 class QuestionTool(Tool):
     NAME = "Question"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
@@ -2449,7 +2459,7 @@ class QuestionTool(Tool):
     )
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[str, list[str] | None, list[str] | None, int | None, str], str] | None = None
+    question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2501,7 +2511,7 @@ class QuestionTool(Tool):
             raise ToolError("Question requires a non-empty 'questions' list")
         # Validate the whole batch up front, so a malformed later question never strands the
         # user after they have already answered earlier ones.
-        prepared: list[tuple[str, list[str] | None, list[str] | None, int | None]] = []
+        prepared: list[QuestionSpec] = []
         for item in questions:
             if not isinstance(item, dict):
                 raise ToolError("each question must be an object with a 'question' field")
@@ -2523,12 +2533,12 @@ class QuestionTool(Tool):
                 isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
             ):
                 raise ToolError("Question recommended must be a valid 0-based choice index")
-            prepared.append((question, choices, previews, recommended))
+            prepared.append(QuestionSpec(question, choices, previews, recommended))
         total = len(prepared)
         answers: list[tuple[str, str]] = []
-        for index, (question, choices, previews, recommended) in enumerate(prepared):
+        for index, spec in enumerate(prepared):
             position = f"{index + 1}/{total}" if total > 1 else ""
-            answers.append((question, self.question_fn(question, choices, previews, recommended, position) if self.question_fn else question))
+            answers.append((spec.question, self.question_fn(spec, position) if self.question_fn else spec.question))
         if len(answers) == 1:
             return answers[0][1]
         return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
@@ -4084,7 +4094,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
-        self.question_fn: Callable[[str, list[str] | None, list[str] | None, int | None, str], str] | None = None
+        self.question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
@@ -6243,18 +6253,12 @@ Tools:
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
-    def question_application(
-        self,
-        question: str,
-        choices: list[str] | None,
-        previews: list[str] | None,
-        recommended: int | None = None,
-        position: str = "",
-    ) -> str:
+    def question_application(self, spec: QuestionSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
+        choices = spec.choices
         # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
         # markdown — no separate styled line, hence no ANSI escapes to mangle.
-        prompt = f"({position}) {question}" if position else question
+        prompt = f"({position}) {spec.question}" if position else spec.question
         if not choices or not self.interactive_input:
             return self.read_input(prompt)
 
@@ -6266,9 +6270,10 @@ Tools:
         # An optional recommended choice is pre-selected (via current) and marked (via labels),
         # reusing the selector's existing machinery.
         labels, current = {}, ""
-        if recommended is not None and 0 <= recommended < len(choices):
-            current = choices[recommended]
+        if spec.recommended is not None and 0 <= spec.recommended < len(choices):
+            current = choices[spec.recommended]
             labels = {current: current + " (recommended)"}
+        previews = spec.previews
         preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
         result = self.choice_application(
             "Select:", tuple(choices), labels, current, set(),
@@ -6276,18 +6281,16 @@ Tools:
             free_text=True,
         )
         if result is SELECTION_FREE_TEXT:
-            return self.read_input(question + " (type freely)")
+            return self.read_input(spec.question + " (type freely)")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
-    def question_interaction(
-        self, question: str, choices: list[str] | None, previews: list[str] | None, recommended: int | None = None, position: str = ""
-    ) -> str:
+    def question_interaction(self, spec: QuestionSpec, position: str = "") -> str:
         """Entry point for Question tool — shows the chosen answer in CLI after selection."""
-        result = self.question_application(question, choices, previews, recommended, position)
+        result = self.question_application(spec, position)
         # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
-        if choices and result in choices:
+        if spec.choices and result in spec.choices:
             self.emit(result + "\n")
         return result
 
