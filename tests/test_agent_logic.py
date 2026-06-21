@@ -634,6 +634,51 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         reader.close()
 
 
+
+def test_queued_text_auto_submits_at_round_end(tmp_path):
+    """queue_input_text set during agent run is auto-submitted as next input."""
+    s = session(tmp_path)
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.queue_input_text = "auto instruction"
+
+    loop.run()
+
+    assert loop.queue_input_text == ""
+    assert any("auto instruction" in msg.get("content", "") for msg in s.messages)
+
+
+def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
+    """Unconsumed pending_user_inputs are auto-submitted as next input."""
+    s = session(tmp_path)
+    s.pending_user_inputs.append("leftover instruction")
+
+    class FakeModel:
+        def request(self, messages):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = n.Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+
+    loop.run()
+
+    assert s.pending_user_inputs == []
+    assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)

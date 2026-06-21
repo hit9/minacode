@@ -5957,12 +5957,12 @@ Tools:
         while True:
             try:
                 texts = []
+                if self.session.pending_user_inputs:
+                    texts.extend(text for text in self.session.pending_user_inputs if text.strip())
+                    self.session.pending_user_inputs.clear()
                 if self.queue_input_text.strip():
                     texts.append(self.queue_input_text)
-                    self.queue_input_text = ""
-                if self.session.pending_user_inputs:
-                    texts.extend(self.session.pending_user_inputs)
-                    self.session.pending_user_inputs.clear()
+                self.queue_input_text = ""
                 if texts:
                     user_input = "\n".join(texts)
                 else:
