@@ -5967,7 +5967,11 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                user_input = self.drain_queued_input() or self.read_input(initial_text="")
+                user_input = self.drain_queued_input()
+                if not user_input:
+                    user_input = self.read_input(initial_text="")
+                elif self.input_history is not None:
+                    self.input_history.append_string(user_input)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
