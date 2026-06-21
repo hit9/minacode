@@ -713,11 +713,12 @@ class SessionSnapshotCodec:
 
     @classmethod
     def marker(cls, session: "Session") -> Json:
+        messages = cls.persistable_messages(session.messages)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
         return {
-            "messages_len": len(session.messages),
-            "messages_digest": cls.digest(session.messages),
+            "messages_len": len(messages),
+            "messages_digest": cls.digest(messages),
             "tool_counter": session.tool_counter,
             "tool_records_len": len(records),
             "tool_records_digest": cls.digest(records),
@@ -738,7 +739,7 @@ class SessionSnapshotCodec:
         state = session.state
         return any(
             (
-                any(not cls.is_internal_message(message) for message in session.messages),
+                bool(cls.persistable_messages(session.messages)),
                 bool(session.tool_records),
                 bool(session.tool_errors),
                 bool(state.goal or state.plan or state.known or state.check or state.summary),
@@ -748,6 +749,10 @@ class SessionSnapshotCodec:
     @staticmethod
     def is_internal_message(message: Json) -> bool:
         return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
+
+    @classmethod
+    def persistable_messages(cls, messages: list[Json]) -> list[Json]:
+        return [message for message in messages if not cls.is_internal_message(message)]
 
     @staticmethod
     def state(state: AgentState) -> Json:
@@ -776,7 +781,7 @@ class SessionSnapshotCodec:
         return {
             "uid": session.uid,
             "cwd": session.cwd,
-            "messages": session.messages,
+            "messages": cls.persistable_messages(session.messages),
             "state": cls.state(session.state),
             "usage": cls.usage(session.usage),
             "tool_counter": session.tool_counter,
@@ -791,7 +796,7 @@ class SessionSnapshotCodec:
             "usage": cls.usage(session.usage),
             "state": cls.state(session.state),
         }
-        cls.add_sequence_delta(delta, "messages", session.messages, saved, "messages_len", "messages_digest")
+        cls.add_sequence_delta(delta, "messages", cls.persistable_messages(session.messages), saved, "messages_len", "messages_digest")
         cls.add_sequence_delta(
             delta,
             "tool_records",
@@ -956,7 +961,7 @@ class SessionSnapshotStore:
             cwd=data.get("cwd", os.getcwd()),
             config=config,
             settings=settings,
-            messages=data.get("messages", []),
+            messages=SessionSnapshotCodec.persistable_messages(data.get("messages", [])),
             state=AgentState(**data.get("state", {})),
             usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
             tool_counter=data.get("tool_counter", 0),
@@ -6007,8 +6012,9 @@ Tools:
         if not messages:
             return
         self.emit(f"Restored session: {self.session.uid}")
+        tool_record_index = 0
         for message in messages:
-            self.render_transcript_message(message)
+            tool_record_index = self.render_transcript_message(message, tool_record_index)
 
     @staticmethod
     def is_resume_marker(message: Json) -> bool:
@@ -6019,17 +6025,57 @@ Tools:
             return False
         return message.get("role") != "tool"
 
-    def render_transcript_message(self, message: Json) -> None:
+    def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
-        if not content:
-            return
-        if role == "assistant":
+        if role == "assistant" and content:
             self.emit("assistant:")
             self.ui.emit_answer(content)
-        elif role == "user":
+        if role == "assistant":
+            return self.render_transcript_tool_calls(message, tool_record_index)
+        if role == "user" and content:
             self.emit("user:")
             self.emit(content)
+        return tool_record_index
+
+    def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            return tool_record_index
+        for raw in raw_calls:
+            call = self.transcript_tool_call(raw)
+            if call is None:
+                continue
+            record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
+            self.emit(self.agent.tools.finish_display(call, record.key if record else "", "", failed=False))
+        return tool_record_index
+
+    @staticmethod
+    def transcript_tool_call(raw: Any) -> ToolCall | None:
+        if not isinstance(raw, dict):
+            return None
+        function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+        name = str(function.get("name") or "")
+        if not name:
+            return None
+        arguments = function.get("arguments")
+        try:
+            payload = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
+        except json.JSONDecodeError:
+            payload = {}
+        return ToolCall(id=str(raw.get("id") or ""), name=name, args=ModelClient.tool_payload(name, payload))
+
+    def transcript_tool_record(self, call: ToolCall, tool_record_index: int) -> tuple[ToolResultRecord | None, int]:
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is not None and not tool_class.STORES_RESULT:
+            return None, tool_record_index
+        records = self.session.tool_records
+        while tool_record_index < len(records):
+            record = records[tool_record_index]
+            tool_record_index += 1
+            if record.name == call.name:
+                return record, tool_record_index
+        return None, tool_record_index
 
     def save_and_emit_resume(self) -> None:
         uid = self.session.save_snapshot()

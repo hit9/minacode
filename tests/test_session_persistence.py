@@ -190,6 +190,64 @@ def test_save_after_load_produces_a_delta(tmp_path):
     assert delta["messages"] == [{"role": "assistant", "content": "post-resume"}]
 
 
+def test_repeated_resume_preserves_history(tmp_path):
+    """Repeated resume/save cycles keep appending new messages to the same history."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "m1"})
+    s.save_snapshot()
+
+    expected = ["m1"]
+    for role, content in (("assistant", "a1"), ("user", "m2"), ("assistant", "a2")):
+        s = n.Session.load_snapshot(s.uid, config=s.config)
+        assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(s.messages)] == expected
+        s.messages.append({"role": role, "content": content})
+        s.save_snapshot()
+        expected.append(content)
+
+    loaded = n.Session.load_snapshot(s.uid, config=s.config)
+    assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(loaded.messages)] == expected
+
+
+def test_resume_marker_is_never_persisted(tmp_path):
+    """Resume markers are runtime-only, including when a message rewrite forces replace."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "m1"})
+    s.save_snapshot()
+
+    resumed = n.Session.load_snapshot(s.uid, config=s.config)
+    resumed.messages = [
+        {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
+        {"role": "user", "content": "rewritten"},
+    ]
+    resumed.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert lines[-1]["messages_replace"] == [{"role": "user", "content": "rewritten"}]
+    assert "[Session resumed:" not in json.dumps(lines)
+
+
+def test_load_discards_persisted_resume_markers(tmp_path):
+    """Older or malformed snapshots may contain resume markers; load should not keep them."""
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
+    path.parent.mkdir(parents=True)
+    marker = {"role": "system", "content": f"[Session resumed: uid={s.uid}]"}
+    n.SessionSnapshotStore.write_jsonl(
+        str(path),
+        {
+            "uid": s.uid,
+            "cwd": str(tmp_path),
+            "messages": [{"role": "user", "content": "m1"}, marker, {"role": "assistant", "content": "a1"}],
+        },
+        mode="w",
+    )
+
+    loaded = n.Session.load_snapshot(s.uid, config=s.config)
+
+    assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(loaded.messages)] == ["m1", "a1"]
+    assert sum(1 for m in loaded.messages if n.SessionSnapshotCodec.is_internal_message(m)) == 1
+
+
 def test_empty_session_first_save_is_skipped(tmp_path):
     """A session with no recoverable content is not persisted."""
     s = session_with_data_dir(tmp_path)

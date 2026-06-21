@@ -739,14 +739,20 @@ def test_empty_exit_does_not_print_resume_command(tmp_path):
 def test_resumed_session_does_not_render_tool_results(tmp_path):
     s = session(tmp_path)
     s.resumed = True
+    arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
     s.messages.extend(
         [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "need tool"},
-            {"role": "tool", "content": "raw tool result"},
+            {
+                "role": "assistant",
+                "content": "need tool",
+                "tool_calls": [{"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": arguments}}],
+            },
+            {"role": "tool", "tool_call_id": "tc.1", "content": "raw tool result"},
             {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
         ]
     )
+    s.tool_records.append(n.ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw tool result", "a.py 0:1"))
     output = []
     loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
 
@@ -757,6 +763,7 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert f"Restored session: {s.uid}" in text
     assert "hello" in text
     assert "need tool" in text
+    assert "tool Read a.py 0:1 -> tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
 
