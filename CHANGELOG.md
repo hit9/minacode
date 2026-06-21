@@ -1,22 +1,30 @@
 # Changelog
 
+## 0.6.3 - (pending)
+
+### Added
+- Added `Question` tool that pauses the agent to ask the user for clarification when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Supports structured choices with optional dynamic previews.
+- Wired `Question` tool into the interactive selection flow via `question_application()` with `j`/`k` navigation, `Ctrl+P` pager preview, Rich markdown rendering of the question text, and free-text fallback.
+- Emit the selected choice or free-text answer in CLI after the interactive selector closes, providing clear feedback to the user.
+
+### Changed
+- Refined `Question` tool DESCRIPTION, SYSTEM_PROMPT usage guidance, and README with clear principles: question only when intent is truly ambiguous, design affects external shape, or prioritization is needed. Skip internal details, contextually-determinable items, and already-specified matters.
+
+### Fixed
+- GitTool: validate non-empty `argv` in `payload_args` with a clear error message when the model sends an empty command list.
+- Refresh `initial_git_branch` after every successful Git tool command so that commits on a legitimately-switched feature branch are not rejected.
+
 ## 0.6.2 - 2026-06-21
 
 ### Changed
 - Simplified the agent system prompt while preserving the main `TOOLS`, `FLOW`, `FILE STATE`, and `FINAL` sections.
 - Simplified MCP command handling and server config parsing by sharing command metadata and config field parsing helpers.
 
-
-### Added
-- Added `Question` tool that pauses the agent to ask the user for clarification when intent is ambiguous, design choices affect external shape, or prioritization is needed. Supports structured choices with optional dynamic previews.
-- Wired `Question` tool into the interactive selection flow via `question_application()` with `j`/`k` navigation, `Ctrl+P` pager preview, and free-text fallback.
-- Added comprehensive test coverage for `QuestionTool` schema, validation, callback invocation, and `ToolRunner` wiring.
 ### Fixed
 - Reused one manager-owned MCP event loop for async MCP operations, including calls made while another event loop is already running.
 - Made MCP OAuth token storage reuse one store and shared path lock to avoid concurrent token file writes racing each other.
 - Allowed `env_http_headers.Authorization` when it is the only configured authorization source.
 - Rejected extra `/mcp` subcommand arguments instead of silently ignoring them.
-- Refreshed `initial_git_branch` after every successful Git tool command so that commits on a legitimately-switched feature branch are not rejected.
 
 ## 0.6.1 - 2026-06-19
 
