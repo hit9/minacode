@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2 - 2026-06-21
+
+### Changed
+- Simplified the agent system prompt while preserving the main `TOOLS`, `FLOW`, `FILE STATE`, and `FINAL` sections.
+- Simplified MCP command handling and server config parsing by sharing command metadata and config field parsing helpers.
+
+### Fixed
+- Reused one manager-owned MCP event loop for async MCP operations, including calls made while another event loop is already running.
+- Made MCP OAuth token storage reuse one store and shared path lock to avoid concurrent token file writes racing each other.
+- Allowed `env_http_headers.Authorization` when it is the only configured authorization source.
+- Rejected extra `/mcp` subcommand arguments instead of silently ignoring them.
+
 ## 0.6.1 - 2026-06-19
 
 ### Changed
