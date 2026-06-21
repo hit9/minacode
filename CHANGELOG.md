@@ -26,6 +26,8 @@
 - Auto-submit queued input at round end: `queue_input_text` (typed but not confirmed) and unconsumed `pending_user_inputs` both get drained and submitted as the next user input; extracted as `CommandLoop.drain_queued_input()`.
 - Clear blank `queue_input_text` even when it contains only whitespace, preventing stale whitespace from lingering in the input area.
 
+- Record auto-submitted queued input in CLI history via `FileHistory.append_string()`, so previously-queued text appears in prompt history like any manually typed input.
+
 ## 0.6.3 - 2026-06-21
 
 ### Added
