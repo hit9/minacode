@@ -85,7 +85,7 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
-- Ask the user: `Question` asks the user a question and waits for their answer before continuing.
+- Ask the user: `Question` asks the user for clarification when the intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Do NOT ask about trivial internal details, things you can determine from context, or anything already specified — if a reasonable choice exists, proceed without asking.
 - MCP: `MCP` calls tools on configured MCP servers.
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.

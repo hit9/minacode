@@ -2435,7 +2435,7 @@ class NoteTool(Tool):
 
 class QuestionTool(Tool):
     NAME = "Question"
-    DESCRIPTION = "Ask the user a question and wait for a response. Use when the instruction is ambiguous, when a decision is needed, or when more context is required from the user."
+    DESCRIPTION = "Ask the user a clarifying question and wait for their answer. Use when: the intent is genuinely ambiguous with different valid outcomes, a design choice affects the codebase's external shape (module structure, public API, naming), or prioritization is needed. Do NOT ask about trivial internal details (variable names, formatting), things you can determine from context (check Read/InspectCode/Bash first), or anything already specified. If a reasonable choice exists, proceed without asking."
     SIGNATURE = 'Question(question, choices?, previews?)'
     EXAMPLE = (
         'Ask with choices and previews. Example: {"question":"Which approach?","choices":["Refactor","Rewrite","Keep"],"previews":["Extract to module +87 -12","Rewrite from scratch","No changes"]}',
@@ -4715,7 +4715,7 @@ TOOLS:
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; InspectCode navigates symbols when available.
 - Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
-- Question/ask: Question asks the user a question and waits for their answer before continuing.
+- Restraint: Before calling "Question", try making progress with other tools first. Only ask when you genuinely cannot proceed without the user's input.
 
 FLOW:
 - Act when clear; keep using tools until done, or return a final answer.
