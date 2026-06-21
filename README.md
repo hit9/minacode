@@ -10,19 +10,24 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
-## Features
+## Overview
 
-- **Live turn control**: Add follow-up input while the agent is still working, without losing the current tool flow.
-- **File-state brain**: Reads and edits build a current, line-numbered view of the files that matter now.
-- **Stale-edit protection**: `line:hash` anchors reject edits when the target code has drifted.
-- **Project-aware navigation**: Use the symbol index to jump through outlines, references, implementors, call chains, and changed files quickly.
-- **Recoverable context**: Tool output stays bounded in the prompt, while raw `tr.N` results remain recallable.
-- **Cache-aware context**: Stable sections stay early and noisy working state stays late to improve prompt-cache reuse.
-- **Focused working memory**: `Note` separates goal, plan, and known facts from noisy execution logs.
-- **MCP integration**: Connect to remote (HTTP) or local (stdio) Model Context Protocol servers and call their tools.
-- **Terminal-first workflow**: Model selection, history search, confirmations, live command output, appended input, and status all stay in one CLI.
+nanocode is a terminal-first coding agent for local development work. It keeps the interaction in one CLI: model selection, history search, confirmations, live command output, queued input, session recovery, and status display.
+
+Core capabilities:
+
+- Live turn control with the `+>` prompt while the agent is still working.
+- File-aware context from `Read`, `Search`, `InspectCode`, and `Edit`.
+- Stale-edit protection with current `line:hash` anchors.
+- Project navigation through the optional code symbol index.
+- Recoverable tool results through compact `tr.N` references and `Recall`.
+- Focused working memory through `Note`.
+- MCP integration for remote HTTP and local stdio servers.
+- Append-only session recovery with `nanocode --resume`.
 
 ## Install
+
+Install with uv:
 
 ```sh
 uv tool install nanocode-cli
@@ -41,9 +46,15 @@ uv sync --extra dev
 uv run nanocode
 ```
 
-## Usage
+## Quick Start
 
-Start the CLI:
+Create a config file:
+
+```sh
+nanocode --init-config
+```
+
+Edit `~/.nanocode/config.toml`, then start:
 
 ```sh
 nanocode
@@ -53,15 +64,44 @@ Useful arguments:
 
 - `--config <path>`: use a TOML config file.
 - `--init-config`: create a default config file.
+- `--resume [UID]`: resume a saved session; without `UID`, resumes `latest`.
 - `--yolo`: skip confirmations for mutating tools.
+- `--mcp <selector>`: choose which configured MCP servers to enable.
+- `--debug`: write model I/O debug traces.
 - `-v`, `--version`: show the version.
 
-During a running turn, the `+>` prompt accepts follow-up input for the next model request.
+During a running turn, type into the `+>` prompt to add follow-up input for the next model request.
 
-## Commands
+## Sessions
+
+nanocode saves recoverable sessions under `[paths] data_dir` as append-only JSONL snapshots. Empty sessions are not saved.
+
+On exit, nanocode prints the command needed to restore the session:
+
+```sh
+Resume with: nanocode --resume <session-id>
+```
+
+Resume a session with:
+
+```sh
+nanocode --resume <session-id>
+nanocode --resume latest
+nanocode --resume last
+```
+
+Restored sessions render the conversation history once on startup. Tool execution summaries are shown again, but raw tool result bodies are not printed. `/status` shows the active session id.
+
+Snapshots store only the recovery data nanocode needs: conversation messages, usage, working notes, tool records, and tool errors. Runtime settings, config, git branch, and other rebuildable state are loaded from the current environment/config instead of the snapshot.
+
+Session files older than `runtime.session_retention_days` are removed on startup. The default is `7`; set it to `0` to disable retention cleanup.
+
+## CLI
+
+Commands:
 
 - `/help`: show commands and tools.
-- `/status`: show runtime status.
+- `/status`: show runtime status, including the active session id.
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
 - `/debug [on|off]`: toggle model I/O debug traces.
@@ -71,13 +111,13 @@ During a running turn, the `+>` prompt accepts follow-up input for the next mode
 - `/provider [NAME]`: show or set provider.
 - `/model [MODEL]`: show or set model.
 - `/reason`: choose reasoning effort.
-- `/set KEY VALUE`: set provider/runtime values.
+- `/set KEY VALUE`: set supported provider/runtime values for the current session.
 - `/yolo`: toggle tool confirmations.
 - `/exit`, `/quit`: exit.
 
 Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input supports history, completion, and `Ctrl-R` history search.
 
-## Tools
+Tools:
 
 - File: `Read`, `LineCount`, `List`, `Find`, `Search`.
 - Code index: `InspectCode`.
@@ -85,29 +125,29 @@ Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc. Input
 - Shell: `Bash`, `Git`.
 - Tool results: `Recall`.
 - Working notes: `Note`.
-- Ask the user: `Question` asks one or more questions (optional choices, previews, recommended) when intent is genuinely ambiguous.
-- MCP: `MCP` calls tools on configured MCP servers.
+- Ask the user: `Question`.
+- MCP: `MCP`.
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
 ## Configuration
 
-Run:
+Default config location:
 
-```sh
-nanocode --init-config
+```text
+~/.nanocode/config.toml
 ```
-
-Default config location is `~/.nanocode/config.toml`.
 
 Main fields:
 
 - `[provider] active = "name"`
 - `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `yolo`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`
 
 `api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
+
+Runtime flags such as `--yolo`, `--debug`, and `--mcp` apply to resumed sessions too. Saved sessions do not carry their old runtime config forward.
 
 ## MCP
 
@@ -127,7 +167,7 @@ auth = "oauth"                              # browser login via /mcp login <serv
 enabled = true
 ```
 
-Local server over stdio (launched as a subprocess):
+Local server over stdio:
 
 ```toml
 [mcp.filesystem]
@@ -146,16 +186,16 @@ Manage servers at runtime:
 - `/mcp refresh [server]`: rediscover servers.
 - `/mcp login <server>` / `/mcp logout <server>`: OAuth login and logout.
 
-## Tested Providers
+## Providers
 
 The following providers have been tested with nanocode:
 
 - **deepseek**: DeepSeek API
 - **opencode**: OpenCode API
-- **aliyun**: Alibaba Cloud (Tongyi Qianwen) API via Chat Completions
+- **aliyun**: Alibaba Cloud Tongyi Qianwen API via Chat Completions
 - **llama.cpp**: Local inference via llama.cpp server
 
-## Context Design
+## Context Model
 
 Each model request is built manually from explicit messages. Stable context comes first, conversation stays as messages, working memory follows, and the latest file state is appended at the end.
 
@@ -166,16 +206,16 @@ model request
 |   concise agent contract and tool rules          |
 +--------------------------------------------------+
 | user                                             |
-|   Environment                                   |
+|   Environment                                    |
 +--------------------------------------------------+
-| user/assistant                                  |
-|   conversation, compacted summaries, tools      |
-+--------------------------------------------------+
-| user                                             |
-|   Memory: goal, plan, known, date               |
+| user/assistant                                   |
+|   conversation, compacted summaries, tools       |
 +--------------------------------------------------+
 | user                                             |
-|   FILE STATE: latest Read/Edit file view        |
+|   Memory: goal, plan, known, date                |
++--------------------------------------------------+
+| user                                             |
+|   FILE STATE: latest Read/Edit file view         |
 +--------------------------------------------------+
 ```
 

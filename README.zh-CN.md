@@ -10,19 +10,24 @@ nanocode 仍是 1.0 前的软件。稳定版发布前，命令、配置和工具
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
-## 特性
+## 概览
 
-- **实时回合控制**：代理还在工作时，也可以追加输入，不打断当前工具流程。
-- **文件状态大脑**：`Read` 和 `Edit` 会构建当前重要文件的带行号视图。
-- **过期编辑保护**：`line:hash` 锚点会在目标代码漂移后拒绝错误编辑。
-- **项目级导航**：通过符号索引快速查看 outline、references 和变更文件。
-- **可恢复上下文**：prompt 中的工具输出保持有界，原始 `tr.N` 结果仍可按需召回。
-- **缓存友好上下文**：稳定内容靠前，嘈杂的工作状态靠后，提高 prompt cache 复用率。
-- **聚焦工作记忆**：`Note` 把 goal、plan、known facts 从嘈杂执行日志中拆出来。
-- **MCP 集成**：连接远程（HTTP）或本地（stdio）的 Model Context Protocol 服务器并调用其工具。
-- **终端优先工作流**：模型选择、历史搜索、确认、实时命令输出、追加输入和状态展示都在一个 CLI 内完成。
+nanocode 是面向本地开发工作的终端编程代理。它把模型选择、历史搜索、确认、实时命令输出、排队输入、session 恢复和状态展示都放在一个 CLI 里。
+
+核心能力：
+
+- 通过 `+>` 提示符在代理运行时追加输入。
+- 通过 `Read`、`Search`、`InspectCode` 和 `Edit` 构建文件感知上下文。
+- 使用当前 `line:hash` 锚点保护编辑，避免修改漂移后的代码。
+- 通过可选代码符号索引进行项目导航。
+- 通过紧凑的 `tr.N` 引用和 `Recall` 恢复工具结果。
+- 通过 `Note` 维护聚焦的工作记忆。
+- 集成远程 HTTP 和本地 stdio MCP 服务器。
+- 通过 `nanocode --resume` 恢复 append-only session。
 
 ## 安装
+
+使用 uv 安装：
 
 ```sh
 uv tool install nanocode-cli
@@ -41,9 +46,15 @@ uv sync --extra dev
 uv run nanocode
 ```
 
-## 使用
+## 快速开始
 
-启动 CLI：
+创建配置文件：
+
+```sh
+nanocode --init-config
+```
+
+编辑 `~/.nanocode/config.toml`，然后启动：
 
 ```sh
 nanocode
@@ -53,15 +64,44 @@ nanocode
 
 - `--config <path>`：使用指定 TOML 配置文件。
 - `--init-config`：创建默认配置文件。
+- `--resume [UID]`：恢复已保存的 session；不传 `UID` 时恢复 `latest`。
 - `--yolo`：跳过会修改环境的工具确认。
+- `--mcp <selector>`：选择启用哪些已配置的 MCP 服务器。
+- `--debug`：写入模型 I/O debug trace。
 - `-v`, `--version`：显示版本。
 
-代理运行中，`+>` 提示符可以接收追加输入，并在下一次模型请求中发送。
+代理运行中，可以在 `+>` 提示符里输入追加内容，发送到下一次模型请求。
 
-## 命令
+## Sessions
+
+nanocode 会把有可恢复内容的 session 保存到 `[paths] data_dir` 下，格式是 append-only JSONL snapshot。空 session 不会保存。
+
+退出时，nanocode 会打印恢复命令：
+
+```sh
+Resume with: nanocode --resume <session-id>
+```
+
+恢复 session：
+
+```sh
+nanocode --resume <session-id>
+nanocode --resume latest
+nanocode --resume last
+```
+
+恢复后会在启动时重新渲染一次会话历史。工具执行摘要会再次显示，但不会打印原始 tool result 正文。`/status` 会显示当前 session id。
+
+snapshot 只保存 nanocode 恢复所需的数据：会话消息、usage、工作笔记、tool records 和 tool errors。runtime settings、config、git branch 以及其他可重建状态会从当前环境和配置读取，不写入 snapshot。
+
+启动时会删除早于 `runtime.session_retention_days` 的 session 文件。默认值是 `7`；设置为 `0` 可关闭保留期清理。
+
+## CLI
+
+命令：
 
 - `/help`：显示命令和工具。
-- `/status`：显示运行状态。
+- `/status`：显示运行状态，包括当前 session id。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。
 - `/debug [on|off]`：切换模型 I/O debug trace。
@@ -71,13 +111,13 @@ nanocode
 - `/provider [NAME]`：显示或设置 provider。
 - `/model [MODEL]`：显示或设置模型。
 - `/reason`：选择 reasoning effort。
-- `/set KEY VALUE`：设置 provider/runtime 值。
+- `/set KEY VALUE`：设置当前 session 支持的 provider/runtime 值。
 - `/yolo`：切换工具确认。
 - `/exit`, `/quit`：退出。
 
 交互选择器支持 `j`/`k`、方向键、`/` 搜索、Enter 和 Esc。输入框支持历史、补全和 `Ctrl-R` 历史搜索。
 
-## 工具
+工具：
 
 - 文件：`Read`, `LineCount`, `List`, `Find`, `Search`。
 - 代码索引：`InspectCode`。
@@ -85,29 +125,29 @@ nanocode
 - Shell：`Bash`, `Git`。
 - 工具结果：`Recall`。
 - 工作笔记：`Note`。
-- 询问用户：`Question` 在意图真正歧义时向用户提一个或多个问题（可选 choices、previews、recommended）。
-- MCP：`MCP` 调用已配置 MCP 服务器上的工具。
+- 询问用户：`Question`。
+- MCP：`MCP`。
 
 `Read`、`Search` 和 `InspectCode` 会在合适时返回行锚点。`Edit` 使用当前 `line:hash` 锚点拒绝过期编辑。
 
 ## 配置
 
-运行：
+默认配置位置：
 
-```sh
-nanocode --init-config
+```text
+~/.nanocode/config.toml
 ```
-
-默认配置位置是 `~/.nanocode/config.toml`。
 
 主要字段：
 
 - `[provider] active = "name"`
 - `[provider.<name>]`：`url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `yolo`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`
 
 `api = "auto"` 会根据 provider/model profile 在 Chat Completions 和 Anthropic Messages 之间选择。`prompt_cache_key = "auto"` 会根据 provider、model、workspace 和工具 schema 名称生成稳定 key。
+
+`--yolo`、`--debug` 和 `--mcp` 等 runtime flags 对恢复的 session 同样生效。保存的 session 不会携带旧 runtime config。
 
 ## MCP
 
@@ -127,7 +167,7 @@ auth = "oauth"                              # 通过 /mcp login <server> 在浏�
 enabled = true
 ```
 
-通过 stdio 的本地服务器（作为子进程启动）：
+通过 stdio 的本地服务器：
 
 ```toml
 [mcp.filesystem]
@@ -146,15 +186,16 @@ HTTP 鉴权选项（`auth`、`bearer_token_env_var`、`env_http_headers`）只�
 - `/mcp refresh [server]`：重新发现服务器。
 - `/mcp login <server>` / `/mcp logout <server>`：OAuth 登录和登出。
 
-## 已测试的 Provider
+## Providers
 
 以下 provider 已在 nanocode 中测试通过：
 
-- **deepseek**: DeepSeek API
-- **opencode**: OpenCode API
-- **aliyun**: 阿里云通义千问 API（Chat Completions）
-- **llama.cpp**: 通过 llama.cpp 服务端本地推理
-## 上下文设计
+- **deepseek**：DeepSeek API
+- **opencode**：OpenCode API
+- **aliyun**：阿里云通义千问 API（Chat Completions）
+- **llama.cpp**：通过 llama.cpp 服务端本地推理
+
+## 上下文模型
 
 每次模型请求都由 nanocode 手动构建成明确的 messages。稳定上下文在前，会话作为 messages 保留，工作记忆随后，最新文件状态放在末尾。
 
@@ -165,16 +206,16 @@ model request
 |   concise agent contract and tool rules          |
 +--------------------------------------------------+
 | user                                             |
-|   Environment                                   |
+|   Environment                                    |
 +--------------------------------------------------+
-| user/assistant                                  |
-|   conversation, compacted summaries, tools      |
-+--------------------------------------------------+
-| user                                             |
-|   Memory: goal, plan, known, date               |
+| user/assistant                                   |
+|   conversation, compacted summaries, tools       |
 +--------------------------------------------------+
 | user                                             |
-|   FILE STATE: latest Read/Edit file view        |
+|   Memory: goal, plan, known, date                |
++--------------------------------------------------+
+| user                                             |
+|   FILE STATE: latest Read/Edit file view         |
 +--------------------------------------------------+
 ```
 
