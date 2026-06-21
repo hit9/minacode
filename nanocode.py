@@ -6247,17 +6247,16 @@ Tools:
         position: str = "",
     ) -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
+        # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
+        # markdown — no separate styled line, hence no ANSI escapes to mangle.
+        prompt = f"({position}) {question}" if position else question
         if not choices or not self.interactive_input:
-            return self.read_input(f"{position} {question}" if position else question)
+            return self.read_input(prompt)
 
-        # Render the position (e.g. 1/3) and the question (markdown) above the selector.
-        # highlight=False stops Rich from auto-coloring the digits in "1/3".
-        if position:
-            self.ui.console.print(position, style="dim", highlight=False) if self.ui.color else self.emit(position + "\n")
         if self.ui.color:
-            self.ui.console.print(Markdown(question))
+            self.ui.console.print(Markdown(prompt))
         else:
-            self.emit(question + "\n")
+            self.emit(prompt + "\n")
 
         # An optional recommended choice is pre-selected (via current) and marked (via labels),
         # reusing the selector's existing machinery.
