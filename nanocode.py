@@ -6365,8 +6365,12 @@ Tools:
     def question_interaction(
         self, question: str, choices: list[str] | None, previews: list[str] | None
     ) -> str:
-        """Entry point for Question tool — delegates to interactive choice UI or plain input."""
-        return self.question_application(question, choices, previews)
+        """Entry point for Question tool — shows the chosen answer in CLI after selection."""
+        result = self.question_application(question, choices, previews)
+        # Emit the selected choice text (free-text is already shown by read_input)
+        if result and result != question and choices and result in choices:
+            self.emit(result + "\n")
+        return result
 
     def select_model(self, choices: tuple[str, ...]) -> str | object | None:
         current = self.session.config.provider.model
