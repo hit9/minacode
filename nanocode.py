@@ -2441,15 +2441,15 @@ class NoteTool(Tool):
 
 class QuestionTool(Tool):
     NAME = "Question"
-    DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
-    SIGNATURE = 'Question(questions=[{question, choices?, previews?}, ...])'
+    DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
+    SIGNATURE = 'Question(questions=[{question, choices?, previews?, recommended?}, ...])'
     EXAMPLE = (
-        'One question with choices and previews. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"]}]}',
+        'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
     )
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[str, list[str] | None, list[str] | None], str] | None = None
+    question_fn: Callable[[str, list[str] | None, list[str] | None, int | None], str] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2473,6 +2473,11 @@ class QuestionTool(Tool):
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": "Optional preview text per choice, shown as the user navigates",
+                            },
+                            "recommended": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Optional 0-based index of the recommended choice; pre-selected and marked",
                             },
                         },
                         "required": ["question"],
@@ -2503,6 +2508,7 @@ class QuestionTool(Tool):
                 raise ToolError("each question requires a 'question' field")
             choices = item.get("choices")
             previews = item.get("previews")
+            recommended = item.get("recommended")
             if choices is not None:
                 if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
                     raise ToolError("Question choices must be a list of strings")
@@ -2511,7 +2517,11 @@ class QuestionTool(Tool):
                         raise ToolError("Question previews must be a list of strings")
                     if len(previews) != len(choices):
                         raise ToolError("Question previews must match choices length")
-            answers.append((question, self.question_fn(question, choices, previews) if self.question_fn else question))
+            if recommended is not None and (
+                isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
+            ):
+                raise ToolError("Question recommended must be a valid 0-based choice index")
+            answers.append((question, self.question_fn(question, choices, previews, recommended) if self.question_fn else question))
         if len(answers) == 1:
             return answers[0][1]
         return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
@@ -4067,7 +4077,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
-        self.question_fn: Callable[[str, list[str] | None, list[str] | None], str] | None = None
+        self.question_fn: Callable[[str, list[str] | None, list[str] | None, int | None], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
@@ -6231,6 +6241,7 @@ Tools:
         question: str,
         choices: list[str] | None,
         previews: list[str] | None,
+        recommended: int | None = None,
     ) -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
         if not choices or not self.interactive_input:
@@ -6242,9 +6253,15 @@ Tools:
         else:
             self.emit(question + "\n")
 
+        # An optional recommended choice is pre-selected (via current) and marked (via labels),
+        # reusing the selector's existing machinery.
+        labels, current = {}, ""
+        if recommended is not None and 0 <= recommended < len(choices):
+            current = choices[recommended]
+            labels = {current: current + " (recommended)"}
         preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
         result = self.choice_application(
-            "Select:", tuple(choices), {}, "", set(),
+            "Select:", tuple(choices), labels, current, set(),
             preview_fn=lambda choice: preview_map.get(choice, ""),
             free_text=True,
         )
@@ -6255,10 +6272,10 @@ Tools:
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
     def question_interaction(
-        self, question: str, choices: list[str] | None, previews: list[str] | None
+        self, question: str, choices: list[str] | None, previews: list[str] | None, recommended: int | None = None
     ) -> str:
         """Entry point for Question tool — shows the chosen answer in CLI after selection."""
-        result = self.question_application(question, choices, previews)
+        result = self.question_application(question, choices, previews, recommended)
         # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
         if choices and result in choices:
             self.emit(result + "\n")

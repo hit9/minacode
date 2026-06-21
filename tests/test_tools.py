@@ -1144,6 +1144,7 @@ def test_question_tool_schema():
     assert props["question"]["type"] == "string"
     assert props["choices"]["items"]["type"] == "string"
     assert props["previews"]["items"]["type"] == "string"
+    assert props["recommended"]["type"] == "integer"
 
 
 def test_question_tool_registered():
@@ -1176,19 +1177,19 @@ def test_question_tool_call_with_choices_and_previews(tmp_path):
 
 
 def test_question_tool_call_invokes_callback(tmp_path):
-    """call() invokes question_fn when set."""
+    """call() invokes question_fn with question/choices/previews/recommended."""
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(question, choices, previews):
-        calls.append((question, choices, previews))
+    def fake_fn(question, choices, previews, recommended):
+        calls.append((question, choices, previews, recommended))
         return "user chose B"
 
-    tool = n.QuestionTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"]}))
+    tool = n.QuestionTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
     result = tool.call()
     assert result == "user chose B"
-    assert calls == [("A or B?", ["A", "B"], ["PA", "PB"])]
+    assert calls == [("A or B?", ["A", "B"], ["PA", "PB"], 1)]
 
 
 def test_question_tool_call_multiple_questions(tmp_path):
@@ -1196,7 +1197,7 @@ def test_question_tool_call_multiple_questions(tmp_path):
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(question, choices, previews):
+    def fake_fn(question, choices, previews, recommended):
         asked.append(question)
         return {"Runtime?": "Node", "Name?": "core"}[question]
 
@@ -1211,12 +1212,12 @@ def test_question_tool_call_multiple_questions(tmp_path):
 
 
 def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
-    """call() passes choices=None when not provided."""
+    """call() passes choices/previews/recommended as None when not provided."""
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(question, choices, previews):
-        calls.append((question, choices, previews))
+    def fake_fn(question, choices, previews, recommended):
+        calls.append((question, choices, previews, recommended))
         return "free text answer"
 
     tool = n.QuestionTool(s, _q({"question": "Name?"}))
@@ -1224,6 +1225,7 @@ def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
     assert tool.call() == "free text answer"
     assert calls[0][1] is None
     assert calls[0][2] is None
+    assert calls[0][3] is None
 
 
 def test_question_tool_call_empty_question_raises(tmp_path):
@@ -1277,6 +1279,17 @@ def test_question_tool_call_no_previews_with_choices(tmp_path):
     assert n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
 
 
+def test_question_tool_call_invalid_recommended_raises(tmp_path):
+    """call() validates recommended is an in-range choice index."""
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        n.QuestionTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
+
+
 def test_question_tool_short_args(tmp_path):
     """short_args() shows the first question and a count of the rest."""
     s = session(tmp_path)
@@ -1296,18 +1309,18 @@ def test_question_tool_wired_in_tool_runner(tmp_path):
     ctx = n.ContextManager(s)
     captured = []
 
-    def fake_question_fn(question, choices, previews):
-        captured.append((question, choices, previews))
+    def fake_question_fn(question, choices, previews, recommended):
+        captured.append((question, choices, previews, recommended))
         return "test answer"
 
     runner = n.ToolRunner(s, ctx, output_fn=lambda text: None)
     runner.question_fn = fake_question_fn
-    results = runner.run([n.ToolCall("q", "Question", [{"questions": [{"question": "A or B?", "choices": ["A", "B"]}]}])])
+    results = runner.run([n.ToolCall("q", "Question", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
     assert len(results) == 1
     assert results[0]["tool_call_id"] == "q"
     assert results[0]["role"] == "tool"
     assert "test answer" in results[0]["content"]
-    assert captured == [("A or B?", ["A", "B"], None)]
+    assert captured == [("A or B?", ["A", "B"], None, 0)]
 
 def test_question_tool_schema_strict(tmp_path):
     """schema() enforces additionalProperties=False at both levels."""
