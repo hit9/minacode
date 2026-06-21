@@ -3264,51 +3264,53 @@ class MCPManager:
         return dict(value) if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else None
 
     def _parse_configs(self) -> list[MCPServerConfig]:
-        configs: list[MCPServerConfig] = []
         mcp_config = self.session.config.mcp
-        if isinstance(mcp_config, dict):
-            for name, raw in mcp_config.items():
-                if isinstance(raw, dict):
-                    config = MCPServerConfig(
-                        name=str(name),
-                        url=Config.str(raw, "url"),
-                        command=Config.str(raw, "command"),
-                        auth=Config.str(raw, "auth").lower(),
-                        bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
-                        enabled=Config.bool(raw, "enabled", True),
-                    )
-                    def fail(message: str, config: MCPServerConfig = config) -> None:
-                        # First error wins, so the most relevant message is not clobbered by a later check.
-                        if not config.error:
-                            config.error = message
-
-                    if (args := raw.get("args")) is not None:
-                        if (parsed := self._string_list(args)) is not None:
-                            config.args = parsed
-                        else:
-                            fail("args must be a string list")
-                    if (env := raw.get("env")) is not None:
-                        if (parsed := self._string_map(env)) is not None:
-                            config.env = parsed
-                        else:
-                            fail("env must be a string map")
-                    if (headers := raw.get("env_http_headers")) is not None:
-                        if (parsed := self._string_map(headers)) is not None:
-                            config.env_http_headers = parsed
-                        else:
-                            fail("env_http_headers must be a string map")
-                    if bool(config.url) == bool(config.command):
-                        fail("exactly one of url or command is required")
-                    elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
-                        fail("command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
-                    if config.auth not in {"", "oauth"}:
-                        fail("auth must be oauth")
-                    if config.auth == "oauth" and config.bearer_token_env_var:
-                        fail("auth=oauth conflicts with bearer_token_env_var")
-                    if config.auth == "oauth" and any(header.lower() == "authorization" for header in config.env_http_headers):
-                        fail("auth=oauth conflicts with env_http_headers.Authorization")
-                    configs.append(config)
+        if not isinstance(mcp_config, dict):
+            return []
+        configs = [self._parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
         return self.select_configs(configs)
+
+    def _parse_config(self, name: str, raw: Json) -> MCPServerConfig:
+        config = MCPServerConfig(
+            name=name,
+            url=Config.str(raw, "url"),
+            command=Config.str(raw, "command"),
+            auth=Config.str(raw, "auth").lower(),
+            bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
+            enabled=Config.bool(raw, "enabled", True),
+        )
+        self._read_config_field(raw, config, "args", self._string_list, "args must be a string list")
+        self._read_config_field(raw, config, "env", self._string_map, "env must be a string map")
+        self._read_config_field(raw, config, "env_http_headers", self._string_map, "env_http_headers must be a string map")
+        if bool(config.url) == bool(config.command):
+            self._config_error(config, "exactly one of url or command is required")
+        elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
+            self._config_error(config, "command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
+        if config.auth not in {"", "oauth"}:
+            self._config_error(config, "auth must be oauth")
+        if config.auth == "oauth" and config.bearer_token_env_var:
+            self._config_error(config, "auth=oauth conflicts with bearer_token_env_var")
+        if config.auth == "oauth" and self._has_header(config.env_http_headers, "authorization"):
+            self._config_error(config, "auth=oauth conflicts with env_http_headers.Authorization")
+        return config
+
+    @staticmethod
+    def _config_error(config: MCPServerConfig, message: str) -> None:
+        if not config.error:
+            config.error = message
+
+    def _read_config_field(self, raw: Json, config: MCPServerConfig, key: str, parse: Callable[[Any], Any], error: str) -> None:
+        if (value := raw.get(key)) is None:
+            return
+        parsed = parse(value)
+        if parsed is None:
+            self._config_error(config, error)
+        else:
+            setattr(config, key, parsed)
+
+    @staticmethod
+    def _has_header(headers: dict[str, str], name: str) -> bool:
+        return any(header.lower() == name.lower() for header in headers)
 
     def select_configs(self, configs: list[MCPServerConfig]) -> list[MCPServerConfig]:
         selector = self.session.settings.mcp_selector.strip()
@@ -3572,7 +3574,7 @@ class MCPManager:
                 if header_name.lower() == "authorization":
                     if config.auth == "oauth":
                         return "conflicting Authorization header; use auth=oauth instead"
-                    if any(name.lower() == "authorization" for name in headers):
+                    if self._has_header(headers, "authorization"):
                         return "conflicting Authorization header; use only one authorization source"
                 headers[header_name] = value
         return headers
@@ -5335,6 +5337,13 @@ class CommandLoop:
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
+    MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
+        "tools": (0, 1, "Usage: /mcp tools [server]"),
+        "login": (1, 1, "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"),
+        "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
+        "refresh": (0, 1, "Usage: /mcp refresh [server]"),
+    }
+    MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
   /help              Show this help.
@@ -5915,30 +5924,28 @@ Tools:
 
         sub = parts[0]
         rest = parts[1:]
+        command = self.MCP_COMMANDS.get(sub)
+        if command is None:
+            return f"Unknown /mcp subcommand: {sub}. {self.MCP_HELP}"
+        min_args, max_args, usage = command
+        if not min_args <= len(rest) <= max_args:
+            return usage
 
         if sub == "tools":
-            if len(rest) > 1:
-                return "Usage: /mcp tools [server]"
             server = rest[0] if rest else None
             return mcp.render_tool_listing(server)
         if sub == "login":
-            if len(rest) != 1:
-                return "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"
             return mcp.login_server(rest[0], notify=self.emit)
         if sub == "logout":
-            if len(rest) != 1:
-                return "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"
             return mcp.logout_server(rest[0])
         if sub == "refresh":
-            if len(rest) > 1:
-                return "Usage: /mcp refresh [server]"
             name = rest[0] if rest else ""
             if name:
                 mcp.discover_server(name)
             else:
                 mcp.discover_enabled()
             return mcp.render_server_status()
-        return f"Unknown /mcp subcommand: {sub}. Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
+        raise AssertionError("unreachable MCP subcommand")
 
     def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
         if not query:
