@@ -10,20 +10,18 @@ nanocode 仍是 1.0 前的软件。稳定版发布前，命令、配置和工具
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
-## 概览
+## 特性
 
-nanocode 是面向本地开发工作的终端编程代理。它把模型选择、历史搜索、确认、实时命令输出、排队输入、session 恢复和状态展示都放在一个 CLI 里。
-
-核心能力：
-
-- 通过 `+>` 提示符在代理运行时追加输入。
-- 通过 `Read`、`Search`、`InspectCode` 和 `Edit` 构建文件感知上下文。
-- 使用当前 `line:hash` 锚点保护编辑，避免修改漂移后的代码。
-- 通过可选代码符号索引进行项目导航。
-- 通过紧凑的 `tr.N` 引用和 `Recall` 恢复工具结果。
-- 通过 `Note` 维护聚焦的工作记忆。
-- 集成远程 HTTP 和本地 stdio MCP 服务器。
-- 通过 `nanocode --resume` 恢复 append-only session。
+- **实时回合控制**：代理还在工作时，也可以追加输入，不打断当前工具流程。
+- **文件状态大脑**：`Read` 和 `Edit` 会构建当前重要文件的带行号视图。
+- **过期编辑保护**：`line:hash` 锚点会在目标代码漂移后拒绝错误编辑。
+- **项目级导航**：通过符号索引快速查看 outline、references、implementors、call chains 和变更文件。
+- **可恢复上下文**：prompt 中的工具输出保持有界，原始 `tr.N` 结果仍可按需召回。
+- **Session 恢复**：通过 `nanocode --resume` 恢复已保存工作，包括重新展示的会话历史。
+- **缓存友好上下文**：稳定内容靠前，嘈杂的工作状态靠后，提高 prompt cache 复用率。
+- **聚焦工作记忆**：`Note` 把 goal、plan、known facts 从嘈杂执行日志中拆出来。
+- **MCP 集成**：连接远程（HTTP）或本地（stdio）的 Model Context Protocol 服务器并调用其工具。
+- **终端优先工作流**：模型选择、历史搜索、确认、实时命令输出、追加输入和状态展示都在一个 CLI 内完成。
 
 ## 安装
 
@@ -74,15 +72,13 @@ nanocode
 
 ## Sessions
 
-nanocode 会把有可恢复内容的 session 保存到 `[paths] data_dir` 下，格式是 append-only JSONL snapshot。空 session 不会保存。
-
-退出时，nanocode 会打印恢复命令：
+nanocode 会把有可恢复内容的非空 session 保存到 `[paths] data_dir` 下，并在退出时打印恢复命令：
 
 ```sh
 Resume with: nanocode --resume <session-id>
 ```
 
-恢复 session：
+按 id 恢复，或恢复最近保存的 session：
 
 ```sh
 nanocode --resume <session-id>
@@ -90,11 +86,7 @@ nanocode --resume latest
 nanocode --resume last
 ```
 
-恢复后会在启动时重新渲染一次会话历史。工具执行摘要会再次显示，但不会打印原始 tool result 正文。`/status` 会显示当前 session id。
-
-snapshot 只保存 nanocode 恢复所需的数据：会话消息、usage、工作笔记、tool records 和 tool errors。runtime settings、config、git branch 以及其他可重建状态会从当前环境和配置读取，不写入 snapshot。
-
-启动时会删除早于 `runtime.session_retention_days` 的 session 文件。默认值是 `7`；设置为 `0` 可关闭保留期清理。
+恢复后会在启动时重放一次可见会话历史；工具摘要会显示，但不会打印原始 tool result 正文。`/status` 会显示当前 session id。早于 `runtime.session_retention_days` 的 session 文件会在启动时清理，默认 `7` 天；设置为 `0` 可关闭清理。
 
 ## CLI
 

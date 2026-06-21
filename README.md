@@ -10,20 +10,18 @@ nanocode is pre-1.0 software. Commands, configuration, and tool behavior may cha
 
 ![nanocode screenshot](snapshots/nanocode-snapshot.png)
 
-## Overview
+## Features
 
-nanocode is a terminal-first coding agent for local development work. It keeps the interaction in one CLI: model selection, history search, confirmations, live command output, queued input, session recovery, and status display.
-
-Core capabilities:
-
-- Live turn control with the `+>` prompt while the agent is still working.
-- File-aware context from `Read`, `Search`, `InspectCode`, and `Edit`.
-- Stale-edit protection with current `line:hash` anchors.
-- Project navigation through the optional code symbol index.
-- Recoverable tool results through compact `tr.N` references and `Recall`.
-- Focused working memory through `Note`.
-- MCP integration for remote HTTP and local stdio servers.
-- Append-only session recovery with `nanocode --resume`.
+- **Live turn control**: Add follow-up input while the agent is still working, without losing the current tool flow.
+- **File-state brain**: Reads and edits build a current, line-numbered view of the files that matter now.
+- **Stale-edit protection**: `line:hash` anchors reject edits when the target code has drifted.
+- **Project-aware navigation**: Use the symbol index to jump through outlines, references, implementors, call chains, and changed files quickly.
+- **Recoverable context**: Tool output stays bounded in the prompt, while raw `tr.N` results remain recallable.
+- **Session recovery**: Resume saved work with `nanocode --resume`, including restored conversation history.
+- **Cache-aware context**: Stable sections stay early and noisy working state stays late to improve prompt-cache reuse.
+- **Focused working memory**: `Note` separates goal, plan, and known facts from noisy execution logs.
+- **MCP integration**: Connect to remote (HTTP) or local (stdio) Model Context Protocol servers and call their tools.
+- **Terminal-first workflow**: Model selection, history search, confirmations, live command output, appended input, and status all stay in one CLI.
 
 ## Install
 
@@ -74,15 +72,13 @@ During a running turn, type into the `+>` prompt to add follow-up input for the 
 
 ## Sessions
 
-nanocode saves recoverable sessions under `[paths] data_dir` as append-only JSONL snapshots. Empty sessions are not saved.
-
-On exit, nanocode prints the command needed to restore the session:
+nanocode saves recoverable non-empty sessions under `[paths] data_dir` and prints a restore command on exit:
 
 ```sh
 Resume with: nanocode --resume <session-id>
 ```
 
-Resume a session with:
+Resume by id, or use the latest saved session:
 
 ```sh
 nanocode --resume <session-id>
@@ -90,11 +86,7 @@ nanocode --resume latest
 nanocode --resume last
 ```
 
-Restored sessions render the conversation history once on startup. Tool execution summaries are shown again, but raw tool result bodies are not printed. `/status` shows the active session id.
-
-Snapshots store only the recovery data nanocode needs: conversation messages, usage, working notes, tool records, and tool errors. Runtime settings, config, git branch, and other rebuildable state are loaded from the current environment/config instead of the snapshot.
-
-Session files older than `runtime.session_retention_days` are removed on startup. The default is `7`; set it to `0` to disable retention cleanup.
+Restored sessions replay the visible conversation history once; tool summaries are shown, raw tool result bodies are not. `/status` shows the active session id. Old session files are cleaned up after `runtime.session_retention_days` days, defaulting to `7`; set it to `0` to disable cleanup.
 
 ## CLI
 
