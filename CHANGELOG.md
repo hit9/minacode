@@ -11,6 +11,7 @@
 
 ### Changed
 - Kept persisted session snapshots focused on necessary recovery data only, deriving runtime tool-result lookup state from saved tool records instead of storing config, settings, timestamps, git branch, or other rebuildable runtime data.
+- Skip first-save persistence for sessions with no recoverable content, avoiding empty snapshots and stale `latest` pointers.
 - Split session snapshot encoding/merging from JSONL file storage, keeping `Session` as a thin owner of runtime state.
 - Resume now applies the current config/runtime flags (`--config`, `--yolo`, `--debug`, `--mcp`) while loading only conversation state from the snapshot.
 

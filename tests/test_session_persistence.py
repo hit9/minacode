@@ -44,6 +44,7 @@ def test_first_save_writes_init_line(tmp_path):
 def test_latest_pointer_created_on_first_save(tmp_path):
     """First save creates the latest pointer file."""
     s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
     latest_path = tmp_path / "latest"
@@ -130,6 +131,7 @@ def test_load_merges_init_and_deltas(tmp_path):
 def test_load_preserves_uid(tmp_path):
     """load_snapshot preserves the original uid."""
     s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
@@ -139,6 +141,7 @@ def test_load_preserves_uid(tmp_path):
 def test_load_with_latest_alias(tmp_path):
     """load_snapshot with uid='latest' resolves from the latest pointer file."""
     s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot("latest", config=s.config)
@@ -175,18 +178,13 @@ def test_save_after_load_produces_a_delta(tmp_path):
     assert delta["messages"] == [{"role": "assistant", "content": "post-resume"}]
 
 
-def test_empty_session_save_and_load(tmp_path):
-    """A session with no messages and no tool calls can be saved and loaded."""
+def test_empty_session_first_save_is_skipped(tmp_path):
+    """A session with no recoverable content is not persisted."""
     s = session_with_data_dir(tmp_path)
-    s.save_snapshot()
+    assert s.save_snapshot() == ""
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
-    assert s2.uid == s.uid
-    # Only the resume marker
-    assert len(s2.messages) == 1
-    assert s2.messages[0]["content"].startswith("[Session resumed:")
-    assert s2.tool_counter == 0
-    assert len(s2.tool_records) == 0
+    assert not (tmp_path / "latest").exists()
+    assert not (tmp_path / "sessions" / f"{s.uid}.jsonl").exists()
 
 
 def test_tool_results_roundtrip(tmp_path):
@@ -232,6 +230,7 @@ def test_tool_errors_roundtrip(tmp_path):
 def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     """All usage fields (including prompt_tokens/completion_tokens) survive save/load."""
     s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     s.usage.calls = 3
     s.usage.prompt_tokens = 100
     s.usage.completion_tokens = 50
@@ -324,6 +323,7 @@ def test_resolve_uid_passthrough_normal_uid(tmp_path):
 def test_jsonl_file_is_append_only(tmp_path):
     """Multiple saves only add lines, never rewrite the file."""
     s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()  # l1
     s.save_snapshot()  # l2
     s.save_snapshot()  # l3

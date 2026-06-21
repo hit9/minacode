@@ -730,6 +730,22 @@ class SessionSnapshotCodec:
     def tool_error(error: ToolErrorRecord) -> Json:
         return {"key": error.key, "name": error.name, "args": error.args, "error": error.error}
 
+    @classmethod
+    def has_content(cls, session: "Session") -> bool:
+        state = session.state
+        return any(
+            (
+                any(not cls.is_internal_message(message) for message in session.messages),
+                bool(session.tool_records),
+                bool(session.tool_errors),
+                bool(state.goal or state.plan or state.known or state.check or state.summary),
+            )
+        )
+
+    @staticmethod
+    def is_internal_message(message: Json) -> bool:
+        return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
+
     @staticmethod
     def state(state: AgentState) -> Json:
         return {
@@ -857,6 +873,8 @@ class SessionSnapshotStore:
         self.session = session
 
     def save(self) -> str:
+        if not self.session._snapshot_saved and not SessionSnapshotCodec.has_content(self.session):
+            return ""
         path = self.session.data_path("sessions", self.session.uid + ".jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if not self.session._snapshot_saved:
@@ -5945,7 +5963,7 @@ Tools:
 
     @staticmethod
     def is_resume_marker(message: Json) -> bool:
-        return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
+        return SessionSnapshotCodec.is_internal_message(message)
 
     def render_transcript_message(self, message: Json) -> None:
         role = str(message.get("role") or "")
@@ -5964,7 +5982,8 @@ Tools:
 
     def save_and_emit_resume(self) -> None:
         uid = self.session.save_snapshot()
-        self.emit(f"Resume with: nanocode --resume {uid}")
+        if uid:
+            self.emit(f"Resume with: nanocode --resume {uid}")
 
     def discover_mcp(self) -> None:
         self.session.mcp.discover_enabled()

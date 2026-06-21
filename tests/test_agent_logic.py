@@ -713,6 +713,7 @@ def test_memory_command_shows_durable_memory(tmp_path):
 
 def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     output = []
     loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
 
@@ -723,8 +724,21 @@ def test_exit_command_prints_resume_command(tmp_path):
     assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
+def test_empty_exit_does_not_print_resume_command(tmp_path):
+    s = session(tmp_path)
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output == []
+    assert not os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+
+
 def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
     output = []
     loop = n.CommandLoop(n.Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
 
