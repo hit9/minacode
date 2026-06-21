@@ -6,6 +6,7 @@
 - Added `Question` tool that pauses the agent to ask the user one or more questions (asked in sequence) when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Each question supports structured choices with optional dynamic previews and an optional `recommended` choice index (pre-selected and marked).
 - Wired `Question` tool into the shared interactive selector with `j`/`k` navigation, dynamic per-choice preview, Rich markdown rendering of the question text, and a free-text fallback.
 - Echo the selected choice in the CLI after the interactive selector closes, giving clear feedback on what was chosen.
+- Show a position indicator (e.g. `1/3`) above each question when several are asked in one `Question` call.
 
 ### Changed
 - Refined `Question` tool DESCRIPTION, SYSTEM_PROMPT usage guidance, and README with clear principles: question only when intent is truly ambiguous, design affects external shape, or prioritization is needed. Skip internal details, contextually-determinable items, and already-specified matters.

@@ -2449,7 +2449,7 @@ class QuestionTool(Tool):
     )
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[str, list[str] | None, list[str] | None, int | None], str] | None = None
+    question_fn: Callable[[str, list[str] | None, list[str] | None, int | None, str], str] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2500,7 +2500,8 @@ class QuestionTool(Tool):
         if not isinstance(questions, list) or not questions:
             raise ToolError("Question requires a non-empty 'questions' list")
         answers: list[tuple[str, str]] = []
-        for item in questions:
+        total = len(questions)
+        for index, item in enumerate(questions):
             if not isinstance(item, dict):
                 raise ToolError("each question must be an object with a 'question' field")
             question = str(item.get("question", "")).strip()
@@ -2521,7 +2522,8 @@ class QuestionTool(Tool):
                 isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
             ):
                 raise ToolError("Question recommended must be a valid 0-based choice index")
-            answers.append((question, self.question_fn(question, choices, previews, recommended) if self.question_fn else question))
+            position = f"{index + 1}/{total}" if total > 1 else ""
+            answers.append((question, self.question_fn(question, choices, previews, recommended, position) if self.question_fn else question))
         if len(answers) == 1:
             return answers[0][1]
         return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
@@ -4077,7 +4079,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
-        self.question_fn: Callable[[str, list[str] | None, list[str] | None, int | None], str] | None = None
+        self.question_fn: Callable[[str, list[str] | None, list[str] | None, int | None, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages = []
@@ -6242,12 +6244,16 @@ Tools:
         choices: list[str] | None,
         previews: list[str] | None,
         recommended: int | None = None,
+        position: str = "",
     ) -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
         if not choices or not self.interactive_input:
-            return self.read_input(question)
+            return self.read_input(f"{position} {question}" if position else question)
 
-        # Render the question (markdown) above the interactive selector.
+        # Render the position (e.g. 1/3) and the question (markdown) above the selector.
+        # highlight=False stops Rich from auto-coloring the digits in "1/3".
+        if position:
+            self.ui.console.print(position, style="dim", highlight=False) if self.ui.color else self.emit(position + "\n")
         if self.ui.color:
             self.ui.console.print(Markdown(question))
         else:
@@ -6272,10 +6278,10 @@ Tools:
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
     def question_interaction(
-        self, question: str, choices: list[str] | None, previews: list[str] | None, recommended: int | None = None
+        self, question: str, choices: list[str] | None, previews: list[str] | None, recommended: int | None = None, position: str = ""
     ) -> str:
         """Entry point for Question tool — shows the chosen answer in CLI after selection."""
-        result = self.question_application(question, choices, previews, recommended)
+        result = self.question_application(question, choices, previews, recommended, position)
         # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
         if choices and result in choices:
             self.emit(result + "\n")

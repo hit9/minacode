@@ -1181,15 +1181,16 @@ def test_question_tool_call_invokes_callback(tmp_path):
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(question, choices, previews, recommended):
-        calls.append((question, choices, previews, recommended))
+    def fake_fn(question, choices, previews, recommended, position):
+        calls.append((question, choices, previews, recommended, position))
         return "user chose B"
 
     tool = n.QuestionTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
     result = tool.call()
     assert result == "user chose B"
-    assert calls == [("A or B?", ["A", "B"], ["PA", "PB"], 1)]
+    # A single question carries no position indicator.
+    assert calls == [("A or B?", ["A", "B"], ["PA", "PB"], 1, "")]
 
 
 def test_question_tool_call_multiple_questions(tmp_path):
@@ -1197,8 +1198,8 @@ def test_question_tool_call_multiple_questions(tmp_path):
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(question, choices, previews, recommended):
-        asked.append(question)
+    def fake_fn(question, choices, previews, recommended, position):
+        asked.append((question, position))
         return {"Runtime?": "Node", "Name?": "core"}[question]
 
     tool = n.QuestionTool(s, _q(
@@ -1207,7 +1208,7 @@ def test_question_tool_call_multiple_questions(tmp_path):
     ))
     tool.question_fn = fake_fn
     result = tool.call()
-    assert asked == ["Runtime?", "Name?"]  # sequential
+    assert asked == [("Runtime?", "1/2"), ("Name?", "2/2")]  # sequential, with position
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
 
 
@@ -1216,8 +1217,8 @@ def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(question, choices, previews, recommended):
-        calls.append((question, choices, previews, recommended))
+    def fake_fn(question, choices, previews, recommended, position):
+        calls.append((question, choices, previews, recommended, position))
         return "free text answer"
 
     tool = n.QuestionTool(s, _q({"question": "Name?"}))
@@ -1226,6 +1227,7 @@ def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
     assert calls[0][1] is None
     assert calls[0][2] is None
     assert calls[0][3] is None
+    assert calls[0][4] == ""
 
 
 def test_question_tool_call_empty_question_raises(tmp_path):
@@ -1309,8 +1311,8 @@ def test_question_tool_wired_in_tool_runner(tmp_path):
     ctx = n.ContextManager(s)
     captured = []
 
-    def fake_question_fn(question, choices, previews, recommended):
-        captured.append((question, choices, previews, recommended))
+    def fake_question_fn(question, choices, previews, recommended, position):
+        captured.append((question, choices, previews, recommended, position))
         return "test answer"
 
     runner = n.ToolRunner(s, ctx, output_fn=lambda text: None)
@@ -1320,7 +1322,7 @@ def test_question_tool_wired_in_tool_runner(tmp_path):
     assert results[0]["tool_call_id"] == "q"
     assert results[0]["role"] == "tool"
     assert "test answer" in results[0]["content"]
-    assert captured == [("A or B?", ["A", "B"], None, 0)]
+    assert captured == [("A or B?", ["A", "B"], None, 0, "")]
 
 def test_question_tool_schema_strict(tmp_path):
     """schema() enforces additionalProperties=False at both levels."""
