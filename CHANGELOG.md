@@ -3,7 +3,7 @@
 ## 0.6.3 - (pending)
 
 ### Added
-- Added `Question` tool that pauses the agent to ask the user for clarification when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Supports structured choices with optional dynamic previews.
+- Added `Question` tool that pauses the agent to ask the user one or more questions (asked in sequence) when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Each question supports structured choices with optional dynamic previews.
 - Wired `Question` tool into the shared interactive selector with `j`/`k` navigation, dynamic per-choice preview, Rich markdown rendering of the question text, and a free-text fallback.
 - Echo the selected choice in the CLI after the interactive selector closes, giving clear feedback on what was chosen.
 

@@ -2441,11 +2441,11 @@ class NoteTool(Tool):
 
 class QuestionTool(Tool):
     NAME = "Question"
-    DESCRIPTION = "Ask the user a clarifying question and wait for their answer. Use when: the intent is genuinely ambiguous with different valid outcomes, a design choice affects the codebase's external shape (module structure, public API, naming), or prioritization is needed. Do NOT ask about trivial internal details (variable names, formatting), things you can determine from context (check Read/InspectCode/Bash first), or anything already specified. If a reasonable choice exists, proceed without asking."
-    SIGNATURE = 'Question(question, choices?, previews?)'
+    DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
+    SIGNATURE = 'Question(questions=[{question, choices?, previews?}, ...])'
     EXAMPLE = (
-        'Ask with choices and previews. Example: {"question":"Which approach?","choices":["Refactor","Rewrite","Keep"],"previews":["Extract to module +87 -12","Rewrite from scratch","No changes"]}',
-        'Open-ended question. Example: {"question":"What should I name this module?"}',
+        'One question with choices and previews. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"]}]}',
+        'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
     )
     MUTATES = False
     STORES_RESULT = True
@@ -2456,19 +2456,31 @@ class QuestionTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The question to ask the user"},
-                "choices": {
+                "questions": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional predefined choices the user can pick from",
-                },
-                "previews": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional preview text for each choice, shown as the user navigates",
+                    "minItems": 1,
+                    "description": "Questions to ask, one after another",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "The question to ask the user"},
+                            "choices": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional predefined choices the user can pick from",
+                            },
+                            "previews": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional preview text per choice, shown as the user navigates",
+                            },
+                        },
+                        "required": ["question"],
+                        "additionalProperties": False,
+                    },
                 },
             },
-            "required": ["question"],
+            "required": ["questions"],
             "additionalProperties": False,
         }
 
@@ -2479,28 +2491,38 @@ class QuestionTool(Tool):
     def call(self) -> str:
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
             raise ToolError("Question requires named fields")
-        data = self.args[0]
-        question = str(data.get("question", "")).strip()
-        if not question:
-            raise ToolError("Question requires a 'question' field")
-        choices = data.get("choices")
-        previews = data.get("previews")
-        if choices is not None:
-            if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
-                raise ToolError("Question choices must be a list of strings")
-            if previews is not None:
-                if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
-                    raise ToolError("Question previews must be a list of strings")
-                if len(previews) != len(choices):
-                    raise ToolError("Question previews must match choices length")
-        if self.question_fn:
-            return self.question_fn(question, choices, previews)
-        return question
+        questions = self.args[0].get("questions")
+        if not isinstance(questions, list) or not questions:
+            raise ToolError("Question requires a non-empty 'questions' list")
+        answers: list[tuple[str, str]] = []
+        for item in questions:
+            if not isinstance(item, dict):
+                raise ToolError("each question must be an object with a 'question' field")
+            question = str(item.get("question", "")).strip()
+            if not question:
+                raise ToolError("each question requires a 'question' field")
+            choices = item.get("choices")
+            previews = item.get("previews")
+            if choices is not None:
+                if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
+                    raise ToolError("Question choices must be a list of strings")
+                if previews is not None:
+                    if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
+                        raise ToolError("Question previews must be a list of strings")
+                    if len(previews) != len(choices):
+                        raise ToolError("Question previews must match choices length")
+            answers.append((question, self.question_fn(question, choices, previews) if self.question_fn else question))
+        if len(answers) == 1:
+            return answers[0][1]
+        return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
 
     def short_args(self) -> list[str]:
-        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
-        question = str(data.get("question", "") or "").strip()
-        return [Tool.compact(question, 80)]
+        questions = self.args[0].get("questions") if self.args and isinstance(self.args[0], dict) else None
+        if not isinstance(questions, list) or not questions:
+            return [""]
+        first = str((questions[0] or {}).get("question", "") or "").strip() if isinstance(questions[0], dict) else ""
+        label = Tool.compact(first, 80)
+        return [label + (f" (+{len(questions) - 1} more)" if len(questions) > 1 else "")]
 
 class MCPTool(Tool):
     NAME = "MCP"
@@ -4720,7 +4742,7 @@ TOOLS:
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; InspectCode navigates symbols when available.
 - Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
-- Restraint: Before calling "Question", try making progress with other tools first. Only ask when you genuinely cannot proceed without the user's input.
+- Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
 
 FLOW:
 - Act when clear; keep using tools until done, or return a final answer.
