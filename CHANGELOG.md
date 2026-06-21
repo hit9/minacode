@@ -6,6 +6,11 @@
 - Simplified the agent system prompt while preserving the main `TOOLS`, `FLOW`, `FILE STATE`, and `FINAL` sections.
 - Simplified MCP command handling and server config parsing by sharing command metadata and config field parsing helpers.
 
+
+### Added
+- Added `Question` tool that pauses the agent to ask the user for clarification when intent is ambiguous, design choices affect external shape, or prioritization is needed. Supports structured choices with optional dynamic previews.
+- Wired `Question` tool into the interactive selection flow via `question_application()` with `j`/`k` navigation, `Ctrl+P` pager preview, and free-text fallback.
+- Added comprehensive test coverage for `QuestionTool` schema, validation, callback invocation, and `ToolRunner` wiring.
 ### Fixed
 - Reused one manager-owned MCP event loop for async MCP operations, including calls made while another event loop is already running.
 - Made MCP OAuth token storage reuse one store and shared path lock to avoid concurrent token file writes racing each other.
