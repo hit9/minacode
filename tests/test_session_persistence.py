@@ -1,12 +1,8 @@
 import json
-import os
 
 import pytest
 
 import nanocode as n
-
-
-# ── helpers ──
 
 
 def session_with_data_dir(tmp_path):
@@ -23,9 +19,6 @@ def read_jsonl(path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-# ── init line ──
-
-
 def test_first_save_writes_init_line(tmp_path):
     """First save writes a single init line with full snapshot data."""
     s = session_with_data_dir(tmp_path)
@@ -38,15 +31,15 @@ def test_first_save_writes_init_line(tmp_path):
     init = lines[0]
     assert init["uid"] == s.uid
     assert init["messages"] == [{"role": "user", "content": "hello"}]
-    assert init["tool_results"] == {"tr.1": "# content"}
     assert init["tool_counter"] == 1
+    assert init["tool_records"][0]["output"] == "# content"
     assert "usage" in init
     assert "state" in init
-    assert "created_at" in init
-    assert "updated_at" in init
-    # Config and settings are NOT stored in the snapshot
+    # Runtime/config and derivable data are NOT stored in the snapshot
     assert "config" not in init
     assert "settings" not in init
+    assert "git_branch" not in init
+    assert "tool_results" not in init
 
 def test_latest_pointer_created_on_first_save(tmp_path):
     """First save creates the latest pointer file."""
@@ -58,11 +51,8 @@ def test_latest_pointer_created_on_first_save(tmp_path):
     assert latest_path.read_text().strip() == s.uid
 
 
-# ── delta lines ──
-
-
 def test_second_save_writes_delta_with_only_new_data(tmp_path):
-    """Second save appends a delta line containing only new messages and tool results."""
+    """Second save appends a delta line containing only new messages and tool records."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "first"})
     s.store_tool_result("Read", ["a.py"], "# a")
@@ -77,8 +67,8 @@ def test_second_save_writes_delta_with_only_new_data(tmp_path):
     delta = lines[1]
     # Only new data in delta
     assert delta["messages"] == [{"role": "assistant", "content": "reply"}]
-    assert delta["tool_results"] == {"tr.2": "result"}
-    assert "tr.1" not in delta.get("tool_results", {})
+    assert [record["key"] for record in delta["tool_records"]] == ["tr.2"]
+    assert delta["tool_records"][0]["output"] == "result"
     assert delta["tool_counter"] == 2
 
 
@@ -96,8 +86,8 @@ def test_delta_omits_messages_when_nothing_new(tmp_path):
     assert "messages" not in delta
 
 
-def test_delta_omits_tool_results_when_nothing_new(tmp_path):
-    """Delta line omits tool_results when no new tool calls."""
+def test_delta_omits_tool_records_when_nothing_new(tmp_path):
+    """Delta line omits tool_records when no new tool calls."""
     s = session_with_data_dir(tmp_path)
     s.store_tool_result("Bash", ["pwd"], "/home")
     s.save_snapshot()  # init
@@ -108,10 +98,8 @@ def test_delta_omits_tool_results_when_nothing_new(tmp_path):
     lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
     delta = lines[1]
     assert "messages" in delta
-    assert "tool_results" not in delta  # No new tool calls since init
-
-
-# ── load / merge ──
+    assert "tool_records" not in delta  # No new tool calls since init
+    assert "tool_results" not in delta
 
 
 def test_load_merges_init_and_deltas(tmp_path):
@@ -139,14 +127,13 @@ def test_load_merges_init_and_deltas(tmp_path):
     assert s2.tool_counter == 2
 
 
-def test_load_preserves_uid_and_created_at(tmp_path):
-    """load_snapshot preserves the original uid and created_at."""
+def test_load_preserves_uid(tmp_path):
+    """load_snapshot preserves the original uid."""
     s = session_with_data_dir(tmp_path)
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
     assert s2.uid == s.uid
-    assert s2._created_at == s._created_at
 
 
 def test_load_with_latest_alias(tmp_path):
@@ -202,9 +189,6 @@ def test_empty_session_save_and_load(tmp_path):
     assert len(s2.tool_records) == 0
 
 
-# ── tool state roundtrip ──
-
-
 def test_tool_results_roundtrip(tmp_path):
     """Tool results survive save/load."""
     s = session_with_data_dir(tmp_path)
@@ -245,9 +229,6 @@ def test_tool_errors_roundtrip(tmp_path):
     assert s2.tool_errors[0].error == "command not found"
 
 
-# ── usage roundtrip ──
-
-
 def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     """All usage fields (including prompt_tokens/completion_tokens) survive save/load."""
     s = session_with_data_dir(tmp_path)
@@ -270,9 +251,6 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     assert s2.usage.last_total_tokens == 60
 
 
-# ── state roundtrip ──
-
-
 def test_agent_state_roundtrip(tmp_path):
     """Agent state (goal, plan, known, check, summary) survives save/load."""
     s = session_with_data_dir(tmp_path)
@@ -289,11 +267,6 @@ def test_agent_state_roundtrip(tmp_path):
     assert s2.state.known == ["file at src/a.py"]
     assert s2.state.check == "assert x == 1"
     assert s2.state.summary == "working on it"
-
-
-
-# ── multiple deltas ──
-
 
 def test_multiple_deltas_accumulate_correctly(tmp_path):
     """Multiple delta saves accumulate data correctly."""
@@ -330,9 +303,6 @@ def test_multiple_deltas_with_tool_calls(tmp_path):
     assert len(s2.tool_records) == 3
 
 
-# ── error handling ──
-
-
 def test_load_missing_snapshot_raises_error(tmp_path):
     """Loading a non-existent session raises NanocodeError."""
     with pytest.raises(n.NanocodeError, match="Session snapshot not found"):
@@ -351,9 +321,6 @@ def test_resolve_uid_passthrough_normal_uid(tmp_path):
     assert result == "my-uid"
 
 
-# ── JSONL format integrity ──
-
-
 def test_jsonl_file_is_append_only(tmp_path):
     """Multiple saves only add lines, never rewrite the file."""
     s = session_with_data_dir(tmp_path)
@@ -366,6 +333,6 @@ def test_jsonl_file_is_append_only(tmp_path):
     assert len(lines) == 4
     # First line has all fields (init)
     assert "uid" in lines[0]
-    assert "updated_at" in lines[1]
-    assert "updated_at" in lines[2]
-    assert "updated_at" in lines[3]
+    assert "messages" not in lines[1]
+    assert "tool_records" not in lines[2]
+    assert "tool_results" not in lines[3]

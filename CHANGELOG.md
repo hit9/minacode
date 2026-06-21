@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.4 - 2026-06-21
+
+### Added
+- Added JSONL session persistence with append-only deltas for the normal save path and `nanocode --resume [UID]` for restoring saved sessions.
+- Added a `latest` session pointer and a resume command hint printed when nanocode exits.
+- Render restored session history once on resume without re-running tools or commands.
+- Show the active session id in `/status`.
+- Added session persistence coverage for snapshot/delta save/load, `latest`, usage/state/tool record roundtrips, missing snapshots, and exit resume hints.
+
+### Changed
+- Kept persisted session snapshots focused on necessary recovery data only, deriving runtime tool-result lookup state from saved tool records instead of storing config, settings, timestamps, git branch, or other rebuildable runtime data.
+- Split session snapshot encoding/merging from JSONL file storage, keeping `Session` as a thin owner of runtime state.
+- Resume now applies the current config/runtime flags (`--config`, `--yolo`, `--debug`, `--mcp`) while loading only conversation state from the snapshot.
+
+### Fixed
+- Fixed command dispatch so ordinary non-command input reaches the agent instead of being treated as an unknown slash command.
+- Changed the resume marker to an internal system message so it does not affect latest-user compaction behavior.
+- Report resume/load errors as CLI errors instead of uncaught exceptions.
+
 ## 0.6.3 - 2026-06-21
 
 ### Added

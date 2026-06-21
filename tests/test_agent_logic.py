@@ -711,6 +711,29 @@ def test_memory_command_shows_durable_memory(tmp_path):
     assert "[~]" not in prompt_memory
 
 
+def test_exit_command_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+
+
+def test_eof_exit_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
+
+    assert loop.run() == 0
+
+    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+
+
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):
     output = []
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)

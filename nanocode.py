@@ -59,7 +59,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -702,6 +702,245 @@ class SystemInfo:
         )
 
 
+class SessionSnapshotCodec:
+    @staticmethod
+    def digest(value: Any) -> str:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def marker(cls, session: "Session") -> Json:
+        records = [cls.tool_record(record) for record in session.tool_records]
+        errors = [cls.tool_error(error) for error in session.tool_errors]
+        return {
+            "messages_len": len(session.messages),
+            "messages_digest": cls.digest(session.messages),
+            "tool_counter": session.tool_counter,
+            "tool_records_len": len(records),
+            "tool_records_digest": cls.digest(records),
+            "tool_errors_len": len(errors),
+            "tool_errors_digest": cls.digest(errors),
+        }
+
+    @staticmethod
+    def tool_record(record: ToolResultRecord) -> Json:
+        return {"key": record.key, "name": record.name, "args": record.args, "output": record.output, "note": record.note}
+
+    @staticmethod
+    def tool_error(error: ToolErrorRecord) -> Json:
+        return {"key": error.key, "name": error.name, "args": error.args, "error": error.error}
+
+    @staticmethod
+    def state(state: AgentState) -> Json:
+        return {
+            "goal": state.goal,
+            "plan": state.plan,
+            "known": state.known,
+            "check": state.check,
+            "summary": state.summary,
+        }
+
+    @staticmethod
+    def usage(usage: ModelUsage) -> Json:
+        return {
+            "calls": usage.calls,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
+            "last_total_tokens": usage.last_total_tokens,
+        }
+
+    @classmethod
+    def snapshot(cls, session: "Session") -> Json:
+        return {
+            "uid": session.uid,
+            "cwd": session.cwd,
+            "messages": session.messages,
+            "state": cls.state(session.state),
+            "usage": cls.usage(session.usage),
+            "tool_counter": session.tool_counter,
+            "tool_records": [cls.tool_record(record) for record in session.tool_records],
+            "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
+        }
+
+    @classmethod
+    def delta(cls, session: "Session", saved: Json) -> Json:
+        delta: Json = {
+            "tool_counter": session.tool_counter,
+            "usage": cls.usage(session.usage),
+            "state": cls.state(session.state),
+        }
+        cls.add_sequence_delta(delta, "messages", session.messages, saved, "messages_len", "messages_digest")
+        cls.add_sequence_delta(
+            delta,
+            "tool_records",
+            [cls.tool_record(record) for record in session.tool_records],
+            saved,
+            "tool_records_len",
+            "tool_records_digest",
+        )
+        cls.add_sequence_delta(
+            delta,
+            "tool_errors",
+            [cls.tool_error(error) for error in session.tool_errors],
+            saved,
+            "tool_errors_len",
+            "tool_errors_digest",
+        )
+        return delta
+
+    @classmethod
+    def add_sequence_delta(cls, delta: Json, key: str, current: list[Any], saved: Json, len_key: str, digest_key: str) -> None:
+        last_len = saved.get(len_key, 0)
+        if cls.digest(current[:last_len]) == saved.get(digest_key):
+            if len(current) > last_len:
+                delta[key] = current[last_len:]
+        elif cls.digest(current) != saved.get(digest_key):
+            delta[key + "_replace"] = current
+
+    @classmethod
+    def merge(cls, data: Json, delta: Json) -> None:
+        cls.merge_sequence(data, delta, "messages")
+        cls.merge_sequence(data, delta, "tool_records")
+        cls.merge_sequence(data, delta, "tool_errors")
+        # Backward compatibility for snapshots written before tool_results became derived.
+        if "tool_results_replace" in delta:
+            data["tool_results"] = delta["tool_results_replace"]
+        if "tool_results" in delta:
+            data.setdefault("tool_results", {}).update(delta["tool_results"])
+        if "tool_counter" in delta:
+            data["tool_counter"] = delta["tool_counter"]
+        if "usage" in delta:
+            data["usage"] = delta["usage"]
+        if "state" in delta:
+            data["state"] = delta["state"]
+
+    @staticmethod
+    def merge_sequence(data: Json, delta: Json, key: str) -> None:
+        replace_key = key + "_replace"
+        if replace_key in delta:
+            data[key] = delta[replace_key]
+        if key in delta:
+            data.setdefault(key, []).extend(delta[key])
+
+    @staticmethod
+    def model_usage(data: Json) -> ModelUsage:
+        usage = ModelUsage()
+        usage.calls = data.get("calls", 0)
+        usage.prompt_tokens = data.get("prompt_tokens", 0)
+        usage.completion_tokens = data.get("completion_tokens", 0)
+        usage.total_tokens = data.get("total_tokens", 0)
+        usage.cached_prompt_tokens = data.get("cached_prompt_tokens", 0)
+        usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
+        usage.last_total_tokens = data.get("last_total_tokens", 0)
+        return usage
+
+    @staticmethod
+    def tool_records(data: list[Json]) -> list[ToolResultRecord]:
+        return [
+            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", ""))
+            for rec in data
+        ]
+
+    @staticmethod
+    def tool_errors(data: list[Json]) -> list[ToolErrorRecord]:
+        return [
+            ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", ""))
+            for err in data
+        ]
+
+
+class SessionSnapshotStore:
+    def __init__(self, session: "Session"):
+        self.session = session
+
+    def save(self) -> str:
+        path = self.session.data_path("sessions", self.session.uid + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not self.session._snapshot_saved:
+            self.write_jsonl(path, SessionSnapshotCodec.snapshot(self.session), mode="w")
+        else:
+            self.write_jsonl(path, SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved), mode="a")
+        self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
+        with open(self.session.data_path("latest"), "w", encoding="utf-8") as file:
+            file.write(self.session.uid)
+        return self.session.uid
+
+    @staticmethod
+    def write_jsonl(path: str, data: Json, *, mode: str) -> None:
+        with open(path, mode, encoding="utf-8") as file:
+            file.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+    @classmethod
+    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
+        if config is None:
+            config = Config.from_dict(ConfigFile.load())
+        if settings is None:
+            settings = RuntimeSettings()
+        uid = cls.resolve_uid(uid, config.data_dir)
+        data = cls.read_merged(cls.path_for(config.data_dir, "sessions", uid + ".jsonl"), uid)
+        tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
+        tool_results = {record.key: record.output for record in tool_records}
+        tool_results.update(data.get("tool_results", {}))
+        session = Session(
+            cwd=data.get("cwd", os.getcwd()),
+            config=config,
+            settings=settings,
+            messages=data.get("messages", []),
+            state=AgentState(**data.get("state", {})),
+            usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
+            tool_counter=data.get("tool_counter", 0),
+            tool_results=tool_results,
+            tool_records=tool_records,
+            tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
+            uid=data.get("uid", uid),
+            resumed=True,
+        )
+        session.messages.append({"role": "system", "content": f"[Session resumed: uid={session.uid}]"})
+        session._snapshot_saved = SessionSnapshotCodec.marker(session)
+        return session
+
+    @classmethod
+    def resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
+        if uid != "latest":
+            return uid
+        try:
+            with open(cls.path_for(data_dir, "latest"), encoding="utf-8") as file:
+                resolved = file.read().strip()
+        except FileNotFoundError:
+            raise NanocodeError("No latest session to resume; start a new session instead")
+        except OSError as error:
+            raise NanocodeError(f"Cannot read latest session: {error}")
+        if not resolved:
+            raise NanocodeError("Latest session file is empty")
+        return resolved
+
+    @classmethod
+    def read_merged(cls, path: str, uid: str) -> Json:
+        if not os.path.exists(path):
+            raise NanocodeError(f"Session snapshot not found: {uid} at {path}")
+        merged = None
+        with open(path, encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                if merged is None:
+                    merged = parsed
+                else:
+                    SessionSnapshotCodec.merge(merged, parsed)
+        if merged is None:
+            raise NanocodeError(f"Empty session file: {path}")
+        return merged
+
+    @staticmethod
+    def path_for(data_dir: str, *parts: str) -> str:
+        return os.path.abspath(os.path.join(os.path.expanduser(data_dir), *parts))
+
+
 @dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
@@ -721,14 +960,12 @@ class Session:
     mcp: MCPManager | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
-    _created_at: str = ""
+    resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.uid:
             self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
-        if not self._created_at:
-            self._created_at = datetime.now().isoformat()
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
         if not self.expected_git_branch:
@@ -803,222 +1040,18 @@ class Session:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 
-    @staticmethod
-    def _record_key_counter(key: str) -> int:
-        """Extract the numeric counter from a tr.N key, or return 0."""
-        if key.startswith("tr."):
-            try:
-                return int(key[3:])
-            except ValueError:
-                pass
-        return 0
-    def _serialize_state(self) -> Json:
-        return {
-            "goal": self.state.goal,
-            "plan": self.state.plan,
-            "known": self.state.known,
-            "check": self.state.check,
-            "summary": self.state.summary,
-        }
-
-    def _serialize_usage(self) -> Json:
-        return {
-            "calls": self.usage.calls,
-            "prompt_tokens": self.usage.prompt_tokens,
-            "completion_tokens": self.usage.completion_tokens,
-            "total_tokens": self.usage.total_tokens,
-            "cached_prompt_tokens": self.usage.cached_prompt_tokens,
-            "last_cached_prompt_tokens": self.usage.last_cached_prompt_tokens,
-            "last_total_tokens": self.usage.last_total_tokens,
-        }
-
-
-    def _build_snapshot(self) -> Json:
-        """Build the full snapshot dict (used for the first JSONL line)."""
-        return {
-            "uid": self.uid,
-            "created_at": self._created_at,
-            "updated_at": datetime.now().isoformat(),
-            "cwd": self.cwd,
-            "git_branch": self.git_branch(self.cwd),
-            "messages": self.messages,
-            "state": self._serialize_state(),
-            "usage": self._serialize_usage(),
-            "tool_counter": self.tool_counter,
-            "tool_results": self.tool_results,
-            "tool_records": [
-                {"key": r.key, "name": r.name, "args": r.args, "output": r.output, "note": r.note}
-                for r in self.tool_records
-            ],
-            "tool_errors": [
-                {"key": e.key, "name": e.name, "args": e.args, "error": e.error}
-                for e in self.tool_errors
-            ],
-        }
-
-    def _build_delta(self) -> Json:
-        """Build a delta dict: only new/changed data since the last save."""
-        saved = self._snapshot_saved
-        delta: Json = {
-            "updated_at": datetime.now().isoformat(),
-            "tool_counter": self.tool_counter,
-            "usage": self._serialize_usage(),
-            "state": self._serialize_state(),
-        }
-        msg_len = len(self.messages)
-        last_msg_len = saved.get("messages_len", 0)
-        if msg_len > last_msg_len:
-            delta["messages"] = self.messages[last_msg_len:]
-        last_counter = saved.get("tool_counter", 0)
-        new_results = {
-            k: v for k, v in self.tool_results.items()
-            if self._record_key_counter(k) > last_counter
-        }
-        if new_results:
-            delta["tool_results"] = new_results
-        new_records = [
-            {"key": r.key, "name": r.name, "args": r.args, "output": r.output, "note": r.note}
-            for r in self.tool_records
-            if self._record_key_counter(r.key) > last_counter
-        ]
-        if new_records:
-            delta["tool_records"] = new_records
-        new_errors = [
-            {"key": e.key, "name": e.name, "args": e.args, "error": e.error}
-            for e in self.tool_errors
-            if self._record_key_counter(e.key) > last_counter
-        ]
-        if new_errors:
-            delta["tool_errors"] = new_errors
-        return delta
-
     def save_snapshot(self) -> str:
-        """Append one JSON line to sessions/<uid>.jsonl.
-        First line = full init snapshot; subsequent lines = deltas (only new/changed data)."""
-        path = self.data_path("sessions", self.uid + ".jsonl")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if not self._snapshot_saved:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(json.dumps(self._build_snapshot(), ensure_ascii=False) + "\n")
-        else:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(self._build_delta(), ensure_ascii=False) + "\n")
-        self._snapshot_saved = {
-            "messages_len": len(self.messages),
-            "tool_counter": self.tool_counter,
-        }
-        latest_path = self.data_path("latest")
-        with open(latest_path, "w", encoding="utf-8") as f:
-            f.write(self.uid)
-        return self.uid
-
-    @staticmethod
-    def _merge_delta_into(data: Json, delta: Json) -> None:
-        """Merge a delta dict into the running data dict (mutates in place)."""
-        if "messages" in delta:
-            data.setdefault("messages", []).extend(delta["messages"])
-        if "tool_results" in delta:
-            data.setdefault("tool_results", {}).update(delta["tool_results"])
-        if "tool_records" in delta:
-            data.setdefault("tool_records", []).extend(delta["tool_records"])
-        if "tool_errors" in delta:
-            data.setdefault("tool_errors", []).extend(delta["tool_errors"])
-        if "tool_counter" in delta:
-            data["tool_counter"] = delta["tool_counter"]
-        if "usage" in delta:
-            data["usage"] = delta["usage"]
-        if "state" in delta:
-            data["state"] = delta["state"]
+        return SessionSnapshotStore(self).save()
 
     @classmethod
     def _resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
-        """Resolve 'latest' to the actual UID from the latest file."""
-        if uid != "latest":
-            return uid
-        latest_path = os.path.join(os.path.expanduser(data_dir), "latest")
-        try:
-            with open(latest_path) as f:
-                resolved = f.read().strip()
-                if not resolved:
-                    raise NanocodeError("Latest session file is empty")
-                return resolved
-        except FileNotFoundError:
-            raise NanocodeError("No latest session to resume; start a new session instead")
-        except OSError as e:
-            raise NanocodeError(f"Cannot read latest session: {e}")
+        return SessionSnapshotStore.resolve_uid(uid, data_dir)
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
-        """Load a session from a snapshot JSONL file by UID (or 'latest' alias)."""
-        if config is None:
-            data = ConfigFile.load()
-            config = Config.from_dict(data)
-        if settings is None:
-            settings = RuntimeSettings()
-        uid = cls._resolve_uid(uid, config.data_dir)
-        path = os.path.join(os.path.expanduser(config.data_dir), "sessions", uid + ".jsonl")
-        if not os.path.exists(path):
-            raise NanocodeError(f"Session snapshot not found: {uid} at {path}")
-        # Read all lines: first = init, rest = deltas
-        merged = None
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                parsed = json.loads(line)
-                if merged is None:
-                    merged = parsed
-                else:
-                    cls._merge_delta_into(merged, parsed)
-        if merged is None:
-            raise NanocodeError(f"Empty session file: {path}")
-        data = merged
-        cfg = config
-        s = settings
-        state = AgentState(**data["state"])
-        # Rebuild ModelUsage
-        usage = ModelUsage()
-        ud = data["usage"]
-        usage.calls = ud.get("calls", 0)
-        usage.prompt_tokens = ud.get("prompt_tokens", 0)
-        usage.completion_tokens = ud.get("completion_tokens", 0)
-        usage.total_tokens = ud.get("total_tokens", 0)
-        usage.cached_prompt_tokens = ud.get("cached_prompt_tokens", 0)
-        usage.last_cached_prompt_tokens = ud.get("last_cached_prompt_tokens", 0)
-        usage.last_total_tokens = ud.get("last_total_tokens", 0)
-        session = cls(
-            cwd=data.get("cwd", os.getcwd()),
-            config=cfg,
-            settings=s,
-            messages=data.get("messages", []),
-            state=state,
-            usage=usage,
-            tool_counter=data.get("tool_counter", 0),
-            tool_results=data.get("tool_results", {}),
-            tool_records=[
-                ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", ""))
-                for rec in data.get("tool_records", [])
-            ],
-            tool_errors=[
-                ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", ""))
-                for err in data.get("tool_errors", [])
-            ],
-            uid=data.get("uid", uid),
-            _created_at=data.get("created_at", ""),
-        )
-        # Append a resume marker BEFORE setting _snapshot_saved
-        session.messages.append({
-            "role": "user",
-            "content": f"[Session resumed: uid={session.uid}]"
-        })
-        # Mark snapshot_saved so the next save produces a proper delta
-        session._snapshot_saved = {
-            "messages_len": len(session.messages),
-            "tool_counter": session.tool_counter,
-        }
+        return SessionSnapshotStore.load(uid, config=config, settings=settings)
 
-        return session
+
 class UpdateChecker:
     PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
     CACHE_FILE = "update.json"
@@ -5699,6 +5732,7 @@ Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
+  --resume [UID]             Resume a saved session; defaults to latest.
 Tools:
   Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
 """
@@ -5843,6 +5877,7 @@ Tools:
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
         threading.Thread(target=self.discover_mcp, daemon=True).start()
@@ -5853,6 +5888,7 @@ Tools:
                 self.queue_input_text = ""
             except EOFError:
                 self.emit("")
+                self.save_and_emit_resume()
                 return 0
             except KeyboardInterrupt:
                 self.emit("Cancelled")
@@ -5895,6 +5931,40 @@ Tools:
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
             self.session.save_snapshot()
+
+    def render_resumed_session(self) -> None:
+        if not self.session.resumed:
+            return
+        self.session.resumed = False
+        messages = [message for message in self.session.messages if not self.is_resume_marker(message)]
+        if not messages:
+            return
+        self.emit(f"Restored session: {self.session.uid}")
+        for message in messages:
+            self.render_transcript_message(message)
+
+    @staticmethod
+    def is_resume_marker(message: Json) -> bool:
+        return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
+
+    def render_transcript_message(self, message: Json) -> None:
+        role = str(message.get("role") or "")
+        content = str(message.get("content") or "").strip()
+        if not content:
+            return
+        if role == "assistant":
+            self.emit("assistant:")
+            self.ui.emit_answer(content)
+        elif role == "tool":
+            self.emit("tool:")
+            self.emit(content)
+        elif role == "user":
+            self.emit("user:")
+            self.emit(content)
+
+    def save_and_emit_resume(self) -> None:
+        uid = self.session.save_snapshot()
+        self.emit(f"Resume with: nanocode --resume {uid}")
 
     def discover_mcp(self) -> None:
         self.session.mcp.discover_enabled()
@@ -6221,8 +6291,9 @@ Tools:
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
-            self.session.save_snapshot()
+            self.save_and_emit_resume()
             return True, True
+        if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
         handlers = {
@@ -6553,6 +6624,7 @@ Tools:
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
+            ("session", "`" + self.session.uid + "`"),
             (
                 "model",
                 f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`",
@@ -6849,13 +6921,21 @@ def main(argv: list[str] | None = None) -> int:
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
         if args.resume:
-            session = Session.load_snapshot(args.resume)
+            data = ConfigFile.load(args.config)
+            session = Session.load_snapshot(
+                args.resume,
+                config=Config.from_dict(data),
+                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp),
+            )
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
         return CommandLoop(Agent(session)).run()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
+    except NanocodeError as error:
+        print("Error: " + str(error), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
