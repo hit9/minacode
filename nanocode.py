@@ -59,7 +59,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -2499,9 +2499,10 @@ class QuestionTool(Tool):
         questions = self.args[0].get("questions")
         if not isinstance(questions, list) or not questions:
             raise ToolError("Question requires a non-empty 'questions' list")
-        answers: list[tuple[str, str]] = []
-        total = len(questions)
-        for index, item in enumerate(questions):
+        # Validate the whole batch up front, so a malformed later question never strands the
+        # user after they have already answered earlier ones.
+        prepared: list[tuple[str, list[str] | None, list[str] | None, int | None]] = []
+        for item in questions:
             if not isinstance(item, dict):
                 raise ToolError("each question must be an object with a 'question' field")
             question = str(item.get("question", "")).strip()
@@ -2522,6 +2523,10 @@ class QuestionTool(Tool):
                 isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
             ):
                 raise ToolError("Question recommended must be a valid 0-based choice index")
+            prepared.append((question, choices, previews, recommended))
+        total = len(prepared)
+        answers: list[tuple[str, str]] = []
+        for index, (question, choices, previews, recommended) in enumerate(prepared):
             position = f"{index + 1}/{total}" if total > 1 else ""
             answers.append((question, self.question_fn(question, choices, previews, recommended, position) if self.question_fn else question))
         if len(answers) == 1:

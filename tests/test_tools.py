@@ -1212,6 +1212,25 @@ def test_question_tool_call_multiple_questions(tmp_path):
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
 
 
+def test_question_tool_validates_batch_before_asking(tmp_path):
+    """A malformed later question raises before any question is asked."""
+    s = session(tmp_path)
+    asked = []
+
+    def fake_fn(question, choices, previews, recommended, position):
+        asked.append(question)
+        return "x"
+
+    tool = n.QuestionTool(s, _q(
+        {"question": "First?", "choices": ["A"]},
+        {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
+    ))
+    tool.question_fn = fake_fn
+    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+        tool.call()
+    assert asked == []  # validation happens up front, so nothing was asked
+
+
 def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
     """call() passes choices/previews/recommended as None when not provided."""
     s = session(tmp_path)

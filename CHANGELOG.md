@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.3 - (pending)
+## 0.6.3 - 2026-06-21
 
 ### Added
 - Added `Question` tool that pauses the agent to ask the user one or more questions (asked in sequence) when intent is genuinely ambiguous, a design choice affects the external shape (module structure, public API, naming), or prioritization is needed. Each question supports structured choices with optional dynamic previews and an optional `recommended` choice index (pre-selected and marked).
