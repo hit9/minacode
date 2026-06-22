@@ -2933,18 +2933,29 @@ class MCPTool(Tool):
             raise ToolError("MCP requires named fields")
         return self.args[0]
 
+    ACTIONS: ClassVar[tuple[str, ...]] = ("call", "describe", "list_resources", "read_resource")
+
+    @classmethod
+    def resolved_action(cls, payload: Json) -> str:
+        """Effective action; defaults to "call" when omitted but the envelope looks like an invocation."""
+        action = str(payload.get("action") or "").strip()
+        if action:
+            return action
+        if payload.get("tool") or payload.get("arguments") is not None:
+            return "call"
+        return action
+
     def needs_confirmation(self) -> bool:
         payload = self.payload()
-        action = payload.get("action", "")
-        if action == "describe":
+        if self.resolved_action(payload) != "call":
             return False
-        if action != "call" or self.session.mcp is None:
+        if self.session.mcp is None:
             return False
         return self.session.mcp.tool_needs_confirmation(str(payload.get("server") or ""), str(payload.get("tool") or ""))
 
     def short_args(self) -> list[str]:
         payload = self.payload()
-        action = str(payload.get("action") or "")
+        action = self.resolved_action(payload)
         server = str(payload.get("server") or "")
         tool_name = str(payload.get("tool") or "")
         if action == "read_resource":
@@ -2964,7 +2975,7 @@ class MCPTool(Tool):
 
     def call(self) -> str:
         payload = self.payload()
-        action = payload.get("action", "")
+        action = self.resolved_action(payload)
         server = payload.get("server", "")
         tool_name = payload.get("tool", "")
         arguments = payload.get("arguments", {})
@@ -2983,7 +2994,10 @@ class MCPTool(Tool):
             return mcp.list_resources(server)
         if action == "read_resource":
             return mcp.read_resource(server, str(payload.get("uri") or ""))
-        raise ToolError(f"unknown MCP action: {action}")
+        raise ToolError(
+            f"unknown MCP action {action!r}. Valid actions: {', '.join(self.ACTIONS)}. "
+            f"To invoke a remote tool named {action!r}, use action=\"call\", tool={action!r}."
+        )
 
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
@@ -4467,6 +4481,10 @@ class MCPManager:
             line = self._format_tool_line(server, info)
             if line:
                 lines.append(line)
+        resources = self.resources.get(server, [])
+        if resources:
+            lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(server)}, uri=...):")
+            lines.extend(self._format_resource_line(res) for res in resources)
         return "\n".join(lines)
 
     def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
@@ -4479,10 +4497,29 @@ class MCPManager:
         line = f"{server}.{info.name}{args_str} - {desc}"
         if len(line) > 200:
             line = line[:197] + "..."
+        # The full description (often naming a resource doc with the argument grammar) is
+        # truncated above, so surface any resource-like URIs it mentions explicitly.
+        uris = self._extract_uris(info.description)
+        if uris:
+            line += "\n  refs (read with MCP action=\"read_resource\"): " + ", ".join(uris)
         schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
         if schema:
             line += f"\n  schema: {schema}"
         return line
+
+    URI_PATTERN: ClassVar[re.Pattern] = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>)\]}]+")
+
+    @classmethod
+    def _extract_uris(cls, text: str, limit: int = 5) -> list[str]:
+        """Pull resource-like URIs out of free text, deduped and lightly de-punctuated."""
+        seen: list[str] = []
+        for match in cls.URI_PATTERN.findall(text or ""):
+            uri = match.rstrip(".,;:")
+            if uri not in seen:
+                seen.append(uri)
+            if len(seen) >= limit:
+                break
+        return seen
 
     @staticmethod
     def _schema_json(schema: Json, limit: int) -> str:

@@ -1418,6 +1418,59 @@ class TestMCPResources:
         out = mgr.normalize_resource([SimpleNamespace(text=None, blob=b"\x00\x01", mimeType="application/pdf")])
         assert "binary" in out and "application/pdf" in out
 
+    def test_action_defaults_to_call_when_omitted(self):
+        assert n.MCPTool.resolved_action({"tool": "x", "server": "s"}) == "call"
+        assert n.MCPTool.resolved_action({"arguments": {}, "server": "s"}) == "call"
+        assert n.MCPTool.resolved_action({"server": "s"}) == ""
+        assert n.MCPTool.resolved_action({"action": "describe", "server": "s"}) == "describe"
+
+    def test_omitted_action_invokes_tool(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [])
+
+        async def fake_call(config, headers, name, arguments):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="ok " + name)])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
+        out = n.MCPTool(s, [{"server": "test", "tool": "query", "arguments": {"q": 1}}]).call()
+        assert "ok query" in out
+
+    def test_unknown_action_error_is_actionable(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [])
+        with pytest.raises(n.ToolError, match=r'tool=.search'):
+            n.MCPTool(s, [{"action": "search", "server": "test", "arguments": {}}]).call()
+
+    def test_extract_uris_from_description(self):
+        text = "See metabase://docs/cq.md for syntax. Also https://x.io/a, and (file://y.txt)."
+        assert n.MCPManager._extract_uris(text) == ["metabase://docs/cq.md", "https://x.io/a", "file://y.txt"]
+
+    def test_index_surfaces_description_uris(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        class FakeTool:
+            name = "query"
+            description = "Run a program. " + "x" * 200 + " See metabase://docs/construct-query.md for syntax."
+            inputSchema = {"type": "object", "properties": {}}
+            annotations = None
+
+        async def fake_tools(url, headers):
+            return [FakeTool()]
+
+        async def empty(url, headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", empty)
+        s.mcp.discover_enabled()
+        idx = s.mcp.render_tools_index()
+        # URI survives even though the description is truncated to 80 chars on the main line.
+        assert "metabase://docs/construct-query.md" in idx
+        assert "refs" in idx
+
+    def test_mention_block_lists_resources(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [_fake_resource(uri="docs://a.md", description="Doc A")])
+        block = s.mcp._mention_block("test", "")
+        assert "docs://a.md" in block and "read_resource" in block
+
 
 # ---------------------------------------------------------------------------
 # Smoke: py_compile
