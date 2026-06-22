@@ -7,6 +7,7 @@
 - Added MCP resource support: discover resources alongside tools (concurrently, best-effort), list them in the tools index, and read them via `MCP(action="list_resources")` and `MCP(action="read_resource", uri=...)`. Resource reads flow through the normal tool-result path so they land in cached conversation history.
 - Surface resource-like URIs referenced in MCP tool descriptions on the tool's index line, so doc references survive description truncation and stay discoverable.
 - List a server's resources in `@server` mention blocks, matching the tools index.
+- Auto-read a resource referenced by an MCP tool's description on the first call to that tool (once per uri per session, best-effort, web links skipped), attaching it to the call result on success and to the error on failure so argument-grammar docs reach the model on the first attempt and land in cached history.
 
 ### Changed
 - Default the `MCP` tool `action` to `"call"` when omitted but `tool`/`arguments` are present, and make the unknown-action error actionable (lists valid actions and shows how to invoke a remote tool by name).

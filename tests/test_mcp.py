@@ -1489,6 +1489,70 @@ class TestMCPResources:
         s.mcp.discovery_status = "ready"
         assert s.mcp._pending_status("test") == "connected; no tools or resources advertised"
 
+    def _server_with_doc_tool(self, monkeypatch, description, read_calls):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        class FakeTool:
+            name = "query"
+            inputSchema = {"type": "object", "properties": {}}
+            annotations = None
+
+        FakeTool.description = description
+
+        async def fake_tools(url, headers):
+            return [FakeTool()]
+
+        async def fake_resources(url, headers):
+            return [_fake_resource(uri="metabase://docs/cq.md")]
+
+        async def fake_read(config, headers, uri):
+            read_calls.append(uri)
+            return [SimpleNamespace(text="GRAMMAR DOC", blob=None)]
+
+        monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
+        monkeypatch.setattr(s.mcp, "_read_resource", fake_read)
+        s.mcp.discover_enabled()
+        return s
+
+    def test_auto_read_injects_doc_on_first_call(self, monkeypatch):
+        reads = []
+        s = self._server_with_doc_tool(monkeypatch, "Run. See metabase://docs/cq.md for syntax.", reads)
+
+        async def ok(config, headers, name, arguments):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="ROWS")])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", ok)
+        out1 = n.MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
+        assert "MCPAutoResources" in out1 and "GRAMMAR DOC" in out1 and "ROWS" in out1
+        # injected once: a second call neither re-reads nor re-injects
+        out2 = n.MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
+        assert "MCPAutoResources" not in out2
+        assert reads == ["metabase://docs/cq.md"]
+
+    def test_auto_read_attaches_doc_to_failed_call(self, monkeypatch):
+        reads = []
+        s = self._server_with_doc_tool(monkeypatch, "Run. See metabase://docs/cq.md for syntax.", reads)
+
+        async def boom(config, headers, name, arguments):
+            raise RuntimeError("Invalid body")
+
+        monkeypatch.setattr(s.mcp, "_call_tool", boom)
+        with pytest.raises(n.ToolError) as exc:
+            n.MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
+        assert "Invalid body" in str(exc.value) and "GRAMMAR DOC" in str(exc.value)
+
+    def test_auto_read_skips_web_links(self, monkeypatch):
+        reads = []
+        s = self._server_with_doc_tool(monkeypatch, "Run. Docs at https://web.example/guide.", reads)
+
+        async def ok(config, headers, name, arguments):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="ROWS")])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", ok)
+        out = n.MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
+        assert "MCPAutoResources" not in out and reads == []
+
 
 # ---------------------------------------------------------------------------
 # Smoke: py_compile

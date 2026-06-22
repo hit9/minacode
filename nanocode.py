@@ -2989,7 +2989,12 @@ class MCPTool(Tool):
         if action == "describe":
             return mcp.describe_tool(server, tool_name)
         if action == "call":
-            return mcp.call_tool(server, tool_name, arguments)
+            prefix = mcp.auto_read_prefix(server, tool_name)
+            try:
+                output = mcp.call_tool(server, tool_name, arguments)
+            except ToolError as error:
+                raise ToolError(f"{error}\n\n{prefix}" if prefix else str(error)) from error
+            return prefix + output if prefix else output
         if action == "list_resources":
             return mcp.list_resources(server)
         if action == "read_resource":
@@ -3730,6 +3735,7 @@ class MCPManager:
         self.session = session
         self.tools: dict[str, list[MCPToolInfo]] = {}
         self.resources: dict[str, list[MCPResourceInfo]] = {}
+        self._auto_read_done: set[tuple[str, str]] = set()
         self.server_errors: dict[str, str] = {}
         self.server_skips: dict[str, str] = {}
         self.lock = threading.Lock()
@@ -3840,6 +3846,7 @@ class MCPManager:
     def _forget_locked(self, name: str) -> None:
         self.tools.pop(name, None)
         self.resources.pop(name, None)
+        self._auto_read_done = {entry for entry in self._auto_read_done if entry[0] != name}
         self.server_errors.pop(name, None)
         self.server_skips.pop(name, None)
 
@@ -4168,6 +4175,38 @@ class MCPManager:
             raise ToolError("MCP resource read failed: " + self.error_text(e))
         text = self.normalize_resource(result)
         return f"<MCPResource server={json.dumps(server)} uri={json.dumps(uri)}>\n{text}\n</MCPResource>"
+
+    AUTO_READ_LIMIT: ClassVar[int] = 6_000  # per-doc cap for resources auto-injected on first tool call
+
+    def auto_read_prefix(self, server: str, tool_name: str) -> str:
+        """On the first call to a tool whose description references a resource doc, fetch it once.
+
+        Returns a block to attach to that call's result (so the grammar reaches the model on the
+        first attempt and lands in cached history), or "" when there is nothing new to inject.
+        Best-effort: failures are swallowed and never retried for the same uri.
+        """
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            return ""
+        advertised = {res.uri for res in self.resources.get(server, [])}
+        blocks: list[str] = []
+        for uri in self._extract_uris(info.description):
+            if (server, uri) in self._auto_read_done:
+                continue
+            scheme = uri.split("://", 1)[0].lower()
+            # Only fetch things we can actually read over MCP: advertised resources or custom
+            # (non-web) schemes. Plain http(s) links are left for the model to read explicitly.
+            if uri not in advertised and scheme in ("http", "https"):
+                continue
+            self._auto_read_done.add((server, uri))  # mark before fetching so failures don't retry
+            try:
+                blocks.append(self.read_resource(server, uri)[: self.AUTO_READ_LIMIT])
+            except Exception:
+                continue
+        if not blocks:
+            return ""
+        body = "\n".join(blocks)
+        return f'<MCPAutoResources note="docs referenced by {server}.{tool_name}; injected once">\n{body}\n</MCPAutoResources>\n'
 
     def normalize_resource(self, result: Any) -> str:
         items = result if isinstance(result, list) else [result]
