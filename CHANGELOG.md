@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Report the prompt-cache hit rate in `/status` against input/prompt tokens instead of total tokens (which folded in completion/reasoning output and structurally understated the rate), and show the `cached/prompt` split for both the cumulative and last-call figures.
+
+### Fixed
+- Moved the volatile `code_index` status out of the early `Environment` block (which sits ahead of the conversation history) into the late `Memory` section, so its `synced ↔ stale` churn no longer invalidates the cached conversation prefix every time files change or the indexer runs.
+
 ## 0.6.5 - 2026-06-22
 
 ### Added

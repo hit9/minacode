@@ -410,6 +410,7 @@ class ModelUsage:
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
     last_total_tokens: int = 0
+    last_prompt_tokens: int = 0
     last_cached_prompt_tokens: int = 0
 
     def add(self, usage: Any) -> None:
@@ -436,6 +437,7 @@ class ModelUsage:
         self.total_tokens += total_tokens
         self.cached_prompt_tokens += cached_tokens
         self.last_total_tokens = total_tokens
+        self.last_prompt_tokens = prompt_tokens
         self.last_cached_prompt_tokens = cached_tokens
 
 
@@ -782,6 +784,7 @@ class SessionSnapshotCodec:
             "total_tokens": usage.total_tokens,
             "cached_prompt_tokens": usage.cached_prompt_tokens,
             "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
+            "last_prompt_tokens": usage.last_prompt_tokens,
             "last_total_tokens": usage.last_total_tokens,
         }
 
@@ -867,6 +870,7 @@ class SessionSnapshotCodec:
         usage.total_tokens = data.get("total_tokens", 0)
         usage.cached_prompt_tokens = data.get("cached_prompt_tokens", 0)
         usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
+        usage.last_prompt_tokens = data.get("last_prompt_tokens", 0)
         usage.last_total_tokens = data.get("last_total_tokens", 0)
         return usage
 
@@ -3166,11 +3170,14 @@ class ContextManager:
         return self.estimated_tokens(self.model_messages(base_system, turn_messages)) >= self.session.settings.max_context_tokens
 
     def memory_context(self, *, with_date: bool = False) -> str:
+        index_status = self.session.state.code_index_status or "missing"
+        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         rows = [
             "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
             "Plan:\n" + "\n".join(self.session.state.plan_rows() or ["- (empty; use Note for a short plan)"]),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
             "Check: " + (self.session.state.check or "(empty)"),
+            f"Code index: {index_status} (InspectCode usable: {index_usable})",
         ]
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
@@ -3178,15 +3185,12 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
-        index_status = self.session.state.code_index_status or "missing"
-        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         rows = [
             f"- cwd: {info.cwd}",
             f"- os: {info.os}",
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
             "- detected_commands: " + (", ".join(info.commands) or "(none)"),
-            f"- code_index: {index_status} (InspectCode usable: {index_usable})",
         ]
         if branch := self.session.git_branch(self.session.cwd):
             rows.append(f"- git_branch: {branch}")
@@ -6996,8 +7000,8 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.total_tokens) if usage.total_tokens else 0
-        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_total_tokens) if usage.last_total_tokens else 0
+        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
+        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
@@ -7012,7 +7016,7 @@ Tools:
             ("goal", self.session.state.goal or "(empty)"),
             (
                 "usage",
-                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_total_tokens}` (`{last_cache_ratio:.1f}%`)",
+                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)",
             ),
             (
                 "runtime",

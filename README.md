@@ -204,7 +204,7 @@ model request
 |   conversation, compacted summaries, tools       |
 +--------------------------------------------------+
 | user                                             |
-|   Memory: goal, plan, known, date                |
+|   Memory: goal, plan, known, code index, date    |
 +--------------------------------------------------+
 | user                                             |
 |   FILE STATE: latest Read/Edit file view         |
@@ -213,6 +213,7 @@ model request
 
 Core rules:
 
+- Environment holds only stable host facts (cwd, os, arch, detected commands) so it stays byte-identical across turns and keeps the conversation prefix cacheable; volatile state like the code index status lives in the late Memory section instead.
 - Mid-turn assistant text and appended user input are kept as conversation.
 - Earlier conversation is compacted into an explicit summary when the context grows too large.
 - FILE STATE is updated by successful `Read` and `Edit` tools and shows current listed file ranges, with recent files first.
