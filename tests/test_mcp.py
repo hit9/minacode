@@ -1471,6 +1471,24 @@ class TestMCPResources:
         block = s.mcp._mention_block("test", "")
         assert "docs://a.md" in block and "read_resource" in block
 
+    def test_resource_only_server_renders_in_index(self):
+        """A connected server with resources but zero tools is listed (not dumped into pending)."""
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = []
+        s.mcp.resources["test"] = [n.MCPResourceInfo("test", "docs://guide.md", "guide", "Usage guide", "text/markdown")]
+        s.mcp.discovery_status = "ready"
+        idx = s.mcp.render_tools_index()
+        assert "[test]" in idx
+        assert "docs://guide.md" in idx
+        assert "not connected" not in idx
+
+    def test_pending_status_connected_but_empty(self):
+        """A ready server with neither tools nor resources is reported as connected, not 'not connected'."""
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = []
+        s.mcp.discovery_status = "ready"
+        assert s.mcp._pending_status("test") == "connected; no tools or resources advertised"
+
 
 # ---------------------------------------------------------------------------
 # Smoke: py_compile

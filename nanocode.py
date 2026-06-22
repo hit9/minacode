@@ -4390,7 +4390,8 @@ class MCPManager:
         pending: list[str] = []
         for config in configs:
             tools = self.tools.get(config.name, [])
-            if not tools:
+            resources = self.resources.get(config.name, [])
+            if not tools and not resources:
                 pending.append(f"- {config.name}: {self._pending_status(config.name)}")
                 continue
             name_display = config.name.capitalize()
@@ -4399,7 +4400,6 @@ class MCPManager:
                 line = self._format_tool_line(config.name, tool)
                 if line:
                     lines.append(line)
-            resources = self.resources.get(config.name, [])
             if resources:
                 lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(config.name)}, uri=...):")
                 lines.extend(self._format_resource_line(res) for res in resources)
@@ -4429,6 +4429,8 @@ class MCPManager:
             return message if kind == "error" else "skipped: " + message
         if self.discovery_status == "discovering":
             return "discovering — tools not loaded yet; retry shortly"
+        if name in self.tools:
+            return "connected; no tools or resources advertised"
         return "not connected"
 
     MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")

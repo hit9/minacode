@@ -11,6 +11,9 @@
 ### Changed
 - Default the `MCP` tool `action` to `"call"` when omitted but `tool`/`arguments` are present, and make the unknown-action error actionable (lists valid actions and shows how to invoke a remote tool by name).
 
+### Fixed
+- Render connected MCP servers that advertise resources but no tools in the tools index (previously gated on having ≥1 tool, so resource-only servers were mislabeled "not connected" and their resources hidden); `_pending_status` now distinguishes a connected-but-empty server from a disconnected one.
+
 ## 0.6.4 - 2026-06-21
 
 ### Added
