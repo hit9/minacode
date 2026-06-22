@@ -660,6 +660,15 @@ class MCPToolInfo:
 
 
 @dataclass
+class MCPResourceInfo:
+    server: str
+    uri: str
+    name: str
+    description: str
+    mime_type: str = ""
+
+
+@dataclass
 class SystemInfo:
     COMMANDS: ClassVar[tuple[str, ...]] = (
         "bash",
@@ -2880,8 +2889,8 @@ class QuestionTool(Tool):
 
 class MCPTool(Tool):
     NAME = "MCP"
-    DESCRIPTION = "Call or describe external MCP server tools"
-    SIGNATURE = 'MCP(action="call"|"describe", server, tool, arguments={})'
+    DESCRIPTION = "Call/describe external MCP server tools, and list/read MCP resources"
+    SIGNATURE = 'MCP(action="call"|"describe"|"list_resources"|"read_resource", server, tool?, arguments?, uri?)'
     MUTATES = True
 
     @classmethod
@@ -2891,8 +2900,8 @@ class MCPTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["call", "describe"],
-                    "description": '"call" invokes the tool; "describe" returns metadata',
+                    "enum": ["call", "describe", "list_resources", "read_resource"],
+                    "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri',
                 },
                 "server": {
                     "type": "string",
@@ -2900,14 +2909,18 @@ class MCPTool(Tool):
                 },
                 "tool": {
                     "type": "string",
-                    "description": "Remote MCP tool name",
+                    "description": "Remote MCP tool name (required for call/describe)",
                 },
                 "arguments": {
                     "type": "object",
                     "description": "Arguments for the remote tool (required for call)",
                 },
+                "uri": {
+                    "type": "string",
+                    "description": "Resource URI (required for read_resource), e.g. scheme://path",
+                },
             },
-            "required": ["action", "server", "tool"],
+            "required": ["action", "server"],
             "additionalProperties": False,
         }
 
@@ -2934,7 +2947,10 @@ class MCPTool(Tool):
         action = str(payload.get("action") or "")
         server = str(payload.get("server") or "")
         tool_name = str(payload.get("tool") or "")
-        target = (server + "." + tool_name).strip(".")
+        if action == "read_resource":
+            target = (server + " " + str(payload.get("uri") or "")).strip()
+        else:
+            target = (server + "." + tool_name).strip(".")
         parts = [part for part in (action, target) if part]
         arguments = payload.get("arguments")
         if action == "call" and isinstance(arguments, dict) and arguments:
@@ -2963,6 +2979,10 @@ class MCPTool(Tool):
             return mcp.describe_tool(server, tool_name)
         if action == "call":
             return mcp.call_tool(server, tool_name, arguments)
+        if action == "list_resources":
+            return mcp.list_resources(server)
+        if action == "read_resource":
+            return mcp.read_resource(server, str(payload.get("uri") or ""))
         raise ToolError(f"unknown MCP action: {action}")
 
 TOOLS: tuple[type[Tool], ...] = (
@@ -3695,6 +3715,7 @@ class MCPManager:
     def __init__(self, session: Session):
         self.session = session
         self.tools: dict[str, list[MCPToolInfo]] = {}
+        self.resources: dict[str, list[MCPResourceInfo]] = {}
         self.server_errors: dict[str, str] = {}
         self.server_skips: dict[str, str] = {}
         self.lock = threading.Lock()
@@ -3804,6 +3825,7 @@ class MCPManager:
 
     def _forget_locked(self, name: str) -> None:
         self.tools.pop(name, None)
+        self.resources.pop(name, None)
         self.server_errors.pop(name, None)
         self.server_skips.pop(name, None)
 
@@ -3856,21 +3878,30 @@ class MCPManager:
                 self.set_server_error(config.name, headers)
             return
 
+        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
+            return
         try:
-            if config.auth == "oauth":
-                if not self.oauth_token_store().has_server_tokens(config.url):
-                    self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
-                    return
-                tools = self.run_async(self._list_oauth_tools(config, headers))
-            else:
-                tools = self.run_async(self._list_tools(config, headers))
-            tools_info = self._tools_info(config.name, tools)
+            tools, resources = self.run_async(self._gather_assets(config, headers))
             with self.lock:
-                self.tools[config.name] = tools_info
+                self.tools[config.name] = self._tools_info(config.name, tools)
+                self.resources[config.name] = self._resources_info(config.name, resources)
                 self.server_errors.pop(config.name, None)
                 self.server_skips.pop(config.name, None)
         except Exception as e:
             self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
+
+    async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[Any, list[Any]]:
+        """Fetch tools and resources concurrently. Tool failure aborts discovery; resources are best-effort."""
+        oauth = config.auth == "oauth"
+        tools_co = self._list_oauth_tools(config, headers) if oauth else self._list_tools(config, headers)
+        resources_co = self._list_oauth_resources(config, headers) if oauth else self._list_resources(config, headers)
+        tools, resources = await asyncio.gather(tools_co, resources_co, return_exceptions=True)
+        if isinstance(tools, BaseException):
+            raise tools
+        if isinstance(resources, BaseException):
+            resources = []
+        return tools, resources
 
     def set_server_error(self, name: str, error: str) -> None:
         with self.lock:
@@ -3909,6 +3940,26 @@ class MCPManager:
             )
             for t in tools
         ]
+
+    def _resources_info(self, server: str, resources: Any) -> list[MCPResourceInfo]:
+        infos: list[MCPResourceInfo] = []
+        for r in resources or []:
+            uri = str(getattr(r, "uri", "") or "")
+            if not uri:
+                continue
+            infos.append(
+                MCPResourceInfo(
+                    server=server,
+                    uri=uri,
+                    name=str(getattr(r, "name", "") or ""),
+                    description=str(getattr(r, "description", "") or ""),
+                    mime_type=str(getattr(r, "mimeType", "") or ""),
+                )
+            )
+        return infos
+
+    def resource_info(self, server: str, uri: str) -> MCPResourceInfo | None:
+        return next((res for res in self.resources.get(server, []) if res.uri == uri), None)
 
     @staticmethod
     def tool_annotations(tool: Any) -> Json:
@@ -4063,6 +4114,77 @@ class MCPManager:
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
+    def _resource_preamble(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
+        config = self.find_config(server)
+        if config is None:
+            raise ToolError(f"MCP server '{server}' not found")
+        if config.error:
+            raise ToolError(config.error)
+        headers = self._build_mcp_headers(config)
+        if isinstance(headers, str):
+            raise ToolError(headers)
+        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
+        if server not in self.tools and server not in self.resources:
+            self.discover_server(server)
+        if server in self.server_errors:
+            raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+        return config, headers
+
+    def list_resources(self, server: str) -> str:
+        self._resource_preamble(server)
+        resources = self.resources.get(server, [])
+        lines = [f"<MCPResources server={json.dumps(server)}>"]
+        if resources:
+            lines.extend(self._format_resource_line(res) for res in resources)
+        else:
+            lines.append("(no resources advertised by this server)")
+        lines.append("</MCPResources>")
+        return "\n".join(lines)
+
+    def read_resource(self, server: str, uri: str) -> str:
+        if not uri:
+            raise ToolError("MCP read_resource requires a uri")
+        config, headers = self._resource_preamble(server)
+        try:
+            result = self.run_async(
+                self._read_oauth_resource(config, headers, uri) if config.auth == "oauth" else self._read_resource(config, headers, uri)
+            )
+        except Exception as e:
+            raise ToolError("MCP resource read failed: " + self.error_text(e))
+        text = self.normalize_resource(result)
+        return f"<MCPResource server={json.dumps(server)} uri={json.dumps(uri)}>\n{text}\n</MCPResource>"
+
+    def normalize_resource(self, result: Any) -> str:
+        items = result if isinstance(result, list) else [result]
+        parts: list[str] = []
+        for item in items:
+            text = getattr(item, "text", None)
+            if text:
+                parts.append(str(text))
+                continue
+            blob = getattr(item, "blob", None)
+            if blob is not None:
+                mime = str(getattr(item, "mimeType", "") or "application/octet-stream")
+                parts.append(f"<binary mimeType={json.dumps(mime)} bytes={len(blob)}/>")
+                continue
+            if hasattr(item, "model_dump"):
+                parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
+                continue
+            parts.append(str(item))
+        text = "\n".join(part for part in parts if part).strip()
+        if len(text) > self.RAW_OUTPUT_LIMIT:
+            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
+        return text
+
+    def _format_resource_line(self, info: MCPResourceInfo) -> str:
+        desc = " ".join((info.description or "").split())
+        if len(desc) > 100:
+            desc = desc[:97] + "..."
+        mime = f" [{info.mime_type}]" if info.mime_type else ""
+        label = f"{info.uri}{mime}"
+        return f"- {label} - {desc}" if desc else f"- {label}"
+
     def normalize_result(self, result: Any) -> str:
         parts: list[str] = []
         content = getattr(result, "content", result)
@@ -4100,6 +4222,36 @@ class MCPManager:
         timeout = self.call_timeout()
         async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
             return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
+
+    async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+        from fastmcp.client import Client
+
+        timeout = self.discovery_timeout()
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.list_resources(), timeout=timeout)
+
+    async def _list_oauth_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.discovery_timeout()
+        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.list_resources(), timeout=timeout)
+
+    async def _read_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
+        from fastmcp.client import Client
+
+        timeout = self.call_timeout()
+        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.read_resource(uri), timeout=timeout)
+
+    async def _read_oauth_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
+        from fastmcp.client import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        timeout = self.call_timeout()
+        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(client.read_resource(uri), timeout=timeout)
 
     async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
         from fastmcp.client import Client
@@ -4216,6 +4368,7 @@ class MCPManager:
         lines.append("--- MCP TOOLS ---")
         lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
         lines.append('Use MCP(action="describe", server, tool) for the full schema when one is truncated below.')
+        lines.append('Use MCP(action="read_resource", server, uri) to read a listed resource (e.g. docs describing how to build a tool\'s arguments). Read relevant resources before calling.')
         lines.append("Format: server.tool(req: type; opt: type) - description")
         lines.append("        schema: <JSON Schema for the arguments object>")
         lines.append("")
@@ -4232,6 +4385,10 @@ class MCPManager:
                 line = self._format_tool_line(config.name, tool)
                 if line:
                     lines.append(line)
+            resources = self.resources.get(config.name, [])
+            if resources:
+                lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(config.name)}, uri=...):")
+                lines.extend(self._format_resource_line(res) for res in resources)
             lines.append("")
 
         if pending:

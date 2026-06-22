@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Surface each MCP tool's input JSON Schema to the model: the tools index now carries a compact (capped) schema per tool and `MCP(action="describe")` emits the full schema, so the model can build nested arguments correctly instead of guessing.
+- Added MCP resource support: discover resources alongside tools (concurrently, best-effort), list them in the tools index, and read them via `MCP(action="list_resources")` and `MCP(action="read_resource", uri=...)`. Resource reads flow through the normal tool-result path so they land in cached conversation history.
+
 ## 0.6.4 - 2026-06-21
 
 ### Added

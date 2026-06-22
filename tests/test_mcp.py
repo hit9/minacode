@@ -325,6 +325,7 @@ class TestMCPManagerDiscovery:
             return []
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         started = time.monotonic()
         s.mcp.discover_enabled()
         elapsed = time.monotonic() - started
@@ -1317,6 +1318,105 @@ class TestMCPDiscoverServer:
         assert "gone" in s.mcp.server_errors
 
 
+
+
+# ---------------------------------------------------------------------------
+# MCP resources (list / read)
+# ---------------------------------------------------------------------------
+
+def _fake_resource(uri="docs://x.md", name="x", description="A doc", mime="text/markdown"):
+    return SimpleNamespace(uri=uri, name=name, description=description, mimeType=mime)
+
+
+class TestMCPResources:
+    def _server_with_resources(self, monkeypatch, resources):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        class FakeTool:
+            name = "query"
+            description = "Run a program."
+            inputSchema = {"type": "object", "properties": {"operations": {"type": "array"}}, "required": ["operations"]}
+            annotations = None
+
+        async def fake_tools(url, headers):
+            return [FakeTool()]
+
+        async def fake_resources(url, headers):
+            return resources
+
+        monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
+        s.mcp.discover_enabled()
+        return s
+
+    def test_action_schema_includes_resource_actions(self):
+        schema = n.MCPTool.params_schema()
+        assert {"call", "describe", "list_resources", "read_resource"} <= set(schema["properties"]["action"]["enum"])
+        assert "uri" in schema["properties"]
+        assert schema["required"] == ["action", "server"]
+
+    def test_discovery_populates_resources(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [_fake_resource(uri="metabase://docs/construct-query.md")])
+        assert [r.uri for r in s.mcp.resources["test"]] == ["metabase://docs/construct-query.md"]
+
+    def test_index_lists_resources(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [_fake_resource(uri="metabase://docs/construct-query.md")])
+        idx = s.mcp.render_tools_index()
+        assert "metabase://docs/construct-query.md" in idx
+        assert "read_resource" in idx
+
+    def test_resources_best_effort_on_failure(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        class FakeTool:
+            name = "t"
+            description = "d"
+            inputSchema = {"type": "object", "properties": {}}
+            annotations = None
+
+        async def fake_tools(url, headers):
+            return [FakeTool()]
+
+        async def boom(url, headers):
+            raise RuntimeError("resources not supported")
+
+        monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", boom)
+        s.mcp.discover_enabled()
+        assert s.mcp.tools["test"]  # tool discovery still succeeded
+        assert s.mcp.resources["test"] == []
+        assert "test" not in s.mcp.server_errors
+
+    def test_read_resource_dispatch(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [_fake_resource(uri="docs://a.md")])
+
+        async def fake_read(config, headers, uri):
+            return [SimpleNamespace(text="hello " + uri, blob=None)]
+
+        monkeypatch.setattr(s.mcp, "_read_resource", fake_read)
+        out = n.MCPTool(s, [{"action": "read_resource", "server": "test", "uri": "docs://a.md"}]).call()
+        assert '<MCPResource server="test" uri="docs://a.md">' in out
+        assert "hello docs://a.md" in out
+
+    def test_read_resource_requires_uri(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [])
+        with pytest.raises(n.ToolError, match="requires a uri"):
+            n.MCPTool(s, [{"action": "read_resource", "server": "test"}]).call()
+
+    def test_read_resource_is_read_only(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [])
+        tool = n.MCPTool(s, [{"action": "read_resource", "server": "test", "uri": "docs://a.md"}])
+        assert tool.needs_confirmation() is False
+
+    def test_list_resources_dispatch(self, monkeypatch):
+        s = self._server_with_resources(monkeypatch, [_fake_resource(uri="docs://a.md", description="Doc A")])
+        out = n.MCPTool(s, [{"action": "list_resources", "server": "test"}]).call()
+        assert "docs://a.md" in out and "Doc A" in out
+
+    def test_normalize_resource_blob(self):
+        mgr = n.MCPManager.__new__(n.MCPManager)
+        out = mgr.normalize_resource([SimpleNamespace(text=None, blob=b"\x00\x01", mimeType="application/pdf")])
+        assert "binary" in out and "application/pdf" in out
 
 
 # ---------------------------------------------------------------------------
