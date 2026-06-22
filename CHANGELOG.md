@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5 - 2026-06-22
 
 ### Added
 - Surface each MCP tool's input JSON Schema to the model: the tools index now carries a compact (capped) schema per tool and `MCP(action="describe")` emits the full schema, so the model can build nested arguments correctly instead of guessing.
