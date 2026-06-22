@@ -432,7 +432,9 @@ class TestToolIndexRendering:
         info = mcp_tool_info("test", "tool", description=long_desc)
         s = session("/tmp")
         line = s.mcp._format_tool_line("test", info)
-        assert len(line.split(" - ")[-1]) <= 83
+        # Description lives on the first line; the schema is appended on a following line.
+        summary = line.split("\n")[0]
+        assert len(summary.split(" - ")[-1]) <= 83
 
     def test_index_contains_mcp_tools_header(self, monkeypatch):
         """render_tools_index includes the MCP TOOLS header."""
@@ -1034,7 +1036,7 @@ class TestMCPTabCompletion:
 
 class TestToolIndexTruncation:
     def test_index_truncation_long_block(self, monkeypatch):
-        """Long index block is truncated at 4000 chars."""
+        """Long index block is bounded by INDEX_TOTAL_LIMIT."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
@@ -1062,10 +1064,8 @@ class TestToolIndexTruncation:
         s.mcp.discover_enabled()
 
         idx = s.mcp.render_tools_index()
-        assert len(idx) <= 4100
-        if "truncated" not in idx:
-            # Index fits within limit
-            assert True
+        assert len(idx) <= n.MCPManager.INDEX_TOTAL_LIMIT + 100
+        assert "truncated" in idx  # 200 tools with schemas exceed the budget
 
     def test_format_tool_line_long_args(self):
         """Long args list is truncated."""

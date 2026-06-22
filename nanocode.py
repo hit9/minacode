@@ -3689,6 +3689,8 @@ class MCPManager:
     DESCRIBE_DESCRIPTION_LIMIT: ClassVar[int] = 1_000
     DESCRIBE_ARGUMENT_LIMIT: ClassVar[int] = 50
     DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
+    INDEX_SCHEMA_LIMIT: ClassVar[int] = 700  # per-tool schema cap in the early (cached) tools index
+    INDEX_TOTAL_LIMIT: ClassVar[int] = 16_000  # overall cap for the tools index block
 
     def __init__(self, session: Session):
         self.session = session
@@ -4198,15 +4200,10 @@ class MCPManager:
             desc = Tool.compact(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
             lines.append(f"- {name} {req} {typ}: {desc}")
         lines.append("</arguments>")
-        lines.append("<schema_summary>")
-        if props:
-            summary = f"Top-level object with {', '.join(props.keys())}."
-        else:
-            summary = "No arguments."
-        if len(summary) > 200:
-            summary = summary[:197] + "..."
-        lines.append(summary)
-        lines.append("</schema_summary>")
+        if isinstance(schema, dict) and schema:
+            lines.append("<schema>")
+            lines.append(json.dumps(schema, ensure_ascii=False, indent=2))
+            lines.append("</schema>")
         lines.append("</MCPDescribe>")
         return "\n".join(lines)
 
@@ -4218,8 +4215,9 @@ class MCPManager:
         lines: list[str] = []
         lines.append("--- MCP TOOLS ---")
         lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
-        lines.append('Use MCP(action="describe", server, tool) for full details when needed.')
+        lines.append('Use MCP(action="describe", server, tool) for the full schema when one is truncated below.')
         lines.append("Format: server.tool(req: type; opt: type) - description")
+        lines.append("        schema: <JSON Schema for the arguments object>")
         lines.append("")
 
         pending: list[str] = []
@@ -4242,8 +4240,8 @@ class MCPManager:
             lines.append("")
 
         text = "\n".join(lines)
-        if len(text) > 4000:
-            text = text[:3990] + "\n... MCP tools truncated; use /mcp tools for full list."
+        if len(text) > self.INDEX_TOTAL_LIMIT:
+            text = text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
         return text
 
     def server_issue(self, name: str) -> tuple[str, str] | None:
@@ -4324,7 +4322,20 @@ class MCPManager:
         line = f"{server}.{info.name}{args_str} - {desc}"
         if len(line) > 200:
             line = line[:197] + "..."
+        schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
+        if schema:
+            line += f"\n  schema: {schema}"
         return line
+
+    @staticmethod
+    def _schema_json(schema: Json, limit: int) -> str:
+        """Render a remote tool's input schema as compact JSON, capped at `limit` chars (0 = no cap)."""
+        if not isinstance(schema, dict) or not schema:
+            return ""
+        text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        if limit and len(text) > limit:
+            text = text[: limit - 1].rstrip() + "… (truncated; MCP describe for full schema)"
+        return text
 
     def _tool_args_summary(self, info: MCPToolInfo) -> str:
         schema = info.input_schema or {}
