@@ -738,45 +738,22 @@ class TestMCPContextBlocks:
         assert "--- MCP TOOLS ---" in result
         assert "[test]" in result
 
-    def test_mcp_tool_details_empty(self):
-        """No describe records → empty."""
+    def test_mcp_describe_result_inline_in_history(self):
+        """A describe result renders inline like any tool output, not a tail pointer."""
         s = n.Session(cwd="/tmp")
-        ctx = n.ContextManager(s)
-        assert ctx.mcp_tool_details() == ""
+        runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+        call = n.ToolCall("c", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}])
+        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho input back.</description>\n</MCPDescribe>'
 
-    def test_mcp_tool_details_built_from_records(self):
-        """Details rebuilt from tool_records."""
-        s = n.Session(cwd="/tmp")
-        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho input back.</description>\n<arguments>\n- text required string: Input.</arguments>\n</MCPDescribe>'
-        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo", "arguments": {}}], desc)
-
-        ctx = n.ContextManager(s)
-        details = ctx.mcp_tool_details()
-        assert "--- MCP TOOL DETAILS ---" in details
-        assert "test.echo" in details
-
-    def test_mcp_tool_details_latest_wins(self):
-        """Later describe for same server.tool overrides earlier."""
-        s = n.Session(cwd="/tmp")
-        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-
-        old = '<MCPDescribe server="test" tool="echo">\n<description>\nOld</description>\n</MCPDescribe>'
-        new = '<MCPDescribe server="test" tool="echo">\n<description>\nNew version</description>\n</MCPDescribe>'
-        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], old)
-        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], new)
-
-        ctx = n.ContextManager(s)
-        details = ctx.mcp_tool_details()
-        assert "New version" in details
-        assert "Old" not in details
+        msg = runner.tool_message(call, "tr.1", desc)
+        assert "-> MCP TOOL DETAILS" not in msg
+        assert "<MCPDescribe" in msg
+        assert "tr.1" in msg
 
     def test_mcp_in_context_order(self):
-        """MCP TOOLS appears after ENVIRONMENT, MCP DETAILS before FILE STATE."""
+        """MCP TOOLS appears after Environment and before FILE STATE; no separate details block."""
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nOK</description>\n</MCPDescribe>'
-        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
 
         ctx = n.ContextManager(s)
         msgs = ctx.model_messages("sys")
@@ -784,12 +761,10 @@ class TestMCPContextBlocks:
 
         env_idx = next(i for i, t in enumerate(texts) if t.startswith("--- Environment ---"))
         mcp_tools_idx = next(i for i, t in enumerate(texts) if t.startswith("--- MCP TOOLS ---"))
-        mcp_detail_idx = next(i for i, t in enumerate(texts) if t.startswith("--- MCP TOOL DETAILS ---"))
         file_state_idx = next(i for i, t in enumerate(texts) if t.startswith("--- FILE STATE ---"))
 
-        assert env_idx < mcp_tools_idx
-        assert mcp_detail_idx < file_state_idx
-        assert mcp_tools_idx < mcp_detail_idx
+        assert env_idx < mcp_tools_idx < file_state_idx
+        assert not any(t.startswith("--- MCP TOOL DETAILS ---") for t in texts)
 
 
 # ---------------------------------------------------------------------------
@@ -1221,22 +1196,34 @@ class TestCallToolSuccess:
 
 
 class TestMCPPruning:
-    def test_prune_preserves_mcp_describe_records(self):
-        """prune_tool_records retains MCP describe records referenced in active_mcp_tool_details."""
+    def test_prune_keeps_describe_record_referenced_in_messages(self):
+        """A describe record is retained when its tr.N is referenced in history (normal path)."""
         s = n.Session(cwd="/tmp")
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho back.</description>\n<arguments>\n- text string: Input.</arguments>\n</MCPDescribe>'
+        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho back.</description>\n</MCPDescribe>'
         s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
         ctx = n.ContextManager(s)
 
         key = s.tool_records[0].key
+        keep_messages = [{"role": "tool", "content": f"tool {key} MCP(describe)\noutput:\n{desc}"}]
+        ctx.prune_tool_records(keep_messages)
+
+        assert [r.key for r in s.tool_records] == [key]
+
+    def test_prune_drops_unreferenced_describe_record(self):
+        """With the tail digest gone, an unreferenced describe record prunes like any other."""
+        s = n.Session(cwd="/tmp")
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho.</description>\n</MCPDescribe>'
+        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
+        ctx = n.ContextManager(s)
+
         ctx.prune_tool_records([])
 
-        assert len(s.tool_records) == 1
-        assert s.tool_records[0].key == key
+        assert s.tool_records == []
 
     def test_prune_drops_non_mcp_records(self):
-        """prune_tool_records drops non-MCP records not referenced in messages."""
+        """prune_tool_records drops records not referenced in messages."""
         s = n.Session(cwd="/tmp")
         s.store_tool_result("Find", [], "results from find")
         s.store_tool_result("Read", [], "read output")
@@ -1245,25 +1232,6 @@ class TestMCPPruning:
         ctx.prune_tool_records([])
 
         assert len(s.tool_records) == 0
-
-    def test_prune_keeps_mcp_describe_and_messages_referenced(self):
-        """MCP describe records and message-referenced records are both kept."""
-        s = n.Session(cwd="/tmp")
-        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-        desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho.</description>\n</MCPDescribe>'
-        s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
-        s.store_tool_result("Read", [], "some read")
-        ctx = n.ContextManager(s)
-
-        # The Read record is referenced in messages
-        read_key = s.tool_records[1].key
-        keep_messages = [{"role": "user", "content": f"see {read_key}"}]
-        ctx.prune_tool_records(keep_messages)
-
-        keys = {r.key for r in s.tool_records}
-        assert len(s.tool_records) == 2
-        assert read_key in keys
-        assert s.tool_records[0].name == "MCP"
 
 
 # ---------------------------------------------------------------------------

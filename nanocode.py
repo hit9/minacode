@@ -3036,9 +3036,6 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
-    MCP_DETAILS_BUDGET: ClassVar[int] = 8_000
-    MCP_DETAILS_MAX_TOOLS: ClassVar[int] = 20
-    MCP_DETAILS_MAX_TOOL_CHARS: ClassVar[int] = 2_000
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
         ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
         ".swift .toml .ts .tsx .vue .yaml .yml".split()
@@ -3065,7 +3062,6 @@ class ContextManager:
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         file_context = self.file_context() or "(empty)"
         mcp_tools = self.mcp_tools_context()
-        mcp_details = self.mcp_tool_details()
 
         messages: list[Json] = [
             {"role": "system", "content": base_system.strip()},
@@ -3078,10 +3074,6 @@ class ContextManager:
         messages.extend(self.session.messages)
         messages.extend(turn_messages or [])
         messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
-
-        if mcp_details:
-            messages.append({"role": "user", "content": mcp_details})
-
         messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
 
@@ -3089,60 +3081,6 @@ class ContextManager:
         if self.session.mcp is None:
             return ""
         return self.session.mcp.render_tools_index()
-
-    def mcp_tool_details(self) -> str:
-        items = self.active_mcp_tool_details()
-        if not items:
-            return ""
-
-        chunks: list[str] = []
-        chunks.append("--- MCP TOOL DETAILS ---")
-        chunks.append('Details previously requested with MCP(action="describe").')
-        chunks.append('Use MCP(action="call", server, tool, arguments) to call them.')
-        chunks.append("")
-
-        for _source_order, server, tool, key, body in items:
-            detail_block = f"{server}.{tool} source={key}\n{body}"
-            chunks.append(detail_block)
-            chunks.append("")
-
-        return "\n".join(chunks).strip()
-
-    def active_mcp_tool_details(self) -> list[tuple[int, str, str, str, str]]:
-        details: dict[tuple[str, str], tuple[int, str, str]] = {}
-        for order, record in enumerate(self.session.tool_records):
-            if record.name != "MCP":
-                continue
-            for match in re.finditer(r'<MCPDescribe server=(".*?") tool=(".*?")>(.*?)</MCPDescribe>', record.output, re.DOTALL):
-                try:
-                    server = str(json.loads(match.group(1)))
-                    tool = str(json.loads(match.group(2)))
-                    body = match.group(3).strip()
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                details[(server, tool)] = (order, record.key, body)
-
-        items = sorted((order, server, tool, key, body) for (server, tool), (order, key, body) in details.items())
-        items = items[-self.MCP_DETAILS_MAX_TOOLS :]
-        active: list[tuple[int, str, str, str, str]] = []
-        total_chars = len("--- MCP TOOL DETAILS ---\n") + 160
-        truncated = False
-        for order, server, tool, key, body in items:
-            header = f"{server}.{tool} source={key}"
-            detail_block = f"{header}\n{body}"
-            if len(detail_block) > self.MCP_DETAILS_MAX_TOOL_CHARS:
-                body = body[: max(0, self.MCP_DETAILS_MAX_TOOL_CHARS - len(header) - 24)] + "\n... detail truncated"
-                detail_block = f"{header}\n{body}"
-                truncated = True
-            if total_chars + len(detail_block) + 1 > self.MCP_DETAILS_BUDGET:
-                truncated = True
-                break
-            active.append((order, server, tool, key, body))
-            total_chars += len(detail_block) + 1
-        if truncated and active:
-            order, server, tool, key, body = active[-1]
-            active[-1] = (order, server, tool, key, body + '\n... MCP tool details truncated; use MCP(action="describe", server, tool) again if needed.')
-        return active
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
@@ -3456,8 +3394,6 @@ class ContextManager:
         for offset, record in enumerate(records):
             if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
                 keep.add(record.key)
-        for _order, _server, _tool, key, _body in self.active_mcp_tool_details():
-            keep.add(key)
 
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
@@ -4424,7 +4360,7 @@ class MCPManager:
         lines: list[str] = []
         lines.append("--- MCP TOOLS ---")
         lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
-        lines.append('Use MCP(action="describe", server, tool) for the full schema when one is truncated below.')
+        lines.append('Use MCP(action="describe", server, tool) for the full schema when one is truncated below; the result stays in the conversation, so do not describe the same tool again once its schema is shown — just call it.')
         lines.append('Use MCP(action="read_resource", server, uri) to read a listed resource (e.g. docs describing how to build a tool\'s arguments). Read relevant resources before calling.')
         lines.append("Format: server.tool(req: type; opt: type) - description")
         lines.append("        schema: <JSON Schema for the arguments object>")
@@ -4792,8 +4728,6 @@ class ToolRunner:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
         if not failed and call.name in {"Read", "Edit"}:
             return head + " -> FILE STATE"
-        if not failed and call.name == "MCP" and "<MCPDescribe " in output:
-            return head + " -> MCP TOOL DETAILS"
         rows = [head]
         if failed:
             rows.append("status: failed")
