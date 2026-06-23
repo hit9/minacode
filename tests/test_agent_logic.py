@@ -735,6 +735,41 @@ def test_queued_blank_text_is_cleared(tmp_path):
         msg.get("content", "").strip() == "" and msg.get("role") == "user"
         for msg in s.messages
     )
+def test_queue_command_runs_readonly(tmp_path):
+    """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/memory")
+
+    assert s.pending_user_inputs == []
+    assert out and not any("unavailable" in t for t in out)
+
+
+def test_queue_command_rejects_mutating(tmp_path):
+    """A state-mutating slash command is refused while the agent works, not queued or run."""
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/model")
+
+    assert s.pending_user_inputs == []
+    assert any("unavailable while the agent is working" in t for t in out)
+
+
+def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
+    """Read-only /mcp is allowed; mutating subcommands like refresh are refused."""
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/mcp refresh")
+
+    assert any("read-only /mcp" in t for t in out)
+
+
 def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)

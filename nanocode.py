@@ -5986,6 +5986,8 @@ class StatusBar:
 
 
 class CommandLoop:
+    # Read-only commands safe to run from the background queue-input thread while the agent works.
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/memory", "/mcp"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -6100,11 +6102,15 @@ Tools:
             texts = [Text.clean(text.strip()) for text in texts if text.strip()]
             if not texts:
                 return
-            self.session.pending_user_inputs.extend(texts)
+            queued = [text for text in texts if not text.startswith("/")]
+            commands = [text for text in texts if text.startswith("/")]
+            self.session.pending_user_inputs.extend(queued)
 
             def show() -> None:
-                for text in texts:
+                for text in queued:
                     self.emit("+ " + text)
+                for text in commands:
+                    self.run_queued_command(text)
 
             run_in_terminal(show)
 
@@ -6155,6 +6161,20 @@ Tools:
             self.queue_input_active.clear()
             if self.queue_input_app is app:
                 self.queue_input_app = None
+
+    def run_queued_command(self, text: str) -> None:
+        """Dispatch a slash command typed in the queue input. Only read-only commands run while the
+        agent is working; mutating/control commands would race the in-flight turn, so they are refused."""
+        name = text.partition(" ")[0]
+        if name not in self.QUEUE_RUN_COMMANDS:
+            self.emit(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
+            return
+        if name == "/mcp":
+            sub = text.partition(" ")[2].split()
+            if sub and sub[0] != "tools":
+                self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
+                return
+        self.command(text)
 
     def pause_queue_input(self) -> None:
         self.queue_input_paused.set()
