@@ -41,7 +41,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -5527,6 +5527,9 @@ class UiPrinter:
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
         self.console = Console() if self.color else None
+        # When set, render Rich answers to an ANSI string and emit via prompt_toolkit, so
+        # answers printed from inside a running prompt app (queue input) aren't mangled by patch_stdout.
+        self.capture_ansi = False
 
     def emit(self, text: str = "") -> None:
         if not self.color:
@@ -5539,6 +5542,13 @@ class UiPrinter:
             self.emit(text)
             return
         assert self.console is not None
+        if self.capture_ansi:
+            console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+            with console.capture() as capture:
+                console.print(Rule(style="bright_black", characters="─"))
+                console.print(Markdown(text))
+            print_formatted_text(ANSI(capture.get()), end="", flush=True)
+            return
         self.console.print(Rule(style="bright_black", characters="─"))
         self.console.print(Markdown(text))
 
@@ -6174,7 +6184,11 @@ Tools:
             if sub and sub[0] != "tools":
                 self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
-        self.command(text)
+        self.ui.capture_ansi = True
+        try:
+            self.command(text)
+        finally:
+            self.ui.capture_ansi = False
 
     def pause_queue_input(self) -> None:
         self.queue_input_paused.set()
