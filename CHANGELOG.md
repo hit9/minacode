@@ -1,6 +1,16 @@
 # Changelog
 
 ## Unreleased
+
+### Added
+- Store `Note` plan items as explicit objects with `status` (`todo`, `doing`, `done`, `blocked`) and `text`, while preserving old string plans as `todo` during load/compaction. Model-visible memory renders readable status text; CLI memory and Note previews keep compact `[ ]`, `[~]`, `[x]`, `[-]` symbols.
+- Added a concise system-prompt `GUIDE` section covering `THINK BEFORE CODING`, `SIMPLICITY FIRST`, `SURGICAL CHANGES`, and `GOAL-DRIVEN EXECUTION`.
+
+### Changed
+- Switched Read/Search/Edit/InspectCode anchors to the explicit `anchor=line:hash | text` format and documented the hash as `hash(line_content)` in FILE STATE.
+- Bumped the `code-symbol-index` dependency floor to `>=0.3.1` and use its upstream explicit InspectCode anchor formatter instead of local normalization.
+- Reduced `nanocode.py` by removing dead code, thin wrappers, and over-complex helper paths without changing behavior.
+
 ## 0.6.6 - 2026-06-23
 
 ### Changed

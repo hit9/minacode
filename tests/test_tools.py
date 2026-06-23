@@ -459,7 +459,19 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    note = runner.short_call(n.ToolCall("m", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "new fact"]}]))
+    note = runner.short_call(
+        n.ToolCall(
+            "m",
+            "Note",
+            [
+                {
+                    "set_goal": "ship",
+                    "replace_plan": [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}],
+                    "append_known": ["existing", "new fact"],
+                }
+            ],
+        )
+    )
     assert note == "Note set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + new fact"
 
 
@@ -514,6 +526,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     note_params = n.NoteTool.schema()["function"]["parameters"]
     assert "minItems" not in note_params["properties"]["replace_plan"]
+    assert note_params["properties"]["replace_plan"]["items"]["properties"]["status"]["enum"] == ["todo", "doing", "done", "blocked"]
     assert "minItems" not in note_params["properties"]["replace_known"]
 
     find_params = n.FindTool.schema()["function"]["parameters"]
@@ -563,10 +576,18 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("note", "Note", [{"set_goal": "ship", "replace_plan": ["inspect", "patch"], "append_known": ["existing", "pytest"]}])])
+    runner.run(
+        [
+            n.ToolCall(
+                "note",
+                "Note",
+                [{"set_goal": "ship", "replace_plan": [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}], "append_known": ["existing", "pytest"]}],
+            )
+        ]
+    )
 
     assert s.state.goal == "ship"
-    assert s.state.plan == ["inspect", "patch"]
+    assert [item.to_json() for item in s.state.plan] == [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
     assert output == ["set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + pytest"]
@@ -581,10 +602,13 @@ def test_note_tool_validates_before_mutating_state(tmp_path):
     with pytest.raises(n.ToolError) as error:
         n.NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
 
-    assert str(error.value) == 'Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}'
+    assert str(error.value) == 'Note replace_plan must be an array of plan items, e.g. {"replace_plan":[{"status":"doing","text":"inspect"}]}'
     assert s.state.goal == "old goal"
     assert s.state.plan == ["old plan"]
     assert s.state.known == ["old fact"]
+
+    with pytest.raises(n.ToolError, match="Note replace_plan status must be one of"):
+        n.NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
 
 
 def test_note_tool_replace_known(tmp_path):

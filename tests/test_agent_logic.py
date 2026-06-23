@@ -334,7 +334,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert "latest" not in model.input
     assert "request" not in model.input
     assert s.state.summary == "compact summary"
-    assert s.state.plan == ["next"]
+    assert [item.to_json() for item in s.state.plan] == [{"status": "todo", "text": "next"}]
     assert s.state.known == ["fact"]
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
@@ -851,13 +851,12 @@ def test_memory_command_shows_durable_memory(tmp_path):
 
     assert "goal: ship" in output
     assert "summary" in output
-    assert "- [~] inspect" in output
+    assert "- [ ] inspect" in output
     assert "- pytest" in output
 
     prompt_memory = n.ContextManager(s).memory_context()
     assert "summary" not in prompt_memory
-    assert "- inspect" in prompt_memory
-    assert "[~]" not in prompt_memory
+    assert "- todo: inspect" in prompt_memory
 
 
 def test_exit_command_prints_resume_command(tmp_path):

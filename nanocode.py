@@ -442,9 +442,40 @@ class ModelUsage:
 
 
 @dataclass
+class PlanItem:
+    STATUSES: ClassVar[tuple[str, ...]] = ("todo", "doing", "done", "blocked")
+    SYMBOLS: ClassVar[dict[str, str]] = {"todo": " ", "doing": "~", "done": "x", "blocked": "-"}
+    LEGACY_MARKERS: ClassVar[dict[str, str]] = {" ": "todo", "~": "doing", "x": "done", "X": "done", "-": "blocked"}
+
+    status: str
+    text: str
+
+    @classmethod
+    def parse(cls, value: Any) -> "PlanItem | None":
+        if isinstance(value, dict):
+            status = str(value.get("status") or "todo").strip().lower()
+            text = str(value.get("text") or "").strip()
+        else:
+            raw = str(value).strip()
+            match = re.fullmatch(r"\[( |x|X|~|-)\]\s+(.+)", raw)
+            status = cls.LEGACY_MARKERS[match.group(1)] if match else "todo"
+            text = match.group(2).strip() if match else raw
+        if not text:
+            return None
+        return cls(status if status in cls.STATUSES else "todo", text)
+
+    def to_json(self) -> Json:
+        return {"status": self.status, "text": self.text}
+
+    def row(self, *, status: bool = False, style: str = "text") -> str:
+        prefix = f"[{self.SYMBOLS[self.status]}] " if status and style == "symbol" else f"{self.status}: " if status else ""
+        return "- " + prefix + self.text
+
+
+@dataclass
 class AgentState:
     goal: str = ""
-    plan: list[str] = field(default_factory=list)
+    plan: list[PlanItem | Json | str] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     check: str = ""
     summary: str = ""
@@ -460,17 +491,28 @@ class AgentState:
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
 
+    def __post_init__(self) -> None:
+        self.plan = self.plan_items(self.plan)
+
     @staticmethod
-    def plan_text(item: str) -> str:
-        return re.sub(r"^\[(?: |x|X|~|-)\]\s+", "", item.strip()).strip()
+    def plan_text(item: PlanItem | Json | str) -> str:
+        parsed = PlanItem.parse(item)
+        return parsed.text if parsed else ""
 
     @classmethod
-    def plan_rows_for(cls, items: list[str], *, status: bool = False) -> list[str]:
-        rows = [
-            f"- [{'~' if index == 0 else ' '}] {item}" if status else "- " + item
-            for index, item in enumerate(filter(None, (cls.plan_text(str(item)) for item in items)))
-        ]
+    def plan_items(cls, items: list[Any]) -> list[PlanItem]:
+        return [item for raw in items if (item := PlanItem.parse(raw))]
+
+    @classmethod
+    def plan_rows_for(cls, items: list[Any], *, status: bool = False, style: str = "text") -> list[str]:
+        rows = [item.row(status=status, style=style) for item in cls.plan_items(items)]
         return rows or ["- (empty)"]
+
+    @classmethod
+    def focus_text(cls, items: list[Any]) -> str:
+        plan = cls.plan_items(items)
+        current = next((item for item in plan if item.status == "doing"), None) or next((item for item in plan if item.status != "done"), None)
+        return current.text if current else ""
 
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary", "check"):
@@ -479,8 +521,8 @@ class AgentState:
         for attr in ("plan", "known"):
             value = data.get(attr)
             if isinstance(value, list):
-                items = list(filter(None, (str(item).strip() for item in value)))
-                setattr(self, attr, [self.plan_text(item) for item in items] if attr == "plan" else items)
+                items = list(filter(None, (str(item).strip() for item in value))) if attr == "known" else self.plan_items(value)
+                setattr(self, attr, items)
 
     def format(self) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
@@ -763,7 +805,7 @@ class SessionSnapshotCodec:
     def state(state: AgentState) -> Json:
         return {
             "goal": state.goal,
-            "plan": state.plan,
+            "plan": [item.to_json() for item in AgentState.plan_items(state.plan)],
             "known": state.known,
             "check": state.check,
             "summary": state.summary,
@@ -2721,15 +2763,27 @@ class RecallTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts."
+    DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. Plan items are objects with status todo|doing|done|blocked and text."
     SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
-    EXAMPLE = ('Set memory. Example: {"set_goal":"ship parser fix","replace_plan":["inspect parser","patch bug"],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',)
+    EXAMPLE = (
+        'Set memory. Example: {"set_goal":"ship parser fix","replace_plan":[{"status":"doing","text":"inspect parser"},{"status":"todo","text":"patch bug"}],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',
+    )
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
         strings = {"type": "array", "items": {"type": "string"}}
-        return {"type": "object", "properties": {"set_goal": {"type": "string"}, "replace_plan": strings, "append_known": strings, "replace_known": strings, "set_check": {"type": "string"}}, "additionalProperties": False}
+        plan_item = {
+            "type": "object",
+            "properties": {"status": {"type": "string", "enum": list(PlanItem.STATUSES)}, "text": {"type": "string"}},
+            "required": ["status", "text"],
+            "additionalProperties": False,
+        }
+        return {
+            "type": "object",
+            "properties": {"set_goal": {"type": "string"}, "replace_plan": {"type": "array", "items": plan_item}, "append_known": strings, "replace_known": strings, "set_check": {"type": "string"}},
+            "additionalProperties": False,
+        }
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2754,8 +2808,14 @@ class NoteTool(Tool):
             changed.append("set_check")
         if "replace_plan" in data:
             if not isinstance(data["replace_plan"], list):
-                raise ToolError('Note replace_plan must be an array of strings, e.g. {"replace_plan":["inspect","patch"]}')
-            plan = [AgentState.plan_text(str(item)) for item in data["replace_plan"] if AgentState.plan_text(str(item))]
+                raise ToolError('Note replace_plan must be an array of plan items, e.g. {"replace_plan":[{"status":"doing","text":"inspect"}]}')
+            for item in data["replace_plan"]:
+                if isinstance(item, dict):
+                    if str(item.get("status") or "").strip().lower() not in PlanItem.STATUSES:
+                        raise ToolError("Note replace_plan status must be one of: " + ", ".join(PlanItem.STATUSES))
+                    if not str(item.get("text") or "").strip():
+                        raise ToolError("Note replace_plan text is required")
+            plan = AgentState.plan_items(data["replace_plan"])
             changed.append("replace_plan")
         if "append_known" in data:
             if not isinstance(data["append_known"], list):
@@ -2783,7 +2843,7 @@ class NoteTool(Tool):
         if check := str(data.get("set_check") or "").strip():
             lines.append("set_check -> " + Tool.compact(check, 120))
         if isinstance(data.get("replace_plan"), list):
-            lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True) if row != "- (empty)")])
+            lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True, style="symbol") if row != "- (empty)")])
         if isinstance(data.get("append_known"), list):
             known = [Tool.compact(item, 120) for item in data["append_known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
@@ -3163,7 +3223,7 @@ class ContextManager:
         index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         rows = [
             "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
-            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan) or ["- (empty; use Note for a short plan)"]),
+            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan, status=True) or ["- (empty; use Note for a short plan)"]),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
             "Check: " + (self.session.state.check or "(empty)"),
             f"Code index: {index_status} (InspectCode usable: {index_usable})",
@@ -3268,7 +3328,7 @@ class ContextManager:
         code_edits = self.recent_code_edits()
         check_status = self.check_status(code_edits)
         state = self.session.state
-        focus = next((text for item in state.plan if (text := state.plan_text(item))), "")
+        focus = state.focus_text(state.plan)
         actions, errors = self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not code_edits and not check_status and not errors:
             return ""
@@ -5066,6 +5126,7 @@ class ModelClient:
 Compact the nanocode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
 Use keys: summary, goal, plan, known, check.
+Plan must be an array of objects: {"status":"todo|doing|done|blocked","text":"..."}.
 Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
@@ -7065,7 +7126,7 @@ Tools:
         state = self.session.state
         known = ["- " + item for item in state.known] or ["- (empty)"]
         return "\n".join(
-            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *AgentState.plan_rows_for(state.plan, status=True), "known:", *known]
+            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *AgentState.plan_rows_for(state.plan, status=True, style="symbol"), "known:", *known]
         )
 
     def config(self, args: str) -> str:
