@@ -475,9 +475,6 @@ class AgentState:
     def plan_rows(self, *, status: bool = False) -> list[str]:
         return self.plan_rows_for(self.plan, status=status)
 
-    def current_focus(self) -> str:
-        return next((text for item in self.plan if (text := self.plan_text(item))), "")
-
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary", "check"):
             if isinstance(data.get(attr), str):
@@ -3251,7 +3248,9 @@ class ContextManager:
         paths = sorted((path for path in lines_by_path if lines_by_path[path]), key=lambda path: (-recent(path), path))
         code_edits = self.recent_code_edits()
         check_status = self.check_status(code_edits)
-        focus, actions, errors = self.session.state.current_focus(), self.recent_file_actions(), self.recent_tool_errors()
+        state = self.session.state
+        focus = next((text for item in state.plan if (text := state.plan_text(item))), "")
+        actions, errors = self.recent_file_actions(), self.recent_tool_errors()
         if not paths and not omitted and not focus and not actions and not code_edits and not check_status and not errors:
             return ""
         chunks = ["Read/Edit outputs update this section. Treat listed ranges as current file state."] if paths else []
@@ -3953,9 +3952,6 @@ class MCPManager:
                 )
             )
         return infos
-
-    def resource_info(self, server: str, uri: str) -> MCPResourceInfo | None:
-        return next((res for res in self.resources.get(server, []) if res.uri == uri), None)
 
     @staticmethod
     def tool_annotations(tool: Any) -> Json:
@@ -6307,22 +6303,13 @@ Tools:
         if not self.session.resumed:
             return
         self.session.resumed = False
-        messages = [message for message in self.session.messages if self.should_render_resumed_message(message)]
+        messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         if not messages:
             return
         self.emit(f"Restored session: {self.session.uid}")
         tool_record_index = 0
         for message in messages:
             tool_record_index = self.render_transcript_message(message, tool_record_index)
-
-    @staticmethod
-    def is_resume_marker(message: Json) -> bool:
-        return SessionSnapshotCodec.is_internal_message(message)
-
-    def should_render_resumed_message(self, message: Json) -> bool:
-        if self.is_resume_marker(message):
-            return False
-        return message.get("role") != "tool"
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
         role = str(message.get("role") or "")
@@ -7003,16 +6990,6 @@ Tools:
             self.emit(result + "\n")
         return result
 
-    def select_model(self, choices: tuple[str, ...]) -> str | object | None:
-        current = self.session.config.provider.model
-        labels = {label: label for label in self.MODEL_LABELS if label in choices}
-        labels.update({current: current + " (current)"} if current in choices else {})
-        return self.select_choice("Model", choices, labels=labels, current=current, disabled=self.MODEL_LABELS)
-
-    def select_provider(self, choices: tuple[str, ...]) -> str | object | None:
-        current = self.session.config.active_provider
-        return self.select_choice("Provider", choices, labels={current: current + " (current)"}, current=current)
-
     def select_reasoning(self) -> str | object | None:
         current = self.session.config.provider.reasoning
         labels = {"off": "off - disable reasoning"}
@@ -7181,13 +7158,12 @@ Tools:
         if parts:
             return self.set_provider(parts[0])
         choices = tuple(sorted(self.session.config.providers))
+        summary = "provider: " + self.session.config.active_provider + "\nproviders: " + ", ".join(choices)
         if len(choices) <= 1:
-            return self.provider_summary()
-        choice = self.select_provider(choices)
-        return self.set_provider(choice) if isinstance(choice, str) else ("No change" if choice is SELECTION_BACK else self.provider_summary())
-
-    def provider_summary(self) -> str:
-        return "provider: " + self.session.config.active_provider + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
+            return summary
+        current = self.session.config.active_provider
+        choice = self.select_choice("Provider", choices, labels={current: current + " (current)"}, current=current)
+        return self.set_provider(choice) if isinstance(choice, str) else ("No change" if choice is SELECTION_BACK else summary)
 
     def set_provider(self, name: str) -> str:
         if name not in self.session.config.providers:
@@ -7206,7 +7182,10 @@ Tools:
         if not choices:
             return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
         while True:
-            choice = self.select_model(choices)
+            current = self.session.config.provider.model
+            labels = {label: label for label in self.MODEL_LABELS if label in choices}
+            labels.update({current: current + " (current)"} if current in choices else {})
+            choice = self.select_choice("Model", choices, labels=labels, current=current, disabled=self.MODEL_LABELS)
             if choice is SELECTION_BACK:
                 return "No change"
             if not isinstance(choice, str):
