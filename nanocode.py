@@ -5331,9 +5331,8 @@ FILE STATE:
 - Read and Edit refresh FILE STATE; after Edit, trust the edited range.
 
 FINAL:
-- Concise markdown in the user's language.
-- Include changed files and checks when relevant.
-- Mention checks run, or say checks not run.\
+- Default to a few lines; scale to the task. Lead with the result; no preamble or recap.
+- Concise markdown in the user's language; note changed files and checks run (or not run).\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):

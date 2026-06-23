@@ -7,6 +7,7 @@
 - Land MCP `describe` results inline in the conversation history (bounded and recallable like any tool output) instead of stripping them into a recomputed `MCP TOOL DETAILS` tail block. The schema is now written once and cached as the conversation grows, rather than re-billed uncached on every request; the tools index tells the model not to describe a tool again once its schema is already shown.
 - Collapse repeated MCP `describe` results for the same tool to a one-line pointer when building the request, keeping only the first full schema per `(server, tool)`. This is a stateless send-time transform that never mutates stored history and only ever collapses the newer occurrence, so it reclaims duplicate-schema tokens without disturbing the cached prefix.
 
+- Tighten the final-answer style guidance: default to a few lines, scale length to the task, lead with the result, and drop preamble / request-restatement / step-by-step recaps, replacing the soft "be concise" wording that models tended to ignore.
 - Pre-fill leftover queued input into the prompt for review/edit when a turn finishes, instead of auto-submitting it as the next turn. Input typed while the agent is working is still injected into the running task; only input left over at the turn boundary now waits at an editable prompt (non-interactive/piped input keeps auto-submitting, since there is no one to confirm).
 
 ### Fixed
