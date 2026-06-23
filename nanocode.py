@@ -494,11 +494,6 @@ class AgentState:
     def __post_init__(self) -> None:
         self.plan = self.plan_items(self.plan)
 
-    @staticmethod
-    def plan_text(item: PlanItem | Json | str) -> str:
-        parsed = PlanItem.parse(item)
-        return parsed.text if parsed else ""
-
     @classmethod
     def plan_items(cls, items: list[Any]) -> list[PlanItem]:
         return [item for raw in items if (item := PlanItem.parse(raw))]
@@ -3223,7 +3218,7 @@ class ContextManager:
         index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         rows = [
             "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
-            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan, status=True) or ["- (empty; use Note for a short plan)"]),
+            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan, status=True)),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
             "Check: " + (self.session.state.check or "(empty)"),
             f"Code index: {index_status} (InspectCode usable: {index_usable})",
