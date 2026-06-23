@@ -10,6 +10,10 @@
 - Switched Read/Search/Edit/InspectCode anchors to the explicit `anchor=line:hash | text` format and documented the hash as `hash(line_content)` in FILE STATE.
 - Bumped the `code-symbol-index` dependency floor to `>=0.3.1` and use its upstream explicit InspectCode anchor formatter instead of local normalization.
 - Reduced `nanocode.py` by removing dead code, thin wrappers, and over-complex helper paths without changing behavior.
+- Render Note success output with user-facing `goal:`, `check:`, `plan:`, and `known:` labels, plus status-aware colors in the CLI, instead of exposing internal field names like `set_goal` and `replace_plan`.
+
+### Fixed
+- Render structured plan items in `/memory` and Note previews as status symbols/text instead of leaking `PlanItem(...)` repr strings.
 
 ## 0.6.6 - 2026-06-23
 

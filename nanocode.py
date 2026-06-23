@@ -452,7 +452,9 @@ class PlanItem:
 
     @classmethod
     def parse(cls, value: Any) -> "PlanItem | None":
-        if isinstance(value, dict):
+        if isinstance(value, cls):
+            status, text = value.status, value.text
+        elif isinstance(value, dict):
             status = str(value.get("status") or "todo").strip().lower()
             text = str(value.get("text") or "").strip()
         else:
@@ -2834,19 +2836,19 @@ class NoteTool(Tool):
         data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
         lines = []
         if goal := str(data.get("set_goal") or "").strip():
-            lines.append("set_goal -> " + Tool.compact(goal, 120))
+            lines.append("goal: " + Tool.compact(goal, 120))
         if check := str(data.get("set_check") or "").strip():
-            lines.append("set_check -> " + Tool.compact(check, 120))
+            lines.append("check: " + Tool.compact(check, 120))
         if isinstance(data.get("replace_plan"), list):
-            lines.extend(["replace_plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True, style="symbol") if row != "- (empty)")])
+            lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True, style="symbol") if row != "- (empty)")])
         if isinstance(data.get("append_known"), list):
             known = [Tool.compact(item, 120) for item in data["append_known"] if str(item).strip() and str(item).strip() not in self.session.state.known]
             if known:
-                lines.extend(["append_known:", *(f"  + {item}" for item in known)])
+                lines.extend(["known:", *(f"  + {item}" for item in known)])
         if isinstance(data.get("replace_known"), list):
             known = [Tool.compact(item, 120) for item in data["replace_known"] if str(item).strip()]
             if known:
-                lines.extend(["replace_known:", *(f"  {item}" for item in known)])
+                lines.extend(["known:", *(f"  {item}" for item in known)])
         return ["\n".join(lines) or "{}"]
 
 
@@ -5641,7 +5643,7 @@ class UiPrinter:
             return self.tool_segments(text)
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
-        if text.startswith(("goal ->", "goal:", "plan:", "known:")):
+        if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("ansiwhite", text[2:] + "\n")]
@@ -5680,10 +5682,16 @@ class UiPrinter:
     def memory_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
-            if line.startswith(("goal ->", "goal:")):
+            if line.startswith(("goal:", "check:")):
                 segments.append(("ansimagenta", line))
             elif line in {"summary:", "plan:", "known:"}:
                 segments.append(("ansicyan", line))
+            elif line.lstrip().startswith("- [x]"):
+                segments.append(("ansigreen", line))
+            elif line.lstrip().startswith("- [~]"):
+                segments.append(("ansiyellow", line))
+            elif line.lstrip().startswith("- [-]"):
+                segments.append(("ansired", line))
             elif line.lstrip().startswith("+ "):
                 segments.append(("ansigreen", line))
             else:

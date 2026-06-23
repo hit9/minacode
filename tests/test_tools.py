@@ -472,7 +472,7 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
             ],
         )
     )
-    assert note == "Note set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + new fact"
+    assert note == "Note goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
 
 def test_reject_collapses_display_in_non_debug(tmp_path):
@@ -506,6 +506,18 @@ def test_uiprinter_renders_rejected_line_dim():
 
     assert any(style == "ansibrightblack" and "rejected" in text for style, text in segs)
     assert not any(style in ("ansired", "ansigreen") for style, text in segs)
+
+
+def test_uiprinter_renders_note_memory_status_colors():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    segs = ui.segments("goal: ship\ncheck: passed\nplan:\n  - [~] inspect\n  - [x] patch\nknown:\n  + pytest")
+
+    assert ("ansimagenta", "goal: ship") in segs
+    assert ("ansimagenta", "check: passed") in segs
+    assert ("ansicyan", "plan:") in segs
+    assert ("ansiyellow", "  - [~] inspect") in segs
+    assert ("ansigreen", "  - [x] patch") in segs
+    assert ("ansigreen", "  + pytest") in segs
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -590,7 +602,7 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     assert [item.to_json() for item in s.state.plan] == [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
-    assert output == ["set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + pytest"]
+    assert output == ["goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
 
 
 def test_note_tool_validates_before_mutating_state(tmp_path):
@@ -616,33 +628,31 @@ def test_note_tool_replace_known(tmp_path):
     s.state.known = ["old fact"]
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
-    # short_args 输出
     short = runner.short_call(n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
-    assert short == "Note replace_known:\n  new fact a\n  new fact b"
+    assert short == "Note known:\n  new fact a\n  new fact b"
 
-    # 实际执行 replace_known
     output = []
     runner.output_fn = output.append
     runner.run([n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
-    assert s.state.known == ["new fact a", "new fact b"]  # old fact 被完全替换
-    assert output == ["replace_known:\n  new fact a\n  new fact b"]
+    assert s.state.known == ["new fact a", "new fact b"]
+    assert output == ["known:\n  new fact a\n  new fact b"]
 
-    # 再次 replace_known 为空的场景
     runner.run([n.ToolCall("n", "Note", [{"replace_known": []}])])
     assert s.state.known == []
+
 
 def test_note_tool_set_check(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
 
     short = runner.short_call(n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
-    assert short == "Note set_check -> pytest -q passed"
+    assert short == "Note check: pytest -q passed"
 
     output = []
     runner.output_fn = output.append
     runner.run([n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
     assert s.state.check == "pytest -q passed"
-    assert output == ["set_check -> pytest -q passed"]
+    assert output == ["check: pytest -q passed"]
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)

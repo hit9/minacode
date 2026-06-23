@@ -859,6 +859,17 @@ def test_memory_command_shows_durable_memory(tmp_path):
     assert "- todo: inspect" in prompt_memory
 
 
+def test_memory_command_renders_plan_item_objects(tmp_path):
+    s = session(tmp_path)
+    s.state.plan = [n.PlanItem("done", "设置 goal 和 plan")]
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    output = loop.memory("")
+
+    assert "- [x] 设置 goal 和 plan" in output
+    assert "PlanItem(" not in output
+
+
 def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
