@@ -472,9 +472,6 @@ class AgentState:
         ]
         return rows or ["- (empty)"]
 
-    def plan_rows(self, *, status: bool = False) -> list[str]:
-        return self.plan_rows_for(self.plan, status=status)
-
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary", "check"):
             if isinstance(data.get(attr), str):
@@ -487,7 +484,7 @@ class AgentState:
 
     def format(self) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows(), "Known:", *known, "Check: " + (self.check or "(empty)")])
+        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows_for(self.plan), "Known:", *known, "Check: " + (self.check or "(empty)")])
 
 
 @dataclass
@@ -3144,7 +3141,7 @@ class ContextManager:
         index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
         rows = [
             "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
-            "Plan:\n" + "\n".join(self.session.state.plan_rows() or ["- (empty; use Note for a short plan)"]),
+            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan) or ["- (empty; use Note for a short plan)"]),
             "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
             "Check: " + (self.session.state.check or "(empty)"),
             f"Code index: {index_status} (InspectCode usable: {index_usable})",
@@ -5852,16 +5849,9 @@ class StatusBar:
         while not self.stop_event.is_set():
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
-            print_formatted_text(FormattedText(self.active_fragments()), output=self.output, end="", flush=True)
+            print_formatted_text(FormattedText(self.display_fragments(active=True)), output=self.output, end="", flush=True)
             self.rendered = True
             self.stop_event.wait(self.INTERVAL)
-
-    def refresh_retry_state(self) -> None:
-        count = self.session.state.model_retry_count
-        if count == self.seen_retry_count:
-            return
-        self.seen_retry_count = count
-        self.retry_notice_until = time.monotonic() + 2.0
 
     def model_elapsed(self) -> float:
         return max(0.0, time.monotonic() - started) if (started := self.session.state.current_model_call_started_at) > 0 else 0.0
@@ -5873,11 +5863,13 @@ class StatusBar:
             self.output.flush()
             self.rendered = False
 
-    def idle_fragments(self) -> list[tuple[str, str]]:
-        return self.fragments(0.0, sweep=False, show_elapsed=False)
-
-    def active_fragments(self) -> list[tuple[str, str]]:
-        self.refresh_retry_state()
+    def display_fragments(self, *, active: bool) -> list[tuple[str, str]]:
+        if not active:
+            return self.fragments(0.0, sweep=False, show_elapsed=False)
+        count = self.session.state.model_retry_count
+        if count != self.seen_retry_count:
+            self.seen_retry_count = count
+            self.retry_notice_until = time.monotonic() + 2.0
         elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
         return self.fragments(elapsed, sweep=True, show_elapsed=True)
 
@@ -5924,7 +5916,8 @@ class StatusBar:
         if show_elapsed and self.session.pending_user_inputs:
             parts.append(("+" + str(len(self.session.pending_user_inputs)), "warn"))
         if show_elapsed:
-            parts.append((self.duration(elapsed), "runtime"))
+            minutes, rest = divmod(int(elapsed), 60)
+            parts.append((f"{elapsed:.1f}s" if elapsed < 60 else f"{minutes}m{rest:02d}s", "runtime"))
             if self.retry_notice_until > time.monotonic():
                 parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
@@ -5993,11 +5986,6 @@ class StatusBar:
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
-
-    @staticmethod
-    def duration(seconds: float) -> str:
-        minutes, rest = divmod(int(seconds), 60)
-        return f"{seconds:.1f}s" if seconds < 60 else f"{minutes}m{rest:02d}s"
 
 
 class CommandLoop:
@@ -6413,7 +6401,7 @@ Tools:
 
     def status_window(self, *, active: bool = False) -> Window:
         return Window(
-            FormattedTextControl(self.status_bar.active_fragments if active else self.status_bar.idle_fragments, style="class:bottom-toolbar.text"),
+            FormattedTextControl(lambda: self.status_bar.display_fragments(active=active), style="class:bottom-toolbar.text"),
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
@@ -7049,7 +7037,7 @@ Tools:
         state = self.session.state
         known = ["- " + item for item in state.known] or ["- (empty)"]
         return "\n".join(
-            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *state.plan_rows(status=True), "known:", *known]
+            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *AgentState.plan_rows_for(state.plan, status=True), "known:", *known]
         )
 
     def config(self, args: str) -> str:
@@ -7178,7 +7166,15 @@ Tools:
         if parts:
             result = self.set_model(parts[0])
             return "No change" if result is SELECTION_BACK else str(result)
-        choices = self.model_choices()
+        provider = self.session.config.provider
+        configured = tuple(dict.fromkeys(provider.available_models))
+        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        choices: list[str] = []
+        if configured:
+            choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
+        if remote:
+            choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
+        choices = tuple(choices)
         if not choices:
             return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
         while True:
@@ -7196,17 +7192,6 @@ Tools:
             if result is SELECTION_BACK:
                 continue
             return str(result)
-
-    def model_choices(self) -> tuple[str, ...]:
-        provider = self.session.config.provider
-        configured = tuple(dict.fromkeys(provider.available_models))
-        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
-        choices: list[str] = []
-        if configured:
-            choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
-        if remote:
-            choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
-        return tuple(choices)
 
     def remote_models(self, provider: ProviderConfig) -> tuple[str, ...]:
         if not provider.url or not provider.key:
