@@ -747,6 +747,19 @@ def test_queue_command_runs_readonly(tmp_path):
     assert out and not any("unavailable" in t for t in out)
 
 
+def test_queue_command_runs_yolo_toggle(tmp_path):
+    """/yolo flips the runtime flag from the queue while the agent works."""
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    before = s.settings.yolo
+    loop.run_queued_command("/yolo")
+
+    assert s.settings.yolo is (not before)
+    assert s.pending_user_inputs == []
+
+
 def test_queue_command_rejects_mutating(tmp_path):
     """A state-mutating slash command is refused while the agent works, not queued or run."""
     s = session(tmp_path)

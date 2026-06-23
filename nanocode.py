@@ -5996,8 +5996,9 @@ class StatusBar:
 
 
 class CommandLoop:
-    # Read-only commands safe to run from the background queue-input thread while the agent works.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/memory", "/mcp"})
+    # Commands safe to run from the background queue-input thread while the agent works: read-only
+    # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/memory", "/mcp", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
