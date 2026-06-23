@@ -4731,8 +4731,15 @@ class ToolRunner:
         if self.session.settings.debug:
             return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
         self.session.record_tool_error("-", call.name, call.args, output)
-        self.output_fn(self.finish_display(call, "", output, failed=True, display=display, batch_suffix=batch_suffix))
+        self.output_fn(self.reject_display(call, output, display=display, batch_suffix=batch_suffix))
         return self.tool_message(call, "", output, failed=True, display=display)
+
+    def reject_display(self, call: ToolCall, output: str, *, display: str | None = None, batch_suffix: str = "") -> str:
+        # Argument/usage rejections are usually self-corrected on retry, so show a quiet one-liner
+        # (rendered dim by UiPrinter) instead of the full red failed block. Full error still goes to
+        # the model and to debug.
+        reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
+        return self.with_batch_suffix("tool " + (display or self.short_call(call)) + " · rejected: " + reason, batch_suffix)
 
     def finish(
         self,
@@ -5572,7 +5579,9 @@ class UiPrinter:
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
-            if line.startswith("tool "):
+            if line.startswith("tool ") and " · rejected:" in line:
+                segments.append(("ansibrightblack", line))
+            elif line.startswith("tool "):
                 body = line[5:]
                 call, sep, tail = body.partition(" -> ")
                 failed = body.endswith(" [failed]") or body.endswith(" [refused]")

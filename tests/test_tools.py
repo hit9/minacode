@@ -442,6 +442,39 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert note == "Note set_goal -> ship\nreplace_plan:\n  - [~] inspect\n  - [ ] patch\nappend_known:\n  + new fact"
 
 
+def test_reject_collapses_display_in_non_debug(tmp_path):
+    s = session(tmp_path)
+    out = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
+
+    msg = runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: Read requires non-empty ranges")
+
+    # display collapses to one quiet line, no full [failed]/error block
+    assert any("· rejected: Read requires non-empty ranges" in t for t in out)
+    assert not any("[failed]" in t or t.startswith("  error ") for t in out)
+    # model still receives the full error
+    assert "Read requires non-empty ranges" in msg
+
+
+def test_reject_keeps_full_display_in_debug(tmp_path):
+    s = session(tmp_path)
+    s.settings.debug = True
+    out = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
+
+    runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: bad args")
+
+    assert any("[failed]" in t for t in out)
+
+
+def test_uiprinter_renders_rejected_line_dim():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    segs = ui.tool_segments("tool Read · rejected: needs ranges")
+
+    assert any(style == "ansibrightblack" and "rejected" in text for style, text in segs)
+    assert not any(style in ("ansired", "ansigreen") for style, text in segs)
+
+
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = n.BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]

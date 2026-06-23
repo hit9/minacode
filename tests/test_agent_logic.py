@@ -484,7 +484,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     n.ToolRunner(bad, n.ContextManager(bad), output_fn=outputs.append).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
-    assert outputs and "[failed]" in outputs[0]
+    assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line in non-debug
 
 
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):
