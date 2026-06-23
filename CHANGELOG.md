@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+## 0.6.6 - 2026-06-23
 
 ### Changed
 - Report the prompt-cache hit rate in `/status` against input/prompt tokens instead of total tokens (which folded in completion/reasoning output and structurally understated the rate), and show the `cached/prompt` split for both the cumulative and last-call figures.
