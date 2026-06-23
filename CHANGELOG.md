@@ -7,6 +7,8 @@
 - Land MCP `describe` results inline in the conversation history (bounded and recallable like any tool output) instead of stripping them into a recomputed `MCP TOOL DETAILS` tail block. The schema is now written once and cached as the conversation grows, rather than re-billed uncached on every request; the tools index tells the model not to describe a tool again once its schema is already shown.
 - Collapse repeated MCP `describe` results for the same tool to a one-line pointer when building the request, keeping only the first full schema per `(server, tool)`. This is a stateless send-time transform that never mutates stored history and only ever collapses the newer occurrence, so it reclaims duplicate-schema tokens without disturbing the cached prefix.
 
+- Pre-fill leftover queued input into the prompt for review/edit when a turn finishes, instead of auto-submitting it as the next turn. Input typed while the agent is working is still injected into the running task; only input left over at the turn boundary now waits at an editable prompt (non-interactive/piped input keeps auto-submitting, since there is no one to confirm).
+
 ### Fixed
 - Moved the volatile `code_index` status out of the early `Environment` block (which sits ahead of the conversation history) into the late `Memory` section, so its `synced ↔ stale` churn no longer invalidates the cached conversation prefix every time files change or the indexer runs.
 
