@@ -5340,7 +5340,7 @@ TOOLS:
 - Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
 
 GUIDE:
-- THINK BEFORE CODING: surface important assumptions, ambiguity, and tradeoffs.
+- THINK BEFORE CODING: briefly state your approach before acting; surface important assumptions, ambiguity, and tradeoffs.
 - SIMPLICITY FIRST: implement the smallest non-speculative solution.
 - SURGICAL CHANGES: touch only lines that trace to the request; clean up only your own orphans.
 - GOAL-DRIVEN EXECUTION: define success criteria and loop until verified or blocked.
