@@ -766,6 +766,46 @@ class TestMCPContextBlocks:
         assert env_idx < mcp_tools_idx < file_state_idx
         assert not any(t.startswith("--- MCP TOOL DETAILS ---") for t in texts)
 
+    @staticmethod
+    def _describe_msg(call_id: str, key: str, tool: str, body: str) -> dict:
+        desc = f'<MCPDescribe server="test" tool="{tool}">\n{body}\n</MCPDescribe>'
+        return {"role": "tool", "tool_call_id": call_id, "content": f"tool {key} MCP(describe, test, {tool})\noutput:\n{desc}"}
+
+    def test_dedup_collapses_repeated_describe(self):
+        """A second describe of the same tool collapses to a pointer at the first; the first stays full."""
+        s = n.Session(cwd="/tmp")
+        ctx = n.ContextManager(s)
+        m1 = self._describe_msg("a", "tr.1", "echo", "schema")
+        m2 = self._describe_msg("b", "tr.2", "echo", "schema")
+
+        out = ctx.dedup_mcp_describes([m1, m2])
+
+        assert "<MCPDescribe" in out[0]["content"]       # first kept full
+        assert "<MCPDescribe" not in out[1]["content"]    # second collapsed
+        assert "repeat describe of test.echo" in out[1]["content"]
+        assert "tr.1" in out[1]["content"]                # points back to the first
+        assert "tr.2" in out[1]["content"]                # head/recall key preserved
+        assert m2["content"].count("<MCPDescribe") == 1   # input not mutated (pure transform)
+
+    def test_dedup_keeps_distinct_tools(self):
+        """Different tools each keep their full schema."""
+        s = n.Session(cwd="/tmp")
+        ctx = n.ContextManager(s)
+        out = ctx.dedup_mcp_describes([self._describe_msg("a", "tr.1", "echo", "s1"), self._describe_msg("b", "tr.2", "ping", "s2")])
+
+        assert all("<MCPDescribe" in m["content"] for m in out)
+
+    def test_model_messages_dedups_describe(self):
+        """model_messages applies the dedup to sent context without touching stored history."""
+        s = n.Session(cwd="/tmp")
+        s.messages = [self._describe_msg("a", "tr.1", "echo", "schema"), self._describe_msg("b", "tr.2", "echo", "schema")]
+        ctx = n.ContextManager(s)
+
+        tool_texts = [m["content"] for m in ctx.model_messages("sys") if m.get("role") == "tool"]
+
+        assert sum("<MCPDescribe" in t for t in tool_texts) == 1
+        assert sum("<MCPDescribe" in m["content"] for m in s.messages) == 2  # history untouched
+
 
 # ---------------------------------------------------------------------------
 # MCPManager — describe_tool

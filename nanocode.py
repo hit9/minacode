@@ -3036,6 +3036,7 @@ class ToolCall:
 class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
         ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
         ".swift .toml .ts .tsx .vue .yaml .yml".split()
@@ -3071,11 +3072,45 @@ class ContextManager:
         if mcp_tools:
             messages.append({"role": "user", "content": mcp_tools})
 
-        messages.extend(self.session.messages)
-        messages.extend(turn_messages or [])
+        messages.extend(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])]))
         messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
         messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
+
+    def dedup_mcp_describes(self, messages: list[Json]) -> list[Json]:
+        """Collapse repeated MCP describe results to a pointer, keeping the first per (server, tool).
+
+        Pure send-time transform — stored history is never mutated. The first describe of a tool keeps
+        its full schema (and stays in the cached prefix); a later duplicate shrinks to a one-line pointer
+        the moment it appears, so the sent prefix stays byte-stable across calls and we reclaim the
+        repeated schema tokens. Only ever collapses the newer occurrence, never an earlier (cached) one;
+        if the first occurrence is later compacted away, the next one is promoted to full on its own.
+        """
+        seen: dict[tuple[str, str], str] = {}
+        result: list[Json] = []
+        for message in messages:
+            content = message.get("content")
+            if message.get("role") != "tool" or not isinstance(content, str):
+                result.append(message)
+                continue
+            match = self.MCP_DESCRIBE_BLOCK.search(content)
+            if match is None:
+                result.append(message)
+                continue
+            try:
+                identity = (str(json.loads(match.group(1))), str(json.loads(match.group(2))))
+            except (json.JSONDecodeError, ValueError):
+                result.append(message)
+                continue
+            first_key = seen.get(identity)
+            if first_key is None:
+                key = re.search(r"\btr\.\d+\b", content)
+                seen[identity] = key.group(0) if key else "above"
+                result.append(message)
+                continue
+            marker = f"(repeat describe of {identity[0]}.{identity[1]}; schema shown earlier at {first_key}, unchanged)"
+            result.append({**message, "content": self.MCP_DESCRIBE_BLOCK.sub(lambda _: marker, content)})
+        return result
 
     def mcp_tools_context(self) -> str:
         if self.session.mcp is None:
