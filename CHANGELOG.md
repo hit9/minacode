@@ -8,6 +8,7 @@
 - Collapse repeated MCP `describe` results for the same tool to a one-line pointer when building the request, keeping only the first full schema per `(server, tool)`. This is a stateless send-time transform that never mutates stored history and only ever collapses the newer occurrence, so it reclaims duplicate-schema tokens without disturbing the cached prefix.
 
 - Tighten the final-answer style guidance: default to a few lines, scale length to the task, lead with the result, and drop preamble / request-restatement / step-by-step recaps, replacing the soft "be concise" wording that models tended to ignore.
+- Add Tab/Shift-Tab completion (commands, paths, mentions) and a completion menu to the queue-input area, matching the main prompt.
 - Run read-only slash commands (`/help`, `/status`, `/memory`, read-only `/mcp`) typed in the queue-input area while the agent is working, instead of sending them to the model as literal text. State-mutating or control commands are refused with a hint to interrupt first, since they would race the in-flight turn.
 - Pre-fill leftover queued input into the prompt for review/edit when a turn finishes, instead of auto-submitting it as the next turn. Input typed while the agent is working is still injected into the running task; only input left over at the turn boundary now waits at an editable prompt (non-interactive/piped input keeps auto-submitting, since there is no one to confirm).
 

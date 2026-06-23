@@ -6103,7 +6103,13 @@ Tools:
         def changed(buffer: Buffer) -> None:
             self.queue_input_text = buffer.text
 
-        buffer = Buffer(document=Document(self.queue_input_text), multiline=False, on_text_changed=changed)
+        buffer = Buffer(
+            document=Document(self.queue_input_text),
+            multiline=False,
+            on_text_changed=changed,
+            completer=self.input_completer,
+            complete_while_typing=False,
+        )
         control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt)])
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
@@ -6141,6 +6147,21 @@ Tools:
                 self.session.state.model_retry_count += 1
                 os.kill(os.getpid(), signal.SIGINT)
 
+        @bindings.add("tab")
+        def _tab(event):
+            if buffer.complete_state:
+                buffer.complete_next()
+                return
+            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
+            if len(completions) == 1:
+                buffer.apply_completion(completions[0])
+            else:
+                buffer.start_completion(select_first=False)
+
+        @bindings.add("s-tab")
+        def _shift_tab(event):
+            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+
         @bindings.add(Keys.BracketedPaste)
         def _paste(event):
             parts = event.data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -6151,7 +6172,12 @@ Tools:
             self.queue_input_text = parts[-1]
             buffer.reset(Document(self.queue_input_text))
 
-        app = self._make_app(Layout(HSplit([input_window, self.status_window(active=True)]), focused_element=input_window), bindings)
+        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        root = FloatContainer(
+            HSplit([input_window, completion_space, self.status_window(active=True)]),
+            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
+        )
+        app = self._make_app(Layout(root, focused_element=input_window), bindings)
         self.queue_input_app = app
         self.queue_input_active.set()
 
