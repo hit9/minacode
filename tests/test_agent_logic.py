@@ -108,11 +108,11 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
 
     read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
     read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
-    assert "|old" in context.file_context()
+    assert "| old" in context.file_context()
 
     path.write_text("changed\nkeep\n", encoding="utf-8")
     stale = context.file_context()
-    assert "|old" not in stale
+    assert "| old" not in stale
     assert read_key in stale
 
     path.write_text("old\nkeep\n", encoding="utf-8")
@@ -129,10 +129,10 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert "Files:\n- a.txt 0:2" in rendered
     assert "Read/Edit outputs update this section." in rendered
     assert f"Recent file events:\n- {read_key} Read" in rendered
-    assert "Format: line:hash|text. Use line:hash as edit anchors." in rendered
+    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
     assert f"@@ a.txt 0:1 current source={edit_key} tool=Edit" in rendered
-    assert "|new" in rendered
-    assert "|old" not in rendered
+    assert "| new" in rendered
+    assert "| old" not in rendered
 
 
 def test_file_context_marks_full_file_reads(tmp_path):
@@ -144,8 +144,8 @@ def test_file_context_marks_full_file_reads(tmp_path):
 
     rendered = n.ContextManager(s).file_context()
     assert "- a.txt 0:2 current" in rendered
-    assert "|one" in rendered
-    assert "|two" in rendered
+    assert "| one" in rendered
+    assert "| two" in rendered
 
 
 def test_file_context_keeps_current_lines_without_local_budget(tmp_path):
@@ -163,8 +163,8 @@ def test_file_context_keeps_current_lines_without_local_budget(tmp_path):
 
     rendered = context.file_context()
     assert f"source={new_key} tool=Read" in rendered
-    assert "|old-70" in rendered
-    assert "|new-" in rendered
+    assert "| old-70" in rendered
+    assert "| new-" in rendered
 
 
 def test_file_context_edit_invalidate_replaces_only_changed_range(tmp_path):
@@ -181,10 +181,10 @@ def test_file_context_edit_invalidate_replaces_only_changed_range(tmp_path):
     edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
 
     rendered = context.file_context()
-    assert "|a" in rendered
-    assert "|B" in rendered
-    assert "|c" in rendered
-    assert "|b" not in rendered
+    assert "| a" in rendered
+    assert "| B" in rendered
+    assert "| c" in rendered
+    assert "| b" not in rendered
     assert f"@@ a.txt 1:2 current source={edit_key} tool=Edit" in rendered
     assert f"source={read_key} tool=Read" in rendered
 
@@ -199,9 +199,9 @@ def test_file_context_drops_drifted_old_lines_instead_of_guessing(tmp_path):
     n.EditTool(s, ["a.txt", [{"op": "insert_before", "start": "0:" + n.ReadTool.line_hash("a\n"), "content": "x\n"}]]).call()
 
     rendered = context.file_context()
-    assert "|a" not in rendered
-    assert "|b" not in rendered
-    assert "|c" not in rendered
+    assert "| a" not in rendered
+    assert "| b" not in rendered
+    assert "| c" not in rendered
     assert f"{read_key}" in rendered
     assert "Omitted content:" in rendered
 
@@ -216,9 +216,9 @@ def test_file_context_uses_raw_current_lines_not_bounded_middle(tmp_path):
 
     rendered = context.file_context()
     assert f"source={key} tool=Read" in rendered
-    assert "|first" in rendered
-    assert "|middle-40" in rendered
-    assert "|last" in rendered
+    assert "| first" in rendered
+    assert "| middle-40" in rendered
+    assert "| last" in rendered
     assert "<bounded_output" not in rendered
 
 
@@ -234,8 +234,8 @@ def test_file_context_merges_current_ranges_within_same_file(tmp_path):
     rendered = context.file_context()
     assert f"source={old_key} tool=Read" in rendered
     assert f"source={new_key} tool=Read" in rendered
-    assert "|a" in rendered
-    assert "|c" in rendered
+    assert "| a" in rendered
+    assert "| c" in rendered
 
 
 def test_file_context_edit_read_edit_keeps_final_state(tmp_path):
@@ -257,11 +257,11 @@ def test_file_context_edit_read_edit_keeps_final_state(tmp_path):
     edit2_key = s.store_tool_result("Edit", ["a.txt"], edit2)
 
     rendered = context.file_context()
-    assert "|A" in rendered
-    assert "|b" in rendered
-    assert "|C" in rendered
-    assert "|a" not in rendered
-    assert "|c" not in rendered
+    assert "| A" in rendered
+    assert "| b" in rendered
+    assert "| C" in rendered
+    assert "| a" not in rendered
+    assert "| c" not in rendered
     assert f"@@ a.txt 0:2 current source={read_key} tool=Read" in rendered
     assert f"@@ a.txt 2:3 current source={edit2_key} tool=Edit" in rendered
 
@@ -281,10 +281,10 @@ def test_file_context_read_edit_read_uses_latest_read(tmp_path):
     read2_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
 
     rendered = context.file_context()
-    assert "|a" in rendered
-    assert "|B" in rendered
-    assert "|c" in rendered
-    assert "|b" not in rendered
+    assert "| a" in rendered
+    assert "| B" in rendered
+    assert "| c" in rendered
+    assert "| b" not in rendered
     assert f"@@ a.txt 0:3 current source={read2_key} tool=Read" in rendered
     assert f"source={read1_key} tool=Read" not in rendered
 
@@ -427,7 +427,7 @@ def test_compaction_prunes_old_non_file_tool_records(tmp_path):
     assert old_key not in s.tool_results
     assert {record.key for record in s.tool_records} == {read_key, current_key}
     assert set(s.tool_results) == {read_key, current_key}
-    assert "|one" in context.file_context()
+    assert "| one" in context.file_context()
 
 
 def test_compaction_keeps_current_turn_tool_records(tmp_path):
@@ -464,8 +464,8 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 
     rendered = context.file_context()
     assert {record.key for record in s.tool_records} == {read_key, edit_key}
-    assert "|a" in rendered
-    assert "|b" not in rendered
+    assert "| a" in rendered
+    assert "| b" not in rendered
     assert "Omitted content:" in rendered
 
 

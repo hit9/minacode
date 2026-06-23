@@ -1328,7 +1328,7 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, line:hash text, and updates FILE STATE."
+    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, anchor=line:hash(line_content) text, and updates FILE STATE."
     SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
@@ -1372,6 +1372,30 @@ class ReadTool(Tool):
     def line_hash(line: str) -> str:
         return Text.base36(int(hashlib.sha1(line.encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
 
+    @classmethod
+    def anchor(cls, index: int, line: str) -> str:
+        return f"{index}:{cls.line_hash(line)}"
+
+    @classmethod
+    def anchor_line(cls, index: int, line: str) -> str:
+        return f"anchor={cls.anchor(index, line)} | {line.rstrip(chr(10))}"
+
+    @staticmethod
+    def indexed_line_hash(line: str) -> str:
+        return hashlib.sha256(line.rstrip("\n").encode("utf-8")).hexdigest()[:8]
+
+    @staticmethod
+    def parse_anchor(value: str) -> tuple[int, str] | None:
+        text = value.split("|", 1)[0].strip()
+        if text.startswith("anchor="):
+            text = text.removeprefix("anchor=").strip()
+        match = re.fullmatch(r"(\d+):([0-9a-z]{5}|[0-9a-f]{8})", text)
+        return (int(match.group(1)), match.group(2).lower()) if match else None
+
+    @classmethod
+    def anchor_matches(cls, line: str, expected: str) -> bool:
+        return expected == cls.line_hash(line) or expected == cls.indexed_line_hash(line)
+
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
 
@@ -1409,7 +1433,7 @@ class ReadTool(Tool):
             end = max(start, len(lines) if requested_end == 0 else min(len(lines), requested_end))
             out.append(f"<range>{start}:{end}</range>")
             out.append("<content hashline-numbered>")
-            out.append("".join(f"{i}:{self.line_hash(lines[i])}|{lines[i]}" for i in range(start, end)).rstrip("\n"))
+            out.extend(self.anchor_line(i, lines[i]) for i in range(start, end))
             out.append("</content>")
         out.append("</Read>")
         return "\n".join(out)
@@ -1638,7 +1662,7 @@ class FindTool(Tool):
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path:line:hash matches."
+    DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path anchor=line:hash matches."
     SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
@@ -1821,7 +1845,7 @@ class SearchTool(Tool):
         return rows
 
     def match_line(self, prefix: str, path: str, line_index: int, line: str) -> str:
-        return f"{prefix} {self.session.relpath(path)}:{line_index}:{ReadTool.line_hash(line)}|{line.rstrip()}"
+        return f"{prefix} {self.session.relpath(path)} {ReadTool.anchor_line(line_index, line)}"
 
 
 class CodeIndex:
@@ -2073,7 +2097,7 @@ class InspectCodeTool(Tool):
         if mode == "find":
             return csi.search(target, limit=limit or csi.DEFAULT_SEARCH_LIMIT, **common)
         if mode == "inspect":
-            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, **common)
+            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, anchor_format="explicit", **common)
         if mode == "refs":
             ref_kinds = options.get("ref_kind") or ("all" if options.get("all_kinds") else "behavioral")
             return csi.refs(target, limit=limit or csi.DEFAULT_MAX_REFERENCES, offset=int(options.get("offset") or 0), ref_kinds=ref_kinds, **common)
@@ -2313,7 +2337,7 @@ class EditTool(Tool):
                         out.append("...")
                         break
                     line = lines[index]
-                    out.append(f"{index}:{ReadTool.line_hash(line)}|{line.rstrip(chr(10))}")
+                    out.append(ReadTool.anchor_line(index, line))
                     shown_lines += 1
             out.append("</target>")
             if shown_lines >= 12:
@@ -2331,7 +2355,7 @@ class EditTool(Tool):
             shown = lines[start:end]
             if shown:
                 out.append("<content hashline-numbered>")
-                out.extend(f"{start + index}:{ReadTool.line_hash(line)}|{line.rstrip(chr(10))}" for index, line in enumerate(shown))
+                out.extend(ReadTool.anchor_line(start + index, line) for index, line in enumerate(shown))
                 out.append("</content>")
         return "\n".join(out)
 
@@ -2354,16 +2378,14 @@ class EditTool(Tool):
         return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
-        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
-        if not match:
-            raise ToolError('invalid anchor; use "line:hash" from Read or Search')
-        index = int(match.group(1))
+        parsed = ReadTool.parse_anchor(anchor)
+        if parsed is None:
+            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
+        index, expected = parsed
         if index >= len(lines):
             raise ToolError("anchor line out of range")
-        expected = match.group(2).lower()
-        actual = ReadTool.line_hash(lines[index])
-        if actual != expected:
-            current = f"{index}:{actual}|{lines[index].rstrip()}"
+        if not ReadTool.anchor_matches(lines[index], expected):
+            current = ReadTool.anchor_line(index, lines[index])
             raise ToolError(f"stale anchor {anchor}; current is {current}")
         return index
 
@@ -3207,9 +3229,9 @@ class ContextManager:
                     items.append(self.FileContextItem(order, 0, "clear", record.key, record.name, path, int(match.group(1)), int(match.group(2)), "", *stat))
                 for match in re.finditer(r"(?s)<content hashline-numbered>\n(.*?)\n</content>", body):
                     for line in match.group(1).splitlines():
-                        line_match = re.match(r"(\d+):[0-9a-z]{5}\|", line)
-                        if line_match:
-                            items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, int(line_match.group(1)), 0, line, *stat))
+                        parsed = ReadTool.parse_anchor(line)
+                        if parsed is not None:
+                            items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, parsed[0], 0, line, *stat))
         return items
 
     def file_count(self) -> int:
@@ -3232,8 +3254,8 @@ class ContextManager:
         if item.path not in current_lines:
             current_lines[item.path] = self.read_lines(item.path, wanted.get(item.path, set()))
         lines = current_lines[item.path]
-        hash_match = re.match(r"\d+:([0-9a-z]{5})\|", item.line)
-        return bool(lines is not None and hash_match and item.start in lines and ReadTool.line_hash(lines[item.start]) == hash_match.group(1))
+        parsed = ReadTool.parse_anchor(item.line)
+        return bool(lines is not None and parsed is not None and item.start in lines and ReadTool.anchor_matches(lines[item.start], parsed[1]))
 
     def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
         def recent(path: str) -> int:
@@ -3266,7 +3288,7 @@ class ContextManager:
         if errors:
             chunks.extend(["", "Recent tool errors:", *errors])
         if paths:
-            chunks.extend(["", "Content:", "Format: line:hash|text. Use line:hash as edit anchors."])
+            chunks.extend(["", "Content:", "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors."])
             for path in paths:
                 for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
                     chunks.append(f"@@ {path} {start}:{end} current source={source} tool={tool}")
@@ -3677,18 +3699,18 @@ class EditBatchPlan:
         return changes
 
     def resolve_anchor(self, state: FileState, anchor: str) -> int:
-        match = re.fullmatch(r"(\d+):([0-9a-z]{5})", anchor.split("|", 1)[0].strip())
-        if not match:
-            raise ToolError('invalid anchor; use "line:hash" from Read or Search')
-        index, expected = int(match.group(1)), match.group(2).lower()
-        if index < len(state.lines) and ReadTool.line_hash(state.lines[index].text) == expected:
+        parsed = ReadTool.parse_anchor(anchor)
+        if parsed is None:
+            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
+        index, expected = parsed
+        if index < len(state.lines) and ReadTool.anchor_matches(state.lines[index].text, expected):
             return index
-        if index < len(state.original) and ReadTool.line_hash(state.original[index]) == expected:
+        if index < len(state.original) and ReadTool.anchor_matches(state.original[index], expected):
             current = state.current_origin(index)
             if current is not None:
                 return current
             raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
-        current = f"{index}:{ReadTool.line_hash(state.lines[index].text)}|{state.lines[index].text.rstrip()}" if index < len(state.lines) else "out of range"
+        current = ReadTool.anchor_line(index, state.lines[index].text) if index < len(state.lines) else "out of range"
         raise ToolError(f"stale anchor {anchor}; current is {current}")
 
 

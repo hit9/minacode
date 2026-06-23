@@ -25,12 +25,12 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     alpha_hash = n.ReadTool.line_hash("alpha\n")
     needle_hash = n.ReadTool.line_hash("Needle\n")
     omega_hash = n.ReadTool.line_hash("omega\n")
-    assert f"0:{alpha_hash}|alpha" in read
-    assert f"1:{needle_hash}|Needle" in read
-    assert f"2:{omega_hash}|omega" in read
-    assert f"0:{alpha_hash}|alpha" in single_range
-    assert f"1:{needle_hash}|Needle" in single_range
-    assert f"2:{omega_hash}|omega" in full_default
+    assert f"anchor=0:{alpha_hash} | alpha" in read
+    assert f"anchor=1:{needle_hash} | Needle" in read
+    assert f"anchor=2:{omega_hash} | omega" in read
+    assert f"anchor=0:{alpha_hash} | alpha" in single_range
+    assert f"anchor=1:{needle_hash} | Needle" in single_range
+    assert f"anchor=2:{omega_hash} | omega" in full_default
 
     counts = n.LineCountTool(s, ["sample.py", "missing.py"]).call()
     assert "<total>3</total>" in counts
@@ -41,10 +41,10 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert "file binary: blob.bin" in listed
 
     found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
-    assert f"sample.py:1:{needle_hash}|Needle" in found
+    assert f"sample.py anchor=1:{needle_hash} | Needle" in found
 
     multiline = n.SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
-    assert "sample.py:0:" in multiline
+    assert "sample.py anchor=0:" in multiline
 
 
 def test_line_hash_is_short_lowercase_base36(tmp_path):
@@ -70,11 +70,11 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     direct_hidden = n.SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
     direct_ignored = n.SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
 
-    assert "visible.txt:0:" in found
+    assert "visible.txt anchor=0:" in found
     assert ".hidden" not in found
     assert "ignored" not in found
-    assert ".hidden.txt:0:" not in direct_hidden
-    assert "ignored_dir/inside.txt:0:" not in direct_ignored
+    assert ".hidden.txt anchor=0:" not in direct_hidden
+    assert "ignored_dir/inside.txt anchor=0:" not in direct_ignored
 
 
 def test_find_files_dirs_limits_and_ignores(tmp_path):
@@ -172,7 +172,19 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
         n.EditTool(s, ["note.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(0, "wrong\n"), "content": "new\n"}]]).call()
 
     assert "stale anchor" in str(error.value)
-    assert "current is 0:" + n.ReadTool.line_hash("old\n") + "|old" in str(error.value)
+    assert "current is anchor=0:" + n.ReadTool.line_hash("old\n") + " | old" in str(error.value)
+
+
+def test_edit_accepts_inspect_code_anchor(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+    inspect_anchor = "anchor=0:" + n.ReadTool.indexed_line_hash("old\n")
+
+    result = n.EditTool(s, ["note.txt", [{"op": "replace", "start": inspect_anchor, "end": inspect_anchor, "content": "new\n"}]]).call()
+
+    assert "<Edit path=\"note.txt\">" in result
+    assert path.read_text(encoding="utf-8") == "new\n"
 
 
 def test_edit_no_change_reports_current_target_range(tmp_path):
@@ -186,7 +198,7 @@ def test_edit_no_change_reports_current_target_range(tmp_path):
     message = str(error.value)
     assert "edit produced no changes; requested content already matches target range" in message
     assert "<current-target-ranges hashline-numbered>" in message
-    assert "0:" + n.ReadTool.line_hash("old\n") + "|old" in message
+    assert "anchor=0:" + n.ReadTool.line_hash("old\n") + " | old" in message
 
 
 def test_edit_no_change_replace_all_reports_identical_file(tmp_path):
@@ -333,7 +345,16 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     assert calls[1] == (
         "inspect",
         "Example",
-        {"root": str(tmp_path), "kind": None, "path": "sample.py", "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_PAGE_LIMIT, "anchors": True},
+        {
+            "root": str(tmp_path),
+            "kind": None,
+            "path": "sample.py",
+            "exact_only": False,
+            "format": "text",
+            "limit": n.csi.DEFAULT_PAGE_LIMIT,
+            "anchors": True,
+            "anchor_format": "explicit",
+        },
     )
     assert calls[2] == (
         "outline",
@@ -842,9 +863,9 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
     )
 
     read_record = next(record for record in s.tool_records if record.name == "Read")
-    assert "|x" in read_record.output
-    assert "|c" in read_record.output
-    assert "|C" not in read_record.output
+    assert "| x" in read_record.output
+    assert "| c" in read_record.output
+    assert "| C" not in read_record.output
     assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
 
 
@@ -879,7 +900,7 @@ def test_batch_edit_stale_anchor_reports_current_line(tmp_path, monkeypatch):
     runner.run([n.ToolCall("bad", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "wrong\n"), "end": anchor(1, "wrong\n"), "content": "B\n"}]])])
 
     assert s.tool_errors
-    assert "current is 1:" + n.ReadTool.line_hash("b\n") + "|b" in s.tool_errors[0].error
+    assert "current is anchor=1:" + n.ReadTool.line_hash("b\n") + " | b" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
@@ -896,7 +917,7 @@ def test_batch_edit_no_change_reports_current_target_range(tmp_path, monkeypatch
     assert s.tool_errors
     message = s.tool_errors[0].error
     assert "edit produced no changes; requested content already matches target range" in message
-    assert "1:" + n.ReadTool.line_hash("b\n") + "|b" in message
+    assert "anchor=1:" + n.ReadTool.line_hash("b\n") + " | b" in message
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 

@@ -382,11 +382,11 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
 
     first_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call()
     first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], first_output)
-    assert "|first" in context.file_context()
+    assert "| first" in context.file_context()
 
     path.unlink()
     deleted = context.file_context()
-    assert "|first" not in deleted
+    assert "| first" not in deleted
     assert first_key in deleted
 
     path.write_text("first\n", encoding="utf-8")
@@ -397,11 +397,11 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
 
     rendered = context.file_context()
-    assert "|second" in rendered
-    assert "|first" not in rendered
+    assert "| second" in rendered
+    assert "| first" not in rendered
     assert f"source={new_key} tool=Read" in rendered
     assert "Read/Edit outputs update this section." in rendered
     assert "- a.txt 0:1" in rendered
-    assert "Format: line:hash|text. Use line:hash as edit anchors." in rendered
+    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
     assert f"@@ a.txt 0:1 current source={new_key} tool=Read" in rendered
     assert old_key in rendered
