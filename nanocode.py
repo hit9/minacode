@@ -4924,7 +4924,7 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started, approved, display = time.monotonic(), False, None
+        started, approved, auto, display = time.monotonic(), False, False, None
         if isinstance(tool, QuestionTool):
             tool.question_fn = self.question_fn
         try:
@@ -4935,7 +4935,13 @@ class ToolRunner:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                self.output_fn(self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit))
+                auto = True
+                pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
+                # The "auto …" header duplicates the result line; only surface it when it carries a
+                # preview the result line won't repeat (e.g. an Edit diff). The auto-approval itself
+                # is recorded by the [auto] tag on the result line below.
+                if "\n" in pre:
+                    self.output_fn(pre)
             elif needs_confirmation:
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
@@ -4950,7 +4956,7 @@ class ToolRunner:
         except Exception as error:
             output = f"ToolError: {error}"
             return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, display=display, batch_suffix=batch_suffix)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix)
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
         if self.session.settings.debug:
@@ -4974,6 +4980,7 @@ class ToolRunner:
         failed: bool = False,
         elapsed: float | None = None,
         approved: bool = False,
+        auto: bool = False,
         display: str | None = None,
         store: bool = True,
         batch_suffix: str = "",
@@ -4988,7 +4995,7 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, display=display, batch_suffix=batch_suffix, elapsed=elapsed))
+        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed))
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
@@ -5064,11 +5071,11 @@ class ToolRunner:
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(
-        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, display: str | None = None, batch_suffix: str = "", elapsed: float | None = None
+        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, auto: bool = False, display: str | None = None, batch_suffix: str = "", elapsed: float | None = None
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
-        tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else ""
+        tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
         if failed:

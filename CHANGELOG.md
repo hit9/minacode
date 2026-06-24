@@ -8,6 +8,7 @@
 - Added a concise system-prompt `GUIDE` section covering `THINK BEFORE CODING`, `SIMPLICITY FIRST`, `SURGICAL CHANGES`, and `GOAL-DRIVEN EXECUTION`.
 
 ### Changed
+- Stop auto-approved (yolo) tool calls from logging two near-identical CLI lines. The pre-execution `auto …` line duplicated the result line's header for tools without a preview (MCP, Bash, Git); it is now suppressed in that case and the auto-approval is recorded by an `[auto]` tag on the single result line. `Edit` still shows its `auto …` pre-line because it carries the diff preview the result line omits.
 - Depend on `fastmcp-slim[client]` instead of the full `fastmcp` meta-package, since only the MCP client is used. This drops the unused server/CLI stack (cyclopts, griffelib, uvicorn-side bits, openapi/jsonschema tooling, the keyring/py-key-value cluster, etc.) for a much smaller install.
 - Switched Read/Search/Edit/InspectCode anchors to the explicit `anchor=line:hash | text` format and documented the hash as `hash(line_content)` in FILE STATE.
 - Bumped the `code-symbol-index` dependency floor to `>=0.3.1` and use its upstream explicit InspectCode anchor formatter instead of local normalization.

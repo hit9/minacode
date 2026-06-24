@@ -1451,3 +1451,32 @@ def test_question_tool_schema_strict(tmp_path):
     assert "question" in item["properties"]
     assert "choices" in item["properties"]
     assert "previews" in item["properties"]
+
+
+def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
+    # In yolo mode a confirmation-requiring tool without a preview (Bash) should print only the
+    # result line tagged [auto], not a redundant "auto …" pre-line that duplicates the header.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    out = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
+    runner.run([n.ToolCall("b0", "Bash", ["printf hi"])])
+    assert len(out) == 1
+    assert out[0].startswith("tool Bash")
+    assert out[0].rstrip().endswith("[auto]")
+    assert not any(line.startswith("auto Bash") for line in out)
+
+
+def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
+    # Edit's "auto …" pre-line carries the diff preview, which the result line (-> FILE STATE) omits,
+    # so it must still be surfaced; the result line is tagged [auto].
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    (tmp_path / "a.txt").write_text("hello\nworld\n", encoding="utf-8")
+    out = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
+    runner.run([n.ToolCall("e0", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "hello\n"), "content": "NEW\n"}]])])
+    assert len(out) == 2
+    assert out[0].startswith("auto Edit") and "preview" in out[0]
+    assert out[1].rstrip().endswith("[auto]")
