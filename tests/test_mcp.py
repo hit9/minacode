@@ -464,6 +464,120 @@ class TestToolIndexRendering:
 
 
 # ---------------------------------------------------------------------------
+# MCPManager render_tools_index budget degradation (regression: a verbose
+# server must never hide later servers from the model)
+# ---------------------------------------------------------------------------
+
+def _index_session(servers):
+    """Build a session with the given {server: [(tool_name, n_schema_fields), ...]}."""
+    s = n.Session(cwd="/tmp", config=n.Config.from_dict(
+        {"mcp": {name: {"url": f"https://{name}/mcp", "enabled": True} for name in servers}}))
+    for name, tools in servers.items():
+        s.mcp.tools[name] = [
+            n.MCPToolInfo(
+                server=name, name=tool_name, description="A tool.",
+                input_schema={
+                    "type": "object",
+                    "properties": {f"p{i}": {"type": "string", "description": "d" * 40} for i in range(nfields)},
+                    "required": [f"p{i}" for i in range(min(2, nfields))],
+                },
+                annotations={},
+            )
+            for tool_name, nfields in tools
+        ]
+    s.mcp.discovery_status = "ready"
+    return s
+
+
+class TestToolIndexBudget:
+    def test_verbose_server_does_not_hide_later_servers(self):
+        """Regression: a first server whose schemas exceed the whole budget must not
+        truncate later servers out of the index entirely."""
+        s = _index_session({
+            "alpha": [(f"q{i}", 30) for i in range(60)],  # huge: full schemas blow the cap
+            "beta": [("beta_tool", 2)],
+            "gamma": [("gamma_tool", 2)],
+        })
+        idx = s.mcp.render_tools_index()
+        assert len(idx) <= n.MCPManager.INDEX_TOTAL_LIMIT
+        # Every server stays visible...
+        for header in ("[alpha]", "[beta]", "[gamma]"):
+            assert header in idx
+        # ...and the small servers' tools are not lost behind the verbose one.
+        assert "beta_tool" in idx
+        assert "gamma_tool" in idx
+
+    def test_tier1_inlines_schemas_when_small(self):
+        """Small configs keep full per-tool schemas inline (no degradation note)."""
+        s = _index_session({"alpha": [("one", 2)], "beta": [("two", 2)]})
+        idx = s.mcp.render_tools_index()
+        assert "\n  schema: {" in idx
+        assert "Schemas omitted to fit" not in idx
+        assert "Only tool names shown to fit" not in idx
+        assert "one" in idx and "two" in idx
+
+    def test_tier2_drops_schemas_but_keeps_all_tools(self):
+        """When full schemas overflow, schemas are dropped but every server and tool name stay."""
+        s = _index_session({
+            "alpha": [(f"q{i}", 25) for i in range(40)],
+            "beta": [("beta_a", 3), ("beta_b", 3)],
+            "slack": [("post", 3)],
+        })
+        idx = s.mcp.render_tools_index()
+        assert len(idx) <= n.MCPManager.INDEX_TOTAL_LIMIT
+        assert "Schemas omitted to fit" in idx
+        assert "\n  schema: {" not in idx  # no per-tool schema lines
+        for header in ("[alpha]", "[beta]", "[slack]"):
+            assert header in idx
+        for tool in ("q0", "q39", "beta_a", "beta_b", "post"):
+            assert tool in idx
+
+    def test_tier3_names_only_lists_every_tool(self):
+        """When even arg summaries overflow, fall back to name-only with all tools listed."""
+        s = _index_session({
+            "alpha": [(f"q{i}", 30) for i in range(120)],
+            "github": [(f"gh{i}", 30) for i in range(40)],
+            "jira": [(f"j{i}", 30) for i in range(40)],
+        })
+        idx = s.mcp.render_tools_index()
+        assert len(idx) <= n.MCPManager.INDEX_TOTAL_LIMIT
+        assert "Only tool names shown to fit" in idx
+        for header in ("[alpha]", "[github]", "[jira]"):
+            assert header in idx
+        # Spot-check first/last tool of each server are all present.
+        for tool in ("q0", "q119", "gh0", "gh39", "j0", "j39"):
+            assert tool in idx
+
+    def test_tier4_sets_truncated_flag(self):
+        """Tier 4 (even name-only overflows) flags index_truncated so the CLI can warn;
+        tiers 1-3 clear it."""
+        big = _index_session({x: [(f"{x}_long_tool_name_{i}", 30) for i in range(800)] for x in ("a", "b", "c", "d")})
+        big.mcp.render_tools_index()
+        assert big.mcp.index_truncated is True
+
+        small = _index_session({"a": [("t", 2)]})
+        small.mcp.index_truncated = True  # stale value from a previous render
+        small.mcp.render_tools_index()
+        assert small.mcp.index_truncated is False
+
+    def test_unconnected_server_listed_as_pending(self):
+        """A configured-but-not-yet-connected server (e.g. awaiting OAuth login) is still
+        surfaced so the model knows it exists."""
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict({"mcp": {
+            "github": {"url": "https://g/mcp", "enabled": True},
+            "metabase": {"url": "https://m/api/mcp", "auth": "oauth", "enabled": True},
+        }}))
+        s.mcp.tools["github"] = [n.MCPToolInfo(server="github", name="search", description="Search.",
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}, annotations={})]
+        s.mcp.server_errors["metabase"] = "oauth login required; run /mcp login metabase"
+        s.mcp.discovery_status = "ready"
+        idx = s.mcp.render_tools_index()
+        assert "[github]" in idx
+        assert "metabase" in idx
+        assert "oauth login required" in idx
+
+
+# ---------------------------------------------------------------------------
 # MCPManager render_server_status & render_tool_listing
 # ---------------------------------------------------------------------------
 

@@ -3790,6 +3790,7 @@ class MCPManager:
         self.server_skips: dict[str, str] = {}
         self.lock = threading.Lock()
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
+        self.index_truncated: bool = False  # set by render_tools_index when even name-only overflows the cap
         self._configs_cache: list[MCPServerConfig] | None = None
         self._oauth_token_store = MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -4460,19 +4461,71 @@ class MCPManager:
         return "\n".join(lines)
 
     def render_tools_index(self) -> str:
+        """Render the MCP tools block injected into every model turn (in the cached prefix).
+
+        The block is capped at INDEX_TOTAL_LIMIT so it cannot bloat each request. When it
+        would overflow we degrade by shedding *detail*, never *entities*: the model can
+        always re-fetch a dropped schema via `describe`, but it can never call a server or
+        tool it was never told exists. So we try progressively cheaper renderings and emit
+        the richest one that fits:
+
+            tier 1 "schema" — full per-tool JSON schemas inline (normal case)
+            tier 2 "args"   — schemas dropped, name + arg summary per tool
+            tier 3 "names"  — name-only, grouped per server
+            tier 4          — hard truncate (only at thousands of tools, where 16KB
+                              physically cannot hold them); server headers come first so
+                              the model still sees most servers exist.
+
+        Tiers 1–3 keep every enabled server and tool name visible. See _index_body for how
+        each detail level is rendered, and test_mcp.TestToolIndexBudget for the guarantees.
+        """
         configs = [c for c in self.parse_configs() if c.enabled]
         if not configs:
             return ""
 
-        lines: list[str] = []
-        lines.append("--- MCP TOOLS ---")
-        lines.append('Use MCP(action="call", server, tool, arguments) for external MCP server tools.')
-        lines.append('Use MCP(action="describe", server, tool) for the full schema when one is truncated below; the result stays in the conversation, so do not describe the same tool again once its schema is shown — just call it.')
-        lines.append('Use MCP(action="read_resource", server, uri) to read a listed resource (e.g. docs describing how to build a tool\'s arguments). Read relevant resources before calling.')
-        lines.append("Format: server.tool(req: type; opt: type) - description")
-        lines.append("        schema: <JSON Schema for the arguments object>")
-        lines.append("")
+        intro = [
+            "--- MCP TOOLS ---",
+            'Use MCP(action="call", server, tool, arguments) for external MCP server tools.',
+            'Use MCP(action="describe", server, tool) for the full schema when one is truncated below; the result stays in the conversation, so do not describe the same tool again once its schema is shown — just call it.',
+            'Use MCP(action="read_resource", server, uri) to read a listed resource (e.g. docs describing how to build a tool\'s arguments). Read relevant resources before calling.',
+            "Format: server.tool(req: type; opt: type) - description",
+            "        schema: <JSON Schema for the arguments object>",
+            "",
+        ]
 
+        # A note tells the model what was shed (and that describe recovers it) so it does not
+        # assume a tool is argument-less. Tier 1 ("schema") needs no note; tier 4 reuses the
+        # last (tier 3) text below.
+        notes = {
+            "args": ['Schemas omitted to fit; use MCP(action="describe", server, tool) for a tool\'s arguments.', ""],
+            "names": ['Only tool names shown to fit; use MCP(action="describe", server, tool) before calling.', ""],
+        }
+        for detail in ("schema", "args", "names"):
+            body = self._index_body(configs, detail=detail)
+            text = "\n".join(intro + notes.get(detail, []) + body)
+            if len(text) <= self.INDEX_TOTAL_LIMIT:
+                self.index_truncated = False
+                return text
+
+        # Tier 4: even name-only overflows, so some tools are dropped entirely (not just
+        # detail). Flag it so the CLI can warn the user — unlike tiers 1-3 these tools are
+        # not callable until the index fits (fewer servers, or consult /mcp tools).
+        self.index_truncated = True
+        return text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
+
+    def _index_body(self, configs: list["MCPServerConfig"], *, detail: str = "schema") -> list[str]:
+        """Render the per-server body lines of the tools index at one detail level.
+
+        detail controls how much of each tool is emitted (richest to cheapest):
+            "schema" — full line via _format_tool_line, including the inline JSON schema
+            "args"   — same line without the schema (name + arg summary + description)
+            "names"  — one "tools: a, b, c" line per server, names only
+
+        Every enabled server is represented regardless of detail: a connected server shows
+        its tools, an unconnected one (no tools/resources) is collected into a trailing
+        "not yet available" section so the model still knows it exists.
+        """
+        lines: list[str] = []
         pending: list[str] = []
         for config in configs:
             tools = self.tools.get(config.name, [])
@@ -4480,12 +4533,15 @@ class MCPManager:
             if not tools and not resources:
                 pending.append(f"- {config.name}: {self._pending_status(config.name)}")
                 continue
-            name_display = config.name.capitalize()
-            lines.append(f"[{config.name}] {name_display}")
-            for tool in tools:
-                line = self._format_tool_line(config.name, tool)
-                if line:
-                    lines.append(line)
+            lines.append(f"[{config.name}] {config.name.capitalize()}")
+            if detail == "names":
+                if tools:
+                    lines.append("tools: " + ", ".join(tool.name for tool in tools))
+            else:
+                for tool in tools:
+                    line = self._format_tool_line(config.name, tool, include_schema=detail == "schema")
+                    if line:
+                        lines.append(line)
             if resources:
                 lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(config.name)}, uri=...):")
                 lines.extend(self._format_resource_line(res) for res in resources)
@@ -4495,11 +4551,7 @@ class MCPManager:
             lines.append("Configured servers not yet available (they exist — do not assume otherwise):")
             lines.extend(pending)
             lines.append("")
-
-        text = "\n".join(lines)
-        if len(text) > self.INDEX_TOTAL_LIMIT:
-            text = text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
-        return text
+        return lines
 
     def server_issue(self, name: str) -> tuple[str, str] | None:
         """Classify a server's failure state as (kind, message); error takes precedence over skip."""
@@ -4575,7 +4627,7 @@ class MCPManager:
             lines.extend(self._format_resource_line(res) for res in resources)
         return "\n".join(lines)
 
-    def _format_tool_line(self, server: str, info: MCPToolInfo) -> str:
+    def _format_tool_line(self, server: str, info: MCPToolInfo, *, include_schema: bool = True) -> str:
         args_str = self._tool_args_summary(info)
         desc = (info.description or "").split("\n")[0].strip()
         desc = " ".join(desc.split())
@@ -4590,9 +4642,10 @@ class MCPManager:
         uris = self._extract_uris(info.description)
         if uris:
             line += "\n  refs (read with MCP action=\"read_resource\"): " + ", ".join(uris)
-        schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
-        if schema:
-            line += f"\n  schema: {schema}"
+        if include_schema:
+            schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
+            if schema:
+                line += f"\n  schema: {schema}"
         return line
 
     URI_PATTERN: ClassVar[re.Pattern] = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>)\]}]+")
@@ -6074,7 +6127,10 @@ class StatusBar:
             return f"mcp {loaded}/{total}{spinner}"
         if status == "error":
             return "mcp err"
-        return f"mcp {len(self.session.mcp.tools)}" if status == "ready" else ""
+        if status != "ready":
+            return ""
+        # "!" flags that the tools index overflowed the cap and some tools are hidden.
+        return f"mcp {len(self.session.mcp.tools)}{'!' if self.session.mcp.index_truncated else ''}"
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
@@ -6453,6 +6509,11 @@ Tools:
         notice = self.mcp_error_notice()
         if notice:
             self.emit(notice)
+        # render once so index_truncated reflects the freshly discovered tools, then warn if
+        # the index is too large to fit even as name-only (some tools are hidden from the model).
+        self.session.mcp.render_tools_index()
+        if self.session.mcp.index_truncated:
+            self.emit("mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list.")
 
     def mcp_error_notice(self) -> str:
         errors = [
