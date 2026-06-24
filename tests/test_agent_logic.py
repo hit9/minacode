@@ -1151,3 +1151,107 @@ def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
     assert len(results) == 1
     assert results[0]["role"] == "tool"
     assert "non-empty 'argv'" in results[0]["content"]
+
+
+def _runner(tmp_path, input_reply=""):
+    s = n.Session(cwd=str(tmp_path))
+    return s, n.ToolRunner(s, n.ContextManager(s), input_fn=lambda *a: input_reply, output_fn=lambda *a: None)
+
+
+def test_parallel_safe_classification(tmp_path):
+    _, runner = _runner(tmp_path)
+
+    def safe(name, args):
+        return runner.parallel_safe(n.ToolCall(id="x", name=name, args=args))
+
+    assert safe("Read", [{"path": "f.txt"}])
+    assert safe("Search", [{"pattern": "x"}])
+    assert safe("Git", ["status"])  # read-only subcommand
+    assert not safe("Git", ["commit", "-m", "x"])  # mutating subcommand
+    assert not safe("Bash", ["echo hi"])  # mutates + streams live output
+    assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
+    assert not safe("Question", [{"question": "q?"}])  # interactive
+    assert not safe("Nope", [])  # unknown tool
+
+
+def test_parallel_readonly_preserves_request_order(tmp_path):
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text(f"content-{i}\n")
+    s, runner = _runner(tmp_path)
+    s.settings.max_parallel_tools = 4
+    calls = [n.ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(5)]
+
+    # Force overlapping execution and record peak concurrency.
+    active = {"cur": 0, "max": 0}
+    guard = threading.Lock()
+    original = n.ReadTool.call
+
+    def traced(self):
+        with guard:
+            active["cur"] += 1
+            active["max"] = max(active["max"], active["cur"])
+        time.sleep(0.03)
+        try:
+            return original(self)
+        finally:
+            with guard:
+                active["cur"] -= 1
+
+    n.ReadTool.call = traced
+    try:
+        messages = runner.run(calls)
+    finally:
+        n.ReadTool.call = original
+
+    assert [m["tool_call_id"] for m in messages] == [f"r{i}" for i in range(5)]
+    assert active["max"] >= 2  # actually ran concurrently
+
+
+def test_parallel_disabled_runs_serial(tmp_path):
+    for i in range(3):
+        (tmp_path / f"f{i}.txt").write_text(f"c{i}\n")
+    s, runner = _runner(tmp_path)
+    s.settings.max_parallel_tools = 1  # disabled -> identical to legacy serial behavior
+    calls = [n.ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(3)]
+
+    active = {"cur": 0, "max": 0}
+    guard = threading.Lock()
+    original = n.ReadTool.call
+
+    def traced(self):
+        with guard:
+            active["cur"] += 1
+            active["max"] = max(active["max"], active["cur"])
+        time.sleep(0.02)
+        try:
+            return original(self)
+        finally:
+            with guard:
+                active["cur"] -= 1
+
+    n.ReadTool.call = traced
+    try:
+        messages = runner.run(calls)
+    finally:
+        n.ReadTool.call = original
+
+    assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "r2"]
+    assert active["max"] == 1  # never overlapped
+
+
+def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
+    for i in range(3):
+        (tmp_path / f"f{i}.txt").write_text(f"c{i}\n")
+    s, runner = _runner(tmp_path, input_reply="no")  # decline confirmation
+    s.settings.max_parallel_tools = 4
+    calls = [
+        n.ToolCall(id="r0", name="Read", args=[{"path": "f0.txt", "ranges": [[0, 0]]}]),
+        n.ToolCall(id="r1", name="Read", args=[{"path": "f1.txt", "ranges": [[0, 0]]}]),
+        n.ToolCall(id="b0", name="Bash", args=["echo hi"]),  # mutating, refused
+        n.ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
+    ]
+    messages = runner.run(calls)
+    by_id = {m["tool_call_id"]: m["content"] for m in messages}
+    assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "b0", "r2"]
+    assert "refused" in by_id["b0"].lower()
+    assert "Skipped" in by_id["r2"]

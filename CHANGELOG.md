@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Execute a model's batch of read-only tool calls concurrently. Within one assistant turn, maximal runs of auto-approved, non-interactive read tools (`Read`, `Search`, `Find`, `List`, `Recall`, `InspectCode`, read-only `Git`, read-only `MCP`) now run in a bounded thread pool, while results are finalized on the main thread in the exact order the model issued them. Mutating tools, `Edit` batches, confirmations, `Bash` (live output), and `Question` (interactive) stay serial. Bounded by the new `runtime.max_parallel_tools` setting (default `4`; set to `1` to disable and restore fully serial execution).
 - Store `Note` plan items as explicit objects with `status` (`todo`, `doing`, `done`, `blocked`) and `text`, while preserving old string plans as `todo` during load/compaction. Model-visible memory renders readable status text; CLI memory and Note previews keep compact `[ ]`, `[~]`, `[x]`, `[-]` symbols.
 - Added a concise system-prompt `GUIDE` section covering `THINK BEFORE CODING`, `SIMPLICITY FIRST`, `SURGICAL CHANGES`, and `GOAL-DRIVEN EXECUTION`.
 
@@ -17,6 +18,9 @@
 - Keep every MCP server visible in the tools index. It previously built full per-tool schemas and then hard-truncated the whole block at the size cap, so one verbose server could consume the entire budget and silently drop every later server, leaving the model blind to them. The index now degrades by shedding detail rather than entities — inline schemas, then schemas-dropped, then name-only — keeping all servers and tool names visible (the model can re-fetch a schema via `describe`); only at thousands of tools does it truncate, and that case now warns via a post-discovery notice and a `!` status-line marker.
 - Declare `websockets` as a direct dependency. The MCP client transport imports it at runtime, but `fastmcp` only declared it under its server extra, so trimming that extra broke MCP connections (including OAuth login).
 - Render structured plan items in `/memory` and Note previews as status symbols/text instead of leaking `PlanItem(...)` repr strings.
+- Resume sessions whose transcript contains tool calls with multi-line argument strings (e.g. a multi-line `git commit` message). Strict `json.loads` rejected the literal newlines and dropped the args to `{}`, which then failed the tool's own validation (`Git requires a non-empty 'argv' list`) and aborted `--resume`. Tool-call arguments now parse with `strict=False`, and a malformed historical call renders without args instead of crashing.
+- Stop malformed live tool-call arguments from aborting the whole turn. Argument validation that ran while parsing a model response (e.g. `Git` with an empty `argv`) raised outside the tool-execution boundary, ending the turn with an error the model never saw. The error is now captured on the call and surfaced as a normal failed tool result, so the model can self-correct.
+- Decode `Bash` output with a per-stream incremental UTF-8 decoder. Each 4096-byte read was decoded independently, so a multibyte character split across a read boundary (common with CJK output) was mangled into replacement characters.
 
 ## 0.6.6 - 2026-06-23
 

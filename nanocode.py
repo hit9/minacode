@@ -237,6 +237,8 @@ class RuntimeSettings:
     check_updates: bool = True
     update_check_interval_hours: int = 24
     session_retention_days: int = 7
+    # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
+    max_parallel_tools: int = 4
     mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
@@ -248,6 +250,7 @@ class RuntimeSettings:
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
+            max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             check_updates=Config.bool(runtime, "check_updates", True),
             update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
@@ -358,6 +361,7 @@ data_dir = "~/.nanocode"
 shell_timeout = 60
 max_agent_steps = 200
 max_context_tokens = 128000
+max_parallel_tools = 4
 check_updates = true
 update_check_interval_hours = 24
 session_retention_days = 7
@@ -4780,27 +4784,111 @@ class ToolRunner:
         self.question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
-        messages = []
+        messages: list[Json] = []
+        # Shared, mutated across segments: `first` controls which display carries batch_suffix;
+        # `refused` short-circuits the rest of the batch once a confirmation is declined.
+        state = {"first": True, "refused": False}
         index = 0
-        first, refused = True, False
         while index < len(calls):
+            if state["refused"]:
+                messages.append(self.skip_message(calls[index]))
+                index += 1
+                continue
+            end = self.parallel_segment_end(calls, index)
+            if end - index >= 2 and self.session.settings.max_parallel_tools > 1:
+                messages.extend(self.run_parallel(calls[index:end], batch_suffix, state))
+                index = end
+                continue
             end = index + 1 if self.edit_barrier(calls[index]) else self.edit_segment_end(calls, index)
-            segment = calls[index:end]
-            plan = EditBatchPlan(self.session).build(segment) if not refused and any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
-            for call in segment:
-                self.session.state.turn_tool_calls += 1
-                suffix = batch_suffix if first else ""
-                first = False
-                status, content = (
-                    ("skipped", self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True))
-                    if refused
-                    else self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
-                )
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-                if status == "refused":
-                    refused = True
+            messages.extend(self.run_serial(calls[index:end], batch_suffix, state))
             index = end
         return messages
+
+    def skip_message(self, call: ToolCall) -> Json:
+        self.session.state.turn_tool_calls += 1
+        content = self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)
+        return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+    def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool]) -> list[Json]:
+        messages: list[Json] = []
+        plan = EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
+        for call in segment:
+            self.session.state.turn_tool_calls += 1
+            suffix = batch_suffix if state["first"] else ""
+            state["first"] = False
+            status, content = self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+            if status == "refused":
+                state["refused"] = True
+        return messages
+
+    def run_parallel(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool]) -> list[Json]:
+        # Run the pure tool.call() work concurrently, but apply all side effects (display, session
+        # bookkeeping, tool messages) on this thread in request order, so output and the results
+        # handed back to the model match the order the model issued the calls.
+        cap = max(1, self.session.settings.max_parallel_tools)
+        outcomes: list[tuple[str, str, str | None, float] | None] = [None] * len(segment)
+        with ThreadPoolExecutor(max_workers=min(len(segment), cap), thread_name_prefix="tool") as executor:
+            futures = {executor.submit(self.execute_readonly, call): position for position, call in enumerate(segment)}
+            for future in as_completed(futures):
+                outcomes[futures[future]] = future.result()
+        messages: list[Json] = []
+        for call, outcome in zip(segment, outcomes):
+            self.session.state.turn_tool_calls += 1
+            suffix = batch_suffix if state["first"] else ""
+            state["first"] = False
+            assert outcome is not None
+            content = self.finalize_outcome(call, outcome, batch_suffix=suffix)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+        return messages
+
+    def parallel_segment_end(self, calls: list[ToolCall], start: int) -> int:
+        end = start
+        while end < len(calls) and self.parallel_safe(calls[end]):
+            end += 1
+        return end
+
+    def parallel_safe(self, call: ToolCall) -> bool:
+        # A call may run concurrently only if it neither mutates state nor blocks on interactive
+        # input: read-only, auto-approved, non-interactive tools (Read/Search/Find/List/Recall/
+        # InspectCode, read-only Git, read-only MCP). Edit is coordinated serially by EditBatchPlan;
+        # Bash streams live output and mutates; Question blocks on the user.
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None or call.name in {"Edit", "Question"} or tool_class is BashTool:
+            return False
+        try:
+            return not tool_class(self.session, call.args).needs_confirmation()
+        except Exception:
+            return False
+
+    def execute_readonly(self, call: ToolCall) -> tuple[str, str, str | None, float]:
+        # Pure execution for a parallel worker: returns (kind, output, display, elapsed) and performs
+        # no display or session writes (those happen in finalize_outcome on the main thread). Mirrors
+        # run_one's branches, minus confirmation (parallel_safe guarantees none is needed).
+        started = time.monotonic()
+        tool_class = TOOL_REGISTRY.get(call.name)
+        if tool_class is None:
+            return "reject", f"ToolError: unknown tool {call.name}", None, 0.0
+        tool = tool_class(self.session, call.args)
+        display = None
+        try:
+            display = self.short_call(call, tool.short_args())
+            if call.error:
+                raise ToolError(call.error)
+            output = tool.call()
+        except ToolError as error:
+            return "reject", f"ToolError: {error}", display, time.monotonic() - started
+        except Exception as error:
+            return "error", f"ToolError: {error}", display, time.monotonic() - started
+        return "ok", output, display, time.monotonic() - started
+
+    def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str, str | None, float], batch_suffix: str = "") -> str:
+        kind, output, display, elapsed = outcome
+        if kind == "ok":
+            return self.finish(call, output, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
+        if kind == "reject":
+            return self.reject(call, output, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
+        return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -5610,6 +5698,7 @@ class CommandCompleter(Completer):
         "runtime.yolo",
         "runtime.max_agent_steps",
         "runtime.max_context_tokens",
+        "runtime.max_parallel_tools",
         "runtime.shell_timeout",
         "runtime.check_updates",
     )
@@ -7249,6 +7338,7 @@ Tools:
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
                 f"runtime.max_agent_steps: {self.session.settings.max_steps}",
                 f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
+                f"runtime.max_parallel_tools: {self.session.settings.max_parallel_tools}",
                 f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
                 f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
@@ -7459,6 +7549,8 @@ Tools:
                 runtime.max_context_tokens = max(1, int(value))
             elif key == "runtime.shell_timeout":
                 runtime.shell_timeout = max(1, int(value))
+            elif key == "runtime.max_parallel_tools":
+                runtime.max_parallel_tools = max(1, int(value))
             else:
                 return "Unknown config key: " + key
         except (ConfigError, ValueError):
