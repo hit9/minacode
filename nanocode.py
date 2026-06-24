@@ -5321,7 +5321,9 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 continue
             function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
             try:
-                payload = json.loads(str(function.get("arguments") or "{}"))
+                # strict=False: tool-call argument strings often contain literal newlines
+                # (e.g. a multi-line git commit message), which are not valid JSON otherwise.
+                payload = json.loads(str(function.get("arguments") or "{}"), strict=False)
             except json.JSONDecodeError:
                 payload = {}
             blocks.append(
@@ -5424,7 +5426,9 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         calls = []
         for raw in getattr(message, "tool_calls", None) or []:
             try:
-                payload = json.loads(raw.function.arguments or "{}")
+                # strict=False so literal newlines in argument strings (e.g. a multi-line
+                # git commit message) parse instead of dropping the call's args.
+                payload = json.loads(raw.function.arguments or "{}", strict=False)
             except json.JSONDecodeError:
                 calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
                 continue
@@ -6482,10 +6486,18 @@ Tools:
             return None
         arguments = function.get("arguments")
         try:
-            payload = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
+            # strict=False tolerates literal newlines in argument strings (e.g. multi-line
+            # git commit messages) that would otherwise be rejected as invalid JSON.
+            payload = json.loads(arguments, strict=False) if isinstance(arguments, str) else (arguments or {})
         except json.JSONDecodeError:
             payload = {}
-        return ToolCall(id=str(raw.get("id") or ""), name=name, args=ModelClient.tool_payload(name, payload))
+        try:
+            args = ModelClient.tool_payload(name, payload)
+        except ToolError:
+            # A malformed historical call (e.g. tool args that fail validation) must not crash
+            # the resume; render it without parsed args.
+            args = [payload] if payload else []
+        return ToolCall(id=str(raw.get("id") or ""), name=name, args=args)
 
     def transcript_tool_record(self, call: ToolCall, tool_record_index: int) -> tuple[ToolResultRecord | None, int]:
         tool_class = TOOL_REGISTRY.get(call.name)
