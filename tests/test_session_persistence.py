@@ -381,18 +381,18 @@ def test_load_missing_snapshot_raises_error(tmp_path):
 def test_resolve_uid_missing_latest_file(tmp_path):
     """Resolving 'latest' when no latest file exists raises NanocodeError."""
     with pytest.raises(n.NanocodeError, match="No latest session to resume"):
-        n.Session._resolve_uid("latest", data_dir=str(tmp_path))
+        n.SessionSnapshotStore.resolve_uid("latest", data_dir=str(tmp_path))
 
 
 def test_resolve_uid_missing_last_file(tmp_path):
     """Resolving 'last' when no latest file exists raises NanocodeError."""
     with pytest.raises(n.NanocodeError, match="No latest session to resume"):
-        n.Session._resolve_uid("last", data_dir=str(tmp_path))
+        n.SessionSnapshotStore.resolve_uid("last", data_dir=str(tmp_path))
 
 
 def test_resolve_uid_passthrough_normal_uid(tmp_path):
     """Resolving a normal uid (not 'latest') returns it as-is."""
-    result = n.Session._resolve_uid("my-uid", data_dir=str(tmp_path))
+    result = n.SessionSnapshotStore.resolve_uid("my-uid", data_dir=str(tmp_path))
     assert result == "my-uid"
 
 

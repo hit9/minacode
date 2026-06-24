@@ -1167,10 +1167,6 @@ class Session:
         return SessionSnapshotStore.clean_expired(self)
 
     @classmethod
-    def _resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
-        return SessionSnapshotStore.resolve_uid(uid, data_dir)
-
-    @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
         return SessionSnapshotStore.load(uid, config=config, settings=settings)
 
