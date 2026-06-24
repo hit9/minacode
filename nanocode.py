@@ -60,7 +60,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.6.6"
+__version__ = "0.7.0"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-06-24
 
 ### Added
 - Execute a model's batch of read-only tool calls concurrently. Within one assistant turn, maximal runs of auto-approved, non-interactive read tools (`Read`, `Search`, `Find`, `List`, `Recall`, `InspectCode`, read-only `Git`, read-only `MCP`) now run in a bounded thread pool, while results are finalized on the main thread in the exact order the model issued them. Mutating tools, `Edit` batches, confirmations, `Bash` (live output), and `Question` (interactive) stay serial. Bounded by the new `runtime.max_parallel_tools` setting (default `4`; set to `1` to disable and restore fully serial execution).
