@@ -7,12 +7,15 @@
 - Added a concise system-prompt `GUIDE` section covering `THINK BEFORE CODING`, `SIMPLICITY FIRST`, `SURGICAL CHANGES`, and `GOAL-DRIVEN EXECUTION`.
 
 ### Changed
+- Depend on `fastmcp-slim[client]` instead of the full `fastmcp` meta-package, since only the MCP client is used. This drops the unused server/CLI stack (cyclopts, griffelib, uvicorn-side bits, openapi/jsonschema tooling, the keyring/py-key-value cluster, etc.) for a much smaller install.
 - Switched Read/Search/Edit/InspectCode anchors to the explicit `anchor=line:hash | text` format and documented the hash as `hash(line_content)` in FILE STATE.
 - Bumped the `code-symbol-index` dependency floor to `>=0.3.1` and use its upstream explicit InspectCode anchor formatter instead of local normalization.
 - Reduced `nanocode.py` by removing dead code, thin wrappers, and over-complex helper paths without changing behavior.
 - Render Note success output with user-facing `goal:`, `check:`, `plan:`, and `known:` labels, plus status-aware colors in the CLI, instead of exposing internal field names like `set_goal` and `replace_plan`.
 
 ### Fixed
+- Keep every MCP server visible in the tools index. It previously built full per-tool schemas and then hard-truncated the whole block at the size cap, so one verbose server could consume the entire budget and silently drop every later server, leaving the model blind to them. The index now degrades by shedding detail rather than entities — inline schemas, then schemas-dropped, then name-only — keeping all servers and tool names visible (the model can re-fetch a schema via `describe`); only at thousands of tools does it truncate, and that case now warns via a post-discovery notice and a `!` status-line marker.
+- Declare `websockets` as a direct dependency. The MCP client transport imports it at runtime, but `fastmcp` only declared it under its server extra, so trimming that extra broke MCP connections (including OAuth login).
 - Render structured plan items in `/memory` and Note previews as status symbols/text instead of leaking `PlanItem(...)` repr strings.
 
 ## 0.6.6 - 2026-06-23
