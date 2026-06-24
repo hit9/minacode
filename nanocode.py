@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import difflib
 import asyncio
 import fnmatch
@@ -2482,6 +2483,9 @@ class BashTool(Tool):
     def stream_process(self, proc: subprocess.Popen[bytes]) -> str:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
+        # Per-stream incremental decoders so a multibyte UTF-8 character split across two 4096-byte
+        # reads is decoded once it is complete, instead of being mangled into replacement chars.
+        self._decoders = {"stdout": codecs.getincrementaldecoder("utf-8")("replace"), "stderr": codecs.getincrementaldecoder("utf-8")("replace")}
         selector = selectors.DefaultSelector()
         selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
         selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
@@ -2524,6 +2528,13 @@ class BashTool(Tool):
             data = os.read(key.fileobj.fileno(), 4096)
         except OSError:
             data = b""
+        # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
+        # trailing character) so they are not silently dropped.
+        text = self._decoders[key.data].decode(data, final=not data)
+        if text:
+            (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
+            if self.live_output is not None:
+                self.live_output(str(key.data), text)
         if not data:
             try:
                 selector.unregister(key.fileobj)
@@ -2534,10 +2545,6 @@ class BashTool(Tool):
             except Exception:
                 pass
             return False
-        text = data.decode("utf-8", errors="replace")
-        (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
-        if self.live_output is not None:
-            self.live_output(str(key.data), text)
         return True
 
     @staticmethod
@@ -3104,6 +3111,9 @@ class ToolCall:
     id: str
     name: str
     args: list[Any]
+    # A malformed-argument error captured while parsing the call. Deferred so it surfaces as a
+    # tool result the model can correct from, instead of aborting the whole turn at parse time.
+    error: str = ""
 
 
 class ContextManager:
@@ -4831,6 +4841,8 @@ class ToolRunner:
             tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
+            if call.error:
+                raise ToolError(call.error)
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
@@ -5363,7 +5375,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
                 arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-                calls.append(ToolCall(id=call_id, name=name, args=self.tool_payload(name, payload)))
+                calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
         assistant: Json = {"role": "assistant", "content": text or None}
         if tool_calls:
@@ -5432,7 +5444,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             except json.JSONDecodeError:
                 calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
                 continue
-            calls.append(ToolCall(id=raw.id, name=raw.function.name, args=self.tool_payload(raw.function.name, payload)))
+            calls.append(self.tool_call(raw.id, raw.function.name, payload))
         return calls
 
     @staticmethod
@@ -5440,6 +5452,16 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
             return tool.payload_args(payload)
         return [payload]
+
+    @classmethod
+    def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
+        # payload_args may reject malformed arguments (e.g. Git with an empty argv). Capture that
+        # error on the call so it is replayed as a tool result during execution, letting the model
+        # self-correct, rather than escaping to abort the entire agent turn.
+        try:
+            return ToolCall(id=call_id, name=name, args=cls.tool_payload(name, payload))
+        except ToolError as error:
+            return ToolCall(id=call_id, name=name, args=[], error=str(error))
 
 
 class Agent:

@@ -1112,3 +1112,42 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert text == "answer"
     assert assistant["tool_calls"][0]["function"]["name"] == "Bash"
     assert calls == [n.ToolCall(id="tc.2", name="Bash", args=["pwd"])]
+
+
+def test_malformed_tool_args_defer_to_execution_chat(tmp_path):
+    """A live chat tool call whose args fail payload validation (Git with empty argv) must not
+    raise out of parsing; the error is deferred onto the call so the turn is not aborted."""
+    s = n.Session(cwd=str(tmp_path))
+    client = n.ModelClient(s)
+    raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Git", arguments='{"argv": []}'))
+    message = SimpleNamespace(tool_calls=[raw])
+    calls = client.tool_calls(message)  # must not raise ToolError
+    assert len(calls) == 1
+    assert calls[0].args == []
+    assert "non-empty 'argv'" in calls[0].error
+
+
+def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
+    """Same deferral on the anthropic path: a tool_use with invalid input is captured, not raised."""
+    s = n.Session(cwd=str(tmp_path))
+    client = n.ModelClient(s)
+    result = SimpleNamespace(
+        content=[SimpleNamespace(type="tool_use", id="a1", name="Git", input={"argv": []})],
+        usage={},
+    )
+    _, calls, _ = client.anthropic_result(result)  # must not raise ToolError
+    assert len(calls) == 1
+    assert calls[0].error
+
+
+def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
+    """A deferred-error call runs through ToolRunner and is reported back to the model as a failed
+    tool result (so it can self-correct), rather than escaping to abort the turn."""
+    s = n.Session(cwd=str(tmp_path))
+    ctx = n.ContextManager(s)
+    runner = n.ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
+    call = n.ToolCall(id="x1", name="Git", args=[], error="Git requires a non-empty 'argv' list")
+    results = runner.run([call])
+    assert len(results) == 1
+    assert results[0]["role"] == "tool"
+    assert "non-empty 'argv'" in results[0]["content"]

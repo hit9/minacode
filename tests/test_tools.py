@@ -231,6 +231,12 @@ def test_bash_and_git_behaviors(tmp_path):
     assert "<stdout>\nout\n</stdout>" in bash
     assert "<stderr>\nerr\n</stderr>" in bash
 
+    # Multibyte UTF-8 output large enough to span 4096-byte read boundaries must decode cleanly
+    # (regression: per-chunk decoding mangled split characters into replacement chars).
+    wide = n.BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
+    assert "�" not in wide
+    assert wide.count(chr(0x4e2d)) == 3000
+
     if not shutil.which("git"):
         pytest.skip("git unavailable")
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
