@@ -1321,6 +1321,18 @@ def strict_tool_schema(schema: Json) -> Json:
     return transform(copy.deepcopy(schema))
 
 
+def strictifiable(schema: Any) -> bool:
+    """False if the schema contains a free-form object (an `object` with no `properties`),
+    which strict function calling cannot represent — such tools fall back to non-strict."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" and "properties" not in schema:
+            return False
+        return all(strictifiable(value) for value in schema.values())
+    if isinstance(schema, list):
+        return all(strictifiable(item) for item in schema)
+    return True
+
+
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
@@ -1339,7 +1351,7 @@ class Tool:
     def schema(cls, strict: bool = False) -> Json:
         description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
         function: Json = {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}
-        if strict:
+        if strict and strictifiable(function["parameters"]):
             function["parameters"] = strict_tool_schema(function["parameters"])
             function["strict"] = True
         return {"type": "function", "function": function}
@@ -1458,7 +1470,10 @@ class ReadTool(Tool):
     def arg_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}},
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+                "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            },
             "required": ["path"],
             "additionalProperties": False,
         }
@@ -1468,9 +1483,9 @@ class ReadTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
-                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1},
+                "path": {"type": "string", "description": "File path to read (single-file form)"},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
             },
             "additionalProperties": False,
         }
@@ -1568,7 +1583,7 @@ class LineCountTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "File paths to count lines for"}},
             "required": ["paths"],
             "additionalProperties": False,
         }
@@ -1613,7 +1628,15 @@ class ListTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory to list"},
+                "glob": {"type": "string", "description": "Optional glob filtering child names (non-recursive), e.g. test_*.py"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1678,10 +1701,10 @@ class FindTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "name": {"type": "string"},
-                "path": {"type": "string"},
-                "type": {"type": "string", "enum": ["file", "dir", "any"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT},
+                "name": {"type": "string", "description": "Glob or exact name to match, e.g. *.py or migrations"},
+                "path": {"type": "string", "description": "Directory to search under; defaults to repo root"},
+                "type": {"type": "string", "enum": ["file", "dir", "any"], "description": "Match files, dirs, or any; default file"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Max results, 1..{cls.MAX_LIMIT}; default 100"},
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -1690,7 +1713,7 @@ class FindTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of find queries to run in one call"}
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
@@ -1796,10 +1819,10 @@ class SearchTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string"},
-                "glob": {"type": "string"},
-                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT},
+                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
             },
             "required": ["pattern"],
             "additionalProperties": False,
@@ -1808,7 +1831,7 @@ class SearchTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of search queries to run in one call"}
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
@@ -2153,18 +2176,18 @@ class InspectCodeTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = {
-            "mode": {"type": "string", "enum": list(cls.MODES)},
-            "target": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT},
-            "kind": {"type": "string"},
-            "path": {"type": "string"},
-            "symbol": {"type": "string"},
-            "exact_only": {"type": "boolean"},
-            "depth": {"type": "integer", "minimum": 1, "maximum": cls.MAX_DEPTH},
-            "offset": {"type": "integer", "minimum": 0},
-            "all_kinds": {"type": "boolean"},
-            "ref_kind": {"type": "string"},
-            "loose": {"type": "boolean"},
+            "mode": {"type": "string", "enum": list(cls.MODES), "description": "Query type: find|inspect|outline|refs|impls|callers|callees"},
+            "target": {"type": "string", "description": "Symbol name (find/inspect/refs/impls/callers/callees) or file path (outline)"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT, "description": "Max results"},
+            "kind": {"type": "string", "description": "Restrict to a symbol kind, e.g. function, class, method"},
+            "path": {"type": "string", "description": "Restrict the search to this file or directory"},
+            "symbol": {"type": "string", "description": "Disambiguate target when multiple symbols share a name"},
+            "exact_only": {"type": "boolean", "description": "Match the target name exactly instead of fuzzily"},
+            "depth": {"type": "integer", "minimum": 1, "maximum": cls.MAX_DEPTH, "description": "Call-chain depth for callers/callees"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Pagination offset for refs/impls"},
+            "all_kinds": {"type": "boolean", "description": "Include all reference kinds, not just behavioral ones (refs)"},
+            "ref_kind": {"type": "string", "description": "Restrict refs to a specific reference kind"},
+            "loose": {"type": "boolean", "description": "Loosen call-chain matching (callees)"},
         }
         return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
 
@@ -2288,13 +2311,23 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         edit = {
             "type": "object",
-            "properties": {key: {"type": "string"} for key in ("op", "start", "end", "content", "old", "new")},
+            "properties": {
+                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+                "content": {"type": "string", "description": "New text for create/replace/insert"},
+                "old": {"type": "string", "description": "Text to find for replace_all"},
+                "new": {"type": "string", "description": "Replacement text for replace_all"},
+            },
             "required": ["op"],
             "additionalProperties": False,
         }
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}},
+            "properties": {
+                "path": {"type": "string", "description": "File to create or patch"},
+                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+            },
             "required": ["path", "edits"],
             "additionalProperties": False,
         }
@@ -2543,7 +2576,7 @@ class BashTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}},
+            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}},
             "required": ["command"],
             "additionalProperties": False,
         }
@@ -2680,7 +2713,10 @@ class GitTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}},
+            "properties": {
+                "cwd": {"type": "string", "description": "Working directory for the git command; defaults to repo root"},
+                "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Git command and args as a list, e.g. [\"status\",\"--short\"]"},
+            },
             "required": ["argv"],
             "additionalProperties": False,
         }
@@ -2791,8 +2827,8 @@ class RecallTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
+                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
             },
             "required": ["keys"],
             "additionalProperties": False,
@@ -2872,21 +2908,23 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        strings = {"type": "array", "items": {"type": "string"}}
         plan_item = {
             "type": "object",
-            "properties": {"status": {"type": "string", "enum": list(PlanItem.STATUSES)}, "text": {"type": "string"}},
+            "properties": {
+                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+                "text": {"type": "string", "description": "Plan step description"},
+            },
             "required": ["status", "text"],
             "additionalProperties": False,
         }
         return {
             "type": "object",
             "properties": {
-                "set_goal": {"type": "string"},
-                "replace_plan": {"type": "array", "items": plan_item},
-                "append_known": strings,
-                "replace_known": strings,
-                "set_check": {"type": "string"},
+                "set_goal": {"type": "string", "description": "Replace the current goal"},
+                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
             },
             "additionalProperties": False,
         }
@@ -5831,6 +5869,7 @@ class CommandCompleter(Completer):
         "/reason",
         "/set",
         "/yolo",
+        "/strict",
         "/exit",
         "/quit",
     )
@@ -6434,6 +6473,7 @@ class CommandLoop:
   /reason            Select reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
+  /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
   /mcp               Show MCP server status.
   /mcp tools [NAME]   List MCP tools.
   /mcp login NAME     Start OAuth login for a server.
@@ -7128,6 +7168,7 @@ Tools:
             "/reason": self.reason,
             "/set": self.set_value,
             "/yolo": self.yolo,
+            "/strict": self.strict,
             "/mcp": self.mcp_command,
         }
         handler = handlers.get(name)
@@ -7682,6 +7723,16 @@ Tools:
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
+
+    def strict(self, args: str) -> str:
+        if args:
+            return "Usage: /strict"
+        provider = self.session.config.provider
+        provider.strict_tools = not provider.strict_tools
+        state = "on" if provider.strict_tools else "off"
+        if provider.strict_tools and not provider.resolved_strict_tools():
+            return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
+        return f"strict_tools: {state}"
 
     def set_value(self, args: str) -> str:
         key, _, value = args.partition(" ")

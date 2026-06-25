@@ -139,14 +139,29 @@ def test_strict_tools_gating_and_beta_routing():
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     for name, tool in n.TOOL_REGISTRY.items():
-        schema = tool.schema(True)
-        assert schema["function"]["strict"] is True
-        _strict_check(schema["function"]["parameters"], name)
+        function = tool.schema(True)["function"]
+        if function.get("strict"):
+            _strict_check(function["parameters"], name)
+        else:
+            # Only free-form schemas (open objects) may skip strict; they stay untransformed.
+            assert n.strictifiable(tool.params_schema()) is False, name
+            assert function["parameters"] == tool.params_schema()
     after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     assert before == after  # deepcopy keeps shared ClassVar schemas intact
 
     find_type = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["type"]
     assert "null" in find_type["type"] and None in find_type["enum"]
+    # Optional array/object params use anyOf (never object/array inside a type union).
+    find_queries = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["queries"]
+    assert find_queries["anyOf"][1] == {"type": "null"}
+
+
+def test_strict_tools_skips_free_form_object_schemas():
+    # MCP.arguments is a free-form object; strict cannot close it, so MCP stays non-strict.
+    mcp = n.TOOL_REGISTRY["MCP"].schema(True)["function"]
+    assert "strict" not in mcp
+    assert n.strictifiable(n.TOOL_REGISTRY["MCP"].params_schema()) is False
+    assert n.strictifiable(n.TOOL_REGISTRY["Read"].params_schema()) is True
 
 
 def test_drop_nulls_strips_omitted_strict_arguments():
