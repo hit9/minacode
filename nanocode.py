@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import copy
 import difflib
 import asyncio
 import fnmatch
@@ -140,10 +141,10 @@ class ProviderConfig:
         ("thinking", ("deepseek-v4",)),
     )
     PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
-        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)},
+        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False},
+        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
         "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
@@ -157,6 +158,7 @@ class ProviderConfig:
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
     max_tokens: int = 0
+    strict_tools: bool = False
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
     timeout: int = 180
@@ -183,20 +185,29 @@ class ProviderConfig:
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
             max_tokens=max(0, Config.int(data, "max_tokens", 0)),
+            strict_tools=Config.bool(data, "strict_tools", False),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
             timeout=Config.int(data, "timeout", 180),
         )
 
-    def base_url(self) -> str:
+    def _stripped_url(self) -> str:
         url = self.url.rstrip("/")
         for suffix in ("/chat/completions", "/responses", "/messages"):
             if url.endswith(suffix):
                 return url[: -len(suffix)]
         return url
 
+    def base_url(self) -> str:
+        url = self._stripped_url()
+        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only
+        # when strict is actually active, so non-strict users stay on the stable endpoint.
+        if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta"):
+            url = url + "/beta"
+        return url
+
     def host(self) -> str:
-        return (urlparse(self.base_url()).hostname or "").lower()
+        return (urlparse(self._stripped_url()).hostname or "").lower()
 
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
@@ -230,6 +241,13 @@ class ProviderConfig:
         # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
         # (e.g. DeepSeek caches automatically by prefix and ignores the key).
         return bool((self.PROFILES.get(self.host()) or {}).get("prompt_cache_key", True))
+
+    def supports_strict_tools(self) -> bool:
+        return bool((self.PROFILES.get(self.host()) or {}).get("strict_tools"))
+
+    def resolved_strict_tools(self) -> bool:
+        # Only emit strict schemas on the chat path of a host known to support strict mode.
+        return self.strict_tools and self.supports_strict_tools() and self.resolved_api() == "chat"
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -366,6 +384,7 @@ prompt_cache_key = "auto"
 # available_models = ["gpt-5", "gpt-5-mini"]
 # temperature = 0.2
 # max_tokens = 16384
+# strict_tools = false  # constrain tool-call args to the schema (OpenAI / DeepSeek beta)
 reasoning = "medium"
 # chat_reasoning = "auto"
 timeout = 180
@@ -1261,6 +1280,40 @@ class UpdateChecker:
         )
 
 
+def strict_tool_schema(schema: Json) -> Json:
+    """Rewrite a JSON Schema to satisfy strict function-calling (OpenAI / DeepSeek beta):
+    every object property becomes required (genuine optionals turned nullable),
+    additionalProperties is forced false, and unsupported keywords are dropped."""
+
+    def transform(node: Any) -> Any:
+        if isinstance(node, list):
+            return [transform(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        node = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
+        if isinstance(node.get("properties"), dict):
+            required = set(node.get("required") or [])
+            for key, sub in node["properties"].items():
+                if key not in required and isinstance(sub, dict):
+                    node["properties"][key] = nullable(sub)
+            node["required"] = list(node["properties"].keys())
+            node["additionalProperties"] = False
+        return node
+
+    def nullable(sub: Json) -> Json:
+        kind = sub.get("type")
+        if isinstance(kind, str) and kind != "null":
+            sub["type"] = [kind, "null"]
+        elif isinstance(kind, list) and "null" not in kind:
+            sub["type"] = [*kind, "null"]
+        # An enum must accept null too, otherwise strict validation rejects the "omitted" value.
+        if isinstance(sub.get("enum"), list) and None not in sub["enum"]:
+            sub["enum"] = [*sub["enum"], None]
+        return sub
+
+    return transform(copy.deepcopy(schema))
+
+
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
@@ -1276,9 +1329,13 @@ class Tool:
         self.args = args
 
     @classmethod
-    def schema(cls) -> Json:
+    def schema(cls, strict: bool = False) -> Json:
         description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
-        return {"type": "function", "function": {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}}
+        function: Json = {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}
+        if strict:
+            function["parameters"] = strict_tool_schema(function["parameters"])
+            function["strict"] = True
+        return {"type": "function", "function": function}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -5276,7 +5333,7 @@ class ModelClient:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
+        tools = [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values()]
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
             try:
@@ -5611,11 +5668,21 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             calls.append(self.tool_call(raw.id, raw.function.name, payload))
         return calls
 
-    @staticmethod
-    def tool_payload(name: str, payload: Any) -> list[Any]:
+    @classmethod
+    def tool_payload(cls, name: str, payload: Any) -> list[Any]:
         if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
-            return tool.payload_args(payload)
+            # Strict schemas express optional params as nullable, so the model may send explicit
+            # null for an omitted argument. In every nanocode tool null means "absent", so drop it.
+            return tool.payload_args(cls.drop_nulls(payload))
         return [payload]
+
+    @classmethod
+    def drop_nulls(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls.drop_nulls(item) for key, item in value.items() if item is not None}
+        if isinstance(value, list):
+            return [cls.drop_nulls(item) for item in value]
+        return value
 
     @classmethod
     def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
@@ -5771,6 +5838,7 @@ class CommandCompleter(Completer):
         "provider.available_models",
         "provider.temperature",
         "provider.max_tokens",
+        "provider.strict_tools",
         "provider.timeout",
         "runtime.yolo",
         "runtime.max_agent_steps",
@@ -5785,6 +5853,7 @@ class CommandCompleter(Completer):
         "provider.reasoning": REASONING_CHOICES,
         "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",),
+        "provider.strict_tools": ("on", "off", "true", "false"),
         "runtime.yolo": ("on", "off", "true", "false"),
         "runtime.check_updates": ("on", "off", "true", "false"),
     }
@@ -7424,6 +7493,7 @@ Tools:
                 f"provider.chat_reasoning: {provider.chat_reasoning}",
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
                 f"provider.max_tokens: {provider.max_tokens or ('(resolved ' + str(provider.resolved_max_tokens() or 'server default') + ')')}",
+                f"provider.strict_tools: {provider.strict_tools} (active {provider.resolved_strict_tools()})",
                 f"provider.timeout: {provider.timeout}",
                 f"paths.data_dir: {self.session.data_path()}",
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
@@ -7628,6 +7698,8 @@ Tools:
                 provider.temperature = None if value == "off" else float(value)
             elif key == "provider.max_tokens":
                 provider.max_tokens = max(0, int(value))
+            elif key == "provider.strict_tools":
+                provider.strict_tools = Config.bool({key: value}, key)
             elif key == "provider.timeout":
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":

@@ -2,6 +2,9 @@
 
 ## 0.7.2
 
+### Added
+- Add a `provider.strict_tools` option (default `false`, also settable via `/set`) that constrains tool-call arguments to each tool's JSON Schema. When enabled it is only active on hosts whose profile supports strict mode (`api.openai.com`, `api.deepseek.com`) and on the chat path; every other provider is unaffected. Activating it emits a strict-compliant schema (all properties required, genuine optionals made nullable, `additionalProperties: false`, and the unsupported `minItems`/`maxItems`/`minLength`/`maxLength` keywords dropped) with `strict: true` per function, and on DeepSeek it routes the client to the `/beta` endpoint where the feature lives. Because optionals become nullable, the model may send explicit `null` for an omitted argument; nanocode now strips `null` values (recursively) before dispatching to a tool, where `null` has always meant "absent".
+
 ### Changed
 - Add a `provider.max_tokens` option (also settable via `/set`) capping chat-completion output. It defaults to `0` (unset) for generic OpenAI-compatible providers, so their requests are unchanged, and resolves to a profile default of `32768` on `api.deepseek.com` so DeepSeek thinking mode has enough room for `reasoning_content` plus the answer.
 - Map `reasoning = "high"` to DeepSeek's agent-recommended `max` effort in the thinking effort table (was `high`); `xhigh` still maps to `max` and the default `medium` still maps to `high`. Only the DeepSeek/Qwen `thinking` style is affected.

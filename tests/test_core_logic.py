@@ -78,6 +78,74 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert isinstance(params["extra_body"]["thinking_budget"], int)
 
 
+def _strict_check(node, path="root"):
+    if isinstance(node, dict):
+        for key in ("minItems", "maxItems", "minLength", "maxLength"):
+            assert key not in node, f"{path}: leftover {key}"
+        if isinstance(node.get("properties"), dict):
+            assert node.get("additionalProperties") is False, f"{path}: additionalProperties"
+            assert set(node["required"]) == set(node["properties"]), f"{path}: required != properties"
+            for key, sub in node["properties"].items():
+                _strict_check(sub, f"{path}.{key}")
+        if "items" in node:
+            _strict_check(node["items"], f"{path}[]")
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            _strict_check(item, f"{path}[{index}]")
+
+
+def test_strict_tools_off_path_emits_legacy_schema_unchanged():
+    for tool in n.TOOL_REGISTRY.values():
+        legacy = {
+            "type": "function",
+            "function": {
+                "name": tool.NAME,
+                "description": "\n".join([tool.DESCRIPTION, "Signature: " + tool.SIGNATURE, *(("- " + item) for item in tool.EXAMPLE if item)]),
+                "parameters": tool.params_schema(),
+            },
+        }
+        assert tool.schema(False) == legacy
+        assert "strict" not in tool.schema(False)["function"]
+
+
+def test_strict_tools_gating_and_beta_routing():
+    def provider(url, strict=False):
+        return n.ProviderConfig(url=url, strict_tools=strict)
+
+    # Unsupported hosts never activate strict, even when requested, and stay on their endpoint.
+    for url in ("https://openrouter.ai/api/v1", "https://api.together.xyz/v1", "http://localhost:1234/v1"):
+        assert provider(url, strict=True).resolved_strict_tools() is False
+        assert provider(url, strict=True).base_url() == url
+
+    # DeepSeek: off keeps the stable endpoint; on activates strict and routes to /beta (idempotently).
+    assert provider("https://api.deepseek.com").resolved_strict_tools() is False
+    assert provider("https://api.deepseek.com").base_url() == "https://api.deepseek.com"
+    assert provider("https://api.deepseek.com", strict=True).resolved_strict_tools() is True
+    assert provider("https://api.deepseek.com", strict=True).base_url() == "https://api.deepseek.com/beta"
+    assert provider("https://api.deepseek.com/beta", strict=True).base_url() == "https://api.deepseek.com/beta"
+
+    # OpenAI supports strict but not the beta endpoint, so it stays on the normal URL.
+    assert provider("https://api.openai.com/v1", strict=True).resolved_strict_tools() is True
+    assert provider("https://api.openai.com/v1", strict=True).base_url() == "https://api.openai.com/v1"
+
+
+def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
+    before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
+    for name, tool in n.TOOL_REGISTRY.items():
+        schema = tool.schema(True)
+        assert schema["function"]["strict"] is True
+        _strict_check(schema["function"]["parameters"], name)
+    after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
+    assert before == after  # deepcopy keeps shared ClassVar schemas intact
+
+    find_type = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["type"]
+    assert "null" in find_type["type"] and None in find_type["enum"]
+
+
+def test_drop_nulls_strips_omitted_strict_arguments():
+    assert n.ModelClient.drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
+
+
 def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tmp_path):
     client = n.ModelClient(session(tmp_path))
     message = SimpleNamespace(
