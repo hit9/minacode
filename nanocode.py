@@ -490,6 +490,7 @@ class AgentState:
     code_index_error: str = ""
     code_index_notice: str = ""
     code_index_refreshing: bool = False
+    code_index_checking: bool = False
     context_percent: int = 0
     turn_step: int = 0
     turn_tool_calls: int = 0
@@ -2000,6 +2001,25 @@ class CodeIndex:
         if not files or len(files) > self.AUTO_UPDATE_LIMIT or (isinstance(pending, int) and pending > self.AUTO_UPDATE_LIMIT):
             return ""
         return self.update([self.session.resolve_path(path) for path in files])
+
+    def update_pending_async(self) -> None:
+        """Run the working-tree check (and any auto-update) off the UI critical path.
+
+        ``update_pending`` does a ``check=True`` scan that walks/hashes the tree — slow on
+        large repos. Running it inline blocks answer emission and /status, so spawn it in a
+        daemon thread. Guarded so only one scan/update runs at a time.
+        """
+        if self.session.state.code_index_checking or self.session.state.code_index_refreshing:
+            return
+        self.session.state.code_index_checking = True
+
+        def run() -> None:
+            try:
+                self.update_pending()
+            finally:
+                self.session.state.code_index_checking = False
+
+        threading.Thread(target=run, daemon=True).start()
 
     def refresh_existing_async(self) -> bool:
         if self.session.state.code_index_refreshing:
@@ -6546,7 +6566,7 @@ Tools:
                     watcher.join(timeout=1.0)
                 self.queue_input_paused.clear()
                 self.session.state.manual_model_retry_requested = False
-                CodeIndex(self.session).update_pending()
+                CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
@@ -7270,7 +7290,9 @@ Tools:
         usage = self.session.usage
         provider = self.session.config.provider
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
-        index_status, index_message = CodeIndex(self.session).status(check=True)
+        index = CodeIndex(self.session)
+        index_status, index_message = index.status(check=False)
+        index.update_pending_async()
         if self.session.state.code_index_refreshing:
             index_status, index_message = self.session.state.code_index_notice or "syncing", ""
         elif self.session.state.code_index_error:
