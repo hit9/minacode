@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Run the code-symbol-index working-tree check off the UI critical path. `/status` previously forced a synchronous `csi.status(check=True)` full-tree scan (~1.5s on large repos) before rendering, and the same scan ran inline at the end of every turn, delaying the answer. `/status` now reads the last-known status instantly (`check=False`) and triggers the scan asynchronously, and the per-turn `update_pending()` runs in a guarded one-shot daemon thread, so neither blocks the UI. A new transient `code_index_checking` guard prevents overlapping scans.
+
 ## 0.7.0 - 2026-06-24
 
 ### Added
