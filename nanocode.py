@@ -60,7 +60,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -529,7 +529,9 @@ class AgentState:
 
     def format(self) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows_for(self.plan), "Known:", *known, "Check: " + (self.check or "(empty)")])
+        return "\n".join(
+            ["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows_for(self.plan), "Known:", *known, "Check: " + (self.check or "(empty)")]
+        )
 
 
 @dataclass
@@ -916,16 +918,12 @@ class SessionSnapshotCodec:
     @staticmethod
     def tool_records(data: list[Json]) -> list[ToolResultRecord]:
         return [
-            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", ""))
-            for rec in data
+            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", "")) for rec in data
         ]
 
     @staticmethod
     def tool_errors(data: list[Json]) -> list[ToolErrorRecord]:
-        return [
-            ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", ""))
-            for err in data
-        ]
+        return [ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", "")) for err in data]
 
 
 class SessionSnapshotStore:
@@ -2585,7 +2583,9 @@ class BashTool(Tool):
 
 class GitTool(Tool):
     NAME = "Git"
-    DESCRIPTION = 'Run git with explicit argv (default: cwd from Environment; use cwd= for other directories). For add, pass explicit file paths; broad add is rejected.'
+    DESCRIPTION = (
+        "Run git with explicit argv (default: cwd from Environment; use cwd= for other directories). For add, pass explicit file paths; broad add is rejected."
+    )
     SIGNATURE = "Git(argv=[command,...], cwd?)"
     EXAMPLE = (
         'Status. Example: {"argv":["status","--short"]}',
@@ -2609,11 +2609,7 @@ class GitTool(Tool):
     def payload_args(cls, payload: Json) -> list[Any]:
         argv = payload.get("argv")
         if not isinstance(argv, list) or not argv:
-            raise ToolError(
-                "Git requires a non-empty 'argv' list. "
-                'Signature: Git(argv=[command,...], cwd?)  '
-                'Example: {"argv":["status","--short"]}'
-            )
+            raise ToolError('Git requires a non-empty \'argv\' list. Signature: Git(argv=[command,...], cwd?)  Example: {"argv":["status","--short"]}')
         argv = [str(a) for a in argv]
         return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
 
@@ -2805,7 +2801,13 @@ class NoteTool(Tool):
         }
         return {
             "type": "object",
-            "properties": {"set_goal": {"type": "string"}, "replace_plan": {"type": "array", "items": plan_item}, "append_known": strings, "replace_known": strings, "set_check": {"type": "string"}},
+            "properties": {
+                "set_goal": {"type": "string"},
+                "replace_plan": {"type": "array", "items": plan_item},
+                "append_known": strings,
+                "replace_known": strings,
+                "set_check": {"type": "string"},
+            },
             "additionalProperties": False,
         }
 
@@ -2892,7 +2894,7 @@ class QuestionSpec:
 class QuestionTool(Tool):
     NAME = "Question"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
-    SIGNATURE = 'Question(questions=[{question, choices?, previews?, recommended?}, ...])'
+    SIGNATURE = "Question(questions=[{question, choices?, previews?, recommended?}, ...])"
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
@@ -2990,6 +2992,7 @@ class QuestionTool(Tool):
         first = str((questions[0] or {}).get("question", "") or "").strip() if isinstance(questions[0], dict) else ""
         label = Tool.compact(first, 80)
         return [label + (f" (+{len(questions) - 1} more)" if len(questions) > 1 else "")]
+
 
 class MCPTool(Tool):
     NAME = "MCP"
@@ -3105,8 +3108,9 @@ class MCPTool(Tool):
             return mcp.read_resource(server, str(payload.get("uri") or ""))
         raise ToolError(
             f"unknown MCP action {action!r}. Valid actions: {', '.join(self.ACTIONS)}. "
-            f"To invoke a remote tool named {action!r}, use action=\"call\", tool={action!r}."
+            f'To invoke a remote tool named {action!r}, use action="call", tool={action!r}.'
         )
+
 
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
@@ -3141,8 +3145,7 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
-        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql "
-        ".swift .toml .ts .tsx .vue .yaml .yml".split()
+        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
     )
     CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
@@ -4205,7 +4208,9 @@ class MCPManager:
 
         try:
             result = self.run_async(
-                self._call_oauth_tool(config, headers, tool_name, arguments) if config.auth == "oauth" else self._call_tool(config, headers, tool_name, arguments)
+                self._call_oauth_tool(config, headers, tool_name, arguments)
+                if config.auth == "oauth"
+                else self._call_tool(config, headers, tool_name, arguments)
             )
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e))
@@ -4246,9 +4251,7 @@ class MCPManager:
             raise ToolError("MCP read_resource requires a uri")
         config, headers = self._resource_preamble(server)
         try:
-            result = self.run_async(
-                self._read_oauth_resource(config, headers, uri) if config.auth == "oauth" else self._read_resource(config, headers, uri)
-            )
+            result = self.run_async(self._read_oauth_resource(config, headers, uri) if config.auth == "oauth" else self._read_resource(config, headers, uri))
         except Exception as e:
             raise ToolError("MCP resource read failed: " + self.error_text(e))
         text = self.normalize_resource(result)
@@ -4366,7 +4369,9 @@ class MCPManager:
         from fastmcp.client.transports import StreamableHttpTransport
 
         timeout = self.discovery_timeout()
-        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+        async with Client(
+            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
+        ) as client:
             return await asyncio.wait_for(client.list_resources(), timeout=timeout)
 
     async def _read_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
@@ -4381,7 +4386,9 @@ class MCPManager:
         from fastmcp.client.transports import StreamableHttpTransport
 
         timeout = self.call_timeout()
-        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+        async with Client(
+            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
+        ) as client:
             return await asyncio.wait_for(client.read_resource(uri), timeout=timeout)
 
     async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
@@ -4389,7 +4396,9 @@ class MCPManager:
         from fastmcp.client.transports import StreamableHttpTransport
 
         timeout = self.call_timeout()
-        async with Client(StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout) as client:
+        async with Client(
+            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
+        ) as client:
             return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
 
     def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
@@ -4573,7 +4582,7 @@ class MCPManager:
                     if line:
                         lines.append(line)
             if resources:
-                lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(config.name)}, uri=...):")
+                lines.append(f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(config.name)}, uri=...):')
                 lines.extend(self._format_resource_line(res) for res in resources)
             lines.append("")
 
@@ -4653,7 +4662,7 @@ class MCPManager:
                 lines.append(line)
         resources = self.resources.get(server, [])
         if resources:
-            lines.append(f"resources ({len(resources)}) — read with MCP(action=\"read_resource\", server={json.dumps(server)}, uri=...):")
+            lines.append(f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):')
             lines.extend(self._format_resource_line(res) for res in resources)
         return "\n".join(lines)
 
@@ -4671,7 +4680,7 @@ class MCPManager:
         # truncated above, so surface any resource-like URIs it mentions explicitly.
         uris = self._extract_uris(info.description)
         if uris:
-            line += "\n  refs (read with MCP action=\"read_resource\"): " + ", ".join(uris)
+            line += '\n  refs (read with MCP action="read_resource"): ' + ", ".join(uris)
         if include_schema:
             schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
             if schema:
@@ -4780,12 +4789,23 @@ class MCPManager:
             if config.env_http_headers:
                 for header_name in config.env_http_headers:
                     auth.append("env_header(" + header_name + ")")
-            lines.append("| `" + self.markdown_cell(config.name) + "` | " + self.markdown_cell(status) + " | " + self.markdown_cell(tools or "-") + " | " + self.markdown_cell(", ".join(auth) or "-") + " |")
+            lines.append(
+                "| `"
+                + self.markdown_cell(config.name)
+                + "` | "
+                + self.markdown_cell(status)
+                + " | "
+                + self.markdown_cell(tools or "-")
+                + " | "
+                + self.markdown_cell(", ".join(auth) or "-")
+                + " |"
+            )
         return "\n".join(lines) if len(lines) > 2 else "(no MCP servers configured)"
 
     @staticmethod
     def markdown_cell(text: str) -> str:
         return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
+
 
 class ToolRunner:
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
@@ -5011,7 +5031,9 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-        self.output_fn(self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed))
+        self.output_fn(
+            self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed)
+        )
         return self.tool_message(call, key, output, failed=failed, display=display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
@@ -5087,7 +5109,17 @@ class ToolRunner:
         return "\n".join(["  preview", *("  " + line for line in lines)])
 
     def finish_display(
-        self, call: ToolCall, key: str, output: str, *, failed: bool, approved: bool = False, auto: bool = False, display: str | None = None, batch_suffix: str = "", elapsed: float | None = None
+        self,
+        call: ToolCall,
+        key: str,
+        output: str,
+        *,
+        failed: bool,
+        approved: bool = False,
+        auto: bool = False,
+        display: str | None = None,
+        batch_suffix: str = "",
+        elapsed: float | None = None,
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
@@ -5969,6 +6001,7 @@ class UiPrinter:
                 at_start = part.endswith("\n")
         return indented
 
+
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
     MAX_CHARS: ClassVar[int] = 8000
@@ -6504,7 +6537,6 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.01)
 
-
     def drain_queued_input(self) -> str:
         """Return queued user input, or empty string if nothing queued."""
         texts = []
@@ -6515,6 +6547,7 @@ Tools:
             texts.append(self.queue_input_text)
         self.queue_input_text = ""
         return "\n".join(texts)
+
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
         self.session.clean_expired_snapshots()
@@ -6659,14 +6692,12 @@ Tools:
         # the index is too large to fit even as name-only (some tools are hidden from the model).
         self.session.mcp.render_tools_index()
         if self.session.mcp.index_truncated:
-            self.emit("mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list.")
+            self.emit(
+                "mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list."
+            )
 
     def mcp_error_notice(self) -> str:
-        errors = [
-            (name, error)
-            for name, error in sorted(self.session.mcp.server_errors.items())
-            if error and not error.startswith("oauth login required")
-        ]
+        errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error and not error.startswith("oauth login required")]
         if not errors:
             return ""
         shown = errors if self.session.settings.debug else errors[:3]
@@ -7259,7 +7290,11 @@ Tools:
         previews = spec.previews
         preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
         result = self.choice_application(
-            "Select:", tuple(choices), labels, current, set(),
+            "Select:",
+            tuple(choices),
+            labels,
+            current,
+            set(),
             preview_fn=lambda choice: preview_map.get(choice, ""),
             free_text=True,
         )
@@ -7338,7 +7373,15 @@ Tools:
         state = self.session.state
         known = ["- " + item for item in state.known] or ["- (empty)"]
         return "\n".join(
-            ["goal: " + (state.goal or "(empty)"), "summary:", state.summary or "(empty)", "plan:", *AgentState.plan_rows_for(state.plan, status=True, style="symbol"), "known:", *known]
+            [
+                "goal: " + (state.goal or "(empty)"),
+                "summary:",
+                state.summary or "(empty)",
+                "plan:",
+                *AgentState.plan_rows_for(state.plan, status=True, style="symbol"),
+                "known:",
+                *known,
+            ]
         )
 
     def config(self, args: str) -> str:
@@ -7590,8 +7633,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
-    parser.add_argument("--resume", default="", nargs="?", const="latest",
-                        help='Resume a session by UID, or "latest"/"last" for most recent')
+    parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
