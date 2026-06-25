@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import selectors
 import shlex
@@ -275,6 +276,7 @@ class RuntimeSettings:
     mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
+    tips: bool = True
 
     @classmethod
     def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
@@ -290,6 +292,7 @@ class RuntimeSettings:
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             debug=debug or Config.bool(runtime, "debug", False),
+            tips=Config.bool(runtime, "tips", True),
         )
 
 
@@ -401,6 +404,7 @@ check_updates = true
 update_check_interval_hours = 24
 session_retention_days = 7
 yolo = false
+tips = true
 
 # [mcp.example]
 # url = "https://example.com/mcp"
@@ -5892,6 +5896,7 @@ class CommandCompleter(Completer):
         "runtime.max_parallel_tools",
         "runtime.shell_timeout",
         "runtime.check_updates",
+        "runtime.tips",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -5902,6 +5907,7 @@ class CommandCompleter(Completer):
         "provider.strict_tools": ("on", "off", "true", "false"),
         "runtime.yolo": ("on", "off", "true", "false"),
         "runtime.check_updates": ("on", "off", "true", "false"),
+        "runtime.tips": ("on", "off", "true", "false"),
     }
 
     def __init__(
@@ -6011,9 +6017,20 @@ class UiPrinter:
             return [("ansibrightblack", text + "\n")]
         if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
+        if text.startswith("tip: "):
+            return self.tip_segments(text[len("tip: "):])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
         return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
+
+    def tip_segments(self, text: str) -> list[tuple[str, str]]:
+        # Muted hint line with a labeled marker; `code` spans are highlighted so commands stand out.
+        segments: list[tuple[str, str]] = [("ansibrightblack", "  "), ("ansiyellow", "💡 tip "), ("ansibrightblack", "· ")]
+        for index, part in enumerate(text.split("`")):
+            if part:
+                segments.append(("ansicyan" if index % 2 else "ansibrightblack", part))
+        segments.append(("", "\n"))
+        return segments
 
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
@@ -6457,6 +6474,46 @@ class CommandLoop:
         "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
         "refresh": (0, 1, "Usage: /mcp refresh [server]"),
     }
+    # (predicate, tip): predicate gates a tip to contexts where it is actually useful.
+    ALWAYS = staticmethod(lambda s: True)
+    TIPS: ClassVar[tuple[tuple[Callable[["Session"], bool], str], ...]] = (
+        # Sessions & input
+        (ALWAYS, "Resume your last session anytime with `nanocode --resume`."),
+        (ALWAYS, "Keep typing while the agent works — your input is picked up at the next step."),
+        (ALWAYS, "Press Ctrl+C to cancel the current input or interrupt a running turn."),
+        (ALWAYS, "Search your input history with Ctrl+R."),
+        (ALWAYS, "Tab completes commands, file paths, and mentions."),
+        # Context & memory
+        (ALWAYS, "`/compact` summarizes a long conversation to reclaim context."),
+        (ALWAYS, "`/memory` shows the agent's current goal, plan, and known facts."),
+        (ALWAYS, "`/status` shows token usage, context %, and prompt-cache hit rate."),
+        (ALWAYS, "Stable context is kept early so the prompt cache is reused — cheaper, faster turns."),
+        # Model & reasoning
+        (ALWAYS, "`/model` switches model and `/reason` sets reasoning effort on the fly."),
+        (ALWAYS, "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest."),
+        (ALWAYS, "`/set provider.max_tokens N` caps the model's output length."),
+        (ALWAYS, "`/api` shows or switches the API protocol (auto / chat / anthropic)."),
+        (lambda s: len(s.config.providers) > 1, "`/provider` switches between your configured providers."),
+        (lambda s: s.config.provider.supports_strict_tools(), "`/strict` constrains tool-call arguments to each tool's schema (OpenAI / DeepSeek)."),
+        # Tools & navigation
+        (ALWAYS, "`/index` manages the code symbol index for fast symbol navigation."),
+        (ALWAYS, "`/yolo` skips tool confirmations when you want to move fast."),
+        (ALWAYS, "`/set runtime.max_parallel_tools N` tunes how many reads run at once."),
+        (lambda s: bool(s.config.mcp), "Mention an MCP tool inline with `@server.tool` to pull in its schema."),
+        (lambda s: bool(s.config.mcp), "`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow."),
+        # Config & setup
+        (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
+        (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
+        (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
+        (ALWAYS, "Filter MCP servers at launch with `--mcp \"name*,!exclude\"`."),
+        (ALWAYS, "Silence these hints with `/set runtime.tips off`."),
+    )
+
+    def startup_tip(self) -> str:
+        if not self.session.settings.tips:
+            return ""
+        eligible = [tip for predicate, tip in self.TIPS if predicate(self.session)]
+        return random.choice(eligible) if eligible else ""
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
@@ -6688,6 +6745,8 @@ Tools:
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        if tip := self.startup_tip():
+            self.emit("tip: " + tip)
         self.session.clean_expired_snapshots()
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
@@ -7774,6 +7833,8 @@ Tools:
                 runtime.shell_timeout = max(1, int(value))
             elif key == "runtime.max_parallel_tools":
                 runtime.max_parallel_tools = max(1, int(value))
+            elif key == "runtime.tips":
+                runtime.tips = Config.bool({key: value}, key)
             else:
                 return "Unknown config key: " + key
         except (ConfigError, ValueError):
