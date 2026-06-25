@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.2
+
+### Changed
+- Add a `provider.max_tokens` option (also settable via `/set`) capping chat-completion output. It defaults to `0` (unset) for generic OpenAI-compatible providers, so their requests are unchanged, and resolves to a profile default of `32768` on `api.deepseek.com` so DeepSeek thinking mode has enough room for `reasoning_content` plus the answer.
+- Map `reasoning = "high"` to DeepSeek's agent-recommended `max` effort in the thinking effort table (was `high`); `xhigh` still maps to `max` and the default `medium` still maps to `high`. Only the DeepSeek/Qwen `thinking` style is affected.
+- Skip the OpenAI-only `prompt_cache_key` parameter for `api.deepseek.com`, which caches by prefix automatically and ignores the key. All other hosts keep emitting it as before.
+
+### Fixed
+- Set an explicit output ceiling for DeepSeek thinking mode so long `reasoning_content` no longer exhausts the server-side default and truncates the response or drops the tool call.
+- Stop sending `temperature` on the chat path when a native thinking style (`thinking`/`enable_thinking`) is enabled, since DeepSeek and Qwen reject or ignore it in that mode. Other reasoning styles and providers are untouched.
+
 ## 0.7.1 - 2026-06-25
 
 ### Changed

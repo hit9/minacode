@@ -77,8 +77,9 @@ REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
+DEEPSEEK_DEFAULT_MAX_TOKENS = 32_768
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
-    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"},
+    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
     "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
 }
 SELECTION_BACK = object()
@@ -142,7 +143,7 @@ class ProviderConfig:
         "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {"chat_reasoning": "thinking"},
+        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False},
         "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
@@ -155,6 +156,7 @@ class ProviderConfig:
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
+    max_tokens: int = 0
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
     timeout: int = 180
@@ -180,6 +182,7 @@ class ProviderConfig:
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
+            max_tokens=max(0, Config.int(data, "max_tokens", 0)),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
             timeout=Config.int(data, "timeout", 180),
@@ -215,6 +218,18 @@ class ProviderConfig:
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+
+    def resolved_max_tokens(self) -> int:
+        if self.max_tokens > 0:
+            return self.max_tokens
+        # No global default: generic OpenAI-compatible providers keep their own server-side cap.
+        # Only profiles that opt in (e.g. DeepSeek thinking mode) get an explicit ceiling.
+        return int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
+
+    def supports_prompt_cache_key(self) -> bool:
+        # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
+        # (e.g. DeepSeek caches automatically by prefix and ignores the key).
+        return bool((self.PROFILES.get(self.host()) or {}).get("prompt_cache_key", True))
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -350,6 +365,7 @@ api = "auto"
 prompt_cache_key = "auto"
 # available_models = ["gpt-5", "gpt-5-mini"]
 # temperature = 0.2
+# max_tokens = 16384
 reasoning = "medium"
 # chat_reasoning = "auto"
 timeout = 180
@@ -5301,6 +5317,8 @@ class ModelClient:
         messages = Text.value(messages)
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
+        if (max_tokens := provider.resolved_max_tokens()) > 0:
+            params["max_tokens"] = max_tokens
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -5391,6 +5409,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             return ""
         if configured != "auto":
             return configured
+        if not provider.supports_prompt_cache_key():
+            return ""
         payload = {
             "api": provider.resolved_api(),
             "cwd": self.session.cwd,
@@ -5526,11 +5546,12 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         return assistant, calls, text
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig) -> None:
-        if provider.temperature is not None:
-            params["temperature"] = provider.temperature
         chat_reasoning = provider.resolved_chat_reasoning()
         reasoning_enabled = provider.reasoning != "off"
         effort = provider.reasoning_effort()
+        # Native thinking modes (DeepSeek, Qwen) ignore or reject temperature while thinking is on.
+        if provider.temperature is not None and not (reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")):
+            params["temperature"] = provider.temperature
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
             extra["reasoning"] = {"effort": effort}
@@ -5749,6 +5770,7 @@ class CommandCompleter(Completer):
         "provider.chat_reasoning",
         "provider.available_models",
         "provider.temperature",
+        "provider.max_tokens",
         "provider.timeout",
         "runtime.yolo",
         "runtime.max_agent_steps",
@@ -7401,6 +7423,7 @@ Tools:
                 f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
                 f"provider.chat_reasoning: {provider.chat_reasoning}",
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
+                f"provider.max_tokens: {provider.max_tokens or ('(resolved ' + str(provider.resolved_max_tokens() or 'server default') + ')')}",
                 f"provider.timeout: {provider.timeout}",
                 f"paths.data_dir: {self.session.data_path()}",
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
@@ -7603,6 +7626,8 @@ Tools:
                 provider.available_models = tuple(item.strip() for item in value.split(",") if item.strip())
             elif key == "provider.temperature":
                 provider.temperature = None if value == "off" else float(value)
+            elif key == "provider.max_tokens":
+                provider.max_tokens = max(0, int(value))
             elif key == "provider.timeout":
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":
