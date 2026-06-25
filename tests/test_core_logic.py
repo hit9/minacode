@@ -82,6 +82,10 @@ def _strict_check(node, path="root"):
     if isinstance(node, dict):
         for key in ("minItems", "maxItems", "minLength", "maxLength"):
             assert key not in node, f"{path}: leftover {key}"
+        kind = node.get("type")
+        if isinstance(kind, list):
+            # DeepSeek strict rejects object/array inside a type union; only scalars + null allowed.
+            assert all(item in ("string", "number", "integer", "boolean", "null") for item in kind), f"{path}: non-scalar in type union {kind}"
         if isinstance(node.get("properties"), dict):
             assert node.get("additionalProperties") is False, f"{path}: additionalProperties"
             assert set(node["required"]) == set(node["properties"]), f"{path}: required != properties"
@@ -89,6 +93,9 @@ def _strict_check(node, path="root"):
                 _strict_check(sub, f"{path}.{key}")
         if "items" in node:
             _strict_check(node["items"], f"{path}[]")
+        for combiner in ("anyOf", "oneOf", "allOf"):
+            for index, sub in enumerate(node.get(combiner, [])):
+                _strict_check(sub, f"{path}.{combiner}[{index}]")
     elif isinstance(node, list):
         for index, item in enumerate(node):
             _strict_check(item, f"{path}[{index}]")

@@ -1300,12 +1300,19 @@ def strict_tool_schema(schema: Json) -> Json:
             node["additionalProperties"] = False
         return node
 
+    # Strict validators only allow scalar types in a `type` union; object/array nullability
+    # must be expressed with anyOf instead (e.g. {"anyOf": [<array schema>, {"type": "null"}]}).
+    scalars = ("string", "number", "integer", "boolean")
+
     def nullable(sub: Json) -> Json:
         kind = sub.get("type")
-        if isinstance(kind, str) and kind != "null":
+        if isinstance(kind, str) and kind in scalars:
             sub["type"] = [kind, "null"]
-        elif isinstance(kind, list) and "null" not in kind:
-            sub["type"] = [*kind, "null"]
+        elif isinstance(kind, list) and all(item in (*scalars, "null") for item in kind):
+            if "null" not in kind:
+                sub["type"] = [*kind, "null"]
+        else:
+            return {"anyOf": [sub, {"type": "null"}]}
         # An enum must accept null too, otherwise strict validation rejects the "omitted" value.
         if isinstance(sub.get("enum"), list) and None not in sub["enum"]:
             sub["enum"] = [*sub["enum"], None]
