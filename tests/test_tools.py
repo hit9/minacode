@@ -1017,12 +1017,12 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s.settings.yolo = True
     events = []
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
-    runner.live_start = lambda: events.append(("start", ""))
+    runner.live_start = lambda command="": events.append(("start", command))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
-    assert events[0] == ("start", "")
+    assert events[0] == ("start", "printf live")
     assert ("stdout", "live") in events
     assert events[-1] == ("", "")
 

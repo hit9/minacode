@@ -975,7 +975,7 @@ def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.interactive_input = True
-    loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
+    loop.live_preview.start = lambda command="": setattr(loop.live_preview, "active", True)
 
     loop.tool_live_start()
     assert loop.queue_input_paused.is_set()
