@@ -5776,7 +5776,8 @@ FILE STATE:
 - Read and Edit refresh FILE STATE; after Edit, trust the edited range.
 
 FINAL:
-- Default to a few lines; scale to the task. Lead with the result; no preamble or recap.
+- Be concise by default: answer in as few lines as the task allows (often 1-3), and stop. Lead with the result; no preamble, recap, or filler.
+- Do not over-explain, enumerate options, or add background unless the user asks for detail, a walkthrough, or "why". Match length to what was requested; only go long when the user requests it or the task genuinely requires it.
 - Concise markdown in the user's language; note changed files and checks run (or not run).\
 """
 
