@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
+import copy
 import difflib
 import asyncio
 import fnmatch
@@ -12,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import selectors
 import shlex
@@ -77,8 +80,9 @@ REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
+DEEPSEEK_DEFAULT_MAX_TOKENS = 32_768
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
-    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"},
+    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
     "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
 }
 SELECTION_BACK = object()
@@ -139,10 +143,10 @@ class ProviderConfig:
         ("thinking", ("deepseek-v4",)),
     )
     PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
-        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),)},
+        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {"chat_reasoning": "thinking"},
+        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
         "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
         "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
@@ -155,6 +159,8 @@ class ProviderConfig:
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
+    max_tokens: int = 0
+    strict_tools: bool = False
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
     timeout: int = 180
@@ -180,20 +186,30 @@ class ProviderConfig:
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
+            max_tokens=max(0, Config.int(data, "max_tokens", 0)),
+            strict_tools=Config.bool(data, "strict_tools", False),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
             timeout=Config.int(data, "timeout", 180),
         )
 
-    def base_url(self) -> str:
+    def _stripped_url(self) -> str:
         url = self.url.rstrip("/")
         for suffix in ("/chat/completions", "/responses", "/messages"):
             if url.endswith(suffix):
                 return url[: -len(suffix)]
         return url
 
+    def base_url(self) -> str:
+        url = self._stripped_url()
+        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only
+        # when strict is actually active, so non-strict users stay on the stable endpoint.
+        if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta"):
+            url = url + "/beta"
+        return url
+
     def host(self) -> str:
-        return (urlparse(self.base_url()).hostname or "").lower()
+        return (urlparse(self._stripped_url()).hostname or "").lower()
 
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
@@ -215,6 +231,25 @@ class ProviderConfig:
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+
+    def resolved_max_tokens(self) -> int:
+        if self.max_tokens > 0:
+            return self.max_tokens
+        # No global default: generic OpenAI-compatible providers keep their own server-side cap.
+        # Only profiles that opt in (e.g. DeepSeek thinking mode) get an explicit ceiling.
+        return int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
+
+    def supports_prompt_cache_key(self) -> bool:
+        # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
+        # (e.g. DeepSeek caches automatically by prefix and ignores the key).
+        return bool((self.PROFILES.get(self.host()) or {}).get("prompt_cache_key", True))
+
+    def supports_strict_tools(self) -> bool:
+        return bool((self.PROFILES.get(self.host()) or {}).get("strict_tools"))
+
+    def resolved_strict_tools(self) -> bool:
+        # Only emit strict schemas on the chat path of a host known to support strict mode.
+        return self.strict_tools and self.supports_strict_tools() and self.resolved_api() == "chat"
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -242,6 +277,7 @@ class RuntimeSettings:
     mcp_selector: str = ""
     yolo: bool = False
     debug: bool = False
+    tips: bool = True
 
     @classmethod
     def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
@@ -257,6 +293,7 @@ class RuntimeSettings:
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             debug=debug or Config.bool(runtime, "debug", False),
+            tips=Config.bool(runtime, "tips", True),
         )
 
 
@@ -350,6 +387,8 @@ api = "auto"
 prompt_cache_key = "auto"
 # available_models = ["gpt-5", "gpt-5-mini"]
 # temperature = 0.2
+# max_tokens = 16384
+# strict_tools = false  # constrain tool-call args to the schema (OpenAI / DeepSeek beta)
 reasoning = "medium"
 # chat_reasoning = "auto"
 timeout = 180
@@ -366,6 +405,7 @@ check_updates = true
 update_check_interval_hours = 24
 session_retention_days = 7
 yolo = false
+tips = true
 
 # [mcp.example]
 # url = "https://example.com/mcp"
@@ -1245,6 +1285,59 @@ class UpdateChecker:
         )
 
 
+def strict_tool_schema(schema: Json) -> Json:
+    """Rewrite a JSON Schema to satisfy strict function-calling (OpenAI / DeepSeek beta):
+    every object property becomes required (genuine optionals turned nullable),
+    additionalProperties is forced false, and unsupported keywords are dropped."""
+
+    def transform(node: Any) -> Any:
+        if isinstance(node, list):
+            return [transform(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        node = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
+        if isinstance(node.get("properties"), dict):
+            required = set(node.get("required") or [])
+            for key, sub in node["properties"].items():
+                if key not in required and isinstance(sub, dict):
+                    node["properties"][key] = nullable(sub)
+            node["required"] = list(node["properties"].keys())
+            node["additionalProperties"] = False
+        return node
+
+    # Strict validators only allow scalar types in a `type` union; object/array nullability
+    # must be expressed with anyOf instead (e.g. {"anyOf": [<array schema>, {"type": "null"}]}).
+    scalars = ("string", "number", "integer", "boolean")
+
+    def nullable(sub: Json) -> Json:
+        kind = sub.get("type")
+        if isinstance(kind, str) and kind in scalars:
+            sub["type"] = [kind, "null"]
+        elif isinstance(kind, list) and all(item in (*scalars, "null") for item in kind):
+            if "null" not in kind:
+                sub["type"] = [*kind, "null"]
+        else:
+            return {"anyOf": [sub, {"type": "null"}]}
+        # An enum must accept null too, otherwise strict validation rejects the "omitted" value.
+        if isinstance(sub.get("enum"), list) and None not in sub["enum"]:
+            sub["enum"] = [*sub["enum"], None]
+        return sub
+
+    return transform(copy.deepcopy(schema))
+
+
+def strictifiable(schema: Any) -> bool:
+    """False if the schema contains a free-form object (an `object` with no `properties`),
+    which strict function calling cannot represent — such tools fall back to non-strict."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" and "properties" not in schema:
+            return False
+        return all(strictifiable(value) for value in schema.values())
+    if isinstance(schema, list):
+        return all(strictifiable(item) for item in schema)
+    return True
+
+
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
@@ -1260,9 +1353,13 @@ class Tool:
         self.args = args
 
     @classmethod
-    def schema(cls) -> Json:
+    def schema(cls, strict: bool = False) -> Json:
         description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
-        return {"type": "function", "function": {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}}
+        function: Json = {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}
+        if strict and strictifiable(function["parameters"]):
+            function["parameters"] = strict_tool_schema(function["parameters"])
+            function["strict"] = True
+        return {"type": "function", "function": function}
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -1378,7 +1475,10 @@ class ReadTool(Tool):
     def arg_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA}},
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+                "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            },
             "required": ["path"],
             "additionalProperties": False,
         }
@@ -1388,9 +1488,9 @@ class ReadTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
-                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1},
+                "path": {"type": "string", "description": "File path to read (single-file form)"},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
             },
             "additionalProperties": False,
         }
@@ -1488,7 +1588,7 @@ class LineCountTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "File paths to count lines for"}},
             "required": ["paths"],
             "additionalProperties": False,
         }
@@ -1533,7 +1633,15 @@ class ListTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["path"], "additionalProperties": False}
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory to list"},
+                "glob": {"type": "string", "description": "Optional glob filtering child names (non-recursive), e.g. test_*.py"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1598,10 +1706,10 @@ class FindTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "name": {"type": "string"},
-                "path": {"type": "string"},
-                "type": {"type": "string", "enum": ["file", "dir", "any"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT},
+                "name": {"type": "string", "description": "Glob or exact name to match, e.g. *.py or migrations"},
+                "path": {"type": "string", "description": "Directory to search under; defaults to repo root"},
+                "type": {"type": "string", "enum": ["file", "dir", "any"], "description": "Match files, dirs, or any; default file"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Max results, 1..{cls.MAX_LIMIT}; default 100"},
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -1610,7 +1718,7 @@ class FindTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of find queries to run in one call"}
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
@@ -1716,10 +1824,10 @@ class SearchTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string"},
-                "glob": {"type": "string"},
-                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT},
+                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
             },
             "required": ["pattern"],
             "additionalProperties": False,
@@ -1728,7 +1836,7 @@ class SearchTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1}
+        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of search queries to run in one call"}
         return {"type": "object", "properties": props, "additionalProperties": False}
 
     @classmethod
@@ -2073,18 +2181,18 @@ class InspectCodeTool(Tool):
     @classmethod
     def params_schema(cls) -> Json:
         props = {
-            "mode": {"type": "string", "enum": list(cls.MODES)},
-            "target": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT},
-            "kind": {"type": "string"},
-            "path": {"type": "string"},
-            "symbol": {"type": "string"},
-            "exact_only": {"type": "boolean"},
-            "depth": {"type": "integer", "minimum": 1, "maximum": cls.MAX_DEPTH},
-            "offset": {"type": "integer", "minimum": 0},
-            "all_kinds": {"type": "boolean"},
-            "ref_kind": {"type": "string"},
-            "loose": {"type": "boolean"},
+            "mode": {"type": "string", "enum": list(cls.MODES), "description": "Query type: find|inspect|outline|refs|impls|callers|callees"},
+            "target": {"type": "string", "description": "Symbol name (find/inspect/refs/impls/callers/callees) or file path (outline)"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_OUTLINE_LIMIT, "description": "Max results"},
+            "kind": {"type": "string", "description": "Restrict to a symbol kind, e.g. function, class, method"},
+            "path": {"type": "string", "description": "Restrict the search to this file or directory"},
+            "symbol": {"type": "string", "description": "Disambiguate target when multiple symbols share a name"},
+            "exact_only": {"type": "boolean", "description": "Match the target name exactly instead of fuzzily"},
+            "depth": {"type": "integer", "minimum": 1, "maximum": cls.MAX_DEPTH, "description": "Call-chain depth for callers/callees"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Pagination offset for refs/impls"},
+            "all_kinds": {"type": "boolean", "description": "Include all reference kinds, not just behavioral ones (refs)"},
+            "ref_kind": {"type": "string", "description": "Restrict refs to a specific reference kind"},
+            "loose": {"type": "boolean", "description": "Loosen call-chain matching (callees)"},
         }
         return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
 
@@ -2208,13 +2316,23 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         edit = {
             "type": "object",
-            "properties": {key: {"type": "string"} for key in ("op", "start", "end", "content", "old", "new")},
+            "properties": {
+                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+                "content": {"type": "string", "description": "New text for create/replace/insert"},
+                "old": {"type": "string", "description": "Text to find for replace_all"},
+                "new": {"type": "string", "description": "Replacement text for replace_all"},
+            },
             "required": ["op"],
             "additionalProperties": False,
         }
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": edit, "minItems": 1}},
+            "properties": {
+                "path": {"type": "string", "description": "File to create or patch"},
+                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+            },
             "required": ["path", "edits"],
             "additionalProperties": False,
         }
@@ -2463,7 +2581,7 @@ class BashTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$"}},
+            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}},
             "required": ["command"],
             "additionalProperties": False,
         }
@@ -2600,7 +2718,10 @@ class GitTool(Tool):
     def params_schema(cls) -> Json:
         return {
             "type": "object",
-            "properties": {"cwd": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}},
+            "properties": {
+                "cwd": {"type": "string", "description": "Working directory for the git command; defaults to repo root"},
+                "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Git command and args as a list, e.g. [\"status\",\"--short\"]"},
+            },
             "required": ["argv"],
             "additionalProperties": False,
         }
@@ -2711,8 +2832,8 @@ class RecallTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1},
+                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"},
+                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
             },
             "required": ["keys"],
             "additionalProperties": False,
@@ -2792,21 +2913,23 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        strings = {"type": "array", "items": {"type": "string"}}
         plan_item = {
             "type": "object",
-            "properties": {"status": {"type": "string", "enum": list(PlanItem.STATUSES)}, "text": {"type": "string"}},
+            "properties": {
+                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+                "text": {"type": "string", "description": "Plan step description"},
+            },
             "required": ["status", "text"],
             "additionalProperties": False,
         }
         return {
             "type": "object",
             "properties": {
-                "set_goal": {"type": "string"},
-                "replace_plan": {"type": "array", "items": plan_item},
-                "append_known": strings,
-                "replace_known": strings,
-                "set_check": {"type": "string"},
+                "set_goal": {"type": "string", "description": "Replace the current goal"},
+                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
             },
             "additionalProperties": False,
         }
@@ -4114,6 +4237,33 @@ class MCPManager:
     def run_async(self, coroutine: Any) -> Any:
         return asyncio.run_coroutine_threadsafe(coroutine, self._async_loop()).result()
 
+    def close(self) -> None:
+        # Stop and join the background loop before the interpreter tears down its
+        # default executors. Otherwise an in-flight client cleanup (HTTP session
+        # termination, DNS via run_in_executor) races the concurrent.futures atexit
+        # shutdown and prints "cannot schedule new futures after shutdown".
+        with self._loop_lock:
+            loop = self._loop
+            thread = self._loop_thread
+            self._loop = None
+            self._loop_thread = None
+        if loop is None or thread is None:
+            return
+
+        async def _shutdown() -> None:
+            pending = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with contextlib.suppress(BaseException):
+                    await task
+
+        if loop.is_running():
+            with contextlib.suppress(BaseException):
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=5)
+            loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
         from fastmcp.client.auth import OAuth
 
@@ -4816,7 +4966,7 @@ class ToolRunner:
         self.preview_fn: Callable[[str], bool] | None = None
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
-        self.live_start: Callable[[], None] | None = None
+        self.live_start: Callable[[str], None] | None = None
         self.question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
@@ -4985,7 +5135,7 @@ class ToolRunner:
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
-                self.live_start()
+                self.live_start(str(call.args[0]) if call.args else "")
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
@@ -5260,7 +5410,7 @@ class ModelClient:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        tools = [tool.schema() for tool in TOOL_REGISTRY.values()]
+        tools = [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values()]
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
             try:
@@ -5301,6 +5451,8 @@ class ModelClient:
         messages = Text.value(messages)
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
+        if (max_tokens := provider.resolved_max_tokens()) > 0:
+            params["max_tokens"] = max_tokens
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -5391,6 +5543,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             return ""
         if configured != "auto":
             return configured
+        if not provider.supports_prompt_cache_key():
+            return ""
         payload = {
             "api": provider.resolved_api(),
             "cwd": self.session.cwd,
@@ -5526,11 +5680,12 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         return assistant, calls, text
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig) -> None:
-        if provider.temperature is not None:
-            params["temperature"] = provider.temperature
         chat_reasoning = provider.resolved_chat_reasoning()
         reasoning_enabled = provider.reasoning != "off"
         effort = provider.reasoning_effort()
+        # Native thinking modes (DeepSeek, Qwen) ignore or reject temperature while thinking is on.
+        if provider.temperature is not None and not (reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")):
+            params["temperature"] = provider.temperature
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
             extra["reasoning"] = {"effort": effort}
@@ -5590,11 +5745,21 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             calls.append(self.tool_call(raw.id, raw.function.name, payload))
         return calls
 
-    @staticmethod
-    def tool_payload(name: str, payload: Any) -> list[Any]:
+    @classmethod
+    def tool_payload(cls, name: str, payload: Any) -> list[Any]:
         if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
-            return tool.payload_args(payload)
+            # Strict schemas express optional params as nullable, so the model may send explicit
+            # null for an omitted argument. In every nanocode tool null means "absent", so drop it.
+            return tool.payload_args(cls.drop_nulls(payload))
         return [payload]
+
+    @classmethod
+    def drop_nulls(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls.drop_nulls(item) for key, item in value.items() if item is not None}
+        if isinstance(value, list):
+            return [cls.drop_nulls(item) for item in value]
+        return value
 
     @classmethod
     def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
@@ -5639,7 +5804,8 @@ FILE STATE:
 - Read and Edit refresh FILE STATE; after Edit, trust the edited range.
 
 FINAL:
-- Default to a few lines; scale to the task. Lead with the result; no preamble or recap.
+- Be concise by default: answer in as few lines as the task allows (often 1-3), and stop. Lead with the result; no preamble, recap, or filler.
+- Do not over-explain, enumerate options, or add background unless the user asks for detail, a walkthrough, or "why". Match length to what was requested; only go long when the user requests it or the task genuinely requires it.
 - Concise markdown in the user's language; note changed files and checks run (or not run).\
 """
 
@@ -5736,6 +5902,7 @@ class CommandCompleter(Completer):
         "/reason",
         "/set",
         "/yolo",
+        "/strict",
         "/exit",
         "/quit",
     )
@@ -5749,6 +5916,8 @@ class CommandCompleter(Completer):
         "provider.chat_reasoning",
         "provider.available_models",
         "provider.temperature",
+        "provider.max_tokens",
+        "provider.strict_tools",
         "provider.timeout",
         "runtime.yolo",
         "runtime.max_agent_steps",
@@ -5756,6 +5925,7 @@ class CommandCompleter(Completer):
         "runtime.max_parallel_tools",
         "runtime.shell_timeout",
         "runtime.check_updates",
+        "runtime.tips",
     )
     SET_VALUES = {
         "provider.api": PROVIDER_API_CHOICES,
@@ -5763,8 +5933,10 @@ class CommandCompleter(Completer):
         "provider.reasoning": REASONING_CHOICES,
         "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",),
+        "provider.strict_tools": ("on", "off", "true", "false"),
         "runtime.yolo": ("on", "off", "true", "false"),
         "runtime.check_updates": ("on", "off", "true", "false"),
+        "runtime.tips": ("on", "off", "true", "false"),
     }
 
     def __init__(
@@ -5874,9 +6046,20 @@ class UiPrinter:
             return [("ansibrightblack", text + "\n")]
         if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
+        if text.startswith("tip: "):
+            return self.tip_segments(text[len("tip: "):])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
         return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
+
+    def tip_segments(self, text: str) -> list[tuple[str, str]]:
+        # Muted hint line with a labeled marker; `code` spans are highlighted so commands stand out.
+        segments: list[tuple[str, str]] = [("ansibrightblack", "  "), ("ansiyellow", "💡 tip "), ("ansibrightblack", "· ")]
+        for index, part in enumerate(text.split("`")):
+            if part:
+                segments.append(("ansicyan" if index % 2 else "ansibrightblack", part))
+        segments.append(("", "\n"))
+        return segments
 
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
@@ -6005,28 +6188,69 @@ class UiPrinter:
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
     MAX_CHARS: ClassVar[int] = 8000
+    # Heartbeat tick so the elapsed timer advances even while a command produces no output
+    # (e.g. quiet long-runners or `... | tail` that buffers until EOF), so the terminal never
+    # looks frozen during a blocking command.
+    TICK: ClassVar[float] = 0.1
 
     def __init__(self):
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
         self.text = ""
+        self.command = ""
+        self.started_at = 0.0
+        self.lock = threading.Lock()
+        self.timer: threading.Thread | None = None
 
-    def start(self) -> None:
+    def start(self, command: str = "") -> None:
         if not sys.stderr.isatty():
             return
-        self.active, self.rendered_lines, self.text = True, 0, ""
+        with self.lock:
+            self.active, self.rendered_lines, self.text = True, 0, ""
+            self.command = " ".join(command.split())
+            self.started_at = time.monotonic()
+            self.render()
+        self.timer = threading.Thread(target=self.tick, daemon=True)
+        self.timer.start()
+
+    def tick(self) -> None:
+        while True:
+            time.sleep(self.TICK)
+            with self.lock:
+                if not self.active:
+                    return
+                self.render()
 
     def update(self, text: str) -> None:
-        if not self.active:
-            return
-        self.text = (self.text + text)[-self.MAX_CHARS :]
-        self.render()
+        with self.lock:
+            if not self.active:
+                return
+            self.text = (self.text + text)[-self.MAX_CHARS :]
+            self.render()
 
     def finish(self) -> None:
-        if not self.active:
+        with self.lock:
+            if not self.active:
+                return
+            self.active = False
+        timer = self.timer
+        if timer is not None:
+            timer.join()
+        with self.lock:
+            self.clear()
+            self.rendered_lines, self.text = 0, ""
+
+    def clear(self) -> None:
+        if not self.rendered_lines:
             return
-        self.active, self.rendered_lines = False, 0
+        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
+        for _ in range(self.rendered_lines):
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            self.output.write_raw("\n")
+        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
+        self.output.flush()
 
     def render(self) -> None:
         if not self.active:
@@ -6049,11 +6273,26 @@ class BashLivePreview:
         self.output.flush()
         self.rendered_lines = len(lines)
 
+    def elapsed_label(self) -> str:
+        elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes, rest = divmod(int(elapsed), 60)
+        return f"{minutes}m{rest:02d}s"
+
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
-        limit = width - 2
-        return ["  output", *("  " + (line if len(line) <= limit else line[: max(0, limit - 3)] + "...") for line in body)] if body else []
+        label = self.elapsed_label()
+        # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
+        # cursor-up math in render().
+        limit = width - 3
+        clip = lambda line: line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+        # Always emit a header (the running command + a live elapsed timer) so the frame is visible
+        # even before any output arrives and the user can see what is executing.
+        status = f"output · {label}" if body else f"running… {label}"
+        header = [clip("  $ " + self.command)] if self.command else []
+        return [*header, "  " + status, *("  " + clip(line) for line in body)]
 
 
 class ModelRetryShortcut:
@@ -6320,6 +6559,46 @@ class CommandLoop:
         "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
         "refresh": (0, 1, "Usage: /mcp refresh [server]"),
     }
+    # (predicate, tip): predicate gates a tip to contexts where it is actually useful.
+    ALWAYS = staticmethod(lambda s: True)
+    TIPS: ClassVar[tuple[tuple[Callable[["Session"], bool], str], ...]] = (
+        # Sessions & input
+        (ALWAYS, "Resume your last session anytime with `nanocode --resume`."),
+        (ALWAYS, "Keep typing while the agent works — your input is picked up at the next step."),
+        (ALWAYS, "Press Ctrl+C to cancel the current input or interrupt a running turn."),
+        (ALWAYS, "Search your input history with Ctrl+R."),
+        (ALWAYS, "Tab completes commands, file paths, and mentions."),
+        # Context & memory
+        (ALWAYS, "`/compact` summarizes a long conversation to reclaim context."),
+        (ALWAYS, "`/memory` shows the agent's current goal, plan, and known facts."),
+        (ALWAYS, "`/status` shows token usage, context %, and prompt-cache hit rate."),
+        (ALWAYS, "Stable context is kept early so the prompt cache is reused — cheaper, faster turns."),
+        # Model & reasoning
+        (ALWAYS, "`/model` switches model and `/reason` sets reasoning effort on the fly."),
+        (ALWAYS, "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest."),
+        (ALWAYS, "`/set provider.max_tokens N` caps the model's output length."),
+        (ALWAYS, "`/api` shows or switches the API protocol (auto / chat / anthropic)."),
+        (lambda s: len(s.config.providers) > 1, "`/provider` switches between your configured providers."),
+        (lambda s: s.config.provider.supports_strict_tools(), "`/strict` constrains tool-call arguments to each tool's schema (OpenAI / DeepSeek)."),
+        # Tools & navigation
+        (ALWAYS, "`/index` manages the code symbol index for fast symbol navigation."),
+        (ALWAYS, "`/yolo` skips tool confirmations when you want to move fast."),
+        (ALWAYS, "`/set runtime.max_parallel_tools N` tunes how many reads run at once."),
+        (lambda s: bool(s.config.mcp), "Mention an MCP tool inline with `@server.tool` to pull in its schema."),
+        (lambda s: bool(s.config.mcp), "`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow."),
+        # Config & setup
+        (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
+        (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
+        (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
+        (ALWAYS, "Filter MCP servers at launch with `--mcp \"name*,!exclude\"`."),
+        (ALWAYS, "Silence these hints with `/set runtime.tips off`."),
+    )
+
+    def startup_tip(self) -> str:
+        if not self.session.settings.tips:
+            return ""
+        eligible = [tip for predicate, tip in self.TIPS if predicate(self.session)]
+        return random.choice(eligible) if eligible else ""
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
@@ -6336,6 +6615,7 @@ class CommandLoop:
   /reason            Select reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
+  /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
   /mcp               Show MCP server status.
   /mcp tools [NAME]   List MCP tools.
   /mcp login NAME     Start OAuth login for a server.
@@ -6550,6 +6830,8 @@ Tools:
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
+        if tip := self.startup_tip():
+            self.emit("tip: " + tip)
         self.session.clean_expired_snapshots()
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
@@ -6975,7 +7257,7 @@ Tools:
         sys.stdout.flush()
         self.transient_tool_lines = 0
 
-    def tool_live_start(self) -> None:
+    def tool_live_start(self, command: str = "") -> None:
         if not self.ui.color:
             return
         self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
@@ -6984,7 +7266,7 @@ Tools:
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
-        self.live_preview.start()
+        self.live_preview.start(command)
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
@@ -7030,6 +7312,7 @@ Tools:
             "/reason": self.reason,
             "/set": self.set_value,
             "/yolo": self.yolo,
+            "/strict": self.strict,
             "/mcp": self.mcp_command,
         }
         handler = handlers.get(name)
@@ -7401,6 +7684,8 @@ Tools:
                 f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
                 f"provider.chat_reasoning: {provider.chat_reasoning}",
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
+                f"provider.max_tokens: {provider.max_tokens or ('(resolved ' + str(provider.resolved_max_tokens() or 'server default') + ')')}",
+                f"provider.strict_tools: {provider.strict_tools} (active {provider.resolved_strict_tools()})",
                 f"provider.timeout: {provider.timeout}",
                 f"paths.data_dir: {self.session.data_path()}",
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",
@@ -7583,6 +7868,16 @@ Tools:
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
 
+    def strict(self, args: str) -> str:
+        if args:
+            return "Usage: /strict"
+        provider = self.session.config.provider
+        provider.strict_tools = not provider.strict_tools
+        state = "on" if provider.strict_tools else "off"
+        if provider.strict_tools and not provider.resolved_strict_tools():
+            return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
+        return f"strict_tools: {state}"
+
     def set_value(self, args: str) -> str:
         key, _, value = args.partition(" ")
         if not key or not value:
@@ -7603,6 +7898,10 @@ Tools:
                 provider.available_models = tuple(item.strip() for item in value.split(",") if item.strip())
             elif key == "provider.temperature":
                 provider.temperature = None if value == "off" else float(value)
+            elif key == "provider.max_tokens":
+                provider.max_tokens = max(0, int(value))
+            elif key == "provider.strict_tools":
+                provider.strict_tools = Config.bool({key: value}, key)
             elif key == "provider.timeout":
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":
@@ -7619,6 +7918,8 @@ Tools:
                 runtime.shell_timeout = max(1, int(value))
             elif key == "runtime.max_parallel_tools":
                 runtime.max_parallel_tools = max(1, int(value))
+            elif key == "runtime.tips":
+                runtime.tips = Config.bool({key: value}, key)
             else:
                 return "Unknown config key: " + key
         except (ConfigError, ValueError):
@@ -7653,7 +7954,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
-        return CommandLoop(Agent(session)).run()
+        try:
+            return CommandLoop(Agent(session)).run()
+        finally:
+            if session.mcp is not None:
+                session.mcp.close()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.2
+
+### Added
+- Show a short, context-aware tip on startup (a curated set covering sessions, context, model/reasoning, tools, and config). Tips whose feature is unavailable are filtered out (e.g. `/strict` only shows when the provider supports strict tools; MCP tips only when MCP is configured). The line is styled as a muted hint with highlighted `code` spans and can be disabled with `runtime.tips = false` (or `/set runtime.tips off`).
+- Add per-property `description` fields to every built-in tool's JSON Schema (`Read`, `LineCount`, `List`, `Find`, `Search`, `InspectCode`, `Edit`, `Bash`, `Git`, `Recall`, `Note`). The argument contract now lives in the schema the model parses natively rather than only in the prose signature, improving tool-call argument accuracy across providers.
+- Add a `/strict` command to toggle `provider.strict_tools` for the active provider, reporting when it is enabled but inactive (the provider does not support strict tool calling).
+- Add a `provider.strict_tools` option (default `false`, also settable via `/set`) that constrains tool-call arguments to each tool's JSON Schema. When enabled it is only active on hosts whose profile supports strict mode (`api.openai.com`, `api.deepseek.com`) and on the chat path; every other provider is unaffected. Activating it emits a strict-compliant schema (all properties required, genuine optionals made nullable, `additionalProperties: false`, and the unsupported `minItems`/`maxItems`/`minLength`/`maxLength` keywords dropped) with `strict: true` per function, and on DeepSeek it routes the client to the `/beta` endpoint where the feature lives. Because optionals become nullable, the model may send explicit `null` for an omitted argument; nanocode now strips `null` values (recursively) before dispatching to a tool, where `null` has always meant "absent".
+
+### Changed
+- Add a `provider.max_tokens` option (also settable via `/set`) capping chat-completion output. It defaults to `0` (unset) for generic OpenAI-compatible providers, so their requests are unchanged, and resolves to a profile default of `32768` on `api.deepseek.com` so DeepSeek thinking mode has enough room for `reasoning_content` plus the answer.
+- Map `reasoning = "high"` to DeepSeek's agent-recommended `max` effort in the thinking effort table (was `high`); `xhigh` still maps to `max` and the default `medium` still maps to `high`. Only the DeepSeek/Qwen `thinking` style is affected.
+- Skip the OpenAI-only `prompt_cache_key` parameter for `api.deepseek.com`, which caches by prefix automatically and ignores the key. All other hosts keep emitting it as before.
+
+### Fixed
+- Keep the Bash live preview alive during blocking commands so the terminal no longer looks frozen. A command that buffers its output (e.g. a quiet long-runner, or `... | tail` that emits nothing until EOF) previously left the screen completely static — the status bar is stopped while a command runs and the preview only drew when output arrived. The preview now renders an immediate frame showing the command being executed (`$ <command>`) and a live elapsed timer (`running… 12.3s`), ticked by a daemon heartbeat so the timer advances even with no output, and switches to `output · 12.3s` once output streams. On finish the frame is now erased (it previously lingered as dimmed ghost lines), and a full-width line can no longer auto-wrap and desync the redraw cursor math.
+- Set an explicit output ceiling for DeepSeek thinking mode so long `reasoning_content` no longer exhausts the server-side default and truncates the response or drops the tool call.
+- Stop sending `temperature` on the chat path when a native thinking style (`thinking`/`enable_thinking`) is enabled, since DeepSeek and Qwen reject or ignore it in that mode. Other reasoning styles and providers are untouched.
+
 ## 0.7.1 - 2026-06-25
 
 ### Changed
