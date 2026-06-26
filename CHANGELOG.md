@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.2
+## 0.7.2 - 2026-06-26
 
 ### Added
 - Show a short, context-aware tip on startup (a curated set covering sessions, context, model/reasoning, tools, and config). Tips whose feature is unavailable are filtered out (e.g. `/strict` only shows when the provider supports strict tools; MCP tips only when MCP is configured). The line is styled as a muted hint with highlighted `code` spans and can be disabled with `runtime.tips = false` (or `/set runtime.tips off`).
@@ -17,6 +17,7 @@
 - Keep the Bash live preview alive during blocking commands so the terminal no longer looks frozen. A command that buffers its output (e.g. a quiet long-runner, or `... | tail` that emits nothing until EOF) previously left the screen completely static — the status bar is stopped while a command runs and the preview only drew when output arrived. The preview now renders an immediate frame showing the command being executed (`$ <command>`) and a live elapsed timer (`running… 12.3s`), ticked by a daemon heartbeat so the timer advances even with no output, and switches to `output · 12.3s` once output streams. On finish the frame is now erased (it previously lingered as dimmed ghost lines), and a full-width line can no longer auto-wrap and desync the redraw cursor math.
 - Set an explicit output ceiling for DeepSeek thinking mode so long `reasoning_content` no longer exhausts the server-side default and truncates the response or drops the tool call.
 - Stop sending `temperature` on the chat path when a native thinking style (`thinking`/`enable_thinking`) is enabled, since DeepSeek and Qwen reject or ignore it in that mode. Other reasoning styles and providers are untouched.
+- Drain the MCP background event loop on exit. MCP work runs on a daemon loop thread; at interpreter shutdown the `concurrent.futures` atexit hook tore down the default executors before that thread was joined, so an in-flight client cleanup (HTTP session termination, DNS via `run_in_executor`) raced the teardown and printed `cannot schedule new futures after shutdown` / `Session termination failed`. `MCPManager.close()` now cancels pending tasks, stops the loop, and joins the thread (5s timeout) from `main()`'s `finally` before the interpreter tears down its executors.
 
 ## 0.7.1 - 2026-06-25
 
