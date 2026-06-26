@@ -14,6 +14,7 @@
 - Skip the OpenAI-only `prompt_cache_key` parameter for `api.deepseek.com`, which caches by prefix automatically and ignores the key. All other hosts keep emitting it as before.
 
 ### Fixed
+- Keep the Bash live preview alive during blocking commands so the terminal no longer looks frozen. A command that buffers its output (e.g. a quiet long-runner, or `... | tail` that emits nothing until EOF) previously left the screen completely static — the status bar is stopped while a command runs and the preview only drew when output arrived. The preview now renders an immediate frame showing the command being executed (`$ <command>`) and a live elapsed timer (`running… 12.3s`), ticked by a daemon heartbeat so the timer advances even with no output, and switches to `output · 12.3s` once output streams. On finish the frame is now erased (it previously lingered as dimmed ghost lines), and a full-width line can no longer auto-wrap and desync the redraw cursor math.
 - Set an explicit output ceiling for DeepSeek thinking mode so long `reasoning_content` no longer exhausts the server-side default and truncates the response or drops the tool call.
 - Stop sending `temperature` on the chat path when a native thinking style (`thinking`/`enable_thinking`) is enabled, since DeepSeek and Qwen reject or ignore it in that mode. Other reasoning styles and providers are untouched.
 

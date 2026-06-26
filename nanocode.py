@@ -4938,7 +4938,7 @@ class ToolRunner:
         self.preview_fn: Callable[[str], bool] | None = None
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
-        self.live_start: Callable[[], None] | None = None
+        self.live_start: Callable[[str], None] | None = None
         self.question_fn: Callable[[QuestionSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
@@ -5107,7 +5107,7 @@ class ToolRunner:
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
-                self.live_start()
+                self.live_start(str(call.args[0]) if call.args else "")
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
@@ -6160,28 +6160,69 @@ class UiPrinter:
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
     MAX_CHARS: ClassVar[int] = 8000
+    # Heartbeat tick so the elapsed timer advances even while a command produces no output
+    # (e.g. quiet long-runners or `... | tail` that buffers until EOF), so the terminal never
+    # looks frozen during a blocking command.
+    TICK: ClassVar[float] = 0.1
 
     def __init__(self):
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
         self.text = ""
+        self.command = ""
+        self.started_at = 0.0
+        self.lock = threading.Lock()
+        self.timer: threading.Thread | None = None
 
-    def start(self) -> None:
+    def start(self, command: str = "") -> None:
         if not sys.stderr.isatty():
             return
-        self.active, self.rendered_lines, self.text = True, 0, ""
+        with self.lock:
+            self.active, self.rendered_lines, self.text = True, 0, ""
+            self.command = " ".join(command.split())
+            self.started_at = time.monotonic()
+            self.render()
+        self.timer = threading.Thread(target=self.tick, daemon=True)
+        self.timer.start()
+
+    def tick(self) -> None:
+        while True:
+            time.sleep(self.TICK)
+            with self.lock:
+                if not self.active:
+                    return
+                self.render()
 
     def update(self, text: str) -> None:
-        if not self.active:
-            return
-        self.text = (self.text + text)[-self.MAX_CHARS :]
-        self.render()
+        with self.lock:
+            if not self.active:
+                return
+            self.text = (self.text + text)[-self.MAX_CHARS :]
+            self.render()
 
     def finish(self) -> None:
-        if not self.active:
+        with self.lock:
+            if not self.active:
+                return
+            self.active = False
+        timer = self.timer
+        if timer is not None:
+            timer.join()
+        with self.lock:
+            self.clear()
+            self.rendered_lines, self.text = 0, ""
+
+    def clear(self) -> None:
+        if not self.rendered_lines:
             return
-        self.active, self.rendered_lines = False, 0
+        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
+        for _ in range(self.rendered_lines):
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            self.output.write_raw("\n")
+        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
+        self.output.flush()
 
     def render(self) -> None:
         if not self.active:
@@ -6204,11 +6245,26 @@ class BashLivePreview:
         self.output.flush()
         self.rendered_lines = len(lines)
 
+    def elapsed_label(self) -> str:
+        elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes, rest = divmod(int(elapsed), 60)
+        return f"{minutes}m{rest:02d}s"
+
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
-        limit = width - 2
-        return ["  output", *("  " + (line if len(line) <= limit else line[: max(0, limit - 3)] + "...") for line in body)] if body else []
+        label = self.elapsed_label()
+        # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
+        # cursor-up math in render().
+        limit = width - 3
+        clip = lambda line: line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+        # Always emit a header (the running command + a live elapsed timer) so the frame is visible
+        # even before any output arrives and the user can see what is executing.
+        status = f"output · {label}" if body else f"running… {label}"
+        header = [clip("  $ " + self.command)] if self.command else []
+        return [*header, "  " + status, *("  " + clip(line) for line in body)]
 
 
 class ModelRetryShortcut:
@@ -7173,7 +7229,7 @@ Tools:
         sys.stdout.flush()
         self.transient_tool_lines = 0
 
-    def tool_live_start(self) -> None:
+    def tool_live_start(self, command: str = "") -> None:
         if not self.ui.color:
             return
         self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
@@ -7182,7 +7238,7 @@ Tools:
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
-        self.live_preview.start()
+        self.live_preview.start(command)
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
