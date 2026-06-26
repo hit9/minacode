@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
 import copy
 import difflib
 import asyncio
@@ -4236,6 +4237,33 @@ class MCPManager:
     def run_async(self, coroutine: Any) -> Any:
         return asyncio.run_coroutine_threadsafe(coroutine, self._async_loop()).result()
 
+    def close(self) -> None:
+        # Stop and join the background loop before the interpreter tears down its
+        # default executors. Otherwise an in-flight client cleanup (HTTP session
+        # termination, DNS via run_in_executor) races the concurrent.futures atexit
+        # shutdown and prints "cannot schedule new futures after shutdown".
+        with self._loop_lock:
+            loop = self._loop
+            thread = self._loop_thread
+            self._loop = None
+            self._loop_thread = None
+        if loop is None or thread is None:
+            return
+
+        async def _shutdown() -> None:
+            pending = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with contextlib.suppress(BaseException):
+                    await task
+
+        if loop.is_running():
+            with contextlib.suppress(BaseException):
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=5)
+            loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
         from fastmcp.client.auth import OAuth
 
@@ -7926,7 +7954,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
-        return CommandLoop(Agent(session)).run()
+        try:
+            return CommandLoop(Agent(session)).run()
+        finally:
+            if session.mcp is not None:
+                session.mcp.close()
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
