@@ -538,6 +538,7 @@ class AgentState:
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
+    compaction_count: int = 0
 
     def __post_init__(self) -> None:
         self.plan = self.plan_items(self.plan)
@@ -854,6 +855,7 @@ class SessionSnapshotCodec:
             "known": state.known,
             "check": state.check,
             "summary": state.summary,
+            "compaction_count": state.compaction_count,
         }
 
     @staticmethod
@@ -3616,18 +3618,21 @@ class ContextManager:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
 
     def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
+        self.session.state.compaction_count += 1
         self.session.state.apply(data)
         summary = self.session.state.summary
         self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
         self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
 
     def apply_compaction_fallback(self, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
+        self.session.state.compaction_count += 1
         self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
         summary = self.session.state.summary
         self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
         self.prune_tool_records([*keep, *(tool_messages or [])])
 
     def apply_turn_compaction(self, data: Json, keep: list[Json], turn_messages: list[Json]) -> None:
+        self.session.state.compaction_count += 1
         self.session.state.apply(data)
         summary = self.session.state.summary
         index = self.latest_user_index(keep)
@@ -7630,7 +7635,7 @@ Tools:
             ),
             (
                 "context",
-                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; known `{len(self.session.state.known)}`",
+                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`",
             ),
             ("goal", self.session.state.goal or "(empty)"),
             (
