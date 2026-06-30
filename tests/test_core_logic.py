@@ -495,3 +495,28 @@ def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(
     assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
     assert f"@@ a.txt 0:1 current source={new_key} tool=Read" in rendered
     assert old_key in rendered
+
+
+def test_cache_prefix_fingerprint_stable_across_history_growth(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    context.check_cache_prefix("sys")
+    baseline = s.state.prefix_fingerprint
+    assert baseline
+    assert s.state.prefix_fingerprints == [baseline]
+    # Growing history must not change the stable prefix.
+    s.messages.append({"role": "user", "content": "hello"})
+    s.messages.append({"role": "assistant", "content": "hi"})
+    context.check_cache_prefix("sys")
+    assert s.state.prefix_fingerprints == [baseline]
+    assert len(set(s.state.prefix_fingerprints)) == 1
+
+
+def test_cache_prefix_drift_detected_when_system_prompt_changes(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    context.check_cache_prefix("sys")
+    first = s.state.prefix_fingerprint
+    context.check_cache_prefix("different system prompt")
+    assert s.state.prefix_fingerprint == first  # baseline pinned to first seen
+    assert len(set(s.state.prefix_fingerprints)) == 2  # churn detected

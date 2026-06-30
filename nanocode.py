@@ -539,6 +539,8 @@ class AgentState:
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
     compaction_count: int = 0
+    prefix_fingerprint: str = ""
+    prefix_fingerprints: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.plan = self.plan_items(self.plan)
@@ -856,6 +858,8 @@ class SessionSnapshotCodec:
             "check": state.check,
             "summary": state.summary,
             "compaction_count": state.compaction_count,
+            "prefix_fingerprint": state.prefix_fingerprint,
+            "prefix_fingerprints": state.prefix_fingerprints,
         }
 
     @staticmethod
@@ -1123,6 +1127,7 @@ class Session:
     uid: str = ""
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
+    _cache_prefix_text: str | None = None
 
     def __post_init__(self) -> None:
         if not self.uid:
@@ -3348,6 +3353,44 @@ class ContextManager:
             return ""
         return self.session.mcp.render_tools_index()
 
+    def cache_prefix(self, base_system: str, tools: list[Json] | None) -> str:
+        # Canonical text of the bytes a provider can cache: the stable head of every request.
+        # Mirrors the leading blocks model_messages() emits (system + environment + mcp index)
+        # plus the tool schemas. Everything mutable (history, memory, FILE STATE) sits after it.
+        return "\x00".join(
+            [
+                base_system.strip(),
+                "--- Environment ---\n" + (self.environment() or "(empty)"),
+                self.mcp_tools_context() or "",
+                json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ]
+        )
+
+    def tool_schemas(self) -> list[Json]:
+        strict = self.session.config.provider.resolved_strict_tools()
+        return [tool.schema(strict) for tool in TOOL_REGISTRY.values()]
+
+    def check_cache_prefix(self, base_system: str) -> None:
+        # Tripwire for silent cache breakage: fingerprint the stable prefix and flag drift.
+        # A healthy session keeps one fingerprint start to finish; a second one means the prefix
+        # mutated mid-session and every token from the change onward is a cache miss.
+        text = self.cache_prefix(base_system, self.tool_schemas())
+        fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        state = self.session.state
+        if fingerprint in state.prefix_fingerprints:
+            self.session._cache_prefix_text = text
+            return
+        previous = self.session._cache_prefix_text
+        if state.prefix_fingerprint and previous is not None:
+            diff = "\n".join(
+                list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40]
+            )
+            DebugTrace.cache_drift(self.session, expected=state.prefix_fingerprint, actual=fingerprint, diff=diff)
+        if not state.prefix_fingerprint:
+            state.prefix_fingerprint = fingerprint
+        state.prefix_fingerprints.append(fingerprint)
+        self.session._cache_prefix_text = text
+
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
         self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
@@ -5395,6 +5438,10 @@ class DebugTrace:
         payload = {"api": api, "model": model, "error": str(error), "param_keys": sorted(params), "params": cls.filtered_params(params)}
         cls.write(session, activity=activity, label="model-error", payload=payload)
 
+    @classmethod
+    def cache_drift(cls, session: Session, *, expected: str, actual: str, diff: str) -> None:
+        cls.write(session, activity="agent", label="cache-prefix-drift", payload={"expected": expected, "actual": actual, "diff": diff})
+
     @staticmethod
     def filtered_params(params: Json) -> Json:
         return {key: value for key, value in params.items() if key not in {"messages", "tools"}}
@@ -5411,11 +5458,15 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
 
+    def tool_schemas(self) -> list[Json]:
+        provider = self.session.config.provider
+        return [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values()]
+
     def request(self, messages: list[Json]) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        tools = [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values()]
+        tools = self.tool_schemas()
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
             try:
@@ -5864,6 +5915,7 @@ FINAL:
         self.session.state.turn_messages = len(request_turn)
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, request_turn)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, request_turn)
+        self.context.check_cache_prefix(self.SYSTEM_PROMPT)
         self.context.update_percent(messages)
         return messages, pending
 
@@ -7640,7 +7692,8 @@ Tools:
             ("goal", self.session.state.goal or "(empty)"),
             (
                 "usage",
-                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)",
+                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"
+                + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else ""),
             ),
             (
                 "runtime",
