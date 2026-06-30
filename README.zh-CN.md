@@ -94,6 +94,7 @@ nanocode --resume last
 
 - `/help`：显示命令和工具。
 - `/status`：显示运行状态，包括当前 session id。
+- `/memory`：显示工作记忆（goal、summary、plan、known facts）。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。
 - `/debug [on|off]`：切换模型 I/O debug trace。
@@ -103,6 +104,7 @@ nanocode --resume last
 - `/provider [NAME]`：显示或设置 provider。
 - `/model [MODEL]`：显示或设置模型。
 - `/reason`：选择 reasoning effort。
+- `/strict`：切换严格工具调用 schema（仅 OpenAI / DeepSeek）。
 - `/set KEY VALUE`：设置当前 session 支持的 provider/runtime 值。
 - `/yolo`：切换工具确认。
 - `/exit`, `/quit`：退出。
@@ -133,11 +135,13 @@ nanocode --resume last
 主要字段：
 
 - `[provider] active = "name"`
-- `[provider.<name>]`：`url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `timeout`
+- `[provider.<name>]`：`url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`, `tips`
 
 `api = "auto"` 会根据 provider/model profile 在 Chat Completions 和 Anthropic Messages 之间选择。`prompt_cache_key = "auto"` 会根据 provider、model、workspace 和工具 schema 名称生成稳定 key。
+
+`strict_tools = true`（用 `/strict` 切换）会将工具调用参数约束到每个工具的 JSON schema。它仅在支持该特性的 host（OpenAI 和 DeepSeek）以及 Chat Completions 路径上生效，其他情况下为空操作。对 DeepSeek，启用后请求会路由到 `/beta` 端点。无法在严格函数调用下表示的工具 schema 会自动回退到非严格模式。
 
 `--yolo`、`--debug` 和 `--mcp` 等 runtime flags 对恢复的 session 同样生效。保存的 session 不会携带旧 runtime config。
 

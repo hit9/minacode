@@ -94,6 +94,7 @@ Commands:
 
 - `/help`: show commands and tools.
 - `/status`: show runtime status, including the active session id.
+- `/memory`: show the working memory (goal, summary, plan, known facts).
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
 - `/debug [on|off]`: toggle model I/O debug traces.
@@ -103,6 +104,7 @@ Commands:
 - `/provider [NAME]`: show or set provider.
 - `/model [MODEL]`: show or set model.
 - `/reason`: choose reasoning effort.
+- `/strict`: toggle strict tool-call schemas (OpenAI / DeepSeek only).
 - `/set KEY VALUE`: set supported provider/runtime values for the current session.
 - `/yolo`: toggle tool confirmations.
 - `/exit`, `/quit`: exit.
@@ -133,11 +135,13 @@ Default config location:
 Main fields:
 
 - `[provider] active = "name"`
-- `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `timeout`
+- `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`, `tips`
 
 `api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
+
+`strict_tools = true` (toggle with `/strict`) constrains tool-call arguments to each tool's JSON schema. It only takes effect on hosts that support it (OpenAI and DeepSeek) and on the Chat Completions path; it is a no-op elsewhere. For DeepSeek, enabling it routes requests to the `/beta` endpoint. Tools whose schemas can't be represented under strict function calling fall back to non-strict automatically.
 
 Runtime flags such as `--yolo`, `--debug`, and `--mcp` apply to resumed sessions too. Saved sessions do not carry their old runtime config forward.
 
