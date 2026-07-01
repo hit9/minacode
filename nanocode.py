@@ -1131,8 +1131,9 @@ class SkillLibrary:
 
     @classmethod
     def load(cls, session: "Session") -> "SkillLibrary":
-        skills: dict[str, Skill] = {}
-        # User skills load first so a project skill of the same name overrides them.
+        # Built-ins seed the library first; a user/project skill of the same name overrides them.
+        skills: dict[str, Skill] = {skill.name: skill for skill in cls.builtins()}
+        # User skills load before project skills so a project skill of the same name overrides them.
         for root, source in ((session.data_path("skills"), "user"), (os.path.join(session.cwd, ".nanocode", "skills"), "project")):
             if not os.path.isdir(root):
                 continue
@@ -1141,6 +1142,31 @@ class SkillLibrary:
                 if skill is not None:
                     skills[skill.name] = skill
         return cls(skills)
+
+    @classmethod
+    def builtins(cls) -> list[Skill]:
+        """Skills shipped with nanocode itself. The `nanocode-help` skill points the model at the
+        live source file so questions about nanocode are answered version-exactly, from any cwd."""
+        source = os.path.abspath(__file__)
+        if not os.path.isfile(source):
+            return []
+        root = os.path.dirname(source)
+        body = "\n".join(
+            [
+                "Answer questions about nanocode itself — its commands, tools, config keys, and behavior —",
+                "from its own source of truth, not from memory. nanocode is a single Python file.",
+                "",
+                "Consult these, then answer with exact command names, flags, and config keys:",
+                f"- Source: `{source}` — holds the `/help` text, every tool's DESCRIPTION/SIGNATURE, the",
+                "  slash-command handlers, the settable config keys, and the system prompt.",
+                f"- Docs if present alongside it: `{root}/README.md`, `{root}/README.zh-CN.md`, `{root}/CHANGELOG.md`.",
+                "",
+                "Prefer Search or InspectCode to locate the relevant class/handler/string, then Read those lines.",
+                "Cite the exact command or key; never invent options that are not in the source.",
+            ]
+        )
+        description = "Answer questions about nanocode itself — commands, tools, config, and behavior — from its own source."
+        return [Skill("nanocode-help", description, body, root, "builtin")]
 
     @classmethod
     def parse(cls, path: str, folder: str, source: str) -> "Skill | None":
@@ -6972,11 +6998,13 @@ class CommandLoop:
   /exit, /quit       Exit.
 Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
+  $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP.
+  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP, Skill.
+  Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
 """
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):

@@ -122,7 +122,7 @@ Tools:
 - Working notes: `Note`.
 - Ask the user: `Question`.
 - MCP: `MCP`.
-- Skills: `Skill` (only offered when at least one skill is installed).
+- Skills: `Skill` loads a skill's full instructions on demand (offered whenever any skill exists — the built-in `nanocode-help` means it is normally always available).
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
@@ -213,6 +213,7 @@ then group them by type and write entries in the house style.
 - **Reference one inline**: type `$name` in your message (Tab-completes) to nudge the model to use that skill; its instructions are injected for that turn.
 - **Bundled scripts**: `{skill_dir}` (or `${SKILL_DIR}`) in the body expands to the skill's absolute folder path, so the model can run bundled scripts via `Bash` (subject to normal confirmation unless `/yolo`).
 - **Inspect**: `/skills` lists installed skills; the status bar and `/status` show the count.
+- **Built-in**: a `nanocode-help` skill ships by default and points the model at the live `nanocode.py` source, so questions about nanocode itself (commands, tools, config keys) are answered version-exactly from any project. Drop a `nanocode-help` skill of your own to override it.
 
 ## Providers
 

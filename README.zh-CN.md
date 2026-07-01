@@ -122,7 +122,7 @@ nanocode --resume last
 - 工作笔记：`Note`。
 - 询问用户：`Question`。
 - MCP：`MCP`。
-- Skills：`Skill`（仅在安装了至少一个 skill 时提供）。
+- Skills：`Skill` 按需加载某个 skill 的完整说明（只要存在任一 skill 即提供——内置的 `nanocode-help` 意味着它通常始终可用）。
 
 `Read`、`Search` 和 `InspectCode` 会在合适时返回行锚点。`Edit` 使用当前 `line:hash` 锚点拒绝过期编辑。
 
@@ -213,6 +213,7 @@ description: Draft a CHANGELOG entry from commits since the last release.
 - **内联引用**：在消息中输入 `$name`（支持 Tab 补全）以提示模型使用该 skill；其指令会为该轮注入。
 - **随附脚本**：正文中的 `{skill_dir}`（或 `${SKILL_DIR}`）会展开为该 skill 的绝对目录路径，模型可通过 `Bash` 运行随附脚本（除非 `/yolo`，否则仍需正常确认）。
 - **查看**：`/skills` 列出已安装的 skills；状态栏和 `/status` 会显示数量。
+- **内置**：默认自带 `nanocode-help` skill，它让模型直接查看 `nanocode.py` 源码，因此在任何项目中都能准确回答关于 nanocode 本身的问题（命令、工具、配置项），且与版本一致。放置同名 `nanocode-help` skill 即可覆盖它。
 
 ## Providers
 

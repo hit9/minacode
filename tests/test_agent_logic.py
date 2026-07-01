@@ -10,7 +10,10 @@ import nanocode as n
 
 
 def session(tmp_path):
-    return n.Session(cwd=str(tmp_path))
+    # Isolate the data dir so tests never read the developer's real ~/.nanocode (sessions, skills).
+    config = n.Config()
+    config.data_dir = str(tmp_path / "data")
+    return n.Session(cwd=str(tmp_path), config=config)
 
 
 def call(name, args):
@@ -19,6 +22,7 @@ def call(name, args):
 
 def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
+    s.skills = n.SkillLibrary({})  # no skills: assert the base frame ordering
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     turn = [
         {"role": "user", "content": "current request"},
@@ -555,6 +559,7 @@ def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
 def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
+    s.skills = n.SkillLibrary({})  # no skills: assert the base frame layout
     agent = n.Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
@@ -582,6 +587,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert s.state.goal == ""
 
     limited = session(tmp_path)
+    limited.skills = n.SkillLibrary({})
     limited.settings.max_steps = 2
     limited_agent = n.Agent(limited, output_fn=lambda text: None)
 
@@ -1445,27 +1451,38 @@ def test_skill_mentions_inject_body(tmp_path):
     assert s.skills.resolve_mentions("$unknown") == ""
 
 
-def test_skill_tool_only_present_when_skills_installed(tmp_path):
-    bare = n.ContextManager(session(tmp_path))
-    assert bare.skills_context() == ""
-    assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
-    assert "--- SKILLS ---" not in bare.cache_prefix(n.Agent.SYSTEM_PROMPT, bare.tool_schemas())
-
-    _write_skill(tmp_path, "release-notes", "d", "b")
+def test_skill_tool_absent_only_when_no_skills(tmp_path):
+    # With the built-in nanocode-help present, the Skill tool and SKILLS section are offered.
     withskill = n.ContextManager(session(tmp_path))
+    assert "--- SKILLS ---" in withskill.skills_context()
     assert any(t["function"]["name"] == "Skill" for t in withskill.tool_schemas())
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
+    # When truly no skills exist, the tool and section drop out and the prefix stays clean.
+    bare = n.ContextManager(session(tmp_path))
+    bare.session.skills = n.SkillLibrary({})
+    assert bare.skills_context() == ""
+    assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
+    assert "--- SKILLS ---" not in bare.cache_prefix(n.Agent.SYSTEM_PROMPT, bare.tool_schemas())
 
-def test_skills_command_lists_and_reports_empty(tmp_path):
-    empty = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    assert "No skills installed" in empty.skills_command("")
+
+def test_skills_command_lists_builtin_and_installed(tmp_path):
+    # The built-in nanocode-help skill always ships; /skills lists it plus any installed ones.
+    base = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    assert "`nanocode-help` (builtin):" in base.skills_command("")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     output = loop.skills_command("")
     assert "`release-notes` (project): Draft a CHANGELOG entry." in output
+    assert "`nanocode-help` (builtin):" in output
+
+
+def test_skills_command_empty_when_builtins_absent(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    loop.session.skills = n.SkillLibrary({})
+    assert "No skills installed" in loop.skills_command("")
 
 
 def test_skill_loads_dedup_on_repeat(tmp_path):
@@ -1487,6 +1504,24 @@ def test_status_and_bar_show_skill_count(tmp_path):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
 
-    assert "skills `2`" in loop.status("")
+    count = len(s.skills.skills)  # 2 project + built-in nanocode-help
+    assert count == 3
+    assert f"skills `{count}`" in loop.status("")
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(0.0, show_elapsed=False))
-    assert "skills 2" in bar_text
+    assert f"skills {count}" in bar_text
+
+
+def test_builtin_nanocode_help_skill_points_at_source(tmp_path):
+    s = session(tmp_path)
+    skill = s.skills.get("nanocode-help")
+    assert skill is not None and skill.source == "builtin"
+    body = n.SkillTool(s, ["nanocode-help"]).call()
+    assert os.path.abspath(n.__file__) in body  # points at the live source file
+
+
+def test_project_skill_overrides_builtin(tmp_path):
+    _write_skill(tmp_path, "nanocode-help", "custom help", "my own instructions")
+    s = session(tmp_path)
+    skill = s.skills.get("nanocode-help")
+    assert skill.source == "project"
+    assert "my own instructions" in n.SkillTool(s, ["nanocode-help"]).call()
