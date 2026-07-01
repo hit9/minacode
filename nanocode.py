@@ -7773,7 +7773,7 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/mcp", "/context"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/mcp", "/context", "/skills"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
@@ -8114,8 +8114,11 @@ Tools:
         skills = library.all() if library else []
         if not skills:
             return "No skills installed. Add `<name>/SKILL.md` under `.nanocode/skills/` (project) or `~/.nanocode/skills/` (user)."
-        rows = [f"- `{skill.name}` ({skill.source}): {skill.description or '(no description)'}" for skill in skills]
-        return "\n".join(["Skills — load with `Skill(name)` or reference inline with `$name`:", "", *rows])
+        table = ContextManager.md_table(
+            ["skill", "source", "description"],
+            [(f"`{skill.name}`", skill.source, skill.description or "(no description)") for skill in skills],
+        )
+        return "\n".join([f"### Skills · {len(skills)}", "", "Load with `Skill(name)` or reference inline with `$name`.", "", table])
 
     def context_view(self, args: str) -> str | None:
         context = self.agent.context

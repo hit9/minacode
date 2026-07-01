@@ -1470,13 +1470,15 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
 def test_skills_command_lists_builtin_and_installed(tmp_path):
     # The built-in nanocode-help skill always ships; /skills lists it plus any installed ones.
     base = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    assert "`nanocode-help` (builtin):" in base.skills_command("")
+    base_out = base.skills_command("")
+    assert "| skill | source | description |" in base_out  # rendered as a markdown table
+    assert "| `nanocode-help` | builtin |" in base_out
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     output = loop.skills_command("")
-    assert "`release-notes` (project): Draft a CHANGELOG entry." in output
-    assert "`nanocode-help` (builtin):" in output
+    assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
+    assert "| `nanocode-help` | builtin |" in output
 
 
 def test_skills_command_empty_when_builtins_absent(tmp_path):
