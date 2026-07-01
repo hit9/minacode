@@ -1107,6 +1107,100 @@ class SessionSnapshotStore:
 
 
 @dataclass
+class Skill:
+    name: str
+    description: str
+    body: str
+    dir: str
+    source: str  # "project" or "user"
+
+
+class SkillLibrary:
+    """Skills discovered from `.nanocode/skills/<name>/SKILL.md` (project) and the user data dir.
+
+    Each skill is a Markdown file with `name`/`description` frontmatter; the index (name + description)
+    rides the cache-stable prefix so the model knows what exists, and the full body is pulled into the
+    conversation only when the model calls Skill(name) or the user references it with `$name`."""
+
+    FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
+    META_LINE = re.compile(r"^([A-Za-z0-9_-]+):[ \t]*(.*)$", re.MULTILINE)
+    MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]+)")
+
+    def __init__(self, skills: dict[str, Skill]):
+        self.skills = skills
+
+    @classmethod
+    def load(cls, session: "Session") -> "SkillLibrary":
+        skills: dict[str, Skill] = {}
+        # User skills load first so a project skill of the same name overrides them.
+        for root, source in ((session.data_path("skills"), "user"), (os.path.join(session.cwd, ".nanocode", "skills"), "project")):
+            if not os.path.isdir(root):
+                continue
+            for entry in sorted(os.listdir(root)):
+                skill = cls.parse(os.path.join(root, entry, "SKILL.md"), entry, source)
+                if skill is not None:
+                    skills[skill.name] = skill
+        return cls(skills)
+
+    @classmethod
+    def parse(cls, path: str, folder: str, source: str) -> "Skill | None":
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return None
+        # Normalize BOM and CRLF/CR so the frontmatter regex (which keys on "\n") matches files
+        # authored on any platform; we only read two simple scalars, so this stays regex-light.
+        text = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
+        match = cls.FRONTMATTER.match(text)
+        meta, body = (match.group(1), match.group(2)) if match else ("", text)
+        fields = {key: cls.scalar(value) for key, value in cls.META_LINE.findall(meta)}
+        name = fields.get("name") or folder.strip()
+        if not name:
+            return None
+        return Skill(name, fields.get("description", ""), body.strip(), os.path.dirname(path), source)
+
+    @staticmethod
+    def scalar(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value.strip()
+
+    def all(self) -> list[Skill]:
+        return sorted(self.skills.values(), key=lambda skill: skill.name)
+
+    def get(self, name: str) -> "Skill | None":
+        if name in self.skills:
+            return self.skills[name]
+        resolved = {key.lower(): key for key in self.skills}.get(name.lower())
+        return self.skills.get(resolved) if resolved else None
+
+    def expand(self, skill: Skill) -> str:
+        return skill.body.replace("{skill_dir}", skill.dir).replace("${SKILL_DIR}", skill.dir)
+
+    def index(self) -> str:
+        if not self.skills:
+            return ""
+        rows = [f"- {skill.name}: {skill.description or '(no description)'}" for skill in self.all()]
+        return "\n".join(["--- SKILLS ---", "Use Skill(name) to load a skill's full instructions when its description fits the task.", "", *rows])
+
+    def resolve_mentions(self, text: str) -> str:
+        seen: set[str] = set()
+        blocks: list[str] = []
+        for raw in self.MENTION_PATTERN.findall(text):
+            skill = self.get(raw)
+            if skill is None or skill.name in seen:
+                continue
+            seen.add(skill.name)
+            blocks.append(f"[{skill.name}] {skill.description}\n{self.expand(skill)}")
+        if not blocks:
+            return ""
+        header = ["--- SKILL MENTIONS ---", "The user explicitly referenced these skills; follow their instructions unless clearly irrelevant.", ""]
+        return "\n".join(header + blocks).strip()
+
+
+@dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
@@ -1123,6 +1217,7 @@ class Session:
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
+    skills: SkillLibrary | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
     resumed: bool = False
@@ -1138,6 +1233,8 @@ class Session:
             self.expected_git_branch = self.git_branch(self.cwd)
         if self.mcp is None:
             self.mcp = MCPManager(self)
+        if self.skills is None:
+            self.skills = SkillLibrary.load(self)
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
@@ -3242,8 +3339,38 @@ class MCPTool(Tool):
         )
 
 
+class SkillTool(Tool):
+    NAME = "Skill"
+    DESCRIPTION = "Load a skill's full instructions by name (skills are listed in the SKILLS section). Follow the returned steps, running any bundled scripts it references via Bash."
+    SIGNATURE = "Skill(name)"
+    EXAMPLE = ('Load a skill. Example: {"name":"release-notes"}',)
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Skill name from the SKILLS section"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload.get("name", "")]
+
+    def call(self) -> str:
+        (name,) = self.strings(min_count=1, max_count=1)
+        library = self.session.skills
+        skill = library.get(name) if library else None
+        if skill is None:
+            available = ", ".join(item.name for item in library.all()) if library else ""
+            raise ToolError(f"unknown skill {name!r}" + (f"; available: {available}" if available else "; no skills are installed"))
+        return f"<Skill name={json.dumps(skill.name)}>\n{library.expand(skill)}\n</Skill>"
+
+
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
+    SkillTool,
     ReadTool,
     LineCountTool,
     ListTool,
@@ -3274,6 +3401,7 @@ class ContextManager:
     COMPACT_TITLE: ClassVar[str] = "--- Prior Conversation Summary (compacted) ---"
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
+    SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
     CODE_EXTENSIONS: ClassVar[set[str]] = set(
         ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
     )
@@ -3298,6 +3426,7 @@ class ContextManager:
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         file_context = self.file_context() or "(empty)"
+        skills_index = self.skills_context()
         mcp_tools = self.mcp_tools_context()
 
         messages: list[Json] = [
@@ -3305,10 +3434,12 @@ class ContextManager:
             {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
         ]
 
+        if skills_index:
+            messages.append({"role": "user", "content": skills_index})
         if mcp_tools:
             messages.append({"role": "user", "content": mcp_tools})
 
-        messages.extend(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])]))
+        messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])])))
         messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
         messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
@@ -3348,10 +3479,48 @@ class ContextManager:
             result.append({**message, "content": self.MCP_DESCRIBE_BLOCK.sub(lambda _: marker, content)})
         return result
 
+    def dedup_skill_loads(self, messages: list[Json]) -> list[Json]:
+        """Collapse repeated Skill(name) loads to a pointer, keeping the first full body per skill.
+
+        Same send-time transform as dedup_mcp_describes: a re-load of an already-shown skill shrinks to
+        a one-line marker so the instructions are not re-billed, while the first (cached) copy is left
+        untouched. If that first copy is later compacted away, the next occurrence stands on its own."""
+        seen: dict[str, str] = {}
+        result: list[Json] = []
+        for message in messages:
+            content = message.get("content")
+            if message.get("role") != "tool" or not isinstance(content, str):
+                result.append(message)
+                continue
+            match = self.SKILL_BLOCK.search(content)
+            if match is None:
+                result.append(message)
+                continue
+            try:
+                name = str(json.loads(match.group(1)))
+            except (json.JSONDecodeError, ValueError):
+                result.append(message)
+                continue
+            first_key = seen.get(name)
+            if first_key is None:
+                key = re.search(r"\btr\.\d+\b", content)
+                seen[name] = key.group(0) if key else "above"
+                result.append(message)
+                continue
+            marker = f"(repeat load of skill {name}; instructions shown earlier at {first_key}, unchanged)"
+            result.append({**message, "content": self.SKILL_BLOCK.sub(lambda _: marker, content)})
+        return result
+
     def mcp_tools_context(self) -> str:
         if self.session.mcp is None:
             return ""
         return self.session.mcp.render_tools_index()
+
+    def skills_context(self) -> str:
+        return self.session.skills.index() if self.session.skills else ""
+
+    def has_skills(self) -> bool:
+        return bool(self.session.skills and self.session.skills.skills)
 
     def cache_prefix(self, base_system: str, tools: list[Json] | None) -> str:
         # Canonical text of the bytes a provider can cache: the stable head of every request.
@@ -3361,6 +3530,7 @@ class ContextManager:
             [
                 base_system.strip(),
                 "--- Environment ---\n" + (self.environment() or "(empty)"),
+                self.skills_context(),
                 self.mcp_tools_context() or "",
                 json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
             ]
@@ -3368,7 +3538,9 @@ class ContextManager:
 
     def tool_schemas(self) -> list[Json]:
         strict = self.session.config.provider.resolved_strict_tools()
-        return [tool.schema(strict) for tool in TOOL_REGISTRY.values()]
+        # The Skill tool only appears when at least one skill is installed, so a skill-free session
+        # keeps a byte-identical prefix to before skills existed.
+        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or self.has_skills()]
 
     def check_cache_prefix(self, base_system: str) -> None:
         # Tripwire for silent cache breakage: fingerprint the stable prefix and flag drift.
@@ -5560,7 +5732,10 @@ class ModelClient:
 
     def tool_schemas(self) -> list[Json]:
         provider = self.session.config.provider
-        return [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values()]
+        # Keep in lockstep with ContextManager.tool_schemas: the Skill tool is only offered when a
+        # skill is installed, so the sent tools match the cache-prefix fingerprint.
+        has_skills = bool(self.session.skills and self.session.skills.skills)
+        return [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
 
     def request(self, messages: list[Json]) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
@@ -5981,6 +6156,10 @@ FINAL:
             mentions = self.session.mcp.resolve_mentions(user_input)
             if mentions:
                 turn_messages.append({"role": "user", "content": mentions})
+        if self.session.skills is not None:
+            skill_mentions = self.session.skills.resolve_mentions(user_input)
+            if skill_mentions:
+                turn_messages.append({"role": "user", "content": skill_mentions})
         for step in range(self.session.settings.max_steps):
             self.session.state.turn_step = step + 1
             while True:
@@ -6049,6 +6228,7 @@ class CommandCompleter(Completer):
         "/help",
         "/status",
         "/context",
+        "/skills",
         "/config",
         "/api",
         "/debug",
@@ -6103,12 +6283,14 @@ class CommandCompleter(Completer):
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_oauth_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
+        skills: Callable[[], tuple[str, ...]] = tuple,
     ):
         self.providers = providers
         self.models = models
         self.mcp_servers = mcp_servers
         self.mcp_oauth_servers = mcp_oauth_servers
         self.mcp_tools = mcp_tools
+        self.skills = skills
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -6150,6 +6332,11 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_tools(server_part), tool_part)
             else:
                 yield from self.matches(self.mcp_servers(), server_part)
+            return
+
+        skill_match = re.search(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$", text)
+        if skill_match:
+            yield from self.matches(self.skills(), skill_match.group(1))
             return
 
         if text.startswith("/") and " " not in text:
@@ -6607,6 +6794,9 @@ class StatusBar:
         mcp_status = self.mcp_status()
         if mcp_status:
             parts.append((mcp_status, "mcp"))
+        skill_count = len(self.session.skills.skills) if self.session.skills else 0
+        if skill_count:
+            parts.append((f"skills {skill_count}", "mcp"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
@@ -6706,7 +6896,7 @@ class StatusBar:
 class CommandLoop:
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/mcp", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/mcp", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -6762,6 +6952,7 @@ class CommandLoop:
   /help              Show this help.
   /status            Show runtime status.
   /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
+  /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
   /debug [on|off]    Toggle model I/O debug traces.
@@ -6816,6 +7007,7 @@ Tools:
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled),
             mcp_oauth_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled and config.auth == "oauth"),
             mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
+            skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
         self.agent.tools.output_fn = self.tool_output
@@ -7461,6 +7653,7 @@ Tools:
             "/help": self.help,
             "/status": self.status,
             "/context": self.context_view,
+            "/skills": self.skills_command,
             "/config": self.config,
             "/api": self.api,
             "/debug": self.debug,
@@ -7791,7 +7984,7 @@ Tools:
             ),
             (
                 "context",
-                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`",
+                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`",
             ),
             ("goal", self.session.state.goal or "(empty)"),
             (
@@ -7813,6 +8006,14 @@ Tools:
                 *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
             ]
         )
+
+    def skills_command(self, args: str) -> str:
+        library = self.session.skills
+        skills = library.all() if library else []
+        if not skills:
+            return "No skills installed. Add `<name>/SKILL.md` under `.nanocode/skills/` (project) or `~/.nanocode/skills/` (user)."
+        rows = [f"- `{skill.name}` ({skill.source}): {skill.description or '(no description)'}" for skill in skills]
+        return "\n".join(["Skills — load with `Skill(name)` or reference inline with `$name`:", "", *rows])
 
     def context_view(self, args: str) -> str | None:
         context = self.agent.context

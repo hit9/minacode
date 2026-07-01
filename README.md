@@ -95,6 +95,7 @@ Commands:
 - `/help`: show commands and tools.
 - `/status`: show runtime status, including the active session id.
 - `/context [PATH]`: show the model's context frame — environment, memory (goal, plan, known facts, check), and file state; `PATH` shows that file's current in-context lines.
+- `/skills`: list installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
 - `/debug [on|off]`: toggle model I/O debug traces.
@@ -121,6 +122,7 @@ Tools:
 - Working notes: `Note`.
 - Ask the user: `Question`.
 - MCP: `MCP`.
+- Skills: `Skill` (only offered when at least one skill is installed).
 
 `Read`, `Search`, and `InspectCode` return line anchors where useful. `Edit` uses current `line:hash` anchors to reject stale edits.
 
@@ -181,6 +183,36 @@ Manage servers at runtime:
 - `/mcp tools [server]`: list discovered tools.
 - `/mcp refresh [server]`: rediscover servers.
 - `/mcp login <server>` / `/mcp logout <server>`: OAuth login and logout.
+
+## Skills
+
+Skills are reusable instruction packs the agent can pull in on demand. Each skill is a folder with a `SKILL.md`:
+
+```text
+.nanocode/skills/                 # project skills (travel with the repo)
+  release-notes/
+    SKILL.md
+    scripts/
+      collect_commits.py
+~/.nanocode/skills/               # personal skills (all projects)
+```
+
+`SKILL.md` has `name`/`description` frontmatter and a Markdown body of instructions:
+
+```markdown
+---
+name: release-notes
+description: Draft a CHANGELOG entry from commits since the last release.
+---
+Run `python "{skill_dir}/scripts/collect_commits.py" <last-tag>` to gather commits,
+then group them by type and write entries in the house style.
+```
+
+- **Discovery**: `.nanocode/skills/` (project) and `~/.nanocode/skills/` (user). On a name clash the project skill wins.
+- **How the model sees them**: only a compact `SKILLS` index (name + description) sits in context; the full body is loaded on demand when the model calls `Skill(name)`. A repeated load of the same skill collapses to a pointer so the instructions are not re-billed. When no skills are installed, nothing is added to the prompt.
+- **Reference one inline**: type `$name` in your message (Tab-completes) to nudge the model to use that skill; its instructions are injected for that turn.
+- **Bundled scripts**: `{skill_dir}` (or `${SKILL_DIR}`) in the body expands to the skill's absolute folder path, so the model can run bundled scripts via `Bash` (subject to normal confirmation unless `/yolo`).
+- **Inspect**: `/skills` lists installed skills; the status bar and `/status` show the count.
 
 ## Providers
 

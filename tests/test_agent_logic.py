@@ -1373,3 +1373,120 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
     assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "b0", "r2"]
     assert "refused" in by_id["b0"].lower()
     assert "Skipped" in by_id["r2"]
+
+
+def _write_skill(root, name, description, body, *, scripts=None):
+    folder = os.path.join(root, ".nanocode", "skills", name)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write(f"---\nname: {name}\ndescription: {description}\n---\n{body}\n")
+    for script_name, script_body in (scripts or {}).items():
+        script_dir = os.path.join(folder, "scripts")
+        os.makedirs(script_dir, exist_ok=True)
+        with open(os.path.join(script_dir, script_name), "w", encoding="utf-8") as handle:
+            handle.write(script_body)
+    return folder
+
+
+def test_skill_library_index_and_lookup(tmp_path):
+    _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "Do the thing.")
+    s = session(tmp_path)
+
+    index = s.skills.index()
+    assert index.startswith("--- SKILLS ---")
+    assert "- release-notes: Draft a CHANGELOG entry." in index
+    assert s.skills.get("Release-Notes").name == "release-notes"  # case-insensitive
+    assert s.skills.get("missing") is None
+
+
+def test_skill_project_overrides_user(tmp_path, monkeypatch):
+    user_home = tmp_path / "home"
+    user_skill = user_home / ".nanocode" / "skills" / "shared"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("---\nname: shared\ndescription: user version\n---\nuser body\n", encoding="utf-8")
+    _write_skill(tmp_path, "shared", "project version", "project body")
+    monkeypatch.setattr(n.os.path, "expanduser", lambda path: path.replace("~", str(user_home)))
+
+    s = session(tmp_path)
+    skill = s.skills.get("shared")
+    assert skill.source == "project"
+    assert skill.description == "project version"
+
+
+def test_skill_tool_expands_skill_dir(tmp_path):
+    folder = _write_skill(tmp_path, "build", "build it", 'Run python "{skill_dir}/scripts/go.py".', scripts={"go.py": "print(1)"})
+    s = session(tmp_path)
+
+    output = n.SkillTool(s, ["build"]).call()
+    assert output.startswith('<Skill name="build">')
+    assert f'python "{folder}/scripts/go.py"' in output
+    assert "{skill_dir}" not in output
+
+
+def test_skill_tool_unknown_lists_available(tmp_path):
+    _write_skill(tmp_path, "known", "known skill", "body")
+    s = session(tmp_path)
+    with pytest.raises(n.ToolError) as excinfo:
+        n.SkillTool(s, ["nope"]).call()
+    assert "unknown skill 'nope'" in str(excinfo.value)
+    assert "known" in str(excinfo.value)
+
+
+def test_skill_mentions_inject_body(tmp_path):
+    _write_skill(tmp_path, "triage", "triage a bug", "Reproduce first.")
+    s = session(tmp_path)
+
+    resolved = s.skills.resolve_mentions("please $triage this")
+    assert "--- SKILL MENTIONS ---" in resolved
+    assert "[triage] triage a bug" in resolved
+    assert "Reproduce first." in resolved
+    # a bare word without $ is not a mention; an unknown $token is ignored
+    assert s.skills.resolve_mentions("triage this") == ""
+    assert s.skills.resolve_mentions("$unknown") == ""
+
+
+def test_skill_tool_only_present_when_skills_installed(tmp_path):
+    bare = n.ContextManager(session(tmp_path))
+    assert bare.skills_context() == ""
+    assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
+    assert "--- SKILLS ---" not in bare.cache_prefix(n.Agent.SYSTEM_PROMPT, bare.tool_schemas())
+
+    _write_skill(tmp_path, "release-notes", "d", "b")
+    withskill = n.ContextManager(session(tmp_path))
+    assert any(t["function"]["name"] == "Skill" for t in withskill.tool_schemas())
+    messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
+    assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
+
+
+def test_skills_command_lists_and_reports_empty(tmp_path):
+    empty = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    assert "No skills installed" in empty.skills_command("")
+
+    _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    output = loop.skills_command("")
+    assert "`release-notes` (project): Draft a CHANGELOG entry." in output
+
+
+def test_skill_loads_dedup_on_repeat(tmp_path):
+    _write_skill(tmp_path, "guide", "a guide", "FULL GUIDE INSTRUCTIONS")
+    s = session(tmp_path)
+    body = n.SkillTool(s, ["guide"]).call()
+    messages = [{"role": "tool", "content": "tr.1 " + body}, {"role": "tool", "content": "tr.7 " + body}]
+
+    deduped = n.ContextManager(s).dedup_skill_loads(messages)
+    assert "FULL GUIDE INSTRUCTIONS" in deduped[0]["content"]  # first copy kept
+    assert "FULL GUIDE INSTRUCTIONS" not in deduped[1]["content"]  # repeat collapsed
+    assert "repeat load of skill guide" in deduped[1]["content"]
+    assert "tr.1" in deduped[1]["content"]
+
+
+def test_status_and_bar_show_skill_count(tmp_path):
+    _write_skill(tmp_path, "one", "d1", "b")
+    _write_skill(tmp_path, "two", "d2", "b")
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
+
+    assert "skills `2`" in loop.status("")
+    bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(0.0, show_elapsed=False))
+    assert "skills 2" in bar_text
