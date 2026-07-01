@@ -1516,11 +1516,14 @@ def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     skill = s.skills.get("nanocode-help")
     assert skill is not None and skill.source == "builtin"
     body = n.SkillTool(s, ["nanocode-help"]).call()
-    # The reference is assembled from in-code constants so common questions need no source read.
+    # Authored manual prose so how-to / feature / troubleshooting questions need no source read.
+    assert "## How the agent works" in body and "## Troubleshooting" in body
+    assert "prefix churn" in body  # a concept /help does not explain
+    # Plus lists assembled from in-code constants (so they cannot drift).
     assert "/context" in body and "/skills" in body  # command list (from /help)
     assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
     assert "provider.model" in body and "runtime.max_agent_steps" in body  # settable keys
-    assert os.path.abspath(n.__file__) in body  # source named only as a fallback
+    assert os.path.abspath(n.__file__) in body  # source named only as a last-resort fallback
 
 
 def test_project_skill_overrides_builtin(tmp_path):

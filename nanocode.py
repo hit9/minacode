@@ -1126,6 +1126,74 @@ class SkillLibrary:
     META_LINE = re.compile(r"^([A-Za-z0-9_-]+):[ \t]*(.*)$", re.MULTILINE)
     MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]+)")
 
+    # Authored manual behind the built-in `nanocode-help` skill. Explains concepts, workflows, and
+    # common problems — the prose a "how do I / why does" question needs, which the auto-generated
+    # command/tool/key lists (appended in builtins) cannot supply. Kept broader than `/help`.
+    MANUAL = """\
+# nanocode manual
+
+nanocode is a concise, single-file terminal coding agent. You describe a task; it plans, calls
+tools in a loop (read files, search, edit, run commands), and returns a short answer. Assistant
+text is user-visible markdown in your language.
+
+## Getting started
+- Config lives at `~/.nanocode/config.toml`. At minimum set `provider.url`, `provider.key`, and
+  `provider.model`. `/status` and startup warn when these are missing.
+- View config with `/config`; change most values for the session with `/set KEY VALUE`.
+- Pick provider/model/effort at runtime with `/provider`, `/model`, `/reason`.
+
+## How the agent works
+- It acts when the task is clear and keeps using tools until done or blocked, up to
+  `runtime.max_agent_steps`. It does not repeat a failed call unchanged; tool errors come back as
+  results so it can self-correct.
+- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits and shell run
+  serially. It keeps working notes (goal/plan/known/check) via the `Note` tool, shown in `/context`.
+- It answers concisely by default and notes which files changed and which checks it ran (or did not).
+
+## Context model
+Each request is a cache-stable prefix (system prompt, environment, the SKILLS index, the MCP tools
+index, and tool schemas) followed by the conversation, then the `Memory` and `FILE STATE` sections.
+`Read`/`Edit` refresh `FILE STATE`. Prompt caching depends on that prefix staying byte-identical;
+`/status` shows context %, cache hit rate, a `prefix churn` warning if the prefix mutated mid-session
+(inspect with `--debug`, label `cache-prefix-drift`), and a compaction count. Long conversations are
+compacted automatically; `/compact` forces it. Inspect the whole frame with `/context` (tabbed:
+Environment / Memory / File State); `/context <path>` shows a file's current in-context lines.
+
+## Sessions
+Sessions auto-save. Resume the latest with `--resume` (or `--resume <UID>` for a specific one).
+
+## Providers, models, reasoning
+Configure `provider.*` per provider. `/reason` sets reasoning effort; `provider.max_tokens`,
+`provider.temperature`, and `provider.api` (auto/chat/anthropic) tune requests. `/strict` (or
+`provider.strict_tools`) constrains tool-call arguments to each tool's schema on hosts that support
+it (OpenAI, DeepSeek). Native thinking modes (DeepSeek/Qwen) drop `temperature` automatically.
+
+## MCP
+Configure external tools under `[mcp.<name>]` (either `url` or `command`). Manage with `/mcp`,
+`/mcp tools`, `/mcp refresh`, `/mcp login|logout`. Reference a server/tool inline with `@server.tool`
+to pull its schema into the turn. The `MCP` tool invokes them.
+
+## Skills
+Skills are reusable instruction packs under `.nanocode/skills/<name>/SKILL.md` (project) and
+`~/.nanocode/skills/<name>/SKILL.md` (user; project wins on name clash). The model loads one with
+`Skill(name)`; you can reference one inline with `$name` to load it for a turn. A skill-directory
+placeholder in the body expands to the skill's absolute folder so bundled scripts run via `Bash`.
+`/skills` lists them;
+the status bar and `/status` show the count. This manual is the built-in `nanocode-help` skill.
+
+## Safety
+Mutating actions (`Edit`, `Bash`, writing `Git`) ask for confirmation unless `/yolo` is on. nanocode
+will not switch, create, or delete git branches unless asked, and checks the branch before committing.
+
+## Troubleshooting
+- "missing config": set `provider.url`/`key`/`model` via `/set` or `config.toml`.
+- Slow or costly turns / low cache hit rate: check `/status`; a `prefix churn` warning means the
+  cached prefix changed mid-session — see the `--debug` cache-prefix-drift diff.
+- InspectCode unavailable or stale symbols: run `/index` to sync or rebuild the code index.
+- Context filling up: it compacts automatically; `/compact` forces it now.
+- A command typed while the agent works is refused unless it is read-only (`/help`, `/status`,
+  `/context`, `/skills`, read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
+
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills
 
@@ -1154,13 +1222,11 @@ class SkillLibrary:
         root = os.path.dirname(source)
         tool_lines = [f"- {tool.NAME}: {tool.DESCRIPTION}" for tool in TOOLS]
         sections = [
-            "Self-contained reference for answering questions about nanocode itself. Answer from the",
-            "sections below; only fall back to reading the source for details they do not cover. Cite",
-            "exact command names, flags, and config keys — never invent options.",
+            "Self-contained manual for answering questions about nanocode itself — how to use it, its",
+            "features, and common problems. Answer from the sections below; only fall back to reading the",
+            "source for details they do not cover. Cite exact command names, flags, and config keys.",
             "",
-            "## Overview",
-            "nanocode is a concise single-file terminal coding agent. Config lives at `~/.nanocode/config.toml`;",
-            "change settings at runtime with `/set KEY VALUE` and view them with `/config`.",
+            cls.MANUAL,
             "",
             "## Commands, mentions, CLI, tools (verbatim /help)",
             CommandLoop.HELP.strip(),
@@ -1170,15 +1236,10 @@ class SkillLibrary:
             "",
             "## Settable config keys (/set KEY VALUE)",
             ", ".join(CommandCompleter.SET_KEYS),
-            "",
-            "## Skills",
-            "Skills are Markdown packs under `.nanocode/skills/<name>/SKILL.md` (project) and",
-            "`~/.nanocode/skills/<name>/SKILL.md` (user); the model loads one with `Skill(name)` and users can",
-            "reference one inline with `$name`. This reference is itself the built-in `nanocode-help` skill.",
         ]
         if os.path.isfile(source):
-            sections += ["", "## Source (fallback)", f"For anything above not sufficient, read `{source}` (README/CHANGELOG in `{root}` if present)."]
-        description = "Answer questions about nanocode itself — commands, tools, config, mentions, and skills — from a bundled reference."
+            sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
+        description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
         return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
     @classmethod

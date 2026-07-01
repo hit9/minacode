@@ -213,7 +213,7 @@ description: Draft a CHANGELOG entry from commits since the last release.
 - **内联引用**：在消息中输入 `$name`（支持 Tab 补全）以提示模型使用该 skill；其指令会为该轮注入。
 - **随附脚本**：正文中的 `{skill_dir}`（或 `${SKILL_DIR}`）会展开为该 skill 的绝对目录路径，模型可通过 `Bash` 运行随附脚本（除非 `/yolo`，否则仍需正常确认）。
 - **查看**：`/skills` 列出已安装的 skills；状态栏和 `/status` 会显示数量。
-- **内置**：默认自带 `nanocode-help` skill，其正文是一份自包含参考（由 nanocode 自身的 `/help` 文本、工具描述和配置项在加载时拼装而成），因此能即时回答关于 nanocode 本身的问题，无需检索源码，也不会与运行版本脱节。放置同名 `nanocode-help` skill 即可覆盖它。
+- **内置**：默认自带 `nanocode-help` skill，其正文是一份自包含手册——包含关于如何使用 nanocode、其功能和常见问题的成文说明，外加由 nanocode 自身的 `/help` 文本、工具描述和配置项在加载时拼装而成的命令/工具/配置清单。因此“怎么用 / X 是什么 / 为什么 Y”这类问题可直接从手册回答，无需检索源码，且清单不会与运行版本脱节。放置同名 `nanocode-help` skill 即可覆盖它。
 
 ## Providers
 
