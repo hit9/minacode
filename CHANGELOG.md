@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Replace `/memory` with `/context`, a viewer for the model's synthesized context frame — the Environment, Memory (goal, plan, known facts, check, code-index status), and File State sections that wrap the conversation on every request. At an interactive prompt, bare `/context` opens a tabbed viewer (`←/→` or `h/l` switch Environment/Memory/File State, `↑/↓` or `j/k` scroll, `1`–`3` jump, `Esc`/`q` close) with the sections rendered as Markdown tables/headings and a scroll-position indicator; while the agent is working or without a TTY it prints the same content as a static Markdown dump. `/context <path>` shows one in-context file's current anchored lines (matched by exact path, basename, or suffix) inside a fenced block. Unlike the old `/memory`, the Memory section now renders exactly as the model receives it (so it includes `check` and code-index status and omits the transcript-only summary).
+- Detect prompt-prefix drift via fingerprinting. The cache-stable request prefix (system prompt + environment + MCP tool index + sorted tool schemas) is fingerprinted (SHA-256) each turn against a baseline pinned to the first one seen; a healthy session keeps a single fingerprint start to finish, while a second one means every token from the change onward is a cache miss that previously failed silently and only surfaced on the bill. `/status` shows a `⚠ prefix churn` warning with the distinct-fingerprint count when more than one is seen, `--debug` writes a unified diff of exactly what changed (`cache-prefix-drift`), and the fingerprints persist across `--resume`.
+
+### Changed
+- Track and show the context compaction count in `/status`. `AgentState` gains a persisted `compaction_count` incremented on every compaction path (history, turn, and their fallbacks), surfaced in the `/status` context row and preserved across session save/load.
+
 ## 0.7.2 - 2026-06-26
 
 ### Added
