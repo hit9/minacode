@@ -94,7 +94,7 @@ Commands:
 
 - `/help`: show commands and tools.
 - `/status`: show runtime status, including the active session id.
-- `/memory`: show the working memory (goal, summary, plan, known facts).
+- `/context [PATH]`: show the model's context frame — environment, memory (goal, plan, known facts, check), and file state; `PATH` shows that file's current in-context lines.
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
 - `/debug [on|off]`: toggle model I/O debug traces.

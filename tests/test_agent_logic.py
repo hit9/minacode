@@ -135,6 +135,42 @@ def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
     assert "| old" not in rendered
 
 
+def test_empty_files_overview(tmp_path):
+    assert n.ContextManager(session(tmp_path)).files_overview() == "#### File State\n(no files in context)"
+
+
+def test_files_overview_and_detail(tmp_path):
+    path = tmp_path / "a.txt"
+    path.write_text("old\nkeep\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    s.state.plan = ["inspect", "patch"]
+
+    read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
+
+    overview = context.files_overview()
+    assert "#### File State  ·  focus: inspect" in overview
+    # markdown table row for the file, with a source column
+    assert f"| `a.txt` | 0:2 | 2 | {read_key} Read |" in overview
+    assert f"**Recent events**\n- {read_key} Read" in overview
+    # overview omits the full anchored content dump
+    assert "| old" not in overview
+    assert "```" not in overview
+
+    detail = context.file_detail("a.txt")
+    assert detail.startswith("**a.txt** — current, 2 lines")
+    assert "```" in detail
+    assert f"@@ 0:2  {read_key} Read" in detail
+    assert "| old" in detail
+
+    # basename resolves the same file; unknown path lists what is available
+    assert context.file_detail("a.txt") == detail
+    missing = context.file_detail("nope.txt")
+    assert "No in-context content for `nope.txt`" in missing
+    assert "- `a.txt`" in missing
+
+
 def test_file_context_marks_full_file_reads(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("one\ntwo\n", encoding="utf-8")
@@ -765,7 +801,7 @@ def test_queue_command_runs_readonly(tmp_path):
     out = []
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/memory")
+    loop.run_queued_command("/context")
 
     assert s.pending_user_inputs == []
     assert out and not any("unavailable" in t for t in out)
@@ -863,35 +899,93 @@ def test_tool_runner_edit_approval_can_use_preview_callback(tmp_path, monkeypatc
     assert any("[approved]" in output for output in outputs)
 
 
-def test_memory_command_shows_durable_memory(tmp_path):
+def test_context_command_shows_context_frame(tmp_path):
     s = session(tmp_path)
     s.state.goal = "ship"
-    s.state.summary = "summary"
     s.state.plan = ["inspect"]
     s.state.known = ["pytest"]
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    output = loop.memory("")
+    output = loop.context_view("")
 
-    assert "goal: ship" in output
-    assert "summary" in output
+    # unified markdown frame: environment, memory, and file state sections
+    assert "### Context" in output
+    assert "#### Environment" in output
+    assert "#### Memory" in output
+    assert "#### File State" in output
+    assert "| goal | ship |" in output
     assert "- [ ] inspect" in output
     assert "- pytest" in output
-
-    prompt_memory = n.ContextManager(s).memory_context()
-    assert "summary" not in prompt_memory
-    assert "- todo: inspect" in prompt_memory
+    # memory section is the model-facing one, so it never shows summary
+    assert "summary" not in output
 
 
-def test_memory_command_renders_plan_item_objects(tmp_path):
+def test_context_command_renders_plan_item_objects(tmp_path):
     s = session(tmp_path)
     s.state.plan = [n.PlanItem("done", "设置 goal 和 plan")]
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    output = loop.memory("")
+    output = loop.context_view("")
 
-    assert "- [x] 设置 goal 和 plan" in output
+    assert "设置 goal 和 plan" in output
     assert "PlanItem(" not in output
+
+
+def test_context_view_opens_tabs_when_interactive(tmp_path):
+    """At an interactive prompt the bare /context launches the tab viewer and emits nothing inline."""
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.interactive_input = True
+    loop.ui.color = True
+    loop.ui.capture_ansi = False
+    opened = []
+    loop.context_tabs = lambda context: opened.append(context)
+
+    assert loop.context_view("") is None
+    assert opened == [loop.agent.context]
+
+    # while the agent works (queue path sets capture_ansi) it falls back to the static dump
+    loop.ui.capture_ansi = True
+    assert loop.context_view("").startswith("### Context")
+
+
+def test_render_markdown_lines_splits_per_line(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.ui.color = False
+    assert loop.render_markdown_lines("alpha\nbeta", 60) == [[("", "alpha")], [("", "beta")]]
+
+
+def _drive_context_tabs(tmp_path, keys, *, term=(80, 12)):
+    import shutil
+
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=lambda text: None)
+    loop.ui.color = True
+    # Force a tall page so scrolling has room, and a short viewport.
+    loop.render_markdown_lines = lambda markdown, width: [[("", f"line{i}")] for i in range(100)]
+    original_size = shutil.get_terminal_size
+    shutil.get_terminal_size = lambda *a: os.terminal_size(term)
+    with create_pipe_input() as pipe:
+        real_app = n.Application
+        n.Application = lambda **kw: real_app(**{**kw, "input": pipe, "output": DummyOutput()})
+        loop.run_input_app = lambda app: app.run()
+        try:
+            pipe.send_text(keys)
+            loop.context_tabs(loop.agent.context)
+        finally:
+            n.Application = real_app
+            shutil.get_terminal_size = original_size
+    return loop.context_tab_state
+
+
+def test_context_tabs_scroll_and_switch_keys(tmp_path):
+    # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
+    assert _drive_context_tabs(tmp_path, "jjjq")["scroll"] == 3
+    assert _drive_context_tabs(tmp_path, "jjjkq")["scroll"] == 2
+    assert _drive_context_tabs(tmp_path, "llq")["tab"] == 2
+    assert _drive_context_tabs(tmp_path, "lhq")["tab"] == 0
 
 
 def test_exit_command_prints_resume_command(tmp_path):

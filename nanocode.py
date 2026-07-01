@@ -45,7 +45,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import ANSI, FormattedText
+from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -3447,6 +3447,106 @@ class ContextManager:
         lines_by_path, omitted = self.active_file_lines()
         return self.render_file_lines(lines_by_path, omitted)
 
+    def context_overview(self) -> str:
+        """Markdown view of the synthesized context frame the model receives each turn:
+        the Environment, Memory, and File State sections (the live transcript is excluded)."""
+        lines_by_path, omitted = self.active_file_lines()
+        paths = sorted(path for path in lines_by_path if lines_by_path[path])
+        total_lines = sum(len(lines_by_path[path]) for path in paths)
+        header = f"### Context  ·  ctx `{self.session.state.context_percent}%` · {len(paths)} files · {total_lines} lines"
+        return "\n\n".join([header, self.environment_md(), self.memory_md(), self.files_overview((lines_by_path, omitted))])
+
+    @staticmethod
+    def md_table(headers: list[str], rows: list[tuple]) -> str:
+        def cell(value: object) -> str:
+            return Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
+
+        return "\n".join(
+            [
+                "| " + " | ".join(headers) + " |",
+                "| " + " | ".join("---" for _ in headers) + " |",
+                *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
+            ]
+        )
+
+    def environment_md(self) -> str:
+        info = self.session.system_info
+        rows = [
+            ("cwd", "`" + info.cwd + "`"),
+            ("os", f"{info.os} · {info.arch}"),
+            ("shell timeout", f"{self.session.settings.shell_timeout}s"),
+            ("commands", ", ".join(info.commands) or "(none)"),
+        ]
+        if branch := self.session.git_branch(self.session.cwd):
+            rows.append(("git", "`" + branch + "`"))
+        return "#### Environment\n" + self.md_table(["key", "value"], rows)
+
+    def memory_md(self) -> str:
+        state = self.session.state
+        index_status = state.code_index_status or "missing"
+        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
+        rows = [
+            ("goal", state.goal or "(empty)"),
+            ("check", state.check or "(empty)"),
+            ("index", f"{index_status} (usable: {index_usable})"),
+        ]
+        known = "\n".join("- " + item for item in state.known) or "- (empty)"
+        return "\n\n".join(
+            [
+                "#### Memory\n" + self.md_table(["field", "value"], rows),
+                "**Plan**\n" + "\n".join(AgentState.plan_rows_for(state.plan, status=True, style="symbol")),
+                "**Known**\n" + known,
+            ]
+        )
+
+    def files_overview(self, precomputed: tuple[dict, dict] | None = None) -> str:
+        """Markdown summary of the FILE STATE section: which files/ranges are current, recent
+        events, and omissions, without dumping the full anchored content."""
+        lines_by_path, omitted = precomputed if precomputed is not None else self.active_file_lines()
+        paths = sorted(path for path in lines_by_path if lines_by_path[path])
+        state = self.session.state
+        focus = state.focus_text(state.plan)
+        actions, code_edits, errors = self.recent_file_actions(), self.recent_code_edits(), self.recent_tool_errors()
+        check_status = self.check_status(code_edits)
+        if not (paths or omitted or focus or actions or code_edits or check_status or errors):
+            return "#### File State\n(no files in context)"
+        chunks = ["#### File State" + (f"  ·  focus: {focus}" if focus else "")]
+        if paths:
+            rows = [
+                (f"`{path}`", ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])), len(lines_by_path[path]), self.latest_source(lines_by_path[path]))
+                for path in paths
+            ]
+            chunks.append(self.md_table(["file", "ranges", "lines", "source"], rows))
+        for label, items in (("Recent events", actions), ("Recent code edits", code_edits), ("Check status", check_status), ("Recent tool errors", errors)):
+            if items:
+                chunks.append(f"**{label}**\n" + "\n".join(items))
+        if omitted:
+            omit_rows = [f"- `{path}` source={source} lines={count}" for path in sorted(omitted) for source, count in sorted(omitted[path].items())]
+            chunks.append("**Omitted** (stale/superseded)\n" + "\n".join(omit_rows))
+        return "\n\n".join(chunks)
+
+    @staticmethod
+    def latest_source(numbered: dict[int, tuple[str, str, str]]) -> str:
+        source, tool, _line = max(numbered.values(), key=lambda value: int(value[0][3:]) if value[0].startswith("tr.") and value[0][3:].isdigit() else -1)
+        return f"{source} {tool}".strip()
+
+    def file_detail(self, path: str) -> str:
+        """Full current anchored content for one in-context file, exactly as the model sees it,
+        wrapped in a fenced block so it renders monospace and unwrapped."""
+        lines_by_path, _ = self.active_file_lines()
+        available = sorted(candidate for candidate in lines_by_path if lines_by_path[candidate])
+        matches = [candidate for candidate in available if candidate == path or os.path.basename(candidate) == path or candidate.endswith("/" + path)]
+        match = matches[0] if len(matches) == 1 else (path if path in available else None)
+        if match is None:
+            listing = "\n".join("- `" + candidate + "`" for candidate in available) or "(none)"
+            return f"No in-context content for `{path}`.\n\n**Files in context**\n{listing}"
+        numbered = lines_by_path[match]
+        body: list[str] = []
+        for start, end, source, tool, segment_lines in self.segments(numbered):
+            body.append(f"@@ {start}:{end}  {source} {tool}")
+            body.extend(segment_lines)
+        return f"**{match}** — current, {len(numbered)} lines\n\n```\n" + "\n".join(body) + "\n```"
+
     def active_file_lines(self) -> tuple[dict[str, dict[int, tuple[str, str, str]]], dict[str, dict[str, int]]]:
         lines_by_path: dict[str, dict[int, tuple[str, str, str]]] = {}
         omitted: dict[str, dict[str, int]] = {}
@@ -5948,7 +6048,7 @@ class CommandCompleter(Completer):
     COMMANDS = (
         "/help",
         "/status",
-        "/memory",
+        "/context",
         "/config",
         "/api",
         "/debug",
@@ -6606,7 +6706,7 @@ class StatusBar:
 class CommandLoop:
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/memory", "/mcp", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/mcp", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -6627,7 +6727,7 @@ class CommandLoop:
         (ALWAYS, "Tab completes commands, file paths, and mentions."),
         # Context & memory
         (ALWAYS, "`/compact` summarizes a long conversation to reclaim context."),
-        (ALWAYS, "`/memory` shows the agent's current goal, plan, and known facts."),
+        (ALWAYS, "`/context` shows the model's context frame: environment, memory (goal/plan/known), and file state."),
         (ALWAYS, "`/status` shows token usage, context %, and prompt-cache hit rate."),
         (ALWAYS, "Stable context is kept early so the prompt cache is reused — cheaper, faster turns."),
         # Model & reasoning
@@ -6661,7 +6761,7 @@ class CommandLoop:
     HELP = """Commands:
   /help              Show this help.
   /status            Show runtime status.
-  /memory            Show durable agent memory.
+  /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
   /debug [on|off]    Toggle model I/O debug traces.
@@ -7055,6 +7155,8 @@ Tools:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                "tab.active": "bold reverse ansicyan",
+                "tab.inactive": "ansicyan",
                 "completion-menu": "noreverse bg:default",
                 "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
@@ -7358,7 +7460,7 @@ Tools:
         handlers = {
             "/help": self.help,
             "/status": self.status,
-            "/memory": self.memory,
+            "/context": self.context_view,
             "/config": self.config,
             "/api": self.api,
             "/debug": self.debug,
@@ -7374,7 +7476,9 @@ Tools:
         }
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
-        (self.ui.emit_answer if name in {"/status", "/mcp"} else self.emit)(output)
+        # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
+        if output is not None:
+            (self.ui.emit_answer if name in {"/status", "/mcp", "/context"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
@@ -7710,20 +7814,105 @@ Tools:
             ]
         )
 
-    def memory(self, args: str) -> str:
-        state = self.session.state
-        known = ["- " + item for item in state.known] or ["- (empty)"]
-        return "\n".join(
-            [
-                "goal: " + (state.goal or "(empty)"),
-                "summary:",
-                state.summary or "(empty)",
-                "plan:",
-                *AgentState.plan_rows_for(state.plan, status=True, style="symbol"),
-                "known:",
-                *known,
-            ]
-        )
+    def context_view(self, args: str) -> str | None:
+        context = self.agent.context
+        if args:
+            return context.file_detail(args)
+        context.update_percent(context.model_messages(self.agent.SYSTEM_PROMPT))
+        # At the idle prompt on a real terminal, open the interactive tabbed viewer; while the agent
+        # is working (queue path sets capture_ansi) or without a TTY, fall back to the static dump.
+        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+            self.context_tabs(context)
+            return None
+        return context.context_overview()
+
+    CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"), ("File State", "files_overview"))
+
+    def context_tabs(self, context: "ContextManager") -> None:
+        """Interactive tabbed viewer for the context frame: ←/→ switch tabs, ↑/↓ scroll, Esc close.
+        Renders a static snapshot; the transcript continues below once closed."""
+        width = max(20, shutil.get_terminal_size().columns - 2)
+        pages = [self.render_markdown_lines(getattr(context, method)(), width) for _, method in self.CONTEXT_TABS]
+        state = self.context_tab_state = {"tab": 0, "scroll": 0}
+
+        def viewport() -> int:
+            return max(3, shutil.get_terminal_size().lines - 5)
+
+        def fragments():
+            # Blank line separates the viewer from the `nano> /context` input line above it.
+            parts: list[tuple[str, str]] = [("", "\n")]
+            for index, (name, _) in enumerate(self.CONTEXT_TABS):
+                active = index == state["tab"]
+                parts.append(("class:tab.active" if active else "class:tab.inactive", f" {name} "))
+                if index < len(self.CONTEXT_TABS) - 1:
+                    parts.append(("class:choice.disabled", " │ "))
+            lines = pages[state["tab"]]
+            height = viewport()
+            scrollable = len(lines) > height
+            state["scroll"] = min(max(0, int(state["scroll"])), max(0, len(lines) - height))
+            visible = lines[state["scroll"] : state["scroll"] + height]
+            parts.append(("", "\n"))
+            scroll_hint = "↑/↓ scroll" if scrollable else "↑/↓ scroll (fits)"
+            parts.append(("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n"))
+            for line in visible:
+                parts.extend(line)
+                parts.append(("", "\n"))
+            return parts
+
+        def scroll(event, delta: int) -> None:
+            state["scroll"] = max(0, int(state["scroll"]) + delta)
+            event.app.invalidate()
+
+        def switch(event, delta: int) -> None:
+            state["tab"] = (int(state["tab"]) + delta) % len(self.CONTEXT_TABS)
+            state["scroll"] = 0
+            event.app.invalidate()
+
+        bindings = KeyBindings()
+        bindings.add("right", eager=True)(lambda event: switch(event, 1))
+        bindings.add("l", eager=True)(lambda event: switch(event, 1))
+        bindings.add("left", eager=True)(lambda event: switch(event, -1))
+        bindings.add("h", eager=True)(lambda event: switch(event, -1))
+        bindings.add("tab", eager=True)(lambda event: switch(event, 1))
+        bindings.add("down", eager=True)(lambda event: scroll(event, 1))
+        bindings.add("j", eager=True)(lambda event: scroll(event, 1))
+        bindings.add("up", eager=True)(lambda event: scroll(event, -1))
+        bindings.add("k", eager=True)(lambda event: scroll(event, -1))
+        bindings.add("pagedown", eager=True)(lambda event: scroll(event, viewport()))
+        bindings.add("pageup", eager=True)(lambda event: scroll(event, -viewport()))
+
+        for number in range(1, len(self.CONTEXT_TABS) + 1):
+
+            @bindings.add(str(number), eager=True)
+            def _jump(event, number=number):
+                state["tab"] = number - 1
+                state["scroll"] = 0
+                event.app.invalidate()
+
+        @bindings.add("escape", eager=True)
+        @bindings.add("q", eager=True)
+        @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
+        def _close(event):
+            event.app.exit(result=None)
+
+        content = FormattedTextControl(fragments, focusable=True)
+        window = Window(content, dont_extend_height=True, wrap_lines=False)
+        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings)
+        try:
+            self.run_input_app(app)
+        except KeyboardInterrupt:
+            pass
+
+    def render_markdown_lines(self, markdown: str, width: int) -> list[Any]:
+        """Render Markdown to per-line prompt_toolkit fragments via Rich, so the tab body keeps its
+        table/heading styling inside the interactive viewer."""
+        if not self.ui.color:
+            return [[("", line)] for line in markdown.splitlines()]
+        console = Console(force_terminal=True, width=width)
+        with console.capture() as capture:
+            console.print(Markdown(markdown))
+        return [to_formatted_text(ANSI(line)) for line in capture.get().splitlines()]
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
