@@ -1145,28 +1145,41 @@ class SkillLibrary:
 
     @classmethod
     def builtins(cls) -> list[Skill]:
-        """Skills shipped with nanocode itself. The `nanocode-help` skill points the model at the
-        live source file so questions about nanocode are answered version-exactly, from any cwd."""
+        """Skills shipped with nanocode itself. `nanocode-help` carries a self-contained reference so
+        the model answers questions about nanocode instantly, without searching the source. The body is
+        assembled at load time from the same in-code constants the app uses (`/help` text, tool
+        DESCRIPTIONs, settable keys), so it is fast to read yet cannot drift from the running version;
+        the raw source is named only as a fallback for anything the reference does not cover."""
         source = os.path.abspath(__file__)
-        if not os.path.isfile(source):
-            return []
         root = os.path.dirname(source)
-        body = "\n".join(
-            [
-                "Answer questions about nanocode itself — its commands, tools, config keys, and behavior —",
-                "from its own source of truth, not from memory. nanocode is a single Python file.",
-                "",
-                "Consult these, then answer with exact command names, flags, and config keys:",
-                f"- Source: `{source}` — holds the `/help` text, every tool's DESCRIPTION/SIGNATURE, the",
-                "  slash-command handlers, the settable config keys, and the system prompt.",
-                f"- Docs if present alongside it: `{root}/README.md`, `{root}/README.zh-CN.md`, `{root}/CHANGELOG.md`.",
-                "",
-                "Prefer Search or InspectCode to locate the relevant class/handler/string, then Read those lines.",
-                "Cite the exact command or key; never invent options that are not in the source.",
-            ]
-        )
-        description = "Answer questions about nanocode itself — commands, tools, config, and behavior — from its own source."
-        return [Skill("nanocode-help", description, body, root, "builtin")]
+        tool_lines = [f"- {tool.NAME}: {tool.DESCRIPTION}" for tool in TOOLS]
+        sections = [
+            "Self-contained reference for answering questions about nanocode itself. Answer from the",
+            "sections below; only fall back to reading the source for details they do not cover. Cite",
+            "exact command names, flags, and config keys — never invent options.",
+            "",
+            "## Overview",
+            "nanocode is a concise single-file terminal coding agent. Config lives at `~/.nanocode/config.toml`;",
+            "change settings at runtime with `/set KEY VALUE` and view them with `/config`.",
+            "",
+            "## Commands, mentions, CLI, tools (verbatim /help)",
+            CommandLoop.HELP.strip(),
+            "",
+            "## Tool details",
+            *tool_lines,
+            "",
+            "## Settable config keys (/set KEY VALUE)",
+            ", ".join(CommandCompleter.SET_KEYS),
+            "",
+            "## Skills",
+            "Skills are Markdown packs under `.nanocode/skills/<name>/SKILL.md` (project) and",
+            "`~/.nanocode/skills/<name>/SKILL.md` (user); the model loads one with `Skill(name)` and users can",
+            "reference one inline with `$name`. This reference is itself the built-in `nanocode-help` skill.",
+        ]
+        if os.path.isfile(source):
+            sections += ["", "## Source (fallback)", f"For anything above not sufficient, read `{source}` (README/CHANGELOG in `{root}` if present)."]
+        description = "Answer questions about nanocode itself — commands, tools, config, mentions, and skills — from a bundled reference."
+        return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
     @classmethod
     def parse(cls, path: str, folder: str, source: str) -> "Skill | None":

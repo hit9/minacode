@@ -213,7 +213,7 @@ then group them by type and write entries in the house style.
 - **Reference one inline**: type `$name` in your message (Tab-completes) to nudge the model to use that skill; its instructions are injected for that turn.
 - **Bundled scripts**: `{skill_dir}` (or `${SKILL_DIR}`) in the body expands to the skill's absolute folder path, so the model can run bundled scripts via `Bash` (subject to normal confirmation unless `/yolo`).
 - **Inspect**: `/skills` lists installed skills; the status bar and `/status` show the count.
-- **Built-in**: a `nanocode-help` skill ships by default and points the model at the live `nanocode.py` source, so questions about nanocode itself (commands, tools, config keys) are answered version-exactly from any project. Drop a `nanocode-help` skill of your own to override it.
+- **Built-in**: a `nanocode-help` skill ships by default and carries a self-contained reference (assembled from nanocode's own `/help` text, tool descriptions, and config keys), so questions about nanocode itself are answered instantly without searching the source — and it can't drift from the running version. Drop a `nanocode-help` skill of your own to override it.
 
 ## Providers
 

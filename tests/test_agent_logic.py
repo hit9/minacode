@@ -1511,12 +1511,16 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills {count}" in bar_text
 
 
-def test_builtin_nanocode_help_skill_points_at_source(tmp_path):
+def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     s = session(tmp_path)
     skill = s.skills.get("nanocode-help")
     assert skill is not None and skill.source == "builtin"
     body = n.SkillTool(s, ["nanocode-help"]).call()
-    assert os.path.abspath(n.__file__) in body  # points at the live source file
+    # The reference is assembled from in-code constants so common questions need no source read.
+    assert "/context" in body and "/skills" in body  # command list (from /help)
+    assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
+    assert "provider.model" in body and "runtime.max_agent_steps" in body  # settable keys
+    assert os.path.abspath(n.__file__) in body  # source named only as a fallback
 
 
 def test_project_skill_overrides_builtin(tmp_path):
