@@ -94,7 +94,8 @@ nanocode --resume last
 
 - `/help`：显示命令和工具。
 - `/status`：显示运行状态，包括当前 session id。
-- `/memory`：显示工作记忆（goal、summary、plan、known facts）。
+- `/context [PATH]`：显示模型的上下文帧——环境、记忆（goal、plan、known facts、check）和文件状态；`PATH` 显示该文件当前在上下文中的行。
+- `/skills`：列出已安装的 skills（用 `Skill(name)` 加载，或在消息中用 `$name` 引用）。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。
 - `/debug [on|off]`：切换模型 I/O debug trace。
@@ -121,6 +122,7 @@ nanocode --resume last
 - 工作笔记：`Note`。
 - 询问用户：`Question`。
 - MCP：`MCP`。
+- Skills：`Skill`（仅在安装了至少一个 skill 时提供）。
 
 `Read`、`Search` 和 `InspectCode` 会在合适时返回行锚点。`Edit` 使用当前 `line:hash` 锚点拒绝过期编辑。
 
@@ -181,6 +183,36 @@ HTTP 鉴权选项（`auth`、`bearer_token_env_var`、`env_http_headers`）只�
 - `/mcp tools [server]`：列出已发现的工具。
 - `/mcp refresh [server]`：重新发现服务器。
 - `/mcp login <server>` / `/mcp logout <server>`：OAuth 登录和登出。
+
+## Skills
+
+Skills 是可复用的指令包，agent 可按需加载。每个 skill 是一个包含 `SKILL.md` 的文件夹：
+
+```text
+.nanocode/skills/                 # 项目 skills（随仓库一起提交）
+  release-notes/
+    SKILL.md
+    scripts/
+      collect_commits.py
+~/.nanocode/skills/               # 个人 skills（对所有项目生效）
+```
+
+`SKILL.md` 带有 `name`/`description` 前置元数据，正文是 Markdown 指令：
+
+```markdown
+---
+name: release-notes
+description: Draft a CHANGELOG entry from commits since the last release.
+---
+运行 `python "{skill_dir}/scripts/collect_commits.py" <last-tag>` 收集提交，
+再按类型分组并以项目既有风格撰写条目。
+```
+
+- **发现路径**：`.nanocode/skills/`（项目）和 `~/.nanocode/skills/`（用户）。同名时项目 skill 优先。
+- **模型如何看到**：上下文中只放一个精简的 `SKILLS` 索引（name + description）；完整正文仅在模型调用 `Skill(name)` 时按需加载。对同一 skill 的重复加载会折叠为一行指针，避免重复计费。未安装任何 skill 时不会向 prompt 添加内容。
+- **内联引用**：在消息中输入 `$name`（支持 Tab 补全）以提示模型使用该 skill；其指令会为该轮注入。
+- **随附脚本**：正文中的 `{skill_dir}`（或 `${SKILL_DIR}`）会展开为该 skill 的绝对目录路径，模型可通过 `Bash` 运行随附脚本（除非 `/yolo`，否则仍需正常确认）。
+- **查看**：`/skills` 列出已安装的 skills；状态栏和 `/status` 会显示数量。
 
 ## Providers
 
