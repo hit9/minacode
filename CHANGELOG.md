@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 - 2026-07-02
 
 ### Added
 - Add a `nanocode update` (alias `upgrade`) command that upgrades nanocode to the latest PyPI release. It first checks the latest version, reports and exits when already current, then detects how nanocode was installed and runs the matching upgrade command: `uv tool upgrade nanocode-cli` for uv-tool installs, `pipx upgrade nanocode-cli` for pipx, and `python -m pip install --upgrade nanocode-cli` otherwise. Editable/dev installs are detected (via the distribution's `direct_url.json`) and refused with a hint to update the source instead.
