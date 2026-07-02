@@ -67,6 +67,7 @@ Useful arguments:
 - `--mcp <selector>`: choose which configured MCP servers to enable.
 - `--debug`: write model I/O debug traces.
 - `-v`, `--version`: show the version.
+- `update` / `upgrade`: update nanocode to the latest release, using the right installer (uv tool, pipx, or pip) for how it was installed.
 
 During a running turn, type into the `+>` prompt to add follow-up input for the next model request.
 

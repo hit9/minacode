@@ -63,7 +63,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
@@ -8480,6 +8480,68 @@ Tools:
         return "Set " + key
 
 
+class Updater:
+    """Upgrade nanocode in place, choosing the command that matches how it was installed."""
+
+    PACKAGE = "nanocode-cli"
+
+    def run(self) -> int:
+        try:
+            latest = self.fetch_latest()
+        except Exception as error:
+            print("Error: failed to check latest version: " + Text.clean(str(error)), file=sys.stderr)
+            return 1
+        if not UpdateStatus(latest=latest).newer_than(__version__):
+            print(f"nanocode {__version__} is already up to date (latest: {latest}).")
+            return 0
+        method, command = self.detect()
+        if command is None:
+            print(f"nanocode {__version__} -> {latest} available, but this is an {method} install.", file=sys.stderr)
+            print("Update it the same way you installed it (e.g. git pull, or reinstall).", file=sys.stderr)
+            return 1
+        print(f"Updating nanocode {__version__} -> {latest} ({method}): {' '.join(command)}")
+        try:
+            result = subprocess.run(command)
+        except Exception as error:
+            print("Error: upgrade command failed: " + Text.clean(str(error)), file=sys.stderr)
+            return 1
+        if result.returncode != 0:
+            print("Error: upgrade command exited with status " + str(result.returncode), file=sys.stderr)
+            return result.returncode
+        print(f"Updated nanocode to {latest}.")
+        return 0
+
+    def fetch_latest(self) -> str:
+        request = Request(UpdateChecker.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
+        with urlopen(request, timeout=UpdateChecker.TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
+        if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
+            raise NanocodeError("invalid PyPI version response")
+        return version
+
+    def detect(self) -> tuple[str, list[str] | None]:
+        """Return (method label, upgrade command). command is None when we cannot self-update."""
+        if self.is_editable():
+            return "editable", None
+        location = os.path.realpath(os.path.dirname(__file__))
+        if os.sep + "uv" + os.sep + "tools" + os.sep in location + os.sep and shutil.which("uv"):
+            return "uv tool", ["uv", "tool", "upgrade", self.PACKAGE]
+        if os.sep + "pipx" + os.sep in location + os.sep and shutil.which("pipx"):
+            return "pipx", ["pipx", "upgrade", self.PACKAGE]
+        return "pip", [sys.executable, "-m", "pip", "install", "--upgrade", self.PACKAGE]
+
+    @staticmethod
+    def is_editable() -> bool:
+        try:
+            import importlib.metadata as metadata
+
+            raw = metadata.distribution(Updater.PACKAGE).read_text("direct_url.json")
+            return bool(raw) and json.loads(raw).get("dir_info", {}).get("editable", False)
+        except Exception:
+            return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
@@ -8489,10 +8551,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
+    parser.add_argument("command", nargs="?", choices=["update", "upgrade"], help="Update nanocode to the latest version")
     args = parser.parse_args(argv)
     if args.version:
         print(__version__)
         return 0
+    if args.command in ("update", "upgrade"):
+        return Updater().run()
     try:
         if args.init_config:
             path, created = ConfigFile.init(args.config)
