@@ -67,6 +67,7 @@ nanocode
 - `--mcp <selector>`：选择启用哪些已配置的 MCP 服务器。
 - `--debug`：写入模型 I/O debug trace。
 - `-v`, `--version`：显示版本。
+- `update` / `upgrade`：将 nanocode 更新到最新版本，并根据安装方式（uv tool、pipx 或 pip）选择正确的升级方式。
 
 代理运行中，可以在 `+>` 提示符里输入追加内容，发送到下一次模型请求。
 
