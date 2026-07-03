@@ -7268,16 +7268,24 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.01)
 
-    def drain_queued_input(self) -> str:
-        """Return queued user input, or empty string if nothing queued."""
-        texts = []
-        if self.session.pending_user_inputs:
-            texts.extend(text for text in self.session.pending_user_inputs if text.strip())
-            self.session.pending_user_inputs.clear()
-        if self.queue_input_text.strip():
-            texts.append(self.queue_input_text)
-        self.queue_input_text = ""
+    def take_entered_input(self) -> str:
+        """Enter-committed queue input (pending_user_inputs), joined and cleared."""
+        texts = [text for text in self.session.pending_user_inputs if text.strip()]
+        self.session.pending_user_inputs.clear()
         return "\n".join(texts)
+
+    def take_typed_input(self) -> str:
+        """Un-entered text left in the +> box when the agent stopped, cleared."""
+        typed = self.queue_input_text if self.queue_input_text.strip() else ""
+        self.queue_input_text = ""
+        return typed
+
+    def drain_queued_input(self) -> str:
+        """Entered input first, then still-typed text (used for the headless combined path)."""
+        return "\n".join(text for text in (self.take_entered_input(), self.take_typed_input()) if text)
+
+    def echo_input_line(self, text: str) -> None:
+        print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -7291,8 +7299,19 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                # Pre-fill any queued input into the prompt for review/edit instead of auto-submitting it.
-                user_input = self.read_input(initial_text=self.drain_queued_input())
+                entered = self.take_entered_input()
+                typed = self.take_typed_input()
+                if entered and self.interactive_input:
+                    # Input you already pressed Enter on in the +> queue auto-submits as the next turn —
+                    # no second Enter. Any half-typed text goes back to the box for the following prompt.
+                    if typed:
+                        self.queue_input_text = typed
+                    self.echo_input_line(entered)
+                    user_input = entered
+                else:
+                    # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
+                    # text into the prompt for review/edit.
+                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text))
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
