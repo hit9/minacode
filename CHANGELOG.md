@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.2 - 2026-07-03
 
 ### Fixed
 - Auto-submit queued input you already pressed Enter on. While the agent is working, typing in the `+>` queue and pressing Enter records the line into `pending_user_inputs`; if the turn ended before a step consumed it, that already-entered text was pre-filled back into the prompt and sat there waiting for a *second* Enter (and could feel like a very delayed send). Now, in interactive mode, Enter-committed queue input auto-submits as the next turn with no second keypress, while text you were still typing (never Enter'd) is still pre-filled into the prompt for review. Mid-turn injection and the headless combined-submit path are unchanged.
