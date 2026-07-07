@@ -7854,14 +7854,23 @@ Tools:
             except OSError:
                 pass
 
-    @staticmethod
-    def ansi_diff_preview(text: str) -> str:
-        colors = [("---", "\033[90m"), ("+++", "\033[90m"), ("@@", "\033[36m"), ("+", "\033[32m"), ("-", "\033[31m")]
-        lines = []
-        for line in text.splitlines():
-            style = next((color for prefix, color in colors if line.lstrip().startswith(prefix)), "")
-            lines.append(style + line + ("\033[0m" if style else ""))
-        return "\n".join(lines)
+    ANSI_FG: ClassVar[dict[str, int]] = {
+        "ansiblack": 30, "ansired": 31, "ansigreen": 32, "ansiyellow": 33, "ansiblue": 34,
+        "ansimagenta": 35, "ansicyan": 36, "ansiwhite": 37, "ansibrightblack": 90, "ansibrightred": 91,
+        "ansibrightgreen": 92, "ansibrightyellow": 93, "ansibrightblue": 94, "ansibrightmagenta": 95,
+        "ansibrightcyan": 96, "ansibrightwhite": 97,
+    }
+    ANSI_MOD: ClassVar[dict[str, int]] = {"bold": 1, "italic": 3, "underline": 4}
+
+    def ansi_diff_preview(self, text: str) -> str:
+        # Render the same syntax-highlighted diff the inline preview uses, but as ANSI escape codes
+        # so `less -R` shows the highlighting in the Ctrl-A expanded preview.
+        out: list[str] = []
+        for style, piece in self.ui.diff_segments(text):
+            codes = [self.ANSI_FG[tok] for tok in style.split() if tok in self.ANSI_FG]
+            codes += [self.ANSI_MOD[tok] for tok in style.split() if tok in self.ANSI_MOD]
+            out.append(f"\033[{';'.join(map(str, codes))}m{piece}\033[0m" if codes else piece)
+        return "".join(out)
 
     def show_transient_tool_preview(self, text: str) -> None:
         lines = text.rstrip().splitlines()

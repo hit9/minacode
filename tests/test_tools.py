@@ -186,6 +186,21 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
     # green even though no lexer could be selected.
     assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
     assert any(t == "+" and s == "ansigreen" for s, t in segments)
+
+
+def test_ansi_diff_preview_carries_syntax_highlighting():
+    # The Ctrl-A expanded preview (rendered for `less -R`) must carry the same syntax highlighting
+    # as the inline preview, not just plain diff colors.
+    loop = n.CommandLoop.__new__(n.CommandLoop)
+    loop.ui = n.UiPrinter()
+    diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
+    ansi = loop.ansi_diff_preview(diff)
+
+    assert "\033[" in ansi                 # contains ANSI escape codes
+    assert "\033[35m" in ansi              # `return` keyword highlighted magenta (not just diff green)
+    assert "\033[32m+\033[0m" in ansi      # added-line prefix stays diff green
+
+
 def test_edit_stale_anchor_reports_current_line(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"

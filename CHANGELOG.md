@@ -4,7 +4,7 @@
 ## Unreleased
 
 ### Added
-- Syntax-highlight Edit diff previews with Pygments. Added and context lines (the "new" file version) are lexed together as one code block so multiline strings and indentation-sensitive languages highlight correctly; removed lines stay plain diff-red. Degrades gracefully to plain diff coloring when Pygments is unavailable, the file extension is unknown, or the lexer fails.
+- Syntax-highlight Edit diff previews with Pygments. Added and context lines (the "new" file version) are lexed together as one code block so multiline strings and indentation-sensitive languages highlight correctly; removed lines stay plain diff-red. The same highlighting now also renders in the Ctrl-A expanded preview (via `less -R`), not just the inline preview. Degrades gracefully to plain diff coloring when Pygments is unavailable, the file extension is unknown, or the lexer fails.
 - Add background jobs via a `Job` tool (`start`/`status`/`wait`/`list`/`kill`). Long-running or non-blocking work — dev servers, watchers, long builds and test suites — runs in its own process group without blocking the agent; output is buffered (capped per stream), drained non-blockingly on `status`, and returned as a tail. Concurrency is capped (`MAX_JOBS`), running jobs surface in the status bar (`jobs N`), the `/status` row, and a new read-only `/ps` command; `kill` sends SIGTERM then SIGKILL to the group. Jobs run until they exit or are killed (no foreground `shell_timeout` cap), and `Job(action="wait")` with no/zero timeout blocks until the process exits.
 
 ### Changed
