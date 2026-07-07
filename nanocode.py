@@ -8192,12 +8192,14 @@ Tools:
         # markdown — no separate styled line, hence no ANSI escapes to mangle.
         prompt = f"({position}) {spec.question}" if position else spec.question
         if not choices or not self.interactive_input:
-            return self.read_input(prompt)
+            return self.read_input("\n" + prompt)
 
+        # Blank separator line before each question so multi-question prompts don't run together.
         if self.ui.color:
+            self.ui.console.print()
             self.ui.console.print(Markdown(prompt))
         else:
-            self.emit(prompt + "\n")
+            self.emit("\n" + prompt + "\n")
 
         # An optional recommended choice is pre-selected (via current) and marked (via labels),
         # reusing the selector's existing machinery.
