@@ -7863,10 +7863,12 @@ Tools:
     ANSI_MOD: ClassVar[dict[str, int]] = {"bold": 1, "italic": 3, "underline": 4}
 
     def ansi_diff_preview(self, text: str) -> str:
-        # Render the same syntax-highlighted diff the inline preview uses, but as ANSI escape codes
-        # so `less -R` shows the highlighting in the Ctrl-A expanded preview.
+        # Render the same highlighted segments the inline preview uses, but as ANSI escape codes so
+        # `less -R` shows them in the Ctrl-A expanded preview. Use approval_segments (not
+        # diff_segments): the full-preview text carries the "approve …" header, a "preview" line, and
+        # a 2-space-indented diff; approval_segments strips/de-indents those before highlighting.
         out: list[str] = []
-        for style, piece in self.ui.diff_segments(text):
+        for style, piece in self.ui.approval_segments(text):
             codes = [self.ANSI_FG[tok] for tok in style.split() if tok in self.ANSI_FG]
             codes += [self.ANSI_MOD[tok] for tok in style.split() if tok in self.ANSI_MOD]
             out.append(f"\033[{';'.join(map(str, codes))}m{piece}\033[0m" if codes else piece)
