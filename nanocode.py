@@ -6685,7 +6685,6 @@ class BashLivePreview:
         if timer is not None:
             timer.join()
         with self.lock:
-            self.clear()
             self.rendered_lines, self.text = 0, ""
 
     def clear(self) -> None:
@@ -7665,9 +7664,7 @@ Tools:
         return self.with_status_paused(read)
 
     def show_transient_tool_output(self, text: str) -> None:
-        self.clear_transient_tool_output()
         self.emit(text)
-        self.transient_tool_lines = len(text.splitlines() or [""])
 
     def tool_preview(self, text: str) -> bool:
         if not text.startswith("approve Edit ") or not self.interactive_input or not sys.stdout.isatty():
@@ -7706,14 +7703,12 @@ Tools:
         return "\n".join(lines)
 
     def show_transient_tool_preview(self, text: str) -> None:
-        self.clear_transient_tool_output()
         lines = text.rstrip().splitlines()
         if not lines:
             return
         height, width = 12, max(20, shutil.get_terminal_size((120, 20)).columns)
         shown = lines[:height] + ([f"... preview truncated: {len(lines) - height} more lines (Ctrl-A: full preview) ..."] if len(lines) > height else [])
         self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
-        self.transient_tool_lines = len(shown)
 
     def emit_agent_output(self, text: str) -> None:
         self.clear_transient_tool_output()
