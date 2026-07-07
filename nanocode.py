@@ -1817,7 +1817,21 @@ class ReadTool(Tool):
 
     @staticmethod
     def line_hash(line: str) -> str:
-        return Text.base36(int(hashlib.sha1(line.encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
+        # Hash the visible content only. The trailing newline is stripped so the anchor matches the
+        # line the model sees (anchor_line displays the stripped line), stays stable when only the
+        # final newline changes, and is consistent with indexed_line_hash.
+        return Text.base36(int(hashlib.sha1(line.rstrip("\n").encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
+
+    @staticmethod
+    def split_lines(text: str) -> list[str]:
+        # Canonical line model shared by Read and Edit: split on "\n" only, keeping the newline
+        # (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e, \x85,
+        # \u2028, \u2029, which would number lines differently than Read and desync anchors.
+        parts = text.split("\n")
+        lines = [part + "\n" for part in parts[:-1]]
+        if parts[-1]:
+            lines.append(parts[-1])
+        return lines
 
     @classmethod
     def anchor(cls, index: int, line: str) -> str:
@@ -2681,8 +2695,8 @@ class EditTool(Tool):
         relpath = self.session.relpath(path)
         return "".join(
             difflib.unified_diff(
-                original.splitlines(True),
-                new_content.splitlines(True),
+                ReadTool.split_lines(original),
+                ReadTool.split_lines(new_content),
                 fromfile="/dev/null" if not original and not os.path.exists(path) else relpath,
                 tofile=relpath,
             )
@@ -2757,8 +2771,8 @@ class EditTool(Tool):
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            return EditApplyResult(content, [(0, 0, 0, len(content.splitlines(True)))], [], True)
-        lines = original.splitlines(True)
+            return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
+        lines = ReadTool.split_lines(original)
         replacements = []
         for edit in edits:
             start = self.resolve_anchor(lines, edit.start)
@@ -2792,7 +2806,7 @@ class EditTool(Tool):
         return EditApplyResult("".join(new_lines), changes, replacements)
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
-        return self.no_changes_error_from_lines(original.splitlines(True), result.replacements, result.replace_all)
+        return self.no_changes_error_from_lines(ReadTool.split_lines(original), result.replacements, result.replace_all)
 
     @classmethod
     def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
@@ -2832,7 +2846,7 @@ class EditTool(Tool):
         return "\n".join(out)
 
     def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
-        lines = content.splitlines(True)
+        lines = ReadTool.split_lines(content)
         out = []
         for clear_start, clear_end, start, end in changes:
             out.append(f"<invalidate>{clear_start}:{clear_end}</invalidate>")
@@ -2847,7 +2861,7 @@ class EditTool(Tool):
         content = self.normalize_text(content)
         if content == "":
             return []
-        lines = content.splitlines(True)
+        lines = ReadTool.split_lines(content)
         if followed_by_more and lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         return lines
@@ -4520,7 +4534,7 @@ class EditBatchPlan:
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            lines = [self.Line(line, None) for line in content.splitlines(True)]
+            lines = [self.Line(line, None) for line in ReadTool.split_lines(content)]
             return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [], True)
 
         replacements: list[tuple[int, int, list[EditBatchPlan.Line]]] = []

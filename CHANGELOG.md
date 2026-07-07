@@ -8,10 +8,15 @@
 
 ### Changed
 
+- Cache the Anthropic request's stable `tools`+`system` prefix with a `cache_control` breakpoint on the system block, so each turn no longer reprocesses the system prompt and tool schemas from scratch (Anthropic prompt caching only activates at an explicit breakpoint).
+- Strengthen the system prompt for faster convergence: batch independent reads/searches into one parallel request by default, and drive each Bash call to complete in a single pass (chain known steps, split only on genuinely unpredictable dependencies).
 - Bash output is no longer erased from the terminal after the command finishes; the live preview output stays in the scrollback history.
 - Edit diff previews and approve messages remain visible in the CLI history instead of being transiently cleared.
 - Git branch is no longer shown in the environment context sent to the model.
 - Removed branch-change detection protection that prevented `git commit` after an external branch switch.
+
+### Fixed
+- Stable Edit anchors, eliminating spurious "stale anchor" errors. `line_hash` no longer folds the trailing newline into the hash, so a line's anchor stays valid when only its final newline changes (e.g. the last line gaining or losing its `\n`) and Read/Search/Edit anchors now agree with InspectCode's. Edit also numbers lines exactly like Read — both split on `\n` only via a shared `ReadTool.split_lines`, replacing `str.splitlines(True)`, which additionally breaks on `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028`, `\u2029` and desynced line numbering (and thus anchors) for any file containing those characters.
 
 ## 0.8.2 - 2026-07-03
 

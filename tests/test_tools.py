@@ -54,6 +54,24 @@ def test_line_hash_is_short_lowercase_base36(tmp_path):
     assert set(line_hash) <= set("0123456789abcdefghijklmnopqrstuvwxyz")
 
 
+def test_line_hash_ignores_trailing_newline():
+    # An anchor must depend only on the visible content, so a line's anchor stays stable when only
+    # the trailing newline changes (e.g. the last line gaining/losing the final "\n"). It must also
+    # agree with the newline-stripping indexed hash the anchor matcher accepts.
+    assert n.ReadTool.line_hash("code") == n.ReadTool.line_hash("code\n") == n.ReadTool.line_hash("code\n\n")
+    assert n.ReadTool.anchor_matches("code\n", n.ReadTool.line_hash("code"))
+    assert n.ReadTool.anchor_matches("code", n.ReadTool.line_hash("code\n"))
+
+
+def test_split_lines_matches_readlines_only_on_newline():
+    # Edit's line model must number lines exactly like Read (file.readlines), i.e. split on "\n"
+    # only. str.splitlines(True) also breaks on \x0c and friends, which would desync anchors.
+    assert n.ReadTool.split_lines("a\nb\x0cc\nd\n") == ["a\n", "b\x0cc\n", "d\n"]
+    assert n.ReadTool.split_lines("a\nb") == ["a\n", "b"]
+    assert n.ReadTool.split_lines("") == []
+    assert n.ReadTool.split_lines("a\nb\x0cc\nd\n") != "a\nb\x0cc\nd\n".splitlines(True)
+
+
 def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(n.shutil, "which", lambda name: None)
     (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
@@ -173,6 +191,32 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
 
     assert "stale anchor" in str(error.value)
     assert "current is anchor=0:" + n.ReadTool.line_hash("old\n") + " | old" in str(error.value)
+
+
+def test_edit_anchor_survives_trailing_newline_change(tmp_path):
+    # Regression: line_hash used to fold the trailing newline into the hash, so an anchor captured
+    # for a last line without a newline went stale once an edit gave the file a trailing newline,
+    # even though the line's visible text never changed.
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    # Anchor built from the newline-less form of the line (as captured when "b" was the last line
+    # before a trailing newline was added). It must still resolve against the current "b\n".
+    anc = anchor(1, "b")
+    n.EditTool(s, ["note.txt", [{"op": "replace", "start": anc, "end": anc, "content": "B\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "a\nB\n"
+
+
+def test_edit_anchor_consistent_with_read_on_exotic_line_boundary(tmp_path):
+    # Regression: Edit split lines with str.splitlines(True) while Read uses readlines, so a file
+    # containing a form-feed numbered lines differently and a valid Read anchor went stale in Edit.
+    s = session(tmp_path)
+    path = tmp_path / "ff.txt"
+    path.write_text("a\nb\x0cc\nd\n", encoding="utf-8")  # form-feed inside the middle line
+    read = n.ReadTool(s, [{"path": "ff.txt"}]).call()
+    assert f"anchor=2:{n.ReadTool.line_hash('d')} | d" in read  # Read numbers "d" as line 2
+    n.EditTool(s, ["ff.txt", [{"op": "replace", "start": anchor(2, "d\n"), "end": anchor(2, "d\n"), "content": "D\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "a\nb\x0cc\nD\n"
 
 
 def test_edit_accepts_inspect_code_anchor(tmp_path):
