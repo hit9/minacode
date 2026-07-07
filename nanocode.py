@@ -7247,7 +7247,7 @@ Tools:
         try:
             with patch_stdout():
                 app.run()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, ValueError, OSError):
             pass
         finally:
             self.queue_input_text = buffer.text

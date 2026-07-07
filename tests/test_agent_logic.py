@@ -700,6 +700,26 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         reader.close()
 
 
+def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
+    class ClosedInputApp:
+        def __init__(self):
+            self.loop = None
+
+        def run(self):
+            raise ValueError("I/O operation on closed file")
+
+        def exit(self, result=None):
+            pass
+
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop._make_app = lambda *args, **kwargs: ClosedInputApp()
+
+    loop.run_queue_input_app(threading.Event())
+
+    assert not loop.queue_input_active.is_set()
+
+
 
 def test_queued_text_auto_submits_at_round_end(tmp_path):
     """queue_input_text set during agent run is auto-submitted as next input."""
