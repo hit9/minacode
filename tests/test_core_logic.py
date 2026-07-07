@@ -149,11 +149,11 @@ def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     assert before == after  # deepcopy keeps shared ClassVar schemas intact
 
-    find_type = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["type"]
-    assert "null" in find_type["type"] and None in find_type["enum"]
+    search_context = n.TOOL_REGISTRY["Search"].schema(True)["function"]["parameters"]["properties"]["context"]
+    assert "null" in search_context["type"]
     # Optional array/object params use anyOf (never object/array inside a type union).
-    find_queries = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["queries"]
-    assert find_queries["anyOf"][1] == {"type": "null"}
+    search_queries = n.TOOL_REGISTRY["Search"].schema(True)["function"]["parameters"]["properties"]["queries"]
+    assert search_queries["anyOf"][1] == {"type": "null"}
 
 
 def test_strict_tools_skips_free_form_object_schemas():

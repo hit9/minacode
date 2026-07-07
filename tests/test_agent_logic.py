@@ -67,8 +67,8 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- cwd: " + str(tmp_path) in first
     assert "- os: TestOS" in first
     assert "- arch: test-arch" in first
-    assert "- detected_commands: bash, rg, sed" in first
-    assert "- detected_commands: bash, rg, sed" in second
+    assert "- detected_commands (available via Bash): bash, rg, sed" in first
+    assert "- detected_commands (available via Bash): bash, rg, sed" in second
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):
@@ -504,7 +504,7 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
+    runner.run([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -523,7 +523,7 @@ def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    runner.run([call("Bash", ["printf first"])])
+    runner.run([call("Bash", [":"])])
 
     assert s.tool_errors[0].error == "Cancelled: user refused tool call"
 
@@ -532,7 +532,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
 
-    runner.run([call("Bash", ["printf first"])])
+    runner.run([call("Bash", [":"])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -585,7 +585,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
 
     class LoopingModel:
         def request(self, messages):
-            return {}, [call("LineCount", ["a.txt"])], ""
+            return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
     answer = limited_agent.run("keep going")
@@ -619,7 +619,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.pending_user_inputs.append("second instruction")
-                return {}, [call("LineCount", ["missing.txt"])], "checking"
+                return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
@@ -635,7 +635,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[1]["content"] == "extra instruction"
     assert s.messages[2]["content"] == "checking"
     assert s.messages[3]["role"] == "tool"
-    assert s.messages[3]["content"].startswith("tool tr.1 LineCount")
+    assert s.messages[3]["content"].startswith("tool tr.1 Bash wc -l missing.txt")
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
@@ -1265,16 +1265,16 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
 
 
 def test_malformed_tool_args_defer_to_execution_chat(tmp_path):
-    """A live chat tool call whose args fail payload validation (Git with empty argv) must not
+    """A live chat tool call whose args fail payload validation (Bash with empty command) must not
     raise out of parsing; the error is deferred onto the call so the turn is not aborted."""
     s = n.Session(cwd=str(tmp_path))
     client = n.ModelClient(s)
-    raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Git", arguments='{"argv": []}'))
+    raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Bash", arguments='{"command": ""}'))
     message = SimpleNamespace(tool_calls=[raw])
     calls = client.tool_calls(message)  # must not raise ToolError
     assert len(calls) == 1
     assert calls[0].args == []
-    assert "non-empty 'argv'" in calls[0].error
+    assert "non-empty" in calls[0].error
 
 
 def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
@@ -1282,7 +1282,7 @@ def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
     s = n.Session(cwd=str(tmp_path))
     client = n.ModelClient(s)
     result = SimpleNamespace(
-        content=[SimpleNamespace(type="tool_use", id="a1", name="Git", input={"argv": []})],
+        content=[SimpleNamespace(type="tool_use", id="a1", name="Bash", input={"command": ""})],
         usage={},
     )
     _, calls, _ = client.anthropic_result(result)  # must not raise ToolError
@@ -1296,11 +1296,11 @@ def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
     s = n.Session(cwd=str(tmp_path))
     ctx = n.ContextManager(s)
     runner = n.ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
-    call = n.ToolCall(id="x1", name="Git", args=[], error="Git requires a non-empty 'argv' list")
+    call = n.ToolCall(id="x1", name="Bash", args=[], error="Bash command must be non-empty")
     results = runner.run([call])
     assert len(results) == 1
     assert results[0]["role"] == "tool"
-    assert "non-empty 'argv'" in results[0]["content"]
+    assert "non-empty" in results[0]["content"]
 
 
 def _runner(tmp_path, input_reply=""):
@@ -1316,9 +1316,9 @@ def test_parallel_safe_classification(tmp_path):
 
     assert safe("Read", [{"path": "f.txt"}])
     assert safe("Search", [{"pattern": "x"}])
-    assert safe("Git", ["status"])  # read-only subcommand
-    assert not safe("Git", ["commit", "-m", "x"])  # mutating subcommand
-    assert not safe("Bash", ["echo hi"])  # mutates + streams live output
+    assert not safe("Bash", ["git status --short"])  # Bash streams live output, so it stays serial
+    assert not safe("Bash", ["git commit -m x"])  # mutating command
+    assert not safe("Bash", ["echo hi"])  # live-output command
     assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
     assert not safe("Question", [{"question": "q?"}])  # interactive
     assert not safe("Nope", [])  # unknown tool
@@ -1397,7 +1397,7 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
     calls = [
         n.ToolCall(id="r0", name="Read", args=[{"path": "f0.txt", "ranges": [[0, 0]]}]),
         n.ToolCall(id="r1", name="Read", args=[{"path": "f1.txt", "ranges": [[0, 0]]}]),
-        n.ToolCall(id="b0", name="Bash", args=["echo hi"]),  # mutating, refused
+        n.ToolCall(id="b0", name="Bash", args=[":"]),  # confirmation required, refused
         n.ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
     ]
     messages = runner.run(calls)

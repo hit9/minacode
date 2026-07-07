@@ -14,7 +14,7 @@ def anchor(index, line):
     return f"{index}:{n.ReadTool.line_hash(line)}"
 
 
-def test_read_linecount_list_search_success_paths(tmp_path):
+def test_read_and_search_success_paths(tmp_path):
     (tmp_path / "sample.py").write_text("alpha\nNeedle\nomega\n", encoding="utf-8")
     (tmp_path / "blob.bin").write_bytes(b"a\0b")
     s = session(tmp_path)
@@ -31,14 +31,7 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert f"anchor=0:{alpha_hash} | alpha" in single_range
     assert f"anchor=1:{needle_hash} | Needle" in single_range
     assert f"anchor=2:{omega_hash} | omega" in full_default
-
-    counts = n.LineCountTool(s, ["sample.py", "missing.py"]).call()
-    assert "<total>3</total>" in counts
-    assert "missing.py" in counts
-
-    listed = n.ListTool(s, ["."]).call()
-    assert "file text: sample.py" in listed
-    assert "file binary: blob.bin" in listed
+    assert "<total_lines>3</total_lines>" in full_default  # Read reports the line count (replaces LineCount)
 
     found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
     assert f"sample.py anchor=1:{needle_hash} | Needle" in found
@@ -95,31 +88,6 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     assert "ignored_dir/inside.txt anchor=0:" not in direct_ignored
 
 
-def test_find_files_dirs_limits_and_ignores(tmp_path):
-    (tmp_path / ".gitignore").write_text("ignored.py\nignored_dir/\n", encoding="utf-8")
-    (tmp_path / "app.py").write_text("", encoding="utf-8")
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_app.py").write_text("", encoding="utf-8")
-    (tmp_path / ".hidden.py").write_text("", encoding="utf-8")
-    (tmp_path / "ignored.py").write_text("", encoding="utf-8")
-    (tmp_path / "ignored_dir").mkdir()
-    (tmp_path / "ignored_dir" / "keep.py").write_text("", encoding="utf-8")
-    s = session(tmp_path)
-
-    found = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 10}]).call()
-    limited = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 1}]).call()
-    dirs = n.FindTool(s, [{"name": "test*", "path": ".", "type": "dir"}]).call()
-
-    assert "* file: app.py" in found
-    assert "* file: tests/test_app.py" in found
-    assert ".hidden" not in found
-    assert "ignored" not in found
-    assert 'matches=2' in limited
-    assert "* omitted: 1" in limited
-    assert "* dir: tests/" in dirs
-    assert n.FindTool(s, [{"name": "*", "path": str(tmp_path.parent)}]).needs_confirmation()
-
-
 def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
@@ -132,10 +100,6 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
         n.BashTool(s, []).call()
     with pytest.raises(n.ToolError):
         n.SearchTool(s, [{"pattern": "["}]).call()
-    with pytest.raises(n.ToolError):
-        n.FindTool(s, [{"name": "*.py", "type": "bad"}]).call()
-    with pytest.raises(n.ToolError):
-        n.GitTool(s, ["cwd=..", "status"]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["inspect", "two words"]).call()
 
@@ -268,7 +232,7 @@ def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     assert "<Edit path=" in output
 
 
-def test_bash_and_git_behaviors(tmp_path):
+def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
     bash = n.BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
     assert "* exit_code: 3" in bash
@@ -281,26 +245,41 @@ def test_bash_and_git_behaviors(tmp_path):
     assert "�" not in wide
     assert wide.count(chr(0x4e2d)) == 3000
 
-    if not shutil.which("git"):
-        pytest.skip("git unavailable")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    (tmp_path / "sub").mkdir()
-    git = n.GitTool(s, ["cwd=sub", "rev-parse", "--show-toplevel"]).call()
-    assert str(tmp_path) in git
-    assert not n.GitTool(s, ["status"]).needs_confirmation()
-    assert n.GitTool(s, ["commit"]).needs_confirmation()
 
-
-def test_git_yolo_refuses_branch_changes_without_explicit_confirmation(tmp_path, monkeypatch):
+def test_bash_readonly_auto_approval_classification(tmp_path):
     s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(n.shutil, "which", lambda name: "/usr/bin/git" if name == "git" else None)
 
-    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
-        n.GitTool(s, ["switch", "feature"]).call()
+    def readonly(command):
+        return not n.BashTool(s, [command]).needs_confirmation()
 
-    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
-        n.GitTool(s, ["branch", "-D", "feature"]).call()
+    # Safe read-only commands auto-run (no confirmation prompt in non-yolo mode).
+    assert readonly("ls -la")
+    assert readonly("cat file.txt")
+    assert readonly("wc -l nanocode.py")
+    assert readonly("find . -name '*.py'")
+    assert readonly("rg needle src")
+    assert readonly("git status --short")
+    assert readonly("git --no-pager status --short")
+    assert readonly("git diff HEAD~1")
+    assert readonly("cat a | grep foo | wc -l")  # pipeline of safe commands
+    assert readonly("ls && cat README.md")       # sequence of safe commands
+
+    # Anything that writes, executes code, mutates git, or hides execution still asks.
+    assert not readonly("rm -rf build")
+    assert not readonly("git commit -m x")
+    assert not readonly("git checkout main")
+    assert not readonly("echo hi > out.txt")          # redirection
+    assert not readonly("cat $(cmd)")                  # command substitution
+    assert not readonly("python3 script.py")          # arbitrary code
+    assert not readonly("find . -delete")             # destructive flag
+    assert not readonly("find . -name x -fprint0 out") # file-writing flag
+    assert not readonly("sed -i s/a/b/ f")            # in-place edit
+    assert not readonly("git diff --output=patch.txt") # file-writing git option
+    assert not readonly("git grep -O needle")          # opens files via pager/editor
+    assert not readonly("git --paginate log")          # can invoke configured pager
+    assert not readonly("ls & rm x")                  # backgrounding
+    assert not readonly("ls; rm x")                   # unsafe stage in a sequence
+    assert not readonly("FOO=1 env")                  # env assignment / wrapper
 
 
 
@@ -531,13 +510,9 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     assert note_params["properties"]["replace_plan"]["items"]["properties"]["status"]["enum"] == ["todo", "doing", "done", "blocked"]
     assert "minItems" not in note_params["properties"]["replace_known"]
 
-    find_params = n.FindTool.schema()["function"]["parameters"]
-    assert {"name", "queries"} <= set(find_params["properties"])
-    find_item = find_params["properties"]["queries"]["items"]
-    assert find_item["properties"]["type"]["enum"] == ["file", "dir", "any"]
-
     search_params = n.SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
+    assert search_params["properties"]["queries"]["items"]["properties"]["context"]["type"] == "integer"
     def walk(value):
         if isinstance(value, dict):
             assert "anyOf" not in value
@@ -564,8 +539,6 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
     assert n.ReadTool(n.Session(cwd="."), [{"path": "nanocode.py"}]).targets()[0][1] == [(0, 0)]
-    assert n.ModelClient.tool_payload("Find", {"name": "*.py"}) == [{"name": "*.py"}]
-    assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
@@ -1054,7 +1027,7 @@ def test_gitignore_cache_populated_and_reused(tmp_path):
     """Cache stores parsed patterns and reuses them on subsequent calls."""
     (tmp_path / ".gitignore").write_text("ignored.txt\nbuild/\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     # First call populates the cache
     patterns1 = tool.gitignore_patterns(str(tmp_path))
@@ -1079,7 +1052,7 @@ def test_gitignore_cache_invalidates_on_file_change(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("old.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns1 = tool.gitignore_patterns(str(tmp_path))
     assert patterns1 == ["old.txt"]
@@ -1101,7 +1074,7 @@ def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("delete_me.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     tool.gitignore_patterns(str(tmp_path))
     ws_gitignore = str(gitignore)
@@ -1115,11 +1088,11 @@ def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
 
 
 def test_gitignore_cache_shared_across_tools(tmp_path):
-    """FindTool and SearchTool share the same cache via Session."""
+    """SearchTool instances share the same gitignore cache via Session."""
     (tmp_path / ".gitignore").write_text("secret.log\n", encoding="utf-8")
     s = session(tmp_path)
 
-    find = n.FindTool(s, [{"name": "*.py"}])
+    find = n.SearchTool(s, [{"pattern": "x"}])
     search = n.SearchTool(s, [{"pattern": "needle", "path": "."}])
 
     # Find populates the cache
@@ -1144,7 +1117,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
     (sub / ".gitignore").write_text("sub_ignored.txt\n", encoding="utf-8")
 
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     # Root patterns include only workspace .gitignore
     root_patterns = tool.gitignore_patterns(str(tmp_path))
@@ -1163,7 +1136,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
 def test_gitignore_cache_noop_when_no_gitignore(tmp_path):
     """When no .gitignore exists, returns empty list and cache stays empty."""
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == []
@@ -1174,7 +1147,7 @@ def test_gitignore_cache_preserves_order(tmp_path):
     """After a no-op stat (no change), patterns come from cache unchanged."""
     (tmp_path / ".gitignore").write_text("a.txt\nb.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     p1 = tool.gitignore_patterns(str(tmp_path))
     p2 = tool.gitignore_patterns(str(tmp_path))
@@ -1189,7 +1162,7 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
         "keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8"
     )
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == ["keep.txt"]
@@ -1444,7 +1417,7 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
     s.settings.yolo = True
     out = []
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
-    runner.run([n.ToolCall("b0", "Bash", ["printf hi"])])
+    runner.run([n.ToolCall("b0", "Bash", [":"])])
     assert len(out) == 1
     assert out[0].startswith("tool Bash")
     assert out[0].rstrip().endswith("[auto]")

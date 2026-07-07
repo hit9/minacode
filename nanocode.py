@@ -1182,8 +1182,10 @@ placeholder in the body expands to the skill's absolute folder so bundled script
 the status bar and `/status` show the count. This manual is the built-in `nanocode-help` skill.
 
 ## Safety
-Mutating actions (`Edit`, `Bash`, writing `Git`) ask for confirmation unless `/yolo` is on. nanocode
-will not switch, create, or delete git branches unless asked, and checks the branch before committing.
+`Edit` and mutating `Bash` commands ask for confirmation unless `/yolo` is on. Read-only shell
+commands (`ls`, `cat`, `wc`, `find`, `grep`/`rg`, `git status`/`diff`/`log`, …) are classified safe
+and auto-run without a prompt. There is no dedicated git tool — git runs through `Bash`, and only its
+read-only subcommands auto-run; commit/add/push and branch changes still ask.
 
 ## Troubleshooting
 - "missing config": set `provider.url`/`key`/`model` via `/set` or `config.toml`.
@@ -1898,235 +1900,6 @@ class ReadTool(Tool):
             out.append("</content>")
         out.append("</Read>")
         return "\n".join(out)
-
-
-class LineCountTool(Tool):
-    NAME = "LineCount"
-    DESCRIPTION = "Count UTF-8 file lines; returns per-file counts, missing/not_file rows, and total."
-    SIGNATURE = "LineCount(paths=[path,...])"
-    EXAMPLE = ('Count several files. Example: {"paths":["src/app.py","pyproject.toml"]}',)
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "File paths to count lines for"}},
-            "required": ["paths"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return list(payload.get("paths") or [])
-
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path in self.paths())
-
-    def call(self) -> str:
-        rows = []
-        total = 0
-        for path in self.paths():
-            relpath = self.session.relpath(path)
-            if not os.path.exists(path):
-                rows.append(f"* missing: {relpath}")
-                continue
-            if not os.path.isfile(path):
-                rows.append(f"* not_file: {relpath}")
-                continue
-            try:
-                with open(path, encoding="utf-8", errors="replace") as file:
-                    count = sum(1 for _ in file)
-            except OSError as error:
-                rows.append(f"* error: {relpath}: {error}")
-                continue
-            total += count
-            rows.append(f"* {relpath}: {count}")
-        return "\n".join(["<LineCountToolResult>", *rows, f"<total>{total}</total>", "</LineCountToolResult>"])
-
-    def paths(self) -> list[str]:
-        return [self.session.resolve_path(path) for path in self.strings(min_count=1)]
-
-
-class ListTool(Tool):
-    NAME = "List"
-    DESCRIPTION = "List one directory, including hidden entries; returns child dirs/files/symlinks with file text/binary labels."
-    SIGNATURE = "List(path, glob?); glob filters child names, not recursively"
-    EXAMPLE = ('List child entries. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory to list"},
-                "glob": {"type": "string", "description": "Optional glob filtering child names (non-recursive), e.g. test_*.py"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
-
-    def needs_confirmation(self) -> bool:
-        return not self.session.in_cwd(self.path())
-
-    def call(self) -> str:
-        path = self.path()
-        args = self.strings(max_count=2)
-        pattern = args[1] if len(args) > 1 else ""
-        if not os.path.isdir(path):
-            raise ToolError("not a directory")
-        rows = []
-        with os.scandir(path) as scan:
-            for entry in scan:
-                if pattern and not fnmatch.fnmatch(entry.name, pattern):
-                    continue
-                kind = (
-                    "symlink"
-                    if entry.is_symlink()
-                    else "dir"
-                    if entry.is_dir(follow_symlinks=False)
-                    else "file"
-                    if entry.is_file(follow_symlinks=False)
-                    else "other"
-                )
-                label = kind + ((" " + self.file_type(entry.path)) if kind == "file" else "")
-                rows.append((kind, label, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
-        order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
-        rows.sort(key=lambda item: (order[item[0]], item[2]))
-        return "\n".join(["<ListToolResult>"] + [f"* {label}: {name}" for _kind, label, name in rows] + ["</ListToolResult>"])
-
-    def path(self) -> str:
-        args = self.strings(max_count=2)
-        return self.session.resolve_path(args[0] if args else ".")
-
-    @staticmethod
-    def file_type(path: str) -> str:
-        try:
-            chunk = open(path, "rb").read(4096)
-            chunk.decode("utf-8")
-            return "text" if b"\0" not in chunk else "binary"
-        except Exception:
-            return "binary"
-
-
-class FindTool(Tool):
-    NAME = "Find"
-    DESCRIPTION = "Find file/dir paths by name or relative glob; skips hidden/gitignored entries."
-    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any"
-    EXAMPLE = (
-        'Find files. Example: {"name":"*.py"}',
-        'Find dirs. Example: {"name":"migrations","type":"dir"}',
-        'Batch. Example: {"queries":[{"name":"*.py","path":"src"},{"name":"test_*","path":"tests"}]}',
-    )
-    MAX_LIMIT = 500
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Glob or exact name to match, e.g. *.py or migrations"},
-                "path": {"type": "string", "description": "Directory to search under; defaults to repo root"},
-                "type": {"type": "string", "enum": ["file", "dir", "any"], "description": "Match files, dirs, or any; default file"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Max results, 1..{cls.MAX_LIMIT}; default 100"},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of find queries to run in one call"}
-        return {"type": "object", "properties": props, "additionalProperties": False}
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload.get("queries") or [payload]
-
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
-
-    def call(self) -> str:
-        return "\n\n".join(self.find(request) for request in self.requests())
-
-    def short_args(self) -> list[str]:
-        rows = []
-        for request in self.requests():
-            rel = self.session.relpath(str(request["path"]))
-            rows.append(
-                " ".join(
-                    [
-                        str(request["name"]),
-                        *(["path=" + rel] if rel != "." else []),
-                        *(["type=" + str(request["type"])] if request["type"] != "file" else []),
-                        *(["limit=" + str(request["limit"])] if request["limit"] != 100 else []),
-                    ]
-                )
-            )
-        return ["; ".join(rows)]
-
-    def requests(self) -> list[Json]:
-        if not self.args:
-            raise ToolError("Find requires at least one query object")
-        requests = []
-        for item in self.args:
-            if not isinstance(item, dict):
-                raise ToolError("Find args must be query objects")
-            if unexpected := sorted(set(item) - {"name", "path", "type", "limit"}):
-                raise ToolError("Find unexpected field: " + ", ".join(unexpected))
-            name = str(item.get("name") or "").strip()
-            kind = str(item.get("type") or "file")
-            limit = item.get("limit", 100)
-            if not name:
-                raise ToolError("Find requires name")
-            if kind not in {"file", "dir", "any"}:
-                raise ToolError("Find type must be file, dir, or any")
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > self.MAX_LIMIT:
-                raise ToolError(f"Find limit must be 1..{self.MAX_LIMIT}")
-            requests.append({"name": name, "path": self.session.resolve_path(str(item.get("path") or ".")), "type": kind, "limit": limit})
-        return requests
-
-    def find(self, request: Json) -> str:
-        rows = self.matches(str(request["path"]), str(request["name"]), str(request["type"]))
-        limit = int(request["limit"])
-        shown = rows[:limit] + ([f"* omitted: {len(rows) - limit}"] if len(rows) > limit else [])
-        header = f"<FindToolResult pattern={json.dumps(request['name'])} matches={len(rows)}>"
-        return "\n".join([header, *shown, "</FindToolResult>"])
-
-    def matches(self, root: str, pattern: str, kind: str) -> list[str]:
-        patterns = self.gitignore_patterns(root)
-        if self.default_ignored(root, patterns):
-            return []
-        rows: list[str] = []
-        if os.path.isfile(root):
-            return [self.row("file", root)] if kind in {"file", "any"} and self.match_path(root, pattern) else []
-        if not os.path.isdir(root):
-            raise ToolError("Find path is not a file or directory")
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                name for name in dirnames if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns)
-            ]
-            if kind in {"dir", "any"}:
-                rows.extend(self.row("dir", os.path.join(dirpath, name)) for name in dirnames if self.match_path(os.path.join(dirpath, name), pattern))
-            if kind in {"file", "any"}:
-                rows.extend(
-                    self.row("file", os.path.join(dirpath, name))
-                    for name in filenames
-                    if not name.startswith(".")
-                    and not self.ignored(os.path.join(dirpath, name), patterns)
-                    and self.match_path(os.path.join(dirpath, name), pattern)
-                )
-        return sorted(rows)
-
-    def match_path(self, path: str, pattern: str) -> bool:
-        return fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(self.session.relpath(path).replace(os.sep, "/"), pattern)
-
-    def row(self, kind: str, path: str) -> str:
-        return f"* {kind}: {self.session.relpath(path)}" + ("/" if kind == "dir" else "")
 
 
 class SearchTool(Tool):
@@ -2899,6 +2672,87 @@ class BashTool(Tool):
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
+    # Read-only executables that only inspect the filesystem/repo. A command built solely from these
+    # (and safe git subcommands) auto-runs without a confirmation prompt in non-yolo mode, replacing
+    # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
+    SAFE_COMMANDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            # Only commands whose output goes to stdout (gated by the redirection block above).
+            # Excludes sed/sort/uniq/tree — each can write a file via its own flags/args.
+            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg",
+            "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
+            "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
+            "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
+        }
+    )
+    SAFE_GIT_SUBCOMMANDS: ClassVar[frozenset[str]] = frozenset(
+        {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe",
+         "shortlog", "cat-file", "ls-tree", "rev-list", "for-each-ref", "diff-tree"}
+    )
+
+    def needs_confirmation(self) -> bool:
+        try:
+            return not self.is_readonly(self.command())
+        except ToolError:
+            return True
+
+    @classmethod
+    def is_readonly(cls, command: str) -> bool:
+        """Conservatively classify a command as safe to auto-run. Bias hard toward False: a false
+        'safe' would run a mutating command without consent, while a false 'unsafe' only costs a
+        confirmation prompt. Rejects anything that can write, execute arbitrary code, or background."""
+        command = command.strip()
+        if not command:
+            return False
+        # Reject redirections (> < >> <<), command/process substitution ($(...) `...`), and a lone
+        # background & (after stripping the &&/|| sequence operators, which are allowed).
+        scan = command.replace("&&", " ").replace("||", " ")
+        if any(ch in command for ch in (">", "<", "`")) or "$(" in command or "&" in scan:
+            return False
+        # Every stage of a pipeline/sequence must itself be a safe read-only command.
+        return all(cls._safe_segment(part) for part in re.split(r"\||;|\n", scan) if part.strip())
+
+    @classmethod
+    def _safe_segment(cls, segment: str) -> bool:
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            return False
+        if not tokens:
+            return False
+        cmd = tokens[0]
+        # Env assignments and wrapper commands can hide arbitrary execution — never auto-approve.
+        if "=" in cmd or cmd in {"env", "sudo", "eval", "exec", "command", "xargs", "nohup", "time",
+                                 "watch", "bash", "sh", "zsh", "tee", "awk", "python", "python3"}:
+            return False
+        if cmd == "git":
+            return cls._safe_git(tokens)
+        if cmd not in cls.SAFE_COMMANDS:
+            return False
+        # Flags that turn a read-only command into a writer.
+        if cmd == "find" and any(t in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"} for t in tokens):
+            return False
+        if cmd == "sed" and any(t == "-i" or t.startswith("-i") for t in tokens):
+            return False
+        return True
+
+    @classmethod
+    def _safe_git(cls, tokens: list[str]) -> bool:
+        index = 1
+        while index < len(tokens) and tokens[index] == "--no-pager":
+            index += 1
+        if index >= len(tokens):
+            return False
+        sub = tokens[index]
+        if sub not in cls.SAFE_GIT_SUBCOMMANDS:
+            return False
+        args = tokens[index + 1:]
+        if any(t == "--output" or t.startswith("--output=") for t in args):
+            return False
+        if sub == "grep" and any(t == "-O" or t.startswith("-O") or t == "--open-files-in-pager" or t.startswith("--open-files-in-pager=") for t in args):
+            return False
+        return True
+
     @classmethod
     def params_schema(cls) -> Json:
         return {
@@ -2910,7 +2764,10 @@ class BashTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload.get("command", "")]
+        command = str(payload.get("command") or "")
+        if not command.strip():
+            raise ToolError("Bash command must be non-empty")
+        return [command]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -3173,107 +3030,6 @@ class JobTool(Tool):
         if stderr:
             lines.extend(["--- stderr ---", stderr])
         return "\n".join(lines)
-
-class GitTool(Tool):
-    NAME = "Git"
-    DESCRIPTION = (
-        "Run git with explicit argv (default: cwd from Environment; use cwd= for other directories). For add, pass explicit file paths; broad add is rejected."
-    )
-    SIGNATURE = "Git(argv=[command,...], cwd?)"
-    EXAMPLE = (
-        'Status. Example: {"argv":["status","--short"]}',
-        'Diff. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
-        'Stage explicit files. Example: {"argv":["add","--","nanocode.py","README.md"]}',
-        'Show commit/file. Example: {"argv":["show","--stat","HEAD"]}',
-    )
-    READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
-    BROAD_ADD = {"-A", "--all", ".", "./", ":/", "*"}
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "cwd": {"type": "string", "description": "Working directory for the git command; defaults to repo root"},
-                "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Git command and args as a list, e.g. [\"status\",\"--short\"]"},
-            },
-            "required": ["argv"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        argv = payload.get("argv")
-        if not isinstance(argv, list) or not argv:
-            raise ToolError('Git requires a non-empty \'argv\' list. Signature: Git(argv=[command,...], cwd?)  Example: {"argv":["status","--short"]}')
-        argv = [str(a) for a in argv]
-        return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
-
-    def needs_confirmation(self) -> bool:
-        args, _ = self.git_args()
-        return not args or args[0] not in self.READONLY
-
-    def call(self) -> str:
-        args, cwd = self.git_args()
-        if self.changes_branch(args) and self.session.settings.yolo:
-            raise ToolError("branch-changing git commands require explicit confirmation; yolo cannot auto-approve them")
-        git = shutil.which("git")
-        if not git:
-            raise ToolError("git not found")
-        try:
-            proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
-            return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
-        except subprocess.TimeoutExpired as error:
-            return self.process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "\ntimeout")
-
-    BRANCH_CMDS: ClassVar[set[str]] = {"branch", "checkout", "switch", "rebase", "merge", "pull", "fetch", "reset", "revert", "cherry-pick", "tag"}
-
-    @classmethod
-    def changes_branch(cls, args: list[str]) -> bool:
-        if not args or args[0] not in cls.BRANCH_CMDS:
-            return False
-        # `git checkout -- <path>` / `git reset -- <path>` restore or unstage files; they do not
-        # touch branches or history, so they must not trip the yolo confirmation guard.
-        if args[0] in {"checkout", "reset"} and "--" in args[1:]:
-            return False
-        return True
-
-    def git_args(self) -> tuple[list[str], str]:
-        if not self.args:
-            raise ToolError("Git requires arguments")
-        args = [str(arg) for arg in self.args]
-        cwd = self.session.cwd
-        if args[0].startswith("cwd="):
-            raw_cwd = args.pop(0)[4:]
-            if not raw_cwd:
-                raise ToolError("cwd= requires a path")
-            cwd = self.session.resolve_path(raw_cwd)
-            if not self.session.in_cwd(cwd):
-                raise ToolError("git cwd outside workspace")
-            if not os.path.isdir(cwd):
-                raise ToolError("git cwd is not a directory")
-        if not args:
-            raise ToolError("Git requires arguments")
-        self.validate_add(args, cwd)
-        return args, cwd
-
-    def validate_add(self, args: list[str], cwd: str) -> None:
-        if args[0] != "add":
-            return
-        paths, explicit = [], False
-        for arg in args[1:]:
-            if arg == "--":
-                explicit = True
-            elif arg in self.BROAD_ADD or arg.startswith("--pathspec-from-file"):
-                raise ToolError("Git add requires explicit file paths")
-            elif explicit or not arg.startswith("-"):
-                paths.append(arg)
-        if not paths:
-            raise ToolError("Git add requires explicit file paths")
-        for path in paths:
-            if path.startswith(":") or any(char in path for char in "*?[]") or not self.session.in_cwd(os.path.abspath(os.path.join(cwd, path))):
-                raise ToolError("Git add requires explicit file paths inside workspace")
-
 
 class RecallTool(Tool):
     NAME = "Recall"
@@ -3726,15 +3482,11 @@ TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
     SkillTool,
     ReadTool,
-    LineCountTool,
-    ListTool,
-    FindTool,
     InspectCodeTool,
     SearchTool,
     EditTool,
     BashTool,
     JobTool,
-    GitTool,
     RecallTool,
     NoteTool,
     QuestionTool,
@@ -3961,10 +3713,12 @@ class ContextManager:
         info = self.session.system_info
         rows = [
             f"- cwd: {info.cwd}",
+            # Front-ranked so the model knows which executables it may drive via Bash (e.g. git, wc,
+            # find, ls, rg) — these replace the removed List/Find/LineCount/read-only-Git tools.
+            "- detected_commands (available via Bash): " + (", ".join(info.commands) or "(none)"),
             f"- os: {info.os}",
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
-            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
         ]
         return "\n".join(rows)
 
@@ -5707,8 +5461,8 @@ class ToolRunner:
 
     def parallel_safe(self, call: ToolCall) -> bool:
         # A call may run concurrently only if it neither mutates state nor blocks on interactive
-        # input: read-only, auto-approved, non-interactive tools (Read/Search/Find/List/Recall/
-        # InspectCode, read-only Git, read-only MCP). Edit is coordinated serially by EditBatchPlan;
+        # input: read-only, auto-approved, non-interactive tools (Read/Search/Recall/InspectCode,
+        # read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Question blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None or call.name in {"Edit", "Question"} or tool_class in (BashTool, JobTool):
@@ -5761,11 +5515,6 @@ class ToolRunner:
             return True
         if tool_class.MUTATES:
             return True
-        if call.name == "Git":
-            try:
-                return tool_class(self.session, call.args).needs_confirmation()
-            except Exception:
-                return True
         return False
 
     def run_one(
@@ -5778,6 +5527,8 @@ class ToolRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
+        if call.error:
+            return "failed", self.reject(call, f"ToolError: {call.error}", batch_suffix=batch_suffix)
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
@@ -5786,8 +5537,6 @@ class ToolRunner:
             tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
-            if call.error:
-                raise ToolError(call.error)
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
@@ -6451,7 +6200,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     @classmethod
     def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
-        # payload_args may reject malformed arguments (e.g. Git with an empty argv). Capture that
+        # payload_args may reject malformed arguments (e.g. Bash with an empty command). Capture that
         # error on the call so it is replayed as a tool result during execution, letting the model
         # self-correct, rather than escaping to abort the entire agent turn.
         try:
@@ -6465,10 +6214,11 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read LineCount List Find InspectCode Search Edit Bash Git Job Recall Note Question MCP.
+- Available: Read InspectCode Search Edit Bash Job Recall Note Question MCP.
 - Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
-- Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable. When several files or symbols are in play, batch all the reads/searches into one parallel request rather than one at a time.
-- Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit. Drive each Bash call to complete in a single pass: chain the known steps into one command (`&&`, `;`, pipelines, a heredoc script) and push as far as current knowledge allows instead of one command per turn. Split into a second call only when a later step genuinely depends on output you cannot predict.
+- Files/code: Read inspects files; Search locates text and returns editable anchors; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable. When several files or symbols are in play, batch all the reads/searches into one parallel request rather than one at a time.
+- Shell: Bash runs everything else — listing (`ls`), finding paths (`find`), counting (`wc -l`), and git (`git status`/`diff`/`log`/`add`/`commit`/…). Use only the executables shown in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log and the like) auto-run without a confirmation prompt; anything that writes, executes code, or mutates git still asks. Drive each Bash call to complete in a single pass: chain the known steps into one command (`&&`, `;`, pipelines, a heredoc script) and push as far as current knowledge allows instead of one command per turn. Split into a second call only when a later step genuinely depends on output you cannot predict.
+- Changes: Edit writes files.
 - Long-running/non-blocking work: use Job (start/status/wait/list/kill) for processes that outlive one command — dev servers, watchers, long builds or test suites — so the agent keeps working; poll with Job status and kill when done. Use plain Bash for quick commands that finish promptly.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
 - Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
@@ -6482,7 +6232,7 @@ GUIDE:
 
 FLOW:
 - Act when clear; keep using tools until done, then return a final answer.
-- BATCH BY DEFAULT: issue every independent tool call in one parallel request; a single call per turn is the exception, not the norm. The moment you know two or more files/symbols/paths to inspect, read/search them all in ONE batch — never drip them out one per turn. Fan out exploration (multiple Read/Find/Search/InspectCode) up front, then act on the combined results. Serialize ONLY when a call truly needs a prior call's output.
+- BATCH BY DEFAULT: issue every independent tool call in one parallel request; a single call per turn is the exception, not the norm. The moment you know two or more files/symbols/paths to inspect, read/search them all in ONE batch — never drip them out one per turn. Fan out exploration (multiple Read/Search/InspectCode, or a Bash command that gathers known shell facts in one pass) up front, then act on the combined results. Serialize ONLY when a call truly needs a prior call's output.
 - Use tool feedback; never repeat a failed call unchanged — diagnose, then adjust.
 - Do not switch/create/delete git branches unless explicitly asked. Before committing, check the branch and stop if it changed since task start. Commit or push only when asked.
 - Keep changes small/local/reversible and never overwrite unrelated user work.
@@ -7332,7 +7082,7 @@ CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP, Skill.
+  Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Question, MCP, Skill.
   Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
 """
 

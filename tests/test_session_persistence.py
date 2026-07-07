@@ -450,36 +450,35 @@ def test_clean_expired_sessions_skips_current_session(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Transcript replay resilience (regression: multi-line tool arguments such as
-# a git commit -m message must not crash --resume rendering)
+# a Bash command with embedded newlines must not crash --resume rendering)
 # ---------------------------------------------------------------------------
 
-def _git_raw_call(arguments: str) -> dict:
-    return {"id": "c1", "type": "function", "function": {"name": "Git", "arguments": arguments}}
+def _bash_raw_call(arguments: str) -> dict:
+    return {"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": arguments}}
 
 
 def test_transcript_tool_call_parses_multiline_arguments():
     """Argument strings with literal newlines (invalid strict JSON) still parse, so the
-    git commit message survives instead of being dropped to {}."""
-    raw = _git_raw_call('{"argv": ["commit","-m","line one\nline two"]}')
+    Bash command survives instead of being dropped to {}."""
+    raw = _bash_raw_call("{\"command\": \"printf 'line one\nline two'\"}")
     call = n.CommandLoop.transcript_tool_call(raw)
     assert call is not None
-    # Git.payload_args returns the argv list directly; the multi-line message is recovered.
-    assert call.args == ["commit", "-m", "line one\nline two"]
+    assert call.args == ["printf 'line one\nline two'"]
 
 
 def test_transcript_tool_call_does_not_crash_on_unparseable_args():
-    """A historical Git call whose payload fails validation (no argv) must render, not raise."""
-    raw = _git_raw_call("{not valid json at all")
+    """A historical Bash call whose payload fails validation must render, not raise."""
+    raw = _bash_raw_call("{not valid json at all")
     call = n.CommandLoop.transcript_tool_call(raw)  # must not raise ToolError
     assert call is not None
-    assert call.name == "Git"
+    assert call.name == "Bash"
 
 
 def test_chat_tool_calls_parse_multiline_commit_message():
-    """The live chat path recovers args from a multi-line commit message too."""
+    """The live chat path recovers args from a multi-line Bash command too."""
     class _Fn:
-        name = "Git"
-        arguments = '{"argv": ["commit","-m","subject\n\nbody line"]}'
+        name = "Bash"
+        arguments = "{\"command\": \"printf 'subject\n\nbody line'\"}"
     class _Raw:
         id = "x1"
         function = _Fn()
@@ -488,4 +487,4 @@ def test_chat_tool_calls_parse_multiline_commit_message():
     s = n.Session(cwd="/tmp")
     calls = n.ModelClient(s).tool_calls(_Msg())
     assert len(calls) == 1
-    assert calls[0].args == ["commit", "-m", "subject\n\nbody line"]
+    assert calls[0].args == ["printf 'subject\n\nbody line'"]
