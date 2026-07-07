@@ -63,6 +63,13 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
+try:
+    import pygments
+    from pygments.lexers import get_lexer_for_filename
+    from pygments.token import Token
+except ImportError:  # pragma: no cover - optional highlighting dependency
+    pygments = None
+
 __version__ = "0.8.2"
 
 Json = dict[str, Any]
@@ -6588,11 +6595,107 @@ class UiPrinter:
         segments.extend(("ansibrightblack", line + "\n") for line in lines[1:])
         return segments
 
+    # Map Pygments token types to prompt_toolkit style names.  Parent types are
+    # consulted if a specific type is not listed, so highlighting degrades
+    # gracefully for unanticipated tokens.
+    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = {
+        Token.Comment: "ansibrightblack italic",
+        Token.Keyword: "ansimagenta",
+        Token.Keyword.Constant: "ansimagenta",
+        Token.Keyword.Type: "ansicyan",
+        Token.Name: "ansiwhite",
+        Token.Name.Builtin: "ansicyan",
+        Token.Name.Builtin.Pseudo: "ansicyan",
+        Token.Name.Class: "ansicyan bold",
+        Token.Name.Decorator: "ansiyellow",
+        Token.Name.Function: "ansigreen",
+        Token.Name.Function.Magic: "ansigreen",
+        Token.Name.Namespace: "ansicyan",
+        Token.Number: "ansiyellow",
+        Token.Operator: "ansiwhite",
+        Token.Operator.Word: "ansimagenta",
+        Token.Punctuation: "ansiwhite",
+        Token.String: "ansigreen",
+        Token.String.Affix: "ansimagenta",
+        Token.String.Interpol: "ansiyellow",
+        Token.Text: "ansiwhite",
+    }
+
+    @classmethod
+    def _diff_hl_style(cls, token_type: Any) -> str:
+        t: Any = token_type
+        while t and t is not Token:
+            if t in cls.DIFF_HL_STYLES:
+                return cls.DIFF_HL_STYLES[t]
+            t = t.parent
+        return "ansiwhite"
+
+    def _diff_tokenize_lines(self, code_text: str, path: str | None) -> list[list[tuple[str, str]]] | None:
+        """Tokenize a whole block of code and return highlighted segments per line.
+
+        Pygments lexers are designed to work on whole files; splitting by diff
+        lines and lexing each one independently breaks multiline strings and
+        indentation-sensitive languages.  We therefore lex the assembled code
+        block once and split the resulting token stream back into lines.
+        """
+        if pygments is None or not path:
+            return None
+        try:
+            lexer = get_lexer_for_filename(path, stripnl=False)
+        except Exception:
+            return None
+        try:
+            tokens = lexer.get_tokens(code_text)
+        except Exception:
+            return None
+
+        lines: list[list[tuple[str, str]]] = [[]]
+        for token_type, value in tokens:
+            style = self._diff_hl_style(token_type)
+            parts = value.split("\n")
+            for i, part in enumerate(parts):
+                if i > 0:
+                    lines.append([])
+                if part:
+                    lines[-1].append((style, part))
+        return lines
+
     def diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
+
+        # Determine the target file path from the diff header.  The `+++` line
+        # names the resulting file; for created files `---` is /dev/null.
+        file_path: str | None = None
+        for header in lines:
+            if header.startswith("+++"):
+                candidate = header[4:].strip()
+                if candidate != "/dev/null":
+                    file_path = candidate
+                break
+
+        # Collect lines that belong to the new file version: context lines and
+        # added lines.  These are lexed together so the highlighted diff is
+        # syntactically coherent.  Removed lines are left in plain diff red so
+        # the "before" state does not interfere with lexing the "after" state.
+        new_code_lines: list[str] = []
+        new_code_indices: list[int] = []
+        for i, line in enumerate(lines):
+            if line.startswith(("+", " ")) and len(line) >= 1:
+                new_code_lines.append(line[1:])
+                new_code_indices.append(i)
+
+        highlighted: list[list[tuple[str, str]]] | None = None
+        if new_code_lines:
+            highlighted = self._diff_tokenize_lines("\n".join(new_code_lines), file_path)
+
+        hl_by_index: dict[int, list[tuple[str, str]]] = {}
+        if highlighted is not None:
+            for hl_index, line_index in enumerate(new_code_indices):
+                if hl_index < len(highlighted):
+                    hl_by_index[line_index] = highlighted[hl_index]
 
         def hunk_start(part: str, prefix: str) -> int | None:
             if not part.startswith(prefix):
@@ -6606,6 +6709,12 @@ class UiPrinter:
             old_text = "" if old is None else str(old)
             new_text = "" if new is None else str(new)
             segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} | "))
+
+        def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str) -> None:
+            segments.append((prefix_style, prefix))
+            for style, piece in content_hl:
+                segments.append((style, piece))
+            segments.append(("", suffix))
 
         for index, line in enumerate(lines):
             suffix = "\n" if index < len(lines) - 1 else ""
@@ -6621,7 +6730,8 @@ class UiPrinter:
                 segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
                 number(None, new_line)
-                segments.append(("ansigreen", line + suffix))
+                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
+                append_hl("+", "ansigreen", content_hl, suffix)
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
                 number(old_line, None)
@@ -6629,7 +6739,8 @@ class UiPrinter:
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
-                segments.append(("ansiwhite", line + suffix))
+                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
+                append_hl(" ", "ansiwhite", content_hl, suffix)
                 old_line = None if old_line is None else old_line + 1
                 new_line = None if new_line is None else new_line + 1
             else:

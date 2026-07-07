@@ -145,6 +145,47 @@ def test_edit_creates_and_patches_file(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
+
+
+def test_diff_segments_syntax_highlights_python(tmp_path):
+    ui = n.UiPrinter()
+    diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
+    segments = ui.diff_segments(diff)
+
+    # The added line starts with the green diff prefix and keyword `return` is
+    # highlighted as a keyword.
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "return" and s == "ansimagenta" for s, t in segments)
+
+    # Removed lines are plain diff red; no syntax highlight tokens for the
+    # removed content.
+    removed_raw = [t for s, t in segments if s == "ansired"]
+    assert any("pass" in t for t in removed_raw)
+
+    # Line numbers are preserved.
+    assert any("1" in t and "|" in t for s, t in segments)
+
+
+def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
+    ui = n.UiPrinter()
+    diff = "--- foo.unknownxyz\n+++ foo.unknownxyz\n@@ -1,1 +1,1 @@\n- old\n+ new\n"
+    segments = ui.diff_segments(diff)
+
+    # Unknown extension should fall back to plain diff coloring.
+    assert any(s == "ansired" and "-" in t for s, t in segments)
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+
+
+def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
+    ui = n.UiPrinter()
+    # No +++ line, so pygments cannot pick a lexer.
+    diff = "@@ -1,1 +1,1 @@\n- old\n+ new\n"
+    segments = ui.diff_segments(diff)
+
+    # Should still render without crashing; removed line is red, added line is
+    # green even though no lexer could be selected.
+    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
 def test_edit_stale_anchor_reports_current_line(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
