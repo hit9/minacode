@@ -767,6 +767,30 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
 
+def test_queue_live_region_shows_divider_and_pending(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    s.pending_user_inputs = ["run tests", "then push"]
+
+    text = "".join(t for _, t in loop.queue_region_fragments())
+    assert "queued" in text
+    assert "+ run tests" in text and "+ then push" in text
+    # The divider carries a moving bright "sweep" cell.
+    assert any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
+
+    s.pending_user_inputs = []
+    assert loop.queue_region_fragments() == []  # region hidden when nothing is queued
+
+
+def test_queue_flush_moves_messages_into_log(tmp_path):
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=out.append)
+    # The agent's flush hook is wired to move queued messages up into the scrollback log.
+    assert loop.agent.on_queue_flush == loop.flush_queued_to_log
+    loop.flush_queued_to_log(["do a thing", "  "])
+    assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
+
 
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
     """pending_user_inputs comes first, then queue_input_text."""

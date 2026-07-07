@@ -6307,6 +6307,9 @@ FINAL:
         self.model = ModelClient(session)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
+        # Called with the queued messages when they are flushed into the turn, so the UI can move
+        # them from the live queue region up into the scrollback log. Set by CommandLoop.
+        self.on_queue_flush: Callable[[list[str]], None] | None = None
 
     def run(self, user_input: str) -> str:
         self.session.state.turn_step = 0
@@ -6370,6 +6373,8 @@ FINAL:
                     del remaining[index]
                     break
         self.session.pending_user_inputs = remaining
+        if self.on_queue_flush:
+            self.on_queue_flush(pending)
 
     @staticmethod
     def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
@@ -7081,8 +7086,6 @@ class StatusBar:
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
             )
-        if show_elapsed and self.session.pending_user_inputs:
-            parts.append(("+" + str(len(self.session.pending_user_inputs)), "warn"))
         if show_elapsed:
             minutes, rest = divmod(int(elapsed), 60)
             parts.append((f"{elapsed:.1f}s" if elapsed < 60 else f"{minutes}m{rest:02d}s", "runtime"))
@@ -7279,6 +7282,7 @@ Tools:
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
+        self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.preview_fn = self.tool_preview
@@ -7308,6 +7312,44 @@ Tools:
                 continue
             self.run_queue_input_app(stop_event)
 
+    def flush_queued_to_log(self, texts: list[str]) -> None:
+        # Move flushed queued messages from the live bottom region up into the scrollback log, then
+        # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
+        # emitted lines above the still-running queue-input app.
+        for text in texts:
+            if text.strip():
+                self.emit("+ " + text)
+        if self.queue_input_app is not None:
+            self.queue_input_app.invalidate()
+
+    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 14.0
+
+    def queue_divider_fragments(self) -> list[tuple[str, str]]:
+        cols = shutil.get_terminal_size((80, 20)).columns
+        width = max(16, min(46, cols - 2))
+        label = "── queued "
+        rule = max(4, width - len(label))
+        # A short bright window slides left→right across the dim, fading rule, looping — the sweep.
+        period = rule + 6
+        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3
+        fragments: list[tuple[str, str]] = [("class:queue.rule", label)]
+        for index in range(rule):
+            char = "─" if index < rule * 0.6 else ("╌" if index < rule * 0.85 else "┈")
+            style = "class:queue.sweep" if abs(index - pos) <= 1 else "class:queue.rule"
+            fragments.append((style, char))
+        return fragments
+
+    def queue_region_fragments(self) -> list[tuple[str, str]]:
+        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        if not pending:
+            return []
+        fragments = self.queue_divider_fragments()
+        for text in pending:
+            fragments.append(("", "\n"))
+            fragments.append(("class:prompt", "+ "))
+            fragments.append(("", Text.clean(text)))
+        return fragments
+
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
         prompt = FormattedText([("class:prompt", "+> ")])
 
@@ -7331,15 +7373,13 @@ Tools:
                 return
             queued = [text for text in texts if not text.startswith("/")]
             commands = [text for text in texts if text.startswith("/")]
+            # Queued messages live in the bottom region (below the sweep divider) until the turn
+            # flushes them up into the log — they are not echoed to scrollback here.
             self.session.pending_user_inputs.extend(queued)
-
-            def show() -> None:
-                for text in queued:
-                    self.emit("+ " + text)
-                for text in commands:
-                    self.run_queued_command(text)
-
-            run_in_terminal(show)
+            if queued and self.queue_input_app is not None:
+                self.queue_input_app.invalidate()
+            if commands:
+                run_in_terminal(lambda: [self.run_queued_command(text) for text in commands])
 
         @bindings.add("enter", eager=True)
         def _enter(event):
@@ -7384,8 +7424,14 @@ Tools:
             buffer.reset(Document(self.queue_input_text))
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
+        # Shown only while something is queued; the turn flushes them up into the scrollback log.
+        queued_region = ConditionalContainer(
+            Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True),
+            filter=Condition(lambda: any(text.strip() for text in self.session.pending_user_inputs)),
+        )
         root = FloatContainer(
-            HSplit([input_window, completion_space, self.status_window(active=True)]),
+            HSplit([queued_region, input_window, completion_space, self.status_window(active=True)]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
@@ -7629,6 +7675,8 @@ Tools:
         return Style.from_dict(
             {
                 "prompt": "ansicyan bold",
+                "queue.rule": "ansibrightblack",
+                "queue.sweep": "ansicyan bold",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
