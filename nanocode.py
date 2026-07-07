@@ -69,6 +69,7 @@ try:
     from pygments.token import Token
 except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
+    Token = None  # keep the name defined so class-body/token lookups don't NameError
 
 __version__ = "0.8.2"
 
@@ -6597,29 +6598,34 @@ class UiPrinter:
 
     # Map Pygments token types to prompt_toolkit style names.  Parent types are
     # consulted if a specific type is not listed, so highlighting degrades
-    # gracefully for unanticipated tokens.
-    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = {
-        Token.Comment: "ansibrightblack italic",
-        Token.Keyword: "ansimagenta",
-        Token.Keyword.Constant: "ansimagenta",
-        Token.Keyword.Type: "ansicyan",
-        Token.Name: "ansiwhite",
-        Token.Name.Builtin: "ansicyan",
-        Token.Name.Builtin.Pseudo: "ansicyan",
-        Token.Name.Class: "ansicyan bold",
-        Token.Name.Decorator: "ansiyellow",
-        Token.Name.Function: "ansigreen",
-        Token.Name.Function.Magic: "ansigreen",
-        Token.Name.Namespace: "ansicyan",
-        Token.Number: "ansiyellow",
-        Token.Operator: "ansiwhite",
-        Token.Operator.Word: "ansimagenta",
-        Token.Punctuation: "ansiwhite",
-        Token.String: "ansigreen",
-        Token.String.Affix: "ansimagenta",
-        Token.String.Interpol: "ansiyellow",
-        Token.Text: "ansiwhite",
-    }
+    # gracefully for unanticipated tokens.  Empty when Pygments is unavailable
+    # (Token is None then, so the dict literal cannot be built).
+    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = (
+        {
+            Token.Comment: "ansibrightblack italic",
+            Token.Keyword: "ansimagenta",
+            Token.Keyword.Constant: "ansimagenta",
+            Token.Keyword.Type: "ansicyan",
+            Token.Name: "ansiwhite",
+            Token.Name.Builtin: "ansicyan",
+            Token.Name.Builtin.Pseudo: "ansicyan",
+            Token.Name.Class: "ansicyan bold",
+            Token.Name.Decorator: "ansiyellow",
+            Token.Name.Function: "ansigreen",
+            Token.Name.Function.Magic: "ansigreen",
+            Token.Name.Namespace: "ansicyan",
+            Token.Number: "ansiyellow",
+            Token.Operator: "ansiwhite",
+            Token.Operator.Word: "ansimagenta",
+            Token.Punctuation: "ansiwhite",
+            Token.String: "ansigreen",
+            Token.String.Affix: "ansimagenta",
+            Token.String.Interpol: "ansiyellow",
+            Token.Text: "ansiwhite",
+        }
+        if pygments is not None
+        else {}
+    )
 
     @classmethod
     def _diff_hl_style(cls, token_type: Any) -> str:
@@ -6683,7 +6689,11 @@ class UiPrinter:
         new_code_lines: list[str] = []
         new_code_indices: list[int] = []
         for i, line in enumerate(lines):
-            if line.startswith(("+", " ")) and len(line) >= 1:
+            # Skip the unified-diff file headers / hunk markers (the trailing space avoids matching a
+            # real added line whose content starts with "+++"); feed only actual code to the lexer.
+            if line.startswith(("+++ ", "--- ", "@@ ")):
+                continue
+            if line.startswith(("+", " ")):
                 new_code_lines.append(line[1:])
                 new_code_indices.append(i)
 
