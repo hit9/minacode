@@ -306,6 +306,12 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert readonly("ls && cat README.md")       # sequence of safe commands
     assert readonly("cd /Users/x/proj && git log --oneline -10")  # cd prefix is a benign builtin
     assert readonly("cd a; ls")
+    assert readonly("ls -la && find . -maxdepth 2 -type f | grep -v .git | sort | head -80")
+    assert readonly("cat f | sort -u | uniq -c")  # sort/uniq are read-only in pipelines
+    assert readonly("grep foo f 2>/dev/null")            # discarding stderr is not a file write
+    assert readonly("ls -la >/dev/null 2>&1")            # /dev/null + stderr-merge
+    assert readonly("cat f | sed -n '1,20p'")            # sed for read-only filtering
+    assert readonly("tree -L 2 src")
 
     # Anything that writes, executes code, mutates git, or hides execution still asks.
     assert not readonly("rm -rf build")
@@ -321,6 +327,10 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert not readonly("python3 script.py")          # arbitrary code
     assert not readonly("find . -delete")             # destructive flag
     assert not readonly("find . -name x -fprint0 out") # file-writing flag
+    assert not readonly("cat f > g")                   # redirection to a real file
+    assert not readonly("sed -i s/a/b/ f")             # in-place edit
+    assert not readonly("sort -o out.txt f")           # sort output file
+    assert not readonly("tree -o out.txt")             # tree output file
     assert not readonly("sed -i s/a/b/ f")            # in-place edit
     assert not readonly("git diff --output=patch.txt") # file-writing git option
     assert not readonly("git grep -O needle")          # opens files via pager/editor

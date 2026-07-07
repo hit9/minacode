@@ -2694,10 +2694,11 @@ class BashTool(Tool):
     # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
     SAFE_COMMANDS: ClassVar[frozenset[str]] = frozenset(
         {
-            # Only commands whose output goes to stdout (gated by the redirection block above).
-            # Excludes sed/sort/uniq/tree — each can write a file via its own flags/args.
-            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg",
-            "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
+            # Common read-only inspection commands. The obvious file-writing forms (`sort -o`,
+            # `uniq IN OUT`, `sed -i`, `tree -o`) are guarded below; we do not chase exotic paths
+            # like sed's `w` command — common sense over exhaustive safety.
+            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg", "sort", "uniq",
+            "sed", "tree", "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
             "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
             "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
             # Benign builtin the model routinely prefixes (cd changes the subshell dir only).
@@ -2723,15 +2724,21 @@ class BashTool(Tool):
         command = command.strip()
         if not command:
             return False
-        # Reject redirections (> < >> <<) and command/process substitution ($(...) `...`).
-        if any(ch in command for ch in (">", "<", "`")) or "$(" in command:
+        # Normalize away the ubiquitous harmless redirections — discarding output to /dev/null and
+        # merging stderr/stdout — so the common `cmd 2>/dev/null` / `cmd >/dev/null 2>&1` forms are
+        # not treated as file writes.
+        scan = re.sub(r"(?:\d*>>?|&>|<)\s*/dev/null", " ", command)
+        scan = scan.replace("2>&1", " ").replace(">&2", " ")
+        # Anything still redirecting to/from a real path, or substituting a command, can write or
+        # run arbitrary code.
+        if any(ch in scan for ch in (">", "<", "`")) or "$(" in scan:
             return False
         # Reject a lone background & (detaches a process); && and || are allowed sequence operators.
-        if re.search(r"(?<!&)&(?!&)", command):
+        if re.search(r"(?<!&)&(?!&)", scan):
             return False
         # Split on every control operator (&& || | ; newline) and require EVERY stage to be a safe
         # read-only command — so `git log && rm x` is not auto-approved on the strength of `git log`.
-        return all(cls._safe_segment(part) for part in re.split(r"&&|\|\||[|;\n]", command) if part.strip())
+        return all(cls._safe_segment(part) for part in re.split(r"&&|\|\||[|;\n]", scan) if part.strip())
 
     @classmethod
     def _safe_segment(cls, segment: str) -> bool:
@@ -2750,12 +2757,34 @@ class BashTool(Tool):
             return cls._safe_git(tokens)
         if cmd not in cls.SAFE_COMMANDS:
             return False
-        # Flags that turn a read-only command into a writer.
+        # Flags/args that turn a read-only command into a writer.
         if cmd == "find" and any(t in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"} for t in tokens):
             return False
-        if cmd == "sed" and any(t == "-i" or t.startswith("-i") for t in tokens):
+        if cmd == "sed" and any(t == "-i" or t.startswith("-i") or t == "--in-place" or t.startswith("--in-place") for t in tokens):
             return False
+        if cmd == "tree" and any(t == "-o" or t.startswith("-o") or t.startswith("--output") for t in tokens):
+            return False  # `tree -o FILE` writes the listing to a file
+        if cmd == "sort" and any(t.startswith("-o") or t.startswith("--output") for t in tokens):
+            return False  # `sort -o FILE` / `--output=FILE` writes to a file
+        if cmd == "uniq" and cls._uniq_writes(tokens):
+            return False  # `uniq INPUT OUTPUT` writes the second file operand
         return True
+
+    @staticmethod
+    def _uniq_writes(tokens: list[str]) -> bool:
+        # uniq writes only in the two-operand form `uniq [OPTS] INPUT OUTPUT`. Count positional
+        # operands, skipping the numeric argument that follows a value-taking short flag.
+        value_flags = {"-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"}
+        operands = 0
+        skip_next = False
+        for token in tokens[1:]:
+            if skip_next:
+                skip_next = False
+            elif token in value_flags:
+                skip_next = True
+            elif not token.startswith("-"):
+                operands += 1
+        return operands >= 2
 
     @classmethod
     def _safe_git(cls, tokens: list[str]) -> bool:
