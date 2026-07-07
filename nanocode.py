@@ -66,6 +66,15 @@ from rich.rule import Rule
 __version__ = "0.8.2"
 
 Json = dict[str, Any]
+
+
+def create_prompt_output():
+    output = create_output()
+    if hasattr(output, "enable_cpr"):
+        output.enable_cpr = False
+    return output
+
+
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
@@ -7503,6 +7512,7 @@ Tools:
             style=self.style(),
             refresh_interval=StatusBar.INTERVAL,
             erase_when_done=True,
+            output=create_prompt_output(),
         )
 
     def run_input_app(self, app: Application) -> Any:

@@ -17,6 +17,7 @@
 - Removed branch-change detection protection that prevented `git commit` after an external branch switch.
 
 ### Fixed
+- Suppress prompt-toolkit's CPR warning in terminals that do not answer cursor position requests by disabling CPR probing for nanocode's prompt applications.
 - Stable Edit anchors, eliminating spurious "stale anchor" errors. `line_hash` no longer folds the trailing newline into the hash, so a line's anchor stays valid when only its final newline changes (e.g. the last line gaining or losing its `\n`) and Read/Search/Edit anchors now agree with InspectCode's. Edit also numbers lines exactly like Read — both split on `\n` only via a shared `ReadTool.split_lines`, replacing `str.splitlines(True)`, which additionally breaks on `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028`, `\u2029` and desynced line numbering (and thus anchors) for any file containing those characters.
 
 ## 0.8.2 - 2026-07-03

@@ -71,6 +71,14 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- detected_commands (available via Bash): bash, rg, sed" in second
 
 
+def test_prompt_output_disables_cpr_probe(monkeypatch):
+    output = SimpleNamespace(enable_cpr=True)
+    monkeypatch.setattr(n, "create_output", lambda: output)
+
+    assert n.create_prompt_output() is output
+    assert output.enable_cpr is False
+
+
 def test_session_tool_result_store_prunes_old_records(tmp_path):
     s = session(tmp_path)
     for index in range(405):
