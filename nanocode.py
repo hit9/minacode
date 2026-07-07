@@ -1319,20 +1319,27 @@ class BackgroundJob:
     BUFFER_CHARS: ClassVar[int] = 256 * 1024
 
     def drain(self, *, timeout: float = 0.0, final: bool = False) -> None:
-        """Read any available output without blocking (unless final=True)."""
+        """Read available output. With final=True (or a positive timeout) block up to `timeout`
+        seconds, draining until the streams reach EOF; otherwise read only what is ready now."""
         if self.process.stdout is None or self.process.stderr is None:
             return
+        blocking = final or timeout > 0
         selector = selectors.DefaultSelector()
         try:
             for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
                 if not stream.closed:
                     selector.register(stream, selectors.EVENT_READ, label)
-            deadline = time.monotonic() + timeout
+            deadline = time.monotonic() + max(0.0, timeout)
             while selector.get_map():
-                remaining = deadline - time.monotonic() if final else 0.0
-                if final and remaining <= 0:
+                remaining = deadline - time.monotonic()
+                events = selector.select(max(0.0, remaining) if blocking else 0.0)
+                if not events:
+                    # Nothing ready: keep waiting only while a positive budget remains; a
+                    # non-blocking drain returns immediately instead of spinning until EOF.
+                    if blocking and remaining > 0:
+                        continue
                     break
-                for key, _ in selector.select(max(0.0, remaining) if final else 0.0):
+                for key, _ in events:
                     self._read(selector, key)
         finally:
             selector.close()
@@ -3095,7 +3102,6 @@ class JobTool(Tool):
         job = self._resolve_job(payload)
         timeout = int(payload.get("timeout") or 0)
         job.drain(timeout=timeout)
-        self._enforce_deadline(job)
         job.update_status()
         return self._format(job, payload)
 
@@ -3103,14 +3109,14 @@ class JobTool(Tool):
         job = self._resolve_job(payload)
         timeout = payload.get("timeout")
         try:
-            if timeout is None:
+            # timeout omitted or 0 means block until the process exits (per the schema).
+            if not timeout:
                 job.process.wait()
             else:
-                job.process.wait(timeout=max(0, int(timeout)))
+                job.process.wait(timeout=max(1, int(timeout)))
             job.drain(final=True)
         except subprocess.TimeoutExpired:
             job.drain()
-        self._enforce_deadline(job)
         job.update_status()
         return self._format(job, payload)
 
@@ -3136,13 +3142,6 @@ class JobTool(Tool):
         if job is None:
             raise ToolError(f"unknown job: {job_id!r}")
         return job
-
-    def _enforce_deadline(self, job: BackgroundJob) -> None:
-        if job.status != "running":
-            return
-        deadline = job.started_at + self.session.settings.shell_timeout
-        if time.monotonic() > deadline:
-            job.kill()
 
     def _format(self, job: BackgroundJob, payload: Json) -> str:
         limit = int(payload.get("limit") or self.DEFAULT_LIMIT)
@@ -6446,10 +6445,11 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note Question MCP.
+- Available: Read LineCount List Find InspectCode Search Edit Bash Git Job Recall Note Question MCP.
 - Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable.
 - Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
+- Long-running/non-blocking work: use Job (start/status/wait/list/kill) for processes that outlive one command — dev servers, watchers, long builds or test suites — so the agent keeps working; poll with Job status and kill when done. Use plain Bash for quick commands that finish promptly.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
 - Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
 

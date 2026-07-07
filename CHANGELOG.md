@@ -3,12 +3,16 @@
 
 ## Unreleased
 
+### Added
+- Add background jobs via a `Job` tool (`start`/`status`/`wait`/`list`/`kill`). Long-running or non-blocking work — dev servers, watchers, long builds and test suites — runs in its own process group without blocking the agent; output is buffered (capped per stream), drained non-blockingly on `status`, and returned as a tail. Concurrency is capped (`MAX_JOBS`), running jobs surface in the status bar (`jobs N`), the `/status` row, and a new read-only `/ps` command; `kill` sends SIGTERM then SIGKILL to the group. Jobs run until they exit or are killed (no foreground `shell_timeout` cap), and `Job(action="wait")` with no/zero timeout blocks until the process exits.
+
 ### Changed
 
 - Bash output is no longer erased from the terminal after the command finishes; the live preview output stays in the scrollback history.
 - Edit diff previews and approve messages remain visible in the CLI history instead of being transiently cleared.
 - Git branch is no longer shown in the environment context sent to the model.
 - Removed branch-change detection protection that prevented `git commit` after an external branch switch.
+
 ## 0.8.2 - 2026-07-03
 
 ### Fixed
