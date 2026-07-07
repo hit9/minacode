@@ -367,6 +367,7 @@ class TestMCPManagerDiscovery:
         async def fake_list(url, headers):
             return []
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
 
         # Manually add pre-existing stale data
         s.mcp.tools["removed_server"] = [mcp_tool_info("removed_server", "stale")]
@@ -643,6 +644,7 @@ class TestServerStatusRendering:
         async def fake_list(url, headers):
             return []
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         s.mcp.discover_enabled()
 
         listing = s.mcp.render_tool_listing("a")
@@ -1408,6 +1410,7 @@ class TestMCPCommandsByName:
             return [T()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+        monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         s.mcp.discover_enabled()
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
