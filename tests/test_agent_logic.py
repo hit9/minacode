@@ -41,14 +41,6 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert messages[-1]["content"].startswith("--- FILE STATE ---")
 
 
-def test_environment_includes_current_git_branch(tmp_path):
-    s = session(tmp_path)
-    s.git_branch = lambda cwd=None: "feature"
-
-    env = n.ContextManager(s).environment()
-
-    assert "- git_branch: feature" in env
-
 
 def test_empty_file_context_is_empty(tmp_path):
     assert n.ContextManager(session(tmp_path)).file_context() == ""

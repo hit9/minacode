@@ -1,5 +1,14 @@
 # Changelog
 
+
+## Unreleased
+
+### Changed
+
+- Bash output is no longer erased from the terminal after the command finishes; the live preview output stays in the scrollback history.
+- Edit diff previews and approve messages remain visible in the CLI history instead of being transiently cleared.
+- Git branch is no longer shown in the environment context sent to the model.
+- Removed branch-change detection protection that prevented `git commit` after an external branch switch.
 ## 0.8.2 - 2026-07-03
 
 ### Fixed
