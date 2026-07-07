@@ -2956,7 +2956,13 @@ class GitTool(Tool):
 
     @classmethod
     def changes_branch(cls, args: list[str]) -> bool:
-        return len(args) >= 1 and args[0] in cls.BRANCH_CMDS
+        if not args or args[0] not in cls.BRANCH_CMDS:
+            return False
+        # `git checkout -- <path>` / `git reset -- <path>` restore or unstage files; they do not
+        # touch branches or history, so they must not trip the yolo confirmation guard.
+        if args[0] in {"checkout", "reset"} and "--" in args[1:]:
+            return False
+        return True
 
     def git_args(self) -> tuple[list[str], str]:
         if not self.args:
@@ -2976,8 +2982,6 @@ class GitTool(Tool):
             raise ToolError("Git requires arguments")
         self.validate_add(args, cwd)
         return args, cwd
-
-
 
     def validate_add(self, args: list[str], cwd: str) -> None:
         if args[0] != "add":
@@ -6659,17 +6663,6 @@ class BashLivePreview:
         with self.lock:
             self.rendered_lines, self.text = 0, ""
 
-    def clear(self) -> None:
-        if not self.rendered_lines:
-            return
-        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        for _ in range(self.rendered_lines):
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            self.output.write_raw("\n")
-        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        self.output.flush()
-
     def render(self) -> None:
         if not self.active:
             return
@@ -7064,7 +7057,6 @@ Tools:
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
         self.live_queue_paused = False
-        self.transient_tool_lines = 0
         self.approval_full_preview = ""
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
@@ -7611,11 +7603,7 @@ Tools:
             self.with_status_paused(lambda: self.show_transient_tool_output(text))
             return
 
-        def emit() -> None:
-            self.clear_transient_tool_output()
-            self.emit(text)
-
-        self.with_status_paused(emit)
+        self.with_status_paused(lambda: self.emit(text))
 
     def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit_agent_output(text))
@@ -7630,7 +7618,6 @@ Tools:
                 )
             finally:
                 if self.interactive_input and sys.stdout.isatty():
-                    self.clear_transient_tool_output()
                     self.approval_full_preview = ""
 
         return self.with_status_paused(read)
@@ -7683,21 +7670,12 @@ Tools:
         self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
 
     def emit_agent_output(self, text: str) -> None:
-        self.clear_transient_tool_output()
         if self.ui.color and text.strip():
             self.emit()
             self.ui.emit_answer(text)
             self.emit()
             return
         self.emit(text)
-
-    def clear_transient_tool_output(self) -> None:
-        if not self.transient_tool_lines:
-            return
-        for _ in range(self.transient_tool_lines):
-            sys.stdout.write("\x1b[1A\r\x1b[2K")
-        sys.stdout.flush()
-        self.transient_tool_lines = 0
 
     def tool_live_start(self, command: str = "") -> None:
         if not self.ui.color:
