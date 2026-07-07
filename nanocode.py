@@ -6243,9 +6243,15 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
+        system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
+        # Anthropic prompt caching is a prefix match that only takes effect at explicit
+        # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
+        # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
+        # system block caches the stable tools+system prefix and is reused on every later turn.
+        system: Json = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
         params: Json = {
             "model": provider.model,
-            "system": "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip(),
+            "system": system,
             "messages": self.anthropic_messages(messages),
             "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
         }
@@ -6448,7 +6454,7 @@ TOOLS:
 - Available: Read LineCount List Find InspectCode Search Edit Bash Git Job Recall Note Question MCP.
 - Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
 - Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable. When several files or symbols are in play, batch all the reads/searches into one parallel request rather than one at a time.
-- Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
+- Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit. Drive each Bash call to complete in a single pass: chain the known steps into one command (`&&`, `;`, pipelines, a heredoc script) and push as far as current knowledge allows instead of one command per turn. Split into a second call only when a later step genuinely depends on output you cannot predict.
 - Long-running/non-blocking work: use Job (start/status/wait/list/kill) for processes that outlive one command — dev servers, watchers, long builds or test suites — so the agent keeps working; poll with Job status and kill when done. Use plain Bash for quick commands that finish promptly.
 - State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
 - Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.

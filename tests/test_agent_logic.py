@@ -1241,7 +1241,8 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     ]
 
     params = client.anthropic_params(messages, [n.ReadTool.schema()])
-    assert params["system"] == "system"
+    # system is a cache_control-marked block so the tools+system prefix is cached across turns.
+    assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
