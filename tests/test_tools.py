@@ -304,9 +304,16 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert readonly("git diff HEAD~1")
     assert readonly("cat a | grep foo | wc -l")  # pipeline of safe commands
     assert readonly("ls && cat README.md")       # sequence of safe commands
+    assert readonly("cd /Users/x/proj && git log --oneline -10")  # cd prefix is a benign builtin
+    assert readonly("cd a; ls")
 
     # Anything that writes, executes code, mutates git, or hides execution still asks.
     assert not readonly("rm -rf build")
+    # Every stage of a chain is validated — a safe first command must not whitelist a mutating one.
+    assert not readonly("git log && rm -rf x")
+    assert not readonly("ls ; rm x")
+    assert not readonly("cat f && python3 evil.py")
+    assert not readonly("git log & rm x")             # backgrounding
     assert not readonly("git commit -m x")
     assert not readonly("git checkout main")
     assert not readonly("echo hi > out.txt")          # redirection

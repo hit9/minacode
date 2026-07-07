@@ -2700,6 +2700,8 @@ class BashTool(Tool):
             "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
             "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
             "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
+            # Benign builtin the model routinely prefixes (cd changes the subshell dir only).
+            "cd",
         }
     )
     SAFE_GIT_SUBCOMMANDS: ClassVar[frozenset[str]] = frozenset(
@@ -2721,13 +2723,15 @@ class BashTool(Tool):
         command = command.strip()
         if not command:
             return False
-        # Reject redirections (> < >> <<), command/process substitution ($(...) `...`), and a lone
-        # background & (after stripping the &&/|| sequence operators, which are allowed).
-        scan = command.replace("&&", " ").replace("||", " ")
-        if any(ch in command for ch in (">", "<", "`")) or "$(" in command or "&" in scan:
+        # Reject redirections (> < >> <<) and command/process substitution ($(...) `...`).
+        if any(ch in command for ch in (">", "<", "`")) or "$(" in command:
             return False
-        # Every stage of a pipeline/sequence must itself be a safe read-only command.
-        return all(cls._safe_segment(part) for part in re.split(r"\||;|\n", scan) if part.strip())
+        # Reject a lone background & (detaches a process); && and || are allowed sequence operators.
+        if re.search(r"(?<!&)&(?!&)", command):
+            return False
+        # Split on every control operator (&& || | ; newline) and require EVERY stage to be a safe
+        # read-only command — so `git log && rm x` is not auto-approved on the strength of `git log`.
+        return all(cls._safe_segment(part) for part in re.split(r"&&|\|\||[|;\n]", command) if part.strip())
 
     @classmethod
     def _safe_segment(cls, segment: str) -> bool:
