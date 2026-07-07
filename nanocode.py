@@ -1301,6 +1301,104 @@ will not switch, create, or delete git branches unless asked, and checks the bra
 
 
 @dataclass
+class BackgroundJob:
+    """A non-blocking shell process tracked by the session."""
+
+    id: str
+    command: str
+    process: subprocess.Popen[bytes]
+    started_at: float
+    status: str = "running"
+    exit_code: int | None = None
+    stdout_buf: list[str] = field(default_factory=list)
+    stderr_buf: list[str] = field(default_factory=list)
+    _stdout_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
+    _stderr_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
+
+    # Total characters kept per stream; older output is dropped when exceeded.
+    BUFFER_CHARS: ClassVar[int] = 256 * 1024
+
+    def drain(self, *, timeout: float = 0.0, final: bool = False) -> None:
+        """Read any available output without blocking (unless final=True)."""
+        if self.process.stdout is None or self.process.stderr is None:
+            return
+        selector = selectors.DefaultSelector()
+        try:
+            for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
+                if not stream.closed:
+                    selector.register(stream, selectors.EVENT_READ, label)
+            deadline = time.monotonic() + timeout
+            while selector.get_map():
+                remaining = deadline - time.monotonic() if final else 0.0
+                if final and remaining <= 0:
+                    break
+                for key, _ in selector.select(max(0.0, remaining) if final else 0.0):
+                    self._read(selector, key)
+        finally:
+            selector.close()
+
+    def _read(self, selector: selectors.BaseSelector, key: selectors.SelectorKey) -> None:
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=not data)
+        if text:
+            buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
+            buf.append(text)
+            # Drop oldest chunks to cap memory.
+            total = sum(len(part) for part in buf)
+            while total > self.BUFFER_CHARS and len(buf) > 1:
+                total -= len(buf.pop(0))
+        if not data:
+            try:
+                selector.unregister(key.fileobj)
+            except Exception:
+                pass
+
+    def update_status(self) -> None:
+        if self.status != "running":
+            return
+        code = self.process.poll()
+        if code is not None:
+            self.status = "done"
+            self.exit_code = code
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started_at
+
+    def kill(self, grace: float = 3.0) -> None:
+        """SIGTERM, wait grace seconds, then SIGKILL if still running."""
+        if self.status != "running":
+            return
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+        except OSError:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except OSError:
+                self.process.kill()
+            self.process.wait()
+        self.drain(final=True)
+        self.update_status()
+        if self.status == "running":
+            self.status = "killed"
+            self.exit_code = -1
+
+    def tail(self, limit: int) -> tuple[str, str]:
+        stdout = "".join(self.stdout_buf)
+        stderr = "".join(self.stderr_buf)
+        if len(stdout) > limit:
+            stdout = "..." + stdout[-(limit - 3):]
+        if len(stderr) > limit:
+            stderr = "..." + stderr[-(limit - 3):]
+        return stdout, stderr
+
+@dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
@@ -1313,6 +1411,8 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
+    jobs: dict[str, BackgroundJob] = field(default_factory=dict)
+    job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
@@ -2900,6 +3000,167 @@ class BashTool(Tool):
         return tuple(value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or "" for value in (stdout, stderr))
 
 
+class JobTool(Tool):
+    NAME = "Job"
+    DESCRIPTION = (
+        "Start, monitor, wait for, list, and kill background shell jobs. "
+        "Processes run in their own process group and do not block the agent."
+    )
+    SIGNATURE = 'Job(action="start"|"status"|"wait"|"list"|"kill", command?, job?, timeout?, limit?)'
+    MUTATES = True
+    ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
+    MAX_JOBS: ClassVar[int] = 8
+    DEFAULT_LIMIT: ClassVar[int] = 4096
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
+                "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
+                "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
+                "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+                "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> list[Any]:
+        return [payload]
+
+    def payload(self) -> Json:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError("Job requires a single object argument")
+        return self.args[0]
+
+    def resolved_action(self, payload: Json) -> str:
+        action = str(payload.get("action") or "").strip()
+        if action not in self.ACTIONS:
+            raise ToolError(f"unknown action: {action!r}")
+        return action
+
+    def needs_confirmation(self) -> bool:
+        return self.resolved_action(self.payload()) in {"start", "kill", "wait"}
+
+    def short_args(self) -> list[str]:
+        payload = self.payload()
+        action = self.resolved_action(payload)
+        if action == "start":
+            return [str(payload.get("command") or "")]
+        if action == "list":
+            return ["list"]
+        return [action, str(payload.get("job") or "")]
+
+    def call(self) -> str:
+        payload = self.payload()
+        action = self.resolved_action(payload)
+        if action == "start":
+            return self._start(payload)
+        if action == "status":
+            return self._status(payload)
+        if action == "wait":
+            return self._wait(payload)
+        if action == "list":
+            return self._list()
+        if action == "kill":
+            return self._kill(payload)
+        raise ToolError(f"unhandled action: {action!r}")
+
+    def _start(self, payload: Json) -> str:
+        command = str(payload.get("command") or "").strip()
+        if not command:
+            raise ToolError("start requires a non-empty command")
+        active = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        if active >= self.MAX_JOBS:
+            raise ToolError(f"too many active jobs ({active}/{self.MAX_JOBS}); kill or wait for one first")
+        self.session.job_counter += 1
+        job_id = f"job.{self.session.job_counter}"
+        proc = subprocess.Popen(
+            ["bash", "-lc", command],
+            cwd=self.session.cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            bufsize=0,
+        )
+        job = BackgroundJob(id=job_id, command=command, process=proc, started_at=time.monotonic())
+        self.session.jobs[job_id] = job
+        return f"Started {job_id}: {command}"
+
+    def _status(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        timeout = int(payload.get("timeout") or 0)
+        job.drain(timeout=timeout)
+        self._enforce_deadline(job)
+        job.update_status()
+        return self._format(job, payload)
+
+    def _wait(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        timeout = payload.get("timeout")
+        try:
+            if timeout is None:
+                job.process.wait()
+            else:
+                job.process.wait(timeout=max(0, int(timeout)))
+            job.drain(final=True)
+        except subprocess.TimeoutExpired:
+            job.drain()
+        self._enforce_deadline(job)
+        job.update_status()
+        return self._format(job, payload)
+
+    def _list(self) -> str:
+        if not self.session.jobs:
+            return "No jobs."
+        rows = []
+        for job in self.session.jobs.values():
+            exit_code = job.exit_code if job.status != "running" else "-"
+            rows.append(f"| {job.id} | {job.status} | {exit_code} | {job.command[:60]} |")
+        return "Jobs:\n| id | status | exit | command |\n|---|---|---|---|\n" + "\n".join(rows)
+
+    def _kill(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        job.kill()
+        return f"Killed {job.id} (status={job.status}, exit_code={job.exit_code})"
+
+    def _resolve_job(self, payload: Json) -> BackgroundJob:
+        job_id = str(payload.get("job") or "").strip()
+        if not job_id:
+            raise ToolError("job id required")
+        job = self.session.jobs.get(job_id)
+        if job is None:
+            raise ToolError(f"unknown job: {job_id!r}")
+        return job
+
+    def _enforce_deadline(self, job: BackgroundJob) -> None:
+        if job.status != "running":
+            return
+        deadline = job.started_at + self.session.settings.shell_timeout
+        if time.monotonic() > deadline:
+            job.kill()
+
+    def _format(self, job: BackgroundJob, payload: Json) -> str:
+        limit = int(payload.get("limit") or self.DEFAULT_LIMIT)
+        stdout, stderr = job.tail(limit)
+        lines = [
+            f"Job: {job.id}",
+            f"Status: {job.status}",
+            f"Command: {job.command}",
+            f"Elapsed: {job.elapsed():.1f}s",
+        ]
+        if job.exit_code is not None:
+            lines.append(f"Exit code: {job.exit_code}")
+        if stdout:
+            lines.extend(["--- stdout ---", stdout])
+        if stderr:
+            lines.extend(["--- stderr ---", stderr])
+        return "\n".join(lines)
+
 class GitTool(Tool):
     NAME = "Git"
     DESCRIPTION = (
@@ -3459,6 +3720,7 @@ TOOLS: tuple[type[Tool], ...] = (
     SearchTool,
     EditTool,
     BashTool,
+    JobTool,
     GitTool,
     RecallTool,
     NoteTool,
@@ -5436,7 +5698,7 @@ class ToolRunner:
         # InspectCode, read-only Git, read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Question blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name in {"Edit", "Question"} or tool_class is BashTool:
+        if tool_class is None or call.name in {"Edit", "Question"} or tool_class in (BashTool, JobTool):
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
@@ -6305,6 +6567,7 @@ FINAL:
 class CommandCompleter(Completer):
     COMMANDS = (
         "/help",
+        "/ps",
         "/status",
         "/context",
         "/skills",
@@ -6864,6 +7127,9 @@ class StatusBar:
         skill_count = len(self.session.skills.skills) if self.session.skills else 0
         if skill_count:
             parts.append((f"skills {skill_count}", "mcp"))
+        running_jobs = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        if running_jobs:
+            parts.append((f"jobs {running_jobs}", "warn"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
@@ -6963,7 +7229,7 @@ class StatusBar:
 class CommandLoop:
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/mcp", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -6998,6 +7264,7 @@ class CommandLoop:
         (ALWAYS, "`/index` manages the code symbol index for fast symbol navigation."),
         (ALWAYS, "`/yolo` skips tool confirmations when you want to move fast."),
         (ALWAYS, "`/set runtime.max_parallel_tools N` tunes how many reads run at once."),
+        (ALWAYS, "`/ps` shows active background jobs started with the Job tool."),
         (lambda s: bool(s.config.mcp), "Mention an MCP tool inline with `@server.tool` to pull in its schema."),
         (lambda s: bool(s.config.mcp), "`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow."),
         # Config & setup
@@ -7018,6 +7285,7 @@ class CommandLoop:
     HELP = """Commands:
   /help              Show this help.
   /status            Show runtime status.
+  /ps                Show active background jobs.
   /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
@@ -7721,6 +7989,7 @@ Tools:
         handlers = {
             "/help": self.help,
             "/status": self.status,
+            "/ps": self.ps_command,
             "/context": self.context_view,
             "/skills": self.skills_command,
             "/config": self.config,
@@ -8066,6 +8335,10 @@ Tools:
                 f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`",
             ),
             ("index", CodeIndex.status_line(index_status, index_message)),
+            (
+                "jobs",
+                f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`",
+            ),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
         return "\n".join(
@@ -8086,6 +8359,20 @@ Tools:
             [(f"`{skill.name}`", skill.source, skill.description or "(no description)") for skill in skills],
         )
         return "\n".join([f"### Skills · {len(skills)}", "", "Load with `Skill(name)` or reference inline with `$name`.", "", table])
+
+    def ps_command(self, args: str) -> str:
+        if args.strip():
+            return "Usage: /ps"
+        running = [job for job in self.session.jobs.values() if job.status == "running"]
+        if not running:
+            total = len(self.session.jobs)
+            return f"No active jobs ({total} total)."
+        rows = [
+            (job.id, job.status, f"{job.elapsed():.1f}s", job.command[:80])
+            for job in running
+        ]
+        table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
+        return f"### Active jobs · {len(running)}\n\n{table}"
 
     def context_view(self, args: str) -> str | None:
         context = self.agent.context
