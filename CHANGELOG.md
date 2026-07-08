@@ -16,6 +16,7 @@
 - Replace the dedicated `LineCount`, `List`, `Find`, and `Git` tools with Bash-driven equivalents. The model now sees available shell commands near the top of Environment, read-only Bash commands (including safe `git status`/`diff`/`log` style commands) auto-run without confirmation, and mutating shell/git commands still require approval.
 - Bash output is no longer erased from the terminal after the command finishes; the live preview output stays in the scrollback history.
 - Edit diff previews and approve messages remain visible in the CLI history instead of being transiently cleared.
+- Remove the Ctrl-A expanded Edit preview and fixed-height transient preview window. Edit approvals still show the full inline diff preview in the CLI history, with Pygments highlighting preserved.
 - Git branch is no longer shown in the environment context sent to the model.
 - Removed branch-change detection protection that prevented `git commit` after an external branch switch.
 
