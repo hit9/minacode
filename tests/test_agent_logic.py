@@ -1163,6 +1163,30 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "raw tool result" not in text
 
 
+def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "compacted answer"},
+        ]
+    )
+    s.tool_records.append(
+        n.ToolResultRecord("tr.1", "Bash", ["wc -l nanocode.py"], "999 nanocode.py", "wc -l nanocode.py")
+    )
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert f"Restored session: {s.uid}" in text
+    assert "compacted answer" in text
+    assert "tool Bash wc -l nanocode.py -> tr.1" in text
+    assert "999 nanocode.py" not in text
+
+
 def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
@@ -1181,6 +1205,70 @@ def test_select_choice_noninteractive_does_not_prompt(tmp_path):
 
     assert loop.select_choice("Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
     assert output == []
+
+
+def test_choice_application_expands_escaped_preview_newlines(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    rendered = []
+
+    def fake_run_input_app(app):
+        rendered.extend(app.layout.current_control.text())
+        return "A"
+
+    loop.run_input_app = fake_run_input_app
+
+    result = loop.choice_application(
+        "Select:",
+        ("A", "B"),
+        {},
+        "",
+        set(),
+        preview_fn=lambda choice: "one\\ntwo" if choice == "A" else "",
+        free_text=True,
+    )
+
+    assert result == "A"
+    previews = [text for style, text in rendered if style == "class:choice.preview"]
+    assert previews == ["  │ one\n", "  │ two\n"]
+    assert all("\\n" not in text for _, text in rendered)
+
+
+def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    emitted = []
+    prompts = []
+    loop.emit = emitted.append
+    loop.choice_application = lambda *args, **kwargs: n.SELECTION_FREE_TEXT
+
+    def fake_read_input(prompt_text="nano> ", **kwargs):
+        prompts.append(prompt_text)
+        return "typed answer"
+
+    loop.read_input = fake_read_input
+
+    assert loop.question_application(n.AskSpec("Pick?", choices=["A"], previews=["preview"])) == "typed answer"
+    assert prompts == ["> "]
+    assert all(not prompt.startswith("\n") for prompt in prompts)
+    assert emitted[-1] == ""
+
+
+def test_turn_elapsed_label_uses_whole_seconds(tmp_path, monkeypatch):
+    loop = n.CommandLoop(
+        n.Agent(session(tmp_path), output_fn=lambda text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda text: None,
+    )
+    loop.status_bar.started_at = 100.0
+
+    monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
+    assert loop.turn_elapsed_label() == "4s"
+
+    monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
+    assert loop.turn_elapsed_label() == "1m02s"
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):

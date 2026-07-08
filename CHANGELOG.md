@@ -30,6 +30,7 @@
 - Render intermediate assistant markdown correctly while the `+>` queue prompt is active; Rich ANSI output is now replayed through prompt-toolkit instead of leaking as `?[90m`-style text.
 - Move the active-turn elapsed timer into the animated `working` divider and let the sweep highlight pass across the divider label itself.
 - Show saved tool summaries on `--resume` even when the compacted transcript no longer contains the original assistant tool-call messages.
+- Add regression coverage for Ask preview/free-text rendering, whole-second working timers, and restored saved tool summaries.
 
 ## 0.8.2 - 2026-07-03
 
