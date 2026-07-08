@@ -6768,6 +6768,9 @@ class BashLivePreview:
         self.started_at = 0.0
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
+        # A standing divider row (raw-colour fragments) drawn above the frame so the boundary between
+        # the log and the running command stays put — the bottom UI does not look like it vanished.
+        self.divider: list[tuple[str, str]] = []
 
     def start(self, command: str = "") -> None:
         if not sys.stderr.isatty():
@@ -6809,23 +6812,25 @@ class BashLivePreview:
     def render(self) -> None:
         if not self.active:
             return
-        lines = self.frame_lines()
+        rows: list[list[tuple[str, str]]] = [[("ansibrightblack", line)] for line in self.frame_lines()]
+        if self.divider:
+            rows = [self.divider, [("", "")], *rows]  # divider + a blank line, then the frame
         previous = self.rendered_lines
         if self.rendered_lines:
             self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        for line in lines:
+        for row in rows:
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
-            print_formatted_text(FormattedText([("ansibrightblack", line)]), output=self.output, end="", flush=True)
+            print_formatted_text(FormattedText(row), output=self.output, end="", flush=True)
             self.output.write_raw("\n")
-        for _ in range(max(0, previous - len(lines))):
+        for _ in range(max(0, previous - len(rows))):
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
             self.output.write_raw("\n")
-        if previous > len(lines):
-            self.output.write_raw(f"\x1b[{previous - len(lines)}A")
+        if previous > len(rows):
+            self.output.write_raw(f"\x1b[{previous - len(rows)}A")
         self.output.flush()
-        self.rendered_lines = len(lines)
+        self.rendered_lines = len(rows)
 
     def elapsed_label(self) -> str:
         elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
@@ -7297,6 +7302,14 @@ Tools:
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         return self.sweep_divider_fragments(self.divider_label(queued))
+
+    def bash_divider_fragments(self) -> list[tuple[str, str]]:
+        # A static divider for the BashLivePreview, which renders raw colour names (no style dict).
+        # Kept in sync with the divider.working style so it matches the prompt-toolkit dividers.
+        label = self.divider_label(len([t for t in self.session.pending_user_inputs if t.strip()]))
+        width = max(20, min(52, shutil.get_terminal_size((80, 20)).columns - 2))
+        lead, trail = 3, max(3, width - 3 - (len(label) + 2))
+        return [("ansibrightblack", "-" * lead + " "), ("ansimagenta bold", label), ("ansibrightblack", " " + "-" * trail)]
 
     def prompt_divider_fragments(self) -> list[tuple[str, str]]:
         # A short sweeping rule between the log and the nano> prompt. Keep it well short of full width:
@@ -7935,6 +7948,7 @@ Tools:
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
+        self.live_preview.divider = self.bash_divider_fragments()
         self.live_preview.start(command)
 
     def tool_live_output(self, _stream: str, text: str) -> None:
@@ -7948,6 +7962,7 @@ Tools:
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
+                self.live_preview.divider = self.bash_divider_fragments()
                 self.live_preview.start()
             self.live_preview.update(text)
             return
