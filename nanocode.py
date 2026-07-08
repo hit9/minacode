@@ -7796,10 +7796,14 @@ Tools:
             event.app.invalidate()
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # A sweeping rule between the log and the prompt while it waits, with a blank line below it so
-        # the prompt is not crowded up against the divider.
+        # A sweeping rule between the log and the prompt while it waits, with a blank line above and
+        # below it so it is not crowded against the log above or the prompt below.
         top: list[Any] = (
-            [Window(FormattedTextControl(self.prompt_divider_fragments), height=1, dont_extend_height=True), Window(height=1, dont_extend_height=True)]
+            [
+                Window(height=1, dont_extend_height=True),
+                Window(FormattedTextControl(self.prompt_divider_fragments), height=1, dont_extend_height=True),
+                Window(height=1, dont_extend_height=True),
+            ]
             if divider
             else []
         )
