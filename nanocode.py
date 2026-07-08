@@ -7267,36 +7267,43 @@ Tools:
 
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 14.0
 
-    def sweep_divider_fragments(self, label: str = "", width: int | None = None) -> list[tuple[str, str]]:
+    def divider_label(self, queued: int = 0) -> str:
+        # e.g. "working [ 2 queued ]" or just "idle".
+        state = "working" if self.working else "idle"
+        return f"{state} [ {queued} queued ]" if queued else state
+
+    def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
-        width = width if width is not None else max(16, min(46, cols - 2))
-        rule = max(4, width - len(label))
-        # A short bright window slides left→right across the dim rule while the agent is working; when
-        # it goes idle the sweep parks off-screen, leaving a calm static rule (no motion at the prompt).
-        period = rule + 6
+        width = width if width is not None else max(20, min(52, cols - 2))
+        body = f" {label} "
+        lead = 3
+        trail = max(3, width - lead - len(body))
+        line = "-" * lead + body + "-" * trail
+        # A short bright window slides left→right across the dashes while working; idle it parks
+        # off-screen, leaving a calm static rule. Only the dashes sweep — the label stays readable.
+        period = len(line) + 6
         pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.working else -period
-        fragments: list[tuple[str, str]] = [("class:queue.rule", label)] if label else []
-        for index in range(rule):
-            char = "─" if index < rule * 0.6 else ("╌" if index < rule * 0.85 else "┈")
-            style = "class:queue.sweep" if abs(index - pos) <= 1 else "class:queue.rule"
-            fragments.append((style, char))
+        fragments: list[tuple[str, str]] = []
+        for index, char in enumerate(line):
+            swept = char == "-" and abs(index - pos) <= 1
+            fragments.append(("class:queue.sweep" if swept else "class:queue.rule", char))
         return fragments
 
-    def queue_divider_fragments(self) -> list[tuple[str, str]]:
-        return self.sweep_divider_fragments("── queued ")
+    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
+        return self.sweep_divider_fragments(self.divider_label(queued))
 
     def prompt_divider_fragments(self) -> list[tuple[str, str]]:
         # A sweeping rule between the log and the nano> prompt while it waits. Stay a couple of cells
         # short of full width: a rule that fills the last column makes terminals auto-wrap, which
         # desyncs this non-fullscreen app's redraw (visible when a paste changes the input height).
         cols = shutil.get_terminal_size((80, 20)).columns
-        return self.sweep_divider_fragments(width=max(16, cols - 2))
+        return self.sweep_divider_fragments(self.divider_label(), width=max(20, cols - 2))
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
         # The divider is a standing boundary for the whole turn: flushed messages move up into the log
         # above it, so it stays put even once the queue empties rather than vanishing.
-        fragments = self.queue_divider_fragments()
+        fragments = self.queue_divider_fragments(len(pending))
         for text in pending:
             fragments.append(("", "\n"))
             fragments.append(("class:prompt", "+ "))

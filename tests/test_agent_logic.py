@@ -773,7 +773,7 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s.pending_user_inputs = ["run tests", "then push"]
 
     text = "".join(t for _, t in loop.queue_region_fragments())
-    assert "queued" in text
+    assert "2 queued" in text and "idle" in text  # "--- idle [ 2 queued ] ---"
     assert "+ run tests" in text and "+ then push" in text
     # The divider sweeps a bright cell only while the agent is working; idle it is a calm static rule.
     def has_sweep_over_time(monkeypatch):
@@ -791,9 +791,11 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
     # The divider is a standing boundary: it persists even once the queue empties, so flushed
     # messages can move up into the log above it.
+    loop.working = False
     s.pending_user_inputs = []
     empty = "".join(t for _, t in loop.queue_region_fragments())
-    assert "queued" in empty and "run tests" not in empty
+    # Bare rule with just the state word, no count, and no queued messages.
+    assert "idle" in empty and "queued" not in empty and "run tests" not in empty
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
