@@ -205,7 +205,7 @@ class ProviderConfig:
 
     def _stripped_url(self) -> str:
         url = self.url.rstrip("/")
-        return url[:url.rfind("/")] if url.endswith(("/chat/completions", "/responses", "/messages")) else url
+        return url.removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
 
     def base_url(self) -> str:
         # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.

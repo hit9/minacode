@@ -131,6 +131,16 @@ def test_strict_tools_gating_and_beta_routing():
     assert provider("https://api.openai.com/v1", strict=True).base_url() == "https://api.openai.com/v1"
 
 
+
+def test_stripped_url_removes_known_suffixes():
+    p = lambda url: n.ProviderConfig(url=url)._stripped_url()
+    assert p("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/responses") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/messages") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/chat/completions/") == "https://api.openai.com/v1"
+
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     for name, tool in n.TOOL_REGISTRY.items():
