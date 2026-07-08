@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode-cli"
-version = "0.8.2"
+version = "0.9.0"
 description = "A small terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.64.0",
-    "code-symbol-index>=0.3.1",
+    "code-symbol-index>=0.3.5",
     "json-repair",
     "fastmcp-slim[client]>=3,<4",
     "openai>=2.37.0",

@@ -22,7 +22,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import tomllib
@@ -63,9 +62,26 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 
-__version__ = "0.8.2"
+try:
+    import pygments
+    from pygments.lexers import get_lexer_for_filename
+    from pygments.token import Token
+except ImportError:  # pragma: no cover - optional highlighting dependency
+    pygments = None
+    Token = None  # keep the name defined so class-body/token lookups don't NameError
+
+__version__ = "0.9.0"
 
 Json = dict[str, Any]
+
+
+def create_prompt_output():
+    output = create_output()
+    if hasattr(output, "enable_cpr"):
+        output.enable_cpr = False
+    return output
+
+
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
@@ -138,19 +154,14 @@ class Text:
 
 @dataclass
 class ProviderConfig:
-    ALIYUN_CHAT_REASONING_RULES: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
-        ("enable_thinking", ("qwen", "qwq", "qvq")),
-        ("thinking", ("deepseek-v4",)),
-    )
+    # fmt: off
     PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
         "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
         "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
-        "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
-        "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
-        "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
     }
+    # fmt: on
 
     url: str = ""
     key: str = ""
@@ -195,21 +206,18 @@ class ProviderConfig:
 
     def _stripped_url(self) -> str:
         url = self.url.rstrip("/")
-        for suffix in ("/chat/completions", "/responses", "/messages"):
-            if url.endswith(suffix):
-                return url[: -len(suffix)]
-        return url
+        return url.removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
 
     def base_url(self) -> str:
+        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.
         url = self._stripped_url()
-        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only
-        # when strict is actually active, so non-strict users stay on the stable endpoint.
-        if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta"):
-            url = url + "/beta"
-        return url
+        return url + "/beta" if self.resolved_strict_tools() and self._profile().get("strict_beta") and not url.endswith("/beta") else url
 
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
+
+    def _profile(self) -> Json:
+        return self.PROFILES.get(self.host()) or {}
 
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
@@ -220,8 +228,7 @@ class ProviderConfig:
     def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
         if configured != "auto":
             return configured
-        profile = self.PROFILES.get(self.host())
-        if not profile:
+        if not (profile := self._profile()):
             return default
         model = self.model.lower()
         for value, prefixes in profile.get(rules_attr, ()):
@@ -233,19 +240,16 @@ class ProviderConfig:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
     def resolved_max_tokens(self) -> int:
-        if self.max_tokens > 0:
-            return self.max_tokens
-        # No global default: generic OpenAI-compatible providers keep their own server-side cap.
-        # Only profiles that opt in (e.g. DeepSeek thinking mode) get an explicit ceiling.
-        return int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
+        # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.
+        return self.max_tokens or int(self._profile().get("max_tokens", 0))
 
     def supports_prompt_cache_key(self) -> bool:
         # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
         # (e.g. DeepSeek caches automatically by prefix and ignores the key).
-        return bool((self.PROFILES.get(self.host()) or {}).get("prompt_cache_key", True))
+        return bool(self._profile().get("prompt_cache_key", True))
 
     def supports_strict_tools(self) -> bool:
-        return bool((self.PROFILES.get(self.host()) or {}).get("strict_tools"))
+        return bool(self._profile().get("strict_tools"))
 
     def resolved_strict_tools(self) -> bool:
         # Only emit strict schemas on the chat path of a host known to support strict mode.
@@ -374,7 +378,9 @@ class Config:
 
 class ConfigFile:
     DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
-    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
+    # Only the provider block is required; every other key falls back to its built-in default, so the
+    # commented lines below just document the common knobs and their defaults.
+    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration — unset keys use built-in defaults.
 
 [provider]
 active = "default"
@@ -383,50 +389,29 @@ active = "default"
 url = ""
 key = ""
 model = ""
-api = "auto"
-prompt_cache_key = "auto"
+# api = "auto"                 # auto | anthropic | openai | ...
+# reasoning = "medium"
+# timeout = 180
 # available_models = ["gpt-5", "gpt-5-mini"]
-# temperature = 0.2
-# max_tokens = 16384
-# strict_tools = false  # constrain tool-call args to the schema (OpenAI / DeepSeek beta)
-reasoning = "medium"
-# chat_reasoning = "auto"
-timeout = 180
 
-[paths]
-data_dir = "~/.nanocode"
+# [runtime]                    # optional overrides (defaults shown)
+# yolo = false
+# max_context_tokens = 128000
+# max_agent_steps = 200
+# shell_timeout = 60
 
-[runtime]
-shell_timeout = 60
-max_agent_steps = 200
-max_context_tokens = 128000
-max_parallel_tools = 4
-check_updates = true
-update_check_interval_hours = 24
-session_retention_days = 7
-yolo = false
-tips = true
-
-# [mcp.example]
+# [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
-# bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
-# enabled = true
-#
-# [mcp.oauth_example]
-# url = "https://example.com/mcp"
-# auth = "oauth"
-# enabled = true
-#
-# [mcp.stdio_example]
-# command = "npx"
-# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-# env = { EXAMPLE = "value" }
 # enabled = true
 """
 
     @classmethod
+    def resolve_path(cls, path: str | None) -> str:
+        return os.path.expanduser(path or cls.DEFAULT_PATH)
+
+    @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:
-        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
+        config_path = cls.resolve_path(path)
         if os.path.exists(config_path):
             return config_path, False
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -436,7 +421,7 @@ tips = true
 
     @classmethod
     def load(cls, path: str | None = None) -> Json:
-        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
+        config_path = cls.resolve_path(path)
         try:
             with open(config_path, "rb") as file:
                 data = tomllib.load(file)
@@ -458,25 +443,27 @@ class ModelUsage:
     last_prompt_tokens: int = 0
     last_cached_prompt_tokens: int = 0
 
-    def add(self, usage: Any) -> None:
-        def value(*paths: str) -> int:
-            for path in paths:
-                raw = usage
-                for key in path.split("."):
-                    raw = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
-                    if raw is None:
-                        break
-                else:
-                    return int(raw or 0)
-            return 0
+    @staticmethod
+    def field(usage: Any, *paths: str) -> int:
+        """First present dotted path in `usage` (dict keys or attributes) as an int, else 0."""
+        for path in paths:
+            raw = usage
+            for key in path.split("."):
+                raw = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+                if raw is None:
+                    break
+            else:
+                return int(raw or 0)
+        return 0
 
+    def add(self, usage: Any) -> None:
         self.calls += 1
-        prompt_tokens = value("prompt_tokens", "input_tokens")
-        completion_tokens = value("completion_tokens", "output_tokens")
-        total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
-        cached_tokens = value(
-            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
-        )
+        prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
+        completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
+        total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
+        # fmt: off
+        cached_tokens = self.field(usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
+        # fmt: on
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
@@ -640,7 +627,11 @@ class MCPFileTokenStore:
         return server_url.rstrip("/") + suffix
 
     def has_server_tokens(self, server_url: str) -> bool:
-        return self.has_key(self.token_key(server_url, "/tokens"), collection="mcp-oauth-token")
+        key = self.token_key(server_url, "/tokens")
+        collection = "mcp-oauth-token"
+        with self.lock:
+            entry = self.load().get(collection, {}).get(key)
+            return bool(entry and not self.expired(entry))
 
     def clear_server(self, server_url: str) -> None:
         with self.lock:
@@ -654,16 +645,11 @@ class MCPFileTokenStore:
             self.save(data)
 
     def clear_client_info(self, server_url: str) -> None:
+        # Same collection/key convention as clear_server above — keep them in sync.
         with self.lock:
             data = self.load()
             data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
             self.save(data)
-
-    def has_key(self, key: str, *, collection: str | None = None) -> bool:
-        collection = collection or self.DEFAULT_COLLECTION
-        with self.lock:
-            entry = self.load().get(collection, {}).get(key)
-            return bool(entry and not self.expired(entry))
 
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
         collection = collection or self.DEFAULT_COLLECTION
@@ -756,34 +742,12 @@ class MCPResourceInfo:
 
 @dataclass
 class SystemInfo:
+    # fmt: off
     COMMANDS: ClassVar[tuple[str, ...]] = (
-        "bash",
-        "git",
-        "rg",
-        "sed",
-        "grep",
-        "find",
-        "awk",
-        "python3",
-        "jq",
-        "xargs",
-        "cat",
-        "head",
-        "tail",
-        "wc",
-        "sort",
-        "uniq",
-        "make",
-        "cmake",
-        "gcc",
-        "g++",
-        "clang",
-        "clang++",
-        "node",
-        "npm",
-        "uv",
-        "pytest",
+        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs", "cat", "head", "tail", "wc",
+        "sort", "uniq", "make", "cmake", "gcc", "g++", "clang", "clang++", "node", "npm", "uv", "pytest",
     )
+    # fmt: on
 
     cwd: str
     os: str
@@ -811,15 +775,13 @@ class SessionSnapshotCodec:
         messages = cls.persistable_messages(session.messages)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
+        # fmt: off
         return {
-            "messages_len": len(messages),
-            "messages_digest": cls.digest(messages),
-            "tool_counter": session.tool_counter,
-            "tool_records_len": len(records),
-            "tool_records_digest": cls.digest(records),
-            "tool_errors_len": len(errors),
-            "tool_errors_digest": cls.digest(errors),
+            "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
+            "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
+            "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
         }
+        # fmt: on
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
@@ -851,42 +813,33 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def state(state: AgentState) -> Json:
+        # fmt: off
         return {
-            "goal": state.goal,
-            "plan": [item.to_json() for item in AgentState.plan_items(state.plan)],
-            "known": state.known,
-            "check": state.check,
-            "summary": state.summary,
-            "compaction_count": state.compaction_count,
-            "prefix_fingerprint": state.prefix_fingerprint,
-            "prefix_fingerprints": state.prefix_fingerprints,
+            "goal": state.goal, "plan": [item.to_json() for item in AgentState.plan_items(state.plan)], "known": state.known, "check": state.check,
+            "summary": state.summary, "compaction_count": state.compaction_count,
+            "prefix_fingerprint": state.prefix_fingerprint, "prefix_fingerprints": state.prefix_fingerprints,
         }
+        # fmt: on
 
     @staticmethod
     def usage(usage: ModelUsage) -> Json:
+        # fmt: off
         return {
-            "calls": usage.calls,
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "cached_prompt_tokens": usage.cached_prompt_tokens,
-            "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
-            "last_prompt_tokens": usage.last_prompt_tokens,
-            "last_total_tokens": usage.last_total_tokens,
+            "calls": usage.calls, "prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens, "cached_prompt_tokens": usage.cached_prompt_tokens, "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
+            "last_prompt_tokens": usage.last_prompt_tokens, "last_total_tokens": usage.last_total_tokens,
         }
+        # fmt: on
 
     @classmethod
     def snapshot(cls, session: "Session") -> Json:
+        # fmt: off
         return {
-            "uid": session.uid,
-            "cwd": session.cwd,
-            "messages": cls.persistable_messages(session.messages),
-            "state": cls.state(session.state),
-            "usage": cls.usage(session.usage),
-            "tool_counter": session.tool_counter,
-            "tool_records": [cls.tool_record(record) for record in session.tool_records],
-            "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
+            "uid": session.uid, "cwd": session.cwd, "messages": cls.persistable_messages(session.messages),
+            "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
+            "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
         }
+        # fmt: on
 
     @classmethod
     def delta(cls, session: "Session", saved: Json) -> Json:
@@ -963,9 +916,9 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def tool_records(data: list[Json]) -> list[ToolResultRecord]:
-        return [
-            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", "")) for rec in data
-        ]
+        # fmt: off
+        return [ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", "")) for rec in data]
+        # fmt: on
 
     @staticmethod
     def tool_errors(data: list[Json]) -> list[ToolErrorRecord]:
@@ -1132,67 +1085,63 @@ class SkillLibrary:
     MANUAL = """\
 # nanocode manual
 
-nanocode is a concise, single-file terminal coding agent. You describe a task; it plans, calls
-tools in a loop (read files, search, edit, run commands), and returns a short answer. Assistant
-text is user-visible markdown in your language.
+nanocode is a concise, single-file terminal coding agent: describe a task; it loops over tools (read,
+search, edit, run commands) and returns a short answer in your language.
 
 ## Getting started
-- Config lives at `~/.nanocode/config.toml`. At minimum set `provider.url`, `provider.key`, and
-  `provider.model`. `/status` and startup warn when these are missing.
-- View config with `/config`; change most values for the session with `/set KEY VALUE`.
-- Pick provider/model/effort at runtime with `/provider`, `/model`, `/reason`.
+- Config: `~/.nanocode/config.toml` — set at least `provider.url`, `provider.key`, `provider.model`
+  (`/status` and startup warn if missing). `/config` views it; `/set KEY VALUE` changes most values
+  for the session; `/provider`, `/model`, `/reason` switch provider/model/effort at runtime.
 
-## How the agent works
-- It acts when the task is clear and keeps using tools until done or blocked, up to
-  `runtime.max_agent_steps`. It does not repeat a failed call unchanged; tool errors come back as
-  results so it can self-correct.
-- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits and shell run
-  serially. It keeps working notes (goal/plan/known/check) via the `Note` tool, shown in `/context`.
-- It answers concisely by default and notes which files changed and which checks it ran (or did not).
+## How it works
+- Acts when the task is clear, loops until done or blocked (up to `runtime.max_agent_steps`), and
+  self-corrects on tool errors (never repeats a failed call unchanged).
+- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits/shell run
+  serially. Working notes (goal/plan/known/check) via `Note`, shown in `/context`. Answers concisely
+  and notes changed files and checks run.
 
-## Context model
-Each request is a cache-stable prefix (system prompt, environment, the SKILLS index, the MCP tools
-index, and tool schemas) followed by the conversation, then the `Memory` and `FILE STATE` sections.
-`Read`/`Edit` refresh `FILE STATE`. Prompt caching depends on that prefix staying byte-identical;
-`/status` shows context %, cache hit rate, a `prefix churn` warning if the prefix mutated mid-session
-(inspect with `--debug`, label `cache-prefix-drift`), and a compaction count. Long conversations are
-compacted automatically; `/compact` forces it. Inspect the whole frame with `/context` (tabbed:
-Environment / Memory / File State); `/context <path>` shows a file's current in-context lines.
+## Context & caching
+Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
+then the conversation, `Memory`, and `FILE STATE` (refreshed by `Read`/`Edit`). Caching needs that
+prefix byte-identical; `/status` shows context %, cache hit rate, a `prefix churn` warning if it
+mutated mid-session (inspect via `--debug`, label `cache-prefix-drift`), and a compaction count. Long
+chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory /
+File State); `/context <path>` shows a file's in-context lines.
 
 ## Sessions
-Sessions auto-save. Resume the latest with `--resume` (or `--resume <UID>` for a specific one).
+Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
 
-## Providers, models, reasoning
-Configure `provider.*` per provider. `/reason` sets reasoning effort; `provider.max_tokens`,
-`provider.temperature`, and `provider.api` (auto/chat/anthropic) tune requests. `/strict` (or
-`provider.strict_tools`) constrains tool-call arguments to each tool's schema on hosts that support
-it (OpenAI, DeepSeek). Native thinking modes (DeepSeek/Qwen) drop `temperature` automatically.
+## Providers & reasoning
+Set `provider.*` per provider. `/reason` sets effort; `provider.max_tokens`, `provider.temperature`,
+`provider.api` (auto/chat/anthropic) tune requests. `/strict` (or `provider.strict_tools`) constrains
+tool-call args to each tool's schema where supported (OpenAI, DeepSeek). Native thinking modes drop
+`temperature` automatically.
 
 ## MCP
-Configure external tools under `[mcp.<name>]` (either `url` or `command`). Manage with `/mcp`,
-`/mcp tools`, `/mcp refresh`, `/mcp login|logout`. Reference a server/tool inline with `@server.tool`
-to pull its schema into the turn. The `MCP` tool invokes them.
+External tools under `[mcp.<name>]` (`url` or `command`). Manage with `/mcp`, `/mcp tools`,
+`/mcp refresh`, `/mcp login|logout`. `@server.tool` pulls a tool's schema into the turn; the `MCP`
+tool invokes them.
 
 ## Skills
-Skills are reusable instruction packs under `.nanocode/skills/<name>/SKILL.md` (project) and
-`~/.nanocode/skills/<name>/SKILL.md` (user; project wins on name clash). The model loads one with
-`Skill(name)`; you can reference one inline with `$name` to load it for a turn. A skill-directory
-placeholder in the body expands to the skill's absolute folder so bundled scripts run via `Bash`.
-`/skills` lists them;
-the status bar and `/status` show the count. This manual is the built-in `nanocode-help` skill.
+Reusable instruction packs at `.nanocode/skills/<name>/SKILL.md` (project) and
+`~/.nanocode/skills/<name>/SKILL.md` (user; project wins). Load with `Skill(name)` or inline `$name`
+for one turn; a skill-directory placeholder expands to the skill's folder so bundled scripts run via
+`Bash`. `/skills` lists them; the status bar and `/status` show the count. This manual is the
+built-in `nanocode-help` skill.
 
 ## Safety
-Mutating actions (`Edit`, `Bash`, writing `Git`) ask for confirmation unless `/yolo` is on. nanocode
-will not switch, create, or delete git branches unless asked, and checks the branch before committing.
+`Edit` and mutating `Bash` ask for confirmation unless `/yolo` is on; read-only shell commands (`ls`,
+`cat`, `wc`, `find`, `grep`/`rg`, `git status`/`diff`/`log`, …) auto-run. git runs through `Bash` —
+only read-only subcommands auto-run; commit/add/push and branch changes still ask.
 
 ## Troubleshooting
-- "missing config": set `provider.url`/`key`/`model` via `/set` or `config.toml`.
-- Slow or costly turns / low cache hit rate: check `/status`; a `prefix churn` warning means the
-  cached prefix changed mid-session — see the `--debug` cache-prefix-drift diff.
-- InspectCode unavailable or stale symbols: run `/index` to sync or rebuild the code index.
-- Context filling up: it compacts automatically; `/compact` forces it now.
-- A command typed while the agent works is refused unless it is read-only (`/help`, `/status`,
-  `/context`, `/skills`, read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
+- "missing config": set `provider.url`/`key`/`model`.
+- Slow/costly or low cache hit: check `/status`; a `prefix churn` warning means the prefix changed
+  mid-session — see the `--debug` cache-prefix-drift diff.
+- InspectCode stale/unavailable: `/index` to sync or rebuild.
+- Context full: compacts automatically; `/compact` forces it.
+- Command refused while the agent works unless read-only (`/help`, `/status`, `/context`, `/skills`,
+  read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
 
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills
@@ -1221,24 +1170,21 @@ will not switch, create, or delete git branches unless asked, and checks the bra
         source = os.path.abspath(__file__)
         root = os.path.dirname(source)
         tool_lines = [f"- {tool.NAME}: {tool.DESCRIPTION}" for tool in TOOLS]
+        # fmt: off
         sections = [
             "Self-contained manual for answering questions about nanocode itself — how to use it, its",
             "features, and common problems. Answer from the sections below; only fall back to reading the",
             "source for details they do not cover. Cite exact command names, flags, and config keys.",
-            "",
-            cls.MANUAL,
-            "",
-            "## Commands, mentions, CLI, tools (verbatim /help)",
-            CommandLoop.HELP.strip(),
-            "",
-            "## Tool details",
-            *tool_lines,
-            "",
-            "## Settable config keys (/set KEY VALUE)",
-            ", ".join(CommandCompleter.SET_KEYS),
+            "", cls.MANUAL,
+            "", "## Commands, mentions, CLI, tools (verbatim /help)", CommandLoop.HELP.strip(),
+            "", "## Tool details", *tool_lines,
+            "", "## Settable config keys (/set KEY VALUE)", ", ".join(CommandCompleter.SET_KEYS),
         ]
+        # fmt: on
         if os.path.isfile(source):
+            # fmt: off
             sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
+            # fmt: on
         description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
         return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
@@ -1301,10 +1247,115 @@ will not switch, create, or delete git branches unless asked, and checks the bra
 
 
 @dataclass
+class BackgroundJob:
+    """A non-blocking shell process tracked by the session."""
+
+    id: str
+    command: str
+    process: subprocess.Popen[bytes]
+    started_at: float
+    status: str = "running"
+    exit_code: int | None = None
+    stdout_buf: list[str] = field(default_factory=list)
+    stderr_buf: list[str] = field(default_factory=list)
+    _stdout_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
+    _stderr_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
+
+    # Total characters kept per stream; older output is dropped when exceeded.
+    BUFFER_CHARS: ClassVar[int] = 256 * 1024
+
+    def drain(self, *, timeout: float = 0.0, final: bool = False) -> None:
+        """Read available output. With final=True (or a positive timeout) block up to `timeout`
+        seconds, draining until the streams reach EOF; otherwise read only what is ready now."""
+        if self.process.stdout is None or self.process.stderr is None:
+            return
+        blocking = final or timeout > 0
+        selector = selectors.DefaultSelector()
+        try:
+            for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
+                if not stream.closed:
+                    selector.register(stream, selectors.EVENT_READ, label)
+            deadline = time.monotonic() + max(0.0, timeout)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                events = selector.select(max(0.0, remaining) if blocking else 0.0)
+                if not events:
+                    # Nothing ready: keep waiting only while a positive budget remains; a
+                    # non-blocking drain returns immediately instead of spinning until EOF.
+                    if blocking and remaining > 0:
+                        continue
+                    break
+                for key, _ in events:
+                    self._read(selector, key)
+        finally:
+            selector.close()
+
+    def _read(self, selector: selectors.BaseSelector, key: selectors.SelectorKey) -> None:
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=not data)
+        if text:
+            buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
+            buf.append(text)
+            # Drop oldest chunks to cap memory.
+            total = sum(len(part) for part in buf)
+            while total > self.BUFFER_CHARS and len(buf) > 1:
+                total -= len(buf.pop(0))
+        if not data:
+            try:
+                selector.unregister(key.fileobj)
+            except Exception:
+                pass
+
+    def update_status(self) -> None:
+        if self.status != "running":
+            return
+        code = self.process.poll()
+        if code is not None:
+            self.status = "done"
+            self.exit_code = code
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started_at
+
+    def kill(self, grace: float = 3.0) -> None:
+        """SIGTERM, wait grace seconds, then SIGKILL if still running."""
+        if self.status != "running":
+            return
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+        except OSError:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except OSError:
+                self.process.kill()
+            self.process.wait()
+        self.drain(final=True)
+        self.update_status()
+        if self.status == "running":
+            self.status = "killed"
+            self.exit_code = -1
+
+    def tail(self, limit: int) -> tuple[str, str]:
+        stdout = "".join(self.stdout_buf)
+        stderr = "".join(self.stderr_buf)
+        if len(stdout) > limit:
+            stdout = "..." + stdout[-(limit - 3) :]
+        if len(stderr) > limit:
+            stderr = "..." + stderr[-(limit - 3) :]
+        return stdout, stderr
+
+
+@dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
-    expected_git_branch: str = ""
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
     messages: list[Json] = field(default_factory=list)
@@ -1314,6 +1365,8 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
+    jobs: dict[str, BackgroundJob] = field(default_factory=dict)
+    job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
@@ -1329,8 +1382,6 @@ class Session:
             self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
-        if not self.expected_git_branch:
-            self.expected_git_branch = self.git_branch(self.cwd)
         if self.mcp is None:
             self.mcp = MCPManager(self)
         if self.skills is None:
@@ -1357,32 +1408,9 @@ class Session:
         except ValueError:
             return False
 
-    def git_branch(self, cwd: str | None = None) -> str:
-        # Read live each call: a few tens of ms is negligible against a model request, and it is
-        # the only way to reflect an external `git checkout` (caching it would go stale silently).
-        if self.system_info is not None and "git" not in self.system_info.commands:
-            return ""
-        git = "git" if self.system_info is not None else shutil.which("git")
-        if not git:
-            return ""
-        try:
-            proc = subprocess.run(
-                [git, "branch", "--show-current"],
-                cwd=cwd or self.cwd,
-                text=True,
-                capture_output=True,
-                timeout=max(1, min(5, self.settings.shell_timeout)),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ""
-        return proc.stdout.strip() if proc.returncode == 0 else ""
-
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
-
-    def debug_dir(self) -> str:
-        return self.data_path("debug")
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -1405,9 +1433,6 @@ class Session:
 
     def save_snapshot(self) -> str:
         return SessionSnapshotStore(self).save()
-
-    def clean_expired_snapshots(self) -> int:
-        return SessionSnapshotStore.clean_expired(self)
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -1478,15 +1503,13 @@ class UpdateChecker:
             return "update: off"
         if update.checking:
             return "update: checking"
-        return (
-            f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)"
-            if update.newer_than(__version__)
-            else "update: error"
-            if update.error
-            else "update: current"
-            if update.latest
-            else "update: unknown"
-        )
+        if update.newer_than(__version__):
+            _, command = Updater().detect()
+            how = " ".join(command) if command else "reinstall the way you installed it"
+            return f"update: {__version__} -> {update.latest} ({how})"
+        if update.error:
+            return "update: error"
+        return "update: current" if update.latest else "update: unknown"
 
 
 def strict_tool_schema(schema: Json) -> Json:
@@ -1565,9 +1588,16 @@ class Tool:
             function["strict"] = True
         return {"type": "function", "function": function}
 
+    @staticmethod
+    def object_schema(properties: Json, required: list[str] | None = None) -> Json:
+        schema: Json = {"type": "object", "properties": properties, "additionalProperties": False}
+        if required:
+            schema["required"] = required
+        return schema
+
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {}, "additionalProperties": False}
+        return cls.object_schema({})
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1575,6 +1605,11 @@ class Tool:
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
+
+    def single_dict_arg(self, message: str) -> Json:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError(message)
+        return self.args[0]
 
     def preview(self) -> str:
         return f"{self.NAME}({', '.join(self.short_args())})"
@@ -1670,34 +1705,31 @@ class ReadTool(Tool):
     NAME = "Read"
     DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, anchor=line:hash(line_content) text, and updates FILE STATE."
     SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
+    # fmt: off
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
         'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
     )
+    # fmt: on
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path to read"},
-                "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        }
+        # fmt: off
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read"},
+            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+        }, ["path"])
+        # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path to read (single-file form)"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
-            },
-            "additionalProperties": False,
-        }
+        # fmt: off
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read (single-file form)"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
+        })
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1713,7 +1745,21 @@ class ReadTool(Tool):
 
     @staticmethod
     def line_hash(line: str) -> str:
-        return Text.base36(int(hashlib.sha1(line.encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
+        # Hash the visible content only. The trailing newline is stripped so the anchor matches the
+        # line the model sees (anchor_line displays the stripped line), stays stable when only the
+        # final newline changes, and is consistent with indexed_line_hash.
+        return Text.base36(int(hashlib.sha1(line.rstrip("\n").encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
+
+    @staticmethod
+    def split_lines(text: str) -> list[str]:
+        # Canonical line model shared by Read and Edit: split on "\n" only, keeping the newline
+        # (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e, \x85,
+        # \u2028, \u2029, which would number lines differently than Read and desync anchors.
+        parts = text.split("\n")
+        lines = [part + "\n" for part in parts[:-1]]
+        if parts[-1]:
+            lines.append(parts[-1])
+        return lines
 
     @classmethod
     def anchor(cls, index: int, line: str) -> str:
@@ -1782,266 +1828,36 @@ class ReadTool(Tool):
         return "\n".join(out)
 
 
-class LineCountTool(Tool):
-    NAME = "LineCount"
-    DESCRIPTION = "Count UTF-8 file lines; returns per-file counts, missing/not_file rows, and total."
-    SIGNATURE = "LineCount(paths=[path,...])"
-    EXAMPLE = ('Count several files. Example: {"paths":["src/app.py","pyproject.toml"]}',)
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "File paths to count lines for"}},
-            "required": ["paths"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return list(payload.get("paths") or [])
-
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path in self.paths())
-
-    def call(self) -> str:
-        rows = []
-        total = 0
-        for path in self.paths():
-            relpath = self.session.relpath(path)
-            if not os.path.exists(path):
-                rows.append(f"* missing: {relpath}")
-                continue
-            if not os.path.isfile(path):
-                rows.append(f"* not_file: {relpath}")
-                continue
-            try:
-                with open(path, encoding="utf-8", errors="replace") as file:
-                    count = sum(1 for _ in file)
-            except OSError as error:
-                rows.append(f"* error: {relpath}: {error}")
-                continue
-            total += count
-            rows.append(f"* {relpath}: {count}")
-        return "\n".join(["<LineCountToolResult>", *rows, f"<total>{total}</total>", "</LineCountToolResult>"])
-
-    def paths(self) -> list[str]:
-        return [self.session.resolve_path(path) for path in self.strings(min_count=1)]
-
-
-class ListTool(Tool):
-    NAME = "List"
-    DESCRIPTION = "List one directory, including hidden entries; returns child dirs/files/symlinks with file text/binary labels."
-    SIGNATURE = "List(path, glob?); glob filters child names, not recursively"
-    EXAMPLE = ('List child entries. Example: {"path":"."}', 'Filter child names. Example: {"path":"tests","glob":"test_*.py"}')
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory to list"},
-                "glob": {"type": "string", "description": "Optional glob filtering child names (non-recursive), e.g. test_*.py"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [str(payload.get("path") or "."), *([str(payload["glob"])] if payload.get("glob") else [])]
-
-    def needs_confirmation(self) -> bool:
-        return not self.session.in_cwd(self.path())
-
-    def call(self) -> str:
-        path = self.path()
-        args = self.strings(max_count=2)
-        pattern = args[1] if len(args) > 1 else ""
-        if not os.path.isdir(path):
-            raise ToolError("not a directory")
-        rows = []
-        with os.scandir(path) as scan:
-            for entry in scan:
-                if pattern and not fnmatch.fnmatch(entry.name, pattern):
-                    continue
-                kind = (
-                    "symlink"
-                    if entry.is_symlink()
-                    else "dir"
-                    if entry.is_dir(follow_symlinks=False)
-                    else "file"
-                    if entry.is_file(follow_symlinks=False)
-                    else "other"
-                )
-                label = kind + ((" " + self.file_type(entry.path)) if kind == "file" else "")
-                rows.append((kind, label, self.session.relpath(entry.path) + ("/" if kind == "dir" else "")))
-        order = {"dir": 0, "file": 1, "symlink": 2, "other": 3}
-        rows.sort(key=lambda item: (order[item[0]], item[2]))
-        return "\n".join(["<ListToolResult>"] + [f"* {label}: {name}" for _kind, label, name in rows] + ["</ListToolResult>"])
-
-    def path(self) -> str:
-        args = self.strings(max_count=2)
-        return self.session.resolve_path(args[0] if args else ".")
-
-    @staticmethod
-    def file_type(path: str) -> str:
-        try:
-            chunk = open(path, "rb").read(4096)
-            chunk.decode("utf-8")
-            return "text" if b"\0" not in chunk else "binary"
-        except Exception:
-            return "binary"
-
-
-class FindTool(Tool):
-    NAME = "Find"
-    DESCRIPTION = "Find file/dir paths by name or relative glob; skips hidden/gitignored entries."
-    SIGNATURE = "Find(name,path?,type?,limit?) or Find(queries=[...]); type=file|dir|any"
-    EXAMPLE = (
-        'Find files. Example: {"name":"*.py"}',
-        'Find dirs. Example: {"name":"migrations","type":"dir"}',
-        'Batch. Example: {"queries":[{"name":"*.py","path":"src"},{"name":"test_*","path":"tests"}]}',
-    )
-    MAX_LIMIT = 500
-
-    @classmethod
-    def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Glob or exact name to match, e.g. *.py or migrations"},
-                "path": {"type": "string", "description": "Directory to search under; defaults to repo root"},
-                "type": {"type": "string", "enum": ["file", "dir", "any"], "description": "Match files, dirs, or any; default file"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Max results, 1..{cls.MAX_LIMIT}; default 100"},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def params_schema(cls) -> Json:
-        props = dict(cls.arg_schema()["properties"])
-        props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of find queries to run in one call"}
-        return {"type": "object", "properties": props, "additionalProperties": False}
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return payload.get("queries") or [payload]
-
-    def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
-
-    def call(self) -> str:
-        return "\n\n".join(self.find(request) for request in self.requests())
-
-    def short_args(self) -> list[str]:
-        rows = []
-        for request in self.requests():
-            rel = self.session.relpath(str(request["path"]))
-            rows.append(
-                " ".join(
-                    [
-                        str(request["name"]),
-                        *(["path=" + rel] if rel != "." else []),
-                        *(["type=" + str(request["type"])] if request["type"] != "file" else []),
-                        *(["limit=" + str(request["limit"])] if request["limit"] != 100 else []),
-                    ]
-                )
-            )
-        return ["; ".join(rows)]
-
-    def requests(self) -> list[Json]:
-        if not self.args:
-            raise ToolError("Find requires at least one query object")
-        requests = []
-        for item in self.args:
-            if not isinstance(item, dict):
-                raise ToolError("Find args must be query objects")
-            if unexpected := sorted(set(item) - {"name", "path", "type", "limit"}):
-                raise ToolError("Find unexpected field: " + ", ".join(unexpected))
-            name = str(item.get("name") or "").strip()
-            kind = str(item.get("type") or "file")
-            limit = item.get("limit", 100)
-            if not name:
-                raise ToolError("Find requires name")
-            if kind not in {"file", "dir", "any"}:
-                raise ToolError("Find type must be file, dir, or any")
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > self.MAX_LIMIT:
-                raise ToolError(f"Find limit must be 1..{self.MAX_LIMIT}")
-            requests.append({"name": name, "path": self.session.resolve_path(str(item.get("path") or ".")), "type": kind, "limit": limit})
-        return requests
-
-    def find(self, request: Json) -> str:
-        rows = self.matches(str(request["path"]), str(request["name"]), str(request["type"]))
-        limit = int(request["limit"])
-        shown = rows[:limit] + ([f"* omitted: {len(rows) - limit}"] if len(rows) > limit else [])
-        header = f"<FindToolResult pattern={json.dumps(request['name'])} matches={len(rows)}>"
-        return "\n".join([header, *shown, "</FindToolResult>"])
-
-    def matches(self, root: str, pattern: str, kind: str) -> list[str]:
-        patterns = self.gitignore_patterns(root)
-        if self.default_ignored(root, patterns):
-            return []
-        rows: list[str] = []
-        if os.path.isfile(root):
-            return [self.row("file", root)] if kind in {"file", "any"} and self.match_path(root, pattern) else []
-        if not os.path.isdir(root):
-            raise ToolError("Find path is not a file or directory")
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                name for name in dirnames if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), patterns)
-            ]
-            if kind in {"dir", "any"}:
-                rows.extend(self.row("dir", os.path.join(dirpath, name)) for name in dirnames if self.match_path(os.path.join(dirpath, name), pattern))
-            if kind in {"file", "any"}:
-                rows.extend(
-                    self.row("file", os.path.join(dirpath, name))
-                    for name in filenames
-                    if not name.startswith(".")
-                    and not self.ignored(os.path.join(dirpath, name), patterns)
-                    and self.match_path(os.path.join(dirpath, name), pattern)
-                )
-        return sorted(rows)
-
-    def match_path(self, path: str, pattern: str) -> bool:
-        return fnmatch.fnmatch(os.path.basename(path), pattern) or fnmatch.fnmatch(self.session.relpath(path).replace(os.sep, "/"), pattern)
-
-    def row(self, kind: str, path: str) -> str:
-        return f"* {kind}: {self.session.relpath(path)}" + ("/" if kind == "dir" else "")
-
-
 class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path anchor=line:hash matches."
     SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
+    # fmt: off
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
         'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
         'Batch regex terms. Example: {"queries":[{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]}',
     )
+    # fmt: on
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
-                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
-                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
-                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
-            },
-            "required": ["pattern"],
-            "additionalProperties": False,
-        }
+        # fmt: off
+        return cls.object_schema({
+            "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+            "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+            "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+            "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
+        }, ["pattern"])
+        # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
         props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of search queries to run in one call"}
-        return {"type": "object", "properties": props, "additionalProperties": False}
+        return cls.object_schema(props)
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2201,16 +2017,12 @@ class SearchTool(Tool):
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
+    # fmt: off
     SYMBOLS: ClassVar[dict[str, str]] = {
-        "ready": "✓",
-        "synced": "✓",
-        "stale": "*",
-        "syncing": "~",
-        "updating": "~",
-        "missing": "?",
-        "unavailable": "!",
-        "error": "!",
+        "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~",
+        "updating": "~", "missing": "?", "unavailable": "!", "error": "!",
     }
+    # fmt: on
 
     def __init__(self, session: Session):
         self.session = session
@@ -2373,6 +2185,7 @@ class InspectCodeTool(Tool):
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
     DESCRIPTION = "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; refs lists classified references; impls lists implementors; callers/callees walk the call chain."
     SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?,depth?,offset?,all_kinds?,ref_kind?,loose?)"
+    # fmt: off
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
         'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
@@ -2381,6 +2194,7 @@ class InspectCodeTool(Tool):
         'List implementors of an interface/base. Example: {"mode":"impls","target":"Tool","kind":"class"}',
         'Walk transitive callers/callees up to depth; callees loose includes ambiguous cross-module matches. Example: {"mode":"callers","target":"handle_job","depth":3}',
     )
+    # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2398,7 +2212,7 @@ class InspectCodeTool(Tool):
             "ref_kind": {"type": "string", "description": "Restrict refs to a specific reference kind"},
             "loose": {"type": "boolean", "description": "Loosen call-chain matching (callees)"},
         }
-        return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
+        return cls.object_schema(props, ["mode", "target"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2421,7 +2235,15 @@ class InspectCodeTool(Tool):
         if not target:
             raise ToolError("InspectCode target is required")
         if mode in self.SYMBOL_MODES and re.search(r"\s", target):
-            raise ToolError("InspectCode symbol target must not contain whitespace")
+            # Models often repeat the kind inside the target, e.g. target "class Config" with
+            # kind "class". When the first word duplicates a declared kind, drop it — that is the one
+            # case we can strip deterministically (no guessing at per-language keywords).
+            kinds = {token.strip().lower() for token in str(options.get("kind") or "").split(",") if token.strip()}
+            first, _, rest = target.partition(" ")
+            if kinds and first.lower() in kinds and rest.strip():
+                target = rest.strip()
+            if re.search(r"\s", target):
+                raise ToolError("InspectCode symbol target must not contain whitespace")
         if mode in self.RESOLVE_MODES and (target.endswith(".py") or os.path.exists(self.session.resolve_path(target))):
             raise ToolError(f"InspectCode {mode} target must be a symbol, not a file")
         if mode == "outline" and not os.path.isfile(self.session.resolve_path(target)):
@@ -2506,6 +2328,7 @@ class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
     SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=create|replace|delete|insert_before|insert_after|replace_all"
+    # fmt: off
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
@@ -2514,32 +2337,25 @@ class EditTool(Tool):
         'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:0dd44","content":"cleanup()\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
+    # fmt: on
     MUTATES = True
 
     @classmethod
     def params_schema(cls) -> Json:
-        edit = {
-            "type": "object",
-            "properties": {
-                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
-                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
-                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
-                "content": {"type": "string", "description": "New text for create/replace/insert"},
-                "old": {"type": "string", "description": "Text to find for replace_all"},
-                "new": {"type": "string", "description": "Replacement text for replace_all"},
-            },
-            "required": ["op"],
-            "additionalProperties": False,
-        }
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File to create or patch"},
-                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
-            },
-            "required": ["path", "edits"],
-            "additionalProperties": False,
-        }
+        # fmt: off
+        edit = cls.object_schema({
+            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+            "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+            "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+            "content": {"type": "string", "description": "New text for create/replace/insert"},
+            "old": {"type": "string", "description": "Text to find for replace_all"},
+            "new": {"type": "string", "description": "Replacement text for replace_all"},
+        }, ["op"])
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File to create or patch"},
+            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+        }, ["path", "edits"])
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2577,8 +2393,8 @@ class EditTool(Tool):
         relpath = self.session.relpath(path)
         return "".join(
             difflib.unified_diff(
-                original.splitlines(True),
-                new_content.splitlines(True),
+                ReadTool.split_lines(original),
+                ReadTool.split_lines(new_content),
                 fromfile="/dev/null" if not original and not os.path.exists(path) else relpath,
                 tofile=relpath,
             )
@@ -2653,8 +2469,8 @@ class EditTool(Tool):
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            return EditApplyResult(content, [(0, 0, 0, len(content.splitlines(True)))], [], True)
-        lines = original.splitlines(True)
+            return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
+        lines = ReadTool.split_lines(original)
         replacements = []
         for edit in edits:
             start = self.resolve_anchor(lines, edit.start)
@@ -2688,7 +2504,7 @@ class EditTool(Tool):
         return EditApplyResult("".join(new_lines), changes, replacements)
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
-        return self.no_changes_error_from_lines(original.splitlines(True), result.replacements, result.replace_all)
+        return self.no_changes_error_from_lines(ReadTool.split_lines(original), result.replacements, result.replace_all)
 
     @classmethod
     def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
@@ -2728,7 +2544,7 @@ class EditTool(Tool):
         return "\n".join(out)
 
     def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
-        lines = content.splitlines(True)
+        lines = ReadTool.split_lines(content)
         out = []
         for clear_start, clear_end, start, end in changes:
             out.append(f"<invalidate>{clear_start}:{clear_end}</invalidate>")
@@ -2743,7 +2559,7 @@ class EditTool(Tool):
         content = self.normalize_text(content)
         if content == "":
             return []
-        lines = content.splitlines(True)
+        lines = ReadTool.split_lines(content)
         if followed_by_more and lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         return lines
@@ -2774,25 +2590,145 @@ class BashTool(Tool):
     NAME = "Bash"
     DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
+    # fmt: off
     EXAMPLE = (
         'Check environment. Example: {"command":"python3 --version"}',
         'Run a project command. Example: {"command":"python3 -m py_compile nanocode.py"}',
     )
+    # fmt: on
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
+    # Read-only executables that only inspect the filesystem/repo. A command built solely from these
+    # (and safe git subcommands) auto-runs without a confirmation prompt in non-yolo mode, replacing
+    # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
+    # fmt: off
+    SAFE_COMMANDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            # Common read-only inspection commands. The obvious file-writing forms (`sort -o`,
+            # `uniq IN OUT`, `sed -i`, `tree -o`) are guarded below; we do not chase exotic paths
+            # like sed's `w` command — common sense over exhaustive safety.
+            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg", "sort", "uniq",
+            "sed", "tree", "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
+            "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
+            "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
+            # Benign builtin the model routinely prefixes (cd changes the subshell dir only).
+            "cd",
+        }
+    )
+    SAFE_GIT_SUBCOMMANDS: ClassVar[frozenset[str]] = frozenset(
+        {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe",
+         "shortlog", "cat-file", "ls-tree", "rev-list", "for-each-ref", "diff-tree"}
+    )
+    # fmt: on
+
+    def needs_confirmation(self) -> bool:
+        try:
+            return not self.is_readonly(self.command())
+        except ToolError:
+            return True
+
+    @classmethod
+    def is_readonly(cls, command: str) -> bool:
+        """Conservatively classify a command as safe to auto-run. Bias hard toward False: a false
+        'safe' would run a mutating command without consent, while a false 'unsafe' only costs a
+        confirmation prompt. Rejects anything that can write, execute arbitrary code, or background."""
+        command = command.strip()
+        if not command:
+            return False
+        # Normalize away the ubiquitous harmless redirections — discarding output to /dev/null and
+        # merging stderr/stdout — so the common `cmd 2>/dev/null` / `cmd >/dev/null 2>&1` forms are
+        # not treated as file writes.
+        scan = re.sub(r"(?:\d*>>?|&>|<)\s*/dev/null", " ", command)
+        scan = scan.replace("2>&1", " ").replace(">&2", " ")
+        # Anything still redirecting to/from a real path, or substituting a command, can write or
+        # run arbitrary code.
+        if any(ch in scan for ch in (">", "<", "`")) or "$(" in scan:
+            return False
+        # Reject a lone background & (detaches a process); && and || are allowed sequence operators.
+        if re.search(r"(?<!&)&(?!&)", scan):
+            return False
+        # Split on every control operator (&& || | ; newline) and require EVERY stage to be a safe
+        # read-only command — so `git log && rm x` is not auto-approved on the strength of `git log`.
+        return all(cls._safe_segment(part) for part in re.split(r"&&|\|\||[|;\n]", scan) if part.strip())
+
+    @classmethod
+    def _safe_segment(cls, segment: str) -> bool:
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            return False
+        if not tokens:
+            return False
+        cmd = tokens[0]
+        # Env assignments and wrapper commands can hide arbitrary execution — never auto-approve.
+        # fmt: off
+        if "=" in cmd or cmd in {"env", "sudo", "eval", "exec", "command", "xargs", "nohup", "time",
+                                 "watch", "bash", "sh", "zsh", "tee", "awk", "python", "python3"}:
+            return False
+        # fmt: on
+        if cmd == "git":
+            return cls._safe_git(tokens)
+        if cmd not in cls.SAFE_COMMANDS:
+            return False
+        # Flags/args that turn a read-only command into a writer.
+        if cmd == "find" and any(t in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"} for t in tokens):
+            return False
+        if cmd == "sed" and any(t == "-i" or t.startswith("-i") or t == "--in-place" or t.startswith("--in-place") for t in tokens):
+            return False
+        if cmd == "tree" and any(t == "-o" or t.startswith("-o") or t.startswith("--output") for t in tokens):
+            return False  # `tree -o FILE` writes the listing to a file
+        if cmd == "sort" and any(t.startswith("-o") or t.startswith("--output") for t in tokens):
+            return False  # `sort -o FILE` / `--output=FILE` writes to a file
+        if cmd == "uniq" and cls._uniq_writes(tokens):
+            return False  # `uniq INPUT OUTPUT` writes the second file operand
+        return True
+
+    @staticmethod
+    def _uniq_writes(tokens: list[str]) -> bool:
+        # uniq writes only in the two-operand form `uniq [OPTS] INPUT OUTPUT`. Count positional
+        # operands, skipping the numeric argument that follows a value-taking short flag.
+        value_flags = {"-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"}
+        operands = 0
+        skip_next = False
+        for token in tokens[1:]:
+            if skip_next:
+                skip_next = False
+            elif token in value_flags:
+                skip_next = True
+            elif not token.startswith("-"):
+                operands += 1
+        return operands >= 2
+
+    @classmethod
+    def _safe_git(cls, tokens: list[str]) -> bool:
+        index = 1
+        while index < len(tokens) and tokens[index] == "--no-pager":
+            index += 1
+        if index >= len(tokens):
+            return False
+        sub = tokens[index]
+        if sub not in cls.SAFE_GIT_SUBCOMMANDS:
+            return False
+        args = tokens[index + 1 :]
+        if any(t == "--output" or t.startswith("--output=") for t in args):
+            return False
+        if sub == "grep" and any(t == "-O" or t.startswith("-O") or t == "--open-files-in-pager" or t.startswith("--open-files-in-pager=") for t in args):
+            return False
+        return True
+
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}},
-            "required": ["command"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}}, ["command"])
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload.get("command", "")]
+        command = str(payload.get("command") or "")
+        if not command.strip():
+            raise ToolError("Bash command must be non-empty")
+        return [command]
 
     def command(self) -> str:
         command = self.strings(min_count=1, max_count=1)[0]
@@ -2903,145 +2839,165 @@ class BashTool(Tool):
         return tuple(value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or "" for value in (stdout, stderr))
 
 
-class GitTool(Tool):
-    NAME = "Git"
-    DESCRIPTION = (
-        "Run git with explicit argv (default: cwd from Environment; use cwd= for other directories). For add, pass explicit file paths; broad add is rejected."
-    )
-    SIGNATURE = "Git(argv=[command,...], cwd?)"
-    EXAMPLE = (
-        'Status. Example: {"argv":["status","--short"]}',
-        'Diff. Example: {"cwd":"src","argv":["diff","--","app.py"]}',
-        'Stage explicit files. Example: {"argv":["add","--","nanocode.py","README.md"]}',
-        'Show commit/file. Example: {"argv":["show","--stat","HEAD"]}',
-    )
-    READONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"}
-    BROAD_ADD = {"-A", "--all", ".", "./", ":/", "*"}
+class JobTool(Tool):
+    NAME = "Job"
+    DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs. Processes run in their own process group and do not block the agent."
+    SIGNATURE = 'Job(action="start"|"status"|"wait"|"list"|"kill", command?, job?, timeout?, limit?)'
+    MUTATES = True
+    ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
+    MAX_JOBS: ClassVar[int] = 8
+    DEFAULT_LIMIT: ClassVar[int] = 4096
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "cwd": {"type": "string", "description": "Working directory for the git command; defaults to repo root"},
-                "argv": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Git command and args as a list, e.g. [\"status\",\"--short\"]"},
-            },
-            "required": ["argv"],
-            "additionalProperties": False,
-        }
+        # fmt: off
+        return cls.object_schema({
+            "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
+            "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
+            "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
+            "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+            "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+        }, ["action"])
+        # fmt: on
 
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        argv = payload.get("argv")
-        if not isinstance(argv, list) or not argv:
-            raise ToolError('Git requires a non-empty \'argv\' list. Signature: Git(argv=[command,...], cwd?)  Example: {"argv":["status","--short"]}')
-        argv = [str(a) for a in argv]
-        return [("cwd=" + str(payload["cwd"])), *argv] if payload.get("cwd") else argv
+    def payload(self) -> Json:
+        return self.single_dict_arg("Job requires a single object argument")
+
+    def resolved_action(self, payload: Json) -> str:
+        action = str(payload.get("action") or "").strip()
+        if action not in self.ACTIONS:
+            raise ToolError(f"unknown action: {action!r}")
+        return action
 
     def needs_confirmation(self) -> bool:
-        args, _ = self.git_args()
-        return not args or args[0] not in self.READONLY
+        return self.resolved_action(self.payload()) in {"start", "kill", "wait"}
+
+    def short_args(self) -> list[str]:
+        payload = self.payload()
+        action = self.resolved_action(payload)
+        if action == "start":
+            return [str(payload.get("command") or "")]
+        if action == "list":
+            return ["list"]
+        return [action, str(payload.get("job") or "")]
 
     def call(self) -> str:
-        args, cwd = self.git_args()
-        git = shutil.which("git")
-        if not git:
-            raise ToolError("git not found")
-        self.validate_branch_safety(args, cwd)
+        payload = self.payload()
+        action = self.resolved_action(payload)
+        if action == "start":
+            return self._start(payload)
+        if action == "status":
+            return self._status(payload)
+        if action == "wait":
+            return self._wait(payload)
+        if action == "list":
+            return self._list()
+        if action == "kill":
+            return self._kill(payload)
+        raise ToolError(f"unhandled action: {action!r}")
+
+    def _start(self, payload: Json) -> str:
+        command = str(payload.get("command") or "").strip()
+        if not command:
+            raise ToolError("start requires a non-empty command")
+        active = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        if active >= self.MAX_JOBS:
+            raise ToolError(f"too many active jobs ({active}/{self.MAX_JOBS}); kill or wait for one first")
+        self.session.job_counter += 1
+        job_id = f"job.{self.session.job_counter}"
+        proc = subprocess.Popen(
+            ["bash", "-lc", command],
+            cwd=self.session.cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            bufsize=0,
+        )
+        job = BackgroundJob(id=job_id, command=command, process=proc, started_at=time.monotonic())
+        self.session.jobs[job_id] = job
+        return f"Started {job_id}: {command}"
+
+    def _status(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        timeout = int(payload.get("timeout") or 0)
+        job.drain(timeout=timeout)
+        job.update_status()
+        return self._format(job, payload)
+
+    def _wait(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        timeout = payload.get("timeout")
         try:
-            proc = subprocess.run([git, *args], cwd=cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
-            # When the user has nanocode switch branches, update expected_git_branch to the new
-            # branch so later commits are not rejected. Gate on branch-changing commands only: an
-            # unexpected (external) switch should still trip validate_branch_safety on commit.
-            if proc.returncode == 0 and self.changes_branch(args):
-                self.session.expected_git_branch = self.session.git_branch(cwd)
-            return self.process_result("GitToolResult", proc.returncode, proc.stdout, proc.stderr)
-        except subprocess.TimeoutExpired as error:
-            return self.process_result("GitToolResult", -1, error.stdout or "", (error.stderr or "") + "\ntimeout")
+            # timeout omitted or 0 means block until the process exits (per the schema).
+            if not timeout:
+                job.process.wait()
+            else:
+                job.process.wait(timeout=max(1, int(timeout)))
+            job.drain(final=True)
+        except subprocess.TimeoutExpired:
+            job.drain()
+        job.update_status()
+        return self._format(job, payload)
 
-    def git_args(self) -> tuple[list[str], str]:
-        if not self.args:
-            raise ToolError("Git requires arguments")
-        args = [str(arg) for arg in self.args]
-        cwd = self.session.cwd
-        if args[0].startswith("cwd="):
-            raw_cwd = args.pop(0)[4:]
-            if not raw_cwd:
-                raise ToolError("cwd= requires a path")
-            cwd = self.session.resolve_path(raw_cwd)
-            if not self.session.in_cwd(cwd):
-                raise ToolError("git cwd outside workspace")
-            if not os.path.isdir(cwd):
-                raise ToolError("git cwd is not a directory")
-        if not args:
-            raise ToolError("Git requires arguments")
-        self.validate_add(args, cwd)
-        return args, cwd
+    def _list(self) -> str:
+        if not self.session.jobs:
+            return "No jobs."
+        rows = []
+        for job in self.session.jobs.values():
+            exit_code = job.exit_code if job.status != "running" else "-"
+            rows.append(f"| {job.id} | {job.status} | {exit_code} | {job.command[:60]} |")
+        return "Jobs:\n| id | status | exit | command |\n|---|---|---|---|\n" + "\n".join(rows)
 
-    def validate_branch_safety(self, args: list[str], cwd: str) -> None:
-        if self.changes_branch(args) and self.session.settings.yolo:
-            raise ToolError("branch-changing git commands require explicit confirmation; yolo cannot auto-approve them")
-        if args[0] != "commit":
-            return
-        current = self.session.git_branch(cwd)
-        expected = self.session.expected_git_branch
-        if expected and current and current != expected:
-            raise ToolError(f"refusing git commit because branch changed from {expected} to {current}")
-        if current in {"main", "master"} and self.session.settings.yolo:
-            raise ToolError(f"refusing git commit on {current} in yolo mode; explicit confirmation is required")
+    def _kill(self, payload: Json) -> str:
+        job = self._resolve_job(payload)
+        job.kill()
+        return f"Killed {job.id} (status={job.status}, exit_code={job.exit_code})"
 
-    def changes_branch(self, args: list[str]) -> bool:
-        if args[0] == "switch":
-            return True
-        if args[0] == "checkout":
-            # Conservatively treat any `git checkout` without a `--` path separator as
-            # branch/ref-changing; `git checkout -- <path>` (file restore) is exempt.
-            return "--" not in args[1:]
-        if args[0] != "branch":
-            return False
-        if any(arg in {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"} for arg in args[1:]):
-            return True
-        return any(arg == "--" or not arg.startswith("-") for arg in args[1:])
+    def _resolve_job(self, payload: Json) -> BackgroundJob:
+        job_id = str(payload.get("job") or "").strip()
+        if not job_id:
+            raise ToolError("job id required")
+        job = self.session.jobs.get(job_id)
+        if job is None:
+            raise ToolError(f"unknown job: {job_id!r}")
+        return job
 
-    def validate_add(self, args: list[str], cwd: str) -> None:
-        if args[0] != "add":
-            return
-        paths, explicit = [], False
-        for arg in args[1:]:
-            if arg == "--":
-                explicit = True
-            elif arg in self.BROAD_ADD or arg.startswith("--pathspec-from-file"):
-                raise ToolError("Git add requires explicit file paths")
-            elif explicit or not arg.startswith("-"):
-                paths.append(arg)
-        if not paths:
-            raise ToolError("Git add requires explicit file paths")
-        for path in paths:
-            if path.startswith(":") or any(char in path for char in "*?[]") or not self.session.in_cwd(os.path.abspath(os.path.join(cwd, path))):
-                raise ToolError("Git add requires explicit file paths inside workspace")
+    def _format(self, job: BackgroundJob, payload: Json) -> str:
+        limit = int(payload.get("limit") or self.DEFAULT_LIMIT)
+        stdout, stderr = job.tail(limit)
+        lines = [
+            f"Job: {job.id}",
+            f"Status: {job.status}",
+            f"Command: {job.command}",
+            f"Elapsed: {job.elapsed():.1f}s",
+        ]
+        if job.exit_code is not None:
+            lines.append(f"Exit code: {job.exit_code}")
+        if stdout:
+            lines.extend(["--- stdout ---", stdout])
+        if stderr:
+            lines.extend(["--- stderr ---", stderr])
+        return "\n".join(lines)
 
 
 class RecallTool(Tool):
     NAME = "Recall"
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
     SIGNATURE = "Recall(keys=[tr.N,...], ranges?); ranges are 0-based [start,end] output lines"
+    # fmt: off
     EXAMPLE = (
         'Recall full result. Example: {"keys":["tr.1"]}',
         'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
     )
+    # fmt: on
     STORES_RESULT = False
 
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
-            },
-            "required": ["keys"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"}}, ["keys"])
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3073,9 +3029,7 @@ class RecallTool(Tool):
         return ["; ".join(rows)]
 
     def requests(self) -> list[tuple[str, tuple[tuple[int, int], ...]]]:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Recall requires keys")
-        payload = self.args[0]
+        payload = self.single_dict_arg("Recall requires keys")
         if unexpected := sorted(set(payload) - {"keys", "ranges"}):
             raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
         raw_keys = payload.get("keys")
@@ -3110,42 +3064,31 @@ class NoteTool(Tool):
     NAME = "Note"
     DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. Plan items are objects with status todo|doing|done|blocked and text."
     SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
+    # fmt: off
     EXAMPLE = (
         'Set memory. Example: {"set_goal":"ship parser fix","replace_plan":[{"status":"doing","text":"inspect parser"},{"status":"todo","text":"patch bug"}],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',
     )
+    # fmt: on
     STORES_RESULT = False
 
     @classmethod
     def params_schema(cls) -> Json:
-        plan_item = {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
-                "text": {"type": "string", "description": "Plan step description"},
-            },
-            "required": ["status", "text"],
-            "additionalProperties": False,
-        }
-        return {
-            "type": "object",
-            "properties": {
-                "set_goal": {"type": "string", "description": "Replace the current goal"},
-                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
-                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
-                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
-            },
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
+        # fmt: off
+        plan_item = cls.object_schema({
+            "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+            "text": {"type": "string", "description": "Plan step description"},
+        }, ["status", "text"])
+        return cls.object_schema({
+            "set_goal": {"type": "string", "description": "Replace the current goal"},
+            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+            "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
+        })
+        # fmt: on
 
     def call(self) -> str:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Note requires named fields")
-        data = self.args[0]
+        data = self.single_dict_arg("Note requires named fields")
         if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
@@ -3209,7 +3152,7 @@ class NoteTool(Tool):
 
 
 @dataclass(frozen=True)
-class QuestionSpec:
+class AskSpec:
     """One validated question the model wants to ask the user."""
 
     question: str
@@ -3218,69 +3161,41 @@ class QuestionSpec:
     recommended: int | None = None
 
 
-class QuestionTool(Tool):
-    NAME = "Question"
+class AskTool(Tool):
+    NAME = "Ask"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
-    SIGNATURE = "Question(questions=[{question, choices?, previews?, recommended?}, ...])"
+    SIGNATURE = "Ask(questions=[{question, choices?, previews?, recommended?}, ...])"
+    # fmt: off
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
     )
+    # fmt: on
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[QuestionSpec, str], str] | None = None
+    question_fn: Callable[[AskSpec, str], str] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Questions to ask, one after another",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "question": {"type": "string", "description": "The question to ask the user"},
-                            "choices": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional predefined choices the user can pick from",
-                            },
-                            "previews": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional preview text per choice, shown as the user navigates",
-                            },
-                            "recommended": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": "Optional 0-based index of the recommended choice; pre-selected and marked",
-                            },
-                        },
-                        "required": ["question"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["questions"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
+        # fmt: off
+        question = cls.object_schema({
+            "question": {"type": "string", "description": "The question to ask the user"},
+            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
+            "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
+        }, ["question"])
+        return cls.object_schema({
+            "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
+        }, ["questions"])
+        # fmt: on
 
     def call(self) -> str:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Question requires named fields")
-        questions = self.args[0].get("questions")
+        questions = self.single_dict_arg(f"{self.NAME} requires named fields").get("questions")
         if not isinstance(questions, list) or not questions:
-            raise ToolError("Question requires a non-empty 'questions' list")
+            raise ToolError(f"{self.NAME} requires a non-empty 'questions' list")
         # Validate the whole batch up front, so a malformed later question never strands the
         # user after they have already answered earlier ones.
-        prepared: list[QuestionSpec] = []
+        prepared: list[AskSpec] = []
         for item in questions:
             if not isinstance(item, dict):
                 raise ToolError("each question must be an object with a 'question' field")
@@ -3292,17 +3207,17 @@ class QuestionTool(Tool):
             recommended = item.get("recommended")
             if choices is not None:
                 if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
-                    raise ToolError("Question choices must be a list of strings")
+                    raise ToolError(f"{self.NAME} choices must be a list of strings")
                 if previews is not None:
                     if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
-                        raise ToolError("Question previews must be a list of strings")
+                        raise ToolError(f"{self.NAME} previews must be a list of strings")
                     if len(previews) != len(choices):
-                        raise ToolError("Question previews must match choices length")
+                        raise ToolError(f"{self.NAME} previews must match choices length")
             if recommended is not None and (
                 isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
             ):
-                raise ToolError("Question recommended must be a valid 0-based choice index")
-            prepared.append(QuestionSpec(question, choices, previews, recommended))
+                raise ToolError(f"{self.NAME} recommended must be a valid 0-based choice index")
+            prepared.append(AskSpec(question, choices, previews, recommended))
         total = len(prepared)
         answers: list[tuple[str, str]] = []
         for index, spec in enumerate(prepared):
@@ -3329,43 +3244,18 @@ class MCPTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["call", "describe", "list_resources", "read_resource"],
-                    "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri',
-                },
-                "server": {
-                    "type": "string",
-                    "description": "MCP server name from config",
-                },
-                "tool": {
-                    "type": "string",
-                    "description": "Remote MCP tool name (required for call/describe)",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the remote tool (required for call)",
-                },
-                "uri": {
-                    "type": "string",
-                    "description": "Resource URI (required for read_resource), e.g. scheme://path",
-                },
-            },
-            "required": ["action", "server"],
-            "additionalProperties": False,
-        }
-
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
+        # fmt: off
+        return cls.object_schema({
+            "action": {"type": "string", "enum": ["call", "describe", "list_resources", "read_resource"], "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri'},
+            "server": {"type": "string", "description": "MCP server name from config"},
+            "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
+            "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
+            "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
+        }, ["action", "server"])
+        # fmt: on
 
     def payload(self) -> Json:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("MCP requires named fields")
-        return self.args[0]
+        return self.single_dict_arg("MCP requires named fields")
 
     ACTIONS: ClassVar[tuple[str, ...]] = ("call", "describe", "list_resources", "read_resource")
 
@@ -3445,14 +3335,11 @@ class SkillTool(Tool):
     SIGNATURE = "Skill(name)"
     EXAMPLE = ('Load a skill. Example: {"name":"release-notes"}',)
 
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"name": {"type": "string", "description": "Skill name from the SKILLS section"}},
-            "required": ["name"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({"name": {"type": "string", "description": "Skill name from the SKILLS section"}}, ["name"])
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3468,22 +3355,12 @@ class SkillTool(Tool):
         return f"<Skill name={json.dumps(skill.name)}>\n{library.expand(skill)}\n</Skill>"
 
 
+# fmt: off
 TOOLS: tuple[type[Tool], ...] = (
-    MCPTool,
-    SkillTool,
-    ReadTool,
-    LineCountTool,
-    ListTool,
-    FindTool,
-    InspectCodeTool,
-    SearchTool,
-    EditTool,
-    BashTool,
-    GitTool,
-    RecallTool,
-    NoteTool,
-    QuestionTool,
+    MCPTool, SkillTool, ReadTool, InspectCodeTool, SearchTool, EditTool,
+    BashTool, JobTool, RecallTool, NoteTool, AskTool,
 )
+# fmt: on
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -3502,9 +3379,9 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
-    CODE_EXTENSIONS: ClassVar[set[str]] = set(
-        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
-    )
+    # fmt: off
+    CODE_EXTENSIONS: ClassVar[set[str]] = set(".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split())
+    # fmt: on
     CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
     @dataclass
@@ -3654,9 +3531,7 @@ class ContextManager:
             return
         previous = self.session._cache_prefix_text
         if state.prefix_fingerprint and previous is not None:
-            diff = "\n".join(
-                list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40]
-            )
+            diff = "\n".join(list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40])
             DebugTrace.cache_drift(self.session, expected=state.prefix_fingerprint, actual=fingerprint, diff=diff)
         if not state.prefix_fingerprint:
             state.prefix_fingerprint = fingerprint
@@ -3706,13 +3581,13 @@ class ContextManager:
         info = self.session.system_info
         rows = [
             f"- cwd: {info.cwd}",
+            # Front-ranked so the model knows which executables it may drive via Bash (e.g. git, wc,
+            # find, ls, rg) — these replace the removed List/Find/LineCount/read-only-Git tools.
+            "- detected_commands (available via Bash): " + (", ".join(info.commands) or "(none)"),
             f"- os: {info.os}",
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
-            "- detected_commands: " + (", ".join(info.commands) or "(none)"),
         ]
-        if branch := self.session.git_branch(self.session.cwd):
-            rows.append(f"- git_branch: {branch}")
         return "\n".join(rows)
 
     def file_context(self) -> str:
@@ -3749,8 +3624,6 @@ class ContextManager:
             ("shell timeout", f"{self.session.settings.shell_timeout}s"),
             ("commands", ", ".join(info.commands) or "(none)"),
         ]
-        if branch := self.session.git_branch(self.session.cwd):
-            rows.append(("git", "`" + branch + "`"))
         return "#### Environment\n" + self.md_table(["key", "value"], rows)
 
     def memory_md(self) -> str:
@@ -3785,7 +3658,12 @@ class ContextManager:
         chunks = ["#### File State" + (f"  ·  focus: {focus}" if focus else "")]
         if paths:
             rows = [
-                (f"`{path}`", ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])), len(lines_by_path[path]), self.latest_source(lines_by_path[path]))
+                (
+                    f"`{path}`",
+                    ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])),
+                    len(lines_by_path[path]),
+                    self.latest_source(lines_by_path[path]),
+                )
                 for path in paths
             ]
             chunks.append(self.md_table(["file", "ranges", "lines", "source"], rows))
@@ -4283,7 +4161,7 @@ class EditBatchPlan:
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.new)
-            lines = [self.Line(line, None) for line in content.splitlines(True)]
+            lines = [self.Line(line, None) for line in ReadTool.split_lines(content)]
             return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [], True)
 
         replacements: list[tuple[int, int, list[EditBatchPlan.Line]]] = []
@@ -5383,11 +5261,9 @@ class ToolRunner:
         self.context = context
         self.input_fn = input_fn
         self.output_fn = output_fn
-        self.preview_fn: Callable[[str], bool] | None = None
-        self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[str], None] | None = None
-        self.question_fn: Callable[[QuestionSpec, str], str] | None = None
+        self.question_fn: Callable[[AskSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
@@ -5456,11 +5332,11 @@ class ToolRunner:
 
     def parallel_safe(self, call: ToolCall) -> bool:
         # A call may run concurrently only if it neither mutates state nor blocks on interactive
-        # input: read-only, auto-approved, non-interactive tools (Read/Search/Find/List/Recall/
-        # InspectCode, read-only Git, read-only MCP). Edit is coordinated serially by EditBatchPlan;
-        # Bash streams live output and mutates; Question blocks on the user.
+        # input: read-only, auto-approved, non-interactive tools (Read/Search/Recall/InspectCode,
+        # read-only MCP). Edit is coordinated serially by EditBatchPlan;
+        # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name in {"Edit", "Question"} or tool_class is BashTool:
+        if tool_class is None or call.name == "Edit" or tool_class in (BashTool, JobTool, AskTool):
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
@@ -5503,19 +5379,8 @@ class ToolRunner:
         return end
 
     def edit_barrier(self, call: ToolCall) -> bool:
-        if call.name == "Edit":
-            return False
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None:
-            return True
-        if tool_class.MUTATES:
-            return True
-        if call.name == "Git":
-            try:
-                return tool_class(self.session, call.args).needs_confirmation()
-            except Exception:
-                return True
-        return False
+        return call.name != "Edit" and (tool_class is None or tool_class.MUTATES)
 
     def run_one(
         self,
@@ -5527,16 +5392,16 @@ class ToolRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
+        if call.error:
+            return "failed", self.reject(call, f"ToolError: {call.error}", batch_suffix=batch_suffix)
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started, approved, auto, display = time.monotonic(), False, False, None
-        if isinstance(tool, QuestionTool):
+        if isinstance(tool, AskTool):
             tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
-            if call.error:
-                raise ToolError(call.error)
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
@@ -5644,11 +5509,7 @@ class ToolRunner:
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
-        display = self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, preview_lines=40)
-        if self.preview_full_fn and tool.NAME == "Edit":
-            self.preview_full_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, preview_lines=None))
-        if not (self.preview_fn and self.preview_fn(display)):
-            self.output_fn(display)
+        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
         answer = self.input_fn("[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
@@ -5662,21 +5523,17 @@ class ToolRunner:
         status: str,
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
-        preview_lines: int | None = 40,
     ) -> str:
         header = self.with_batch_suffix(("approve " if status == "confirm" else "auto ") + self.short_call(call), batch_suffix)
         if tool.NAME != "Edit":
             return header
         preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
-        return header + (("\n" + block) if (block := self.preview_block(preview, max_lines=preview_lines)) else "")
+        return header + (("\n" + block) if (block := self.preview_block(preview)) else "")
 
-    def preview_block(self, preview: str, *, max_lines: int | None = 40) -> str:
+    @staticmethod
+    def preview_block(preview: str) -> str:
         lines = preview.rstrip().splitlines()
-        if not lines:
-            return ""
-        if max_lines is not None and len(lines) > max_lines:
-            lines = lines[:max_lines] + [f"... preview truncated: {len(lines) - max_lines} more lines (Ctrl-A: full preview) ..."]
-        return "\n".join(["  preview", *("  " + line for line in lines)])
+        return "\n".join(["  preview", *("  " + line for line in lines)]) if lines else ""
 
     def finish_display(
         self,
@@ -5764,7 +5621,7 @@ class DebugTrace:
     def write(cls, session: Session, *, activity: str, label: str, payload: Any) -> str:
         if not session.settings.debug:
             return ""
-        directory = session.debug_dir()
+        directory = session.data_path("debug")
         os.makedirs(directory, exist_ok=True)
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
         path = os.path.join(directory, f"last-{safe_label}.json")
@@ -6006,9 +5863,15 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
+        system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
+        # Anthropic prompt caching is a prefix match that only takes effect at explicit
+        # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
+        # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
+        # system block caches the stable tools+system prefix and is reused on every later turn.
+        system: Json = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
         params: Json = {
             "model": provider.model,
-            "system": "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip(),
+            "system": system,
             "messages": self.anthropic_messages(messages),
             "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
         }
@@ -6194,7 +6057,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     @classmethod
     def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
-        # payload_args may reject malformed arguments (e.g. Git with an empty argv). Capture that
+        # payload_args may reject malformed arguments (e.g. Bash with an empty command). Capture that
         # error on the call so it is replayed as a tool result during execution, letting the model
         # self-correct, rather than escaping to abort the entire agent turn.
         try:
@@ -6208,39 +6071,35 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read LineCount List Find InspectCode Search Edit Bash Git Recall Note Question MCP.
-- Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
-- Files/code: Read/LineCount/List inspect files; Find/Search locate paths/text; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable.
-- Changes/commands: Edit writes files; Git handles git; Bash is fallback when built-ins do not fit.
-- State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
-- Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
+- Available: Read InspectCode Search Edit Bash Job Recall Note Ask MCP.
+- Use exact tool names and named parameters; obey each tool's DESCRIPTION/SIGNATURE.
+- Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
+- Bash runs everything else — `ls`, `find`, `wc -l`, git (`status`/`diff`/`log`/`add`/`commit`/…) — using only the executables in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log …) auto-run; anything that writes, executes code, or mutates git asks first. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
+- Job (start/status/wait/list/kill) for work that outlives one command (dev servers, watchers, long builds/tests); poll and kill when done. Plain Bash for quick commands.
+- Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
 
 GUIDE:
-- THINK BEFORE CODING: briefly state your approach before acting; surface important assumptions, ambiguity, and tradeoffs.
-- SIMPLICITY FIRST: implement the smallest non-speculative solution.
-- SURGICAL CHANGES: touch only lines that trace to the request; clean up only your own orphans.
-- MATCH CONVENTIONS: read nearby code first; follow the project's existing style, naming, structure, and libraries. Do not add comments, docstrings, or tests unless asked or the surrounding code warrants them.
-- GOAL-DRIVEN EXECUTION: define success criteria up front and loop until verified or blocked. Verify with the project's own tools (tests, build, run, lint) when available; never claim something works on assumption alone.
+- THINK BEFORE CODING: briefly state your approach and key assumptions/tradeoffs before acting.
+- SIMPLE & SURGICAL: smallest non-speculative solution; touch only lines that trace to the request; small incremental edits; clean up only your own orphans.
+- MATCH CONVENTIONS: read nearby code first, then follow its style, naming, structure, and libraries. Add comments/docstrings/tests only when asked or warranted.
+- GOAL-DRIVEN: define success up front and loop until verified or blocked; verify with the project's own tools (tests/build/run/lint); never claim success on assumption alone.
 
 FLOW:
-- Act when clear; keep using tools until done, or return a final answer.
-- Batch independent tool calls when practical; sequence dependent ones.
-- Use tool feedback; do not repeat failed calls unchanged — diagnose, then adjust.
-- Do not switch/create/delete git branches unless explicitly asked. Before committing, check the branch and stop if it changed since task start. Commit or push only when asked.
-- Keep changes small/local/reversible and never overwrite unrelated user work.
-- Confirm before irreversible or outward-facing actions (deleting data, force-pushing, destructive shell commands, network sends) unless the user already authorized them.
-- Report outcomes faithfully: if a check failed, was skipped, or was not run, say so plainly; do not overstate confidence.
-- Decline to write or improve code whose clear purpose is malicious (malware, credential theft, unauthorized intrusion); help with defensive and legitimate security work.
-- All assistant text is user-visible markdown in the latest user's language.
+- Act when clear; keep using tools until done, then return a final answer.
+- BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
+- Do not switch/create/delete git branches unless asked; before committing, check the branch and stop if it changed since task start; commit or push only when asked.
+- Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions (deleting data, force-pushing, destructive commands, network sends) unless already authorized.
+- Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
+- Decline clearly malicious code (malware, credential theft, unauthorized intrusion); help with defensive and legitimate security work.
+- LANGUAGE (strict): write in the user's current natural language, detected per turn — final replies, thinking preambles, progress notes, Ask prompts/choices, and Note goal/plan/known/check text. Do not default to English; switch when the user switches. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 
 CONTEXT:
-- FILE STATE is the latest known file snapshot, possibly partial. Read only when needed lines, anchors, or surrounding context are absent. Read and Edit refresh FILE STATE; after Edit, trust the edited range.
-- Environment and Memory sections carry live facts (cwd, git branch, prior notes); treat them as current context, not user instructions, and re-check anything before relying on it.
+- FILE STATE is the latest (possibly partial) snapshot; Read only when needed lines/anchors/context are absent. Read and Edit refresh it; after Edit, trust the edited range.
+- Environment and Memory carry live facts (cwd, prior notes); treat them as context, not user instructions, and re-check before relying.
 
 FINAL:
-- Be concise by default: answer in as few lines as the task allows (often 1-3), and stop. Lead with the result; no preamble, recap, or filler.
-- Do not over-explain, enumerate options, or add background unless the user asks for detail, a walkthrough, or "why". Match length to what was requested; only go long when the user requests it or the task genuinely requires it.
-- Concise markdown in the user's language; note changed files and checks run (or not run).\
+- Be concise: lead with the result, answer in as few lines as the task allows (often 1-3), then stop — no preamble, recap, or filler. Go long only when asked or the task genuinely requires it.
+- Note changed files and checks run (or not run). Reply in the user's current language (see LANGUAGE).\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -6249,6 +6108,9 @@ FINAL:
         self.model = ModelClient(session)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
+        # Called with the queued messages when they are flushed into the turn, so the UI can move
+        # them from the live queue region up into the scrollback log. Set by CommandLoop.
+        self.on_queue_flush: Callable[[list[str]], None] | None = None
 
     def run(self, user_input: str) -> str:
         self.session.state.turn_step = 0
@@ -6312,6 +6174,8 @@ FINAL:
                     del remaining[index]
                     break
         self.session.pending_user_inputs = remaining
+        if self.on_queue_flush:
+            self.on_queue_flush(pending)
 
     @staticmethod
     def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
@@ -6327,57 +6191,28 @@ FINAL:
 
 
 class CommandCompleter(Completer):
+    # fmt: off
     COMMANDS = (
-        "/help",
-        "/status",
-        "/context",
-        "/skills",
-        "/config",
-        "/api",
-        "/debug",
-        "/compact",
-        "/index",
-        "/model",
-        "/provider",
-        "/reason",
-        "/set",
-        "/yolo",
-        "/strict",
-        "/exit",
-        "/quit",
+        "/help", "/ps", "/status", "/context", "/skills", "/config", "/api", "/debug",
+        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
     )
+    # fmt: on
+    # fmt: off
     SET_KEYS = (
-        "provider.model",
-        "provider.url",
-        "provider.key",
-        "provider.api",
-        "provider.prompt_cache_key",
-        "provider.reasoning",
-        "provider.chat_reasoning",
-        "provider.available_models",
-        "provider.temperature",
-        "provider.max_tokens",
-        "provider.strict_tools",
-        "provider.timeout",
-        "runtime.yolo",
-        "runtime.max_agent_steps",
-        "runtime.max_context_tokens",
-        "runtime.max_parallel_tools",
-        "runtime.shell_timeout",
-        "runtime.check_updates",
-        "runtime.tips",
+        "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
+        "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature",
+        "provider.max_tokens", "provider.strict_tools", "provider.timeout", "runtime.yolo", "runtime.max_agent_steps",
+        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout", "runtime.check_updates",
     )
+    # fmt: on
+    # fmt: off
     SET_VALUES = {
-        "provider.api": PROVIDER_API_CHOICES,
-        "provider.prompt_cache_key": ("auto", "off"),
-        "provider.reasoning": REASONING_CHOICES,
-        "provider.chat_reasoning": CHAT_REASONING_CHOICES,
-        "provider.temperature": ("off",),
-        "provider.strict_tools": ("on", "off", "true", "false"),
-        "runtime.yolo": ("on", "off", "true", "false"),
-        "runtime.check_updates": ("on", "off", "true", "false"),
-        "runtime.tips": ("on", "off", "true", "false"),
+        "provider.api": PROVIDER_API_CHOICES, "provider.prompt_cache_key": ("auto", "off"),
+        "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES,
+        "provider.temperature": ("off",), "provider.strict_tools": ("on", "off", "true", "false"),
+        "runtime.yolo": ("on", "off", "true", "false"), "runtime.check_updates": ("on", "off", "true", "false"),
     }
+    # fmt: on
 
     def __init__(
         self,
@@ -6395,7 +6230,7 @@ class CommandCompleter(Completer):
         self.mcp_tools = mcp_tools
         self.skills = skills
 
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document, _complete_event):
         text = document.text_before_cursor
         if text.startswith("/set "):
             tail = text[len("/set ") :]
@@ -6480,6 +6315,18 @@ class UiPrinter:
         self.console.print(Rule(style="bright_black", characters="─"))
         self.console.print(Markdown(text))
 
+    def emit_markdown(self, text: str) -> None:
+        # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
+        # while a prompt app is running (e.g. the Ask selector) lets patch_stdout mangle the ANSI
+        # into raw escapes; capturing first and emitting as ANSI avoids that.
+        if not self.color:
+            self.emit(text)
+            return
+        console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+        with console.capture() as capture:
+            console.print(Markdown(text))
+        print_formatted_text(ANSI(capture.get()), end="", flush=True)
+
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith("tool "):
             return self.tool_segments(text)
@@ -6494,7 +6341,7 @@ class UiPrinter:
         if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
         if text.startswith("tip: "):
-            return self.tip_segments(text[len("tip: "):])
+            return self.tip_segments(text[len("tip: ") :])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
         return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
@@ -6570,11 +6417,100 @@ class UiPrinter:
         segments.extend(("ansibrightblack", line + "\n") for line in lines[1:])
         return segments
 
+    # Map Pygments token types to prompt_toolkit style names.  Parent types are
+    # consulted if a specific type is not listed, so highlighting degrades
+    # gracefully for unanticipated tokens.  Empty when Pygments is unavailable
+    # (Token is None then, so the dict literal cannot be built).
+    # fmt: off
+    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = {
+        Token.Comment: "ansibrightblack italic", Token.Keyword: "ansimagenta", Token.Keyword.Constant: "ansimagenta",
+        Token.Keyword.Type: "ansicyan", Token.Name: "ansiwhite", Token.Name.Builtin: "ansicyan", Token.Name.Builtin.Pseudo: "ansicyan",
+        Token.Name.Class: "ansicyan bold", Token.Name.Decorator: "ansiyellow", Token.Name.Function: "ansigreen",
+        Token.Name.Function.Magic: "ansigreen", Token.Name.Namespace: "ansicyan", Token.Number: "ansiyellow",
+        Token.Operator: "ansiwhite", Token.Operator.Word: "ansimagenta", Token.Punctuation: "ansiwhite",
+        Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
+    } if pygments is not None else {}
+    # fmt: on
+
+    @classmethod
+    def _diff_hl_style(cls, token_type: Any) -> str:
+        t: Any = token_type
+        while t and t is not Token:
+            if t in cls.DIFF_HL_STYLES:
+                return cls.DIFF_HL_STYLES[t]
+            t = t.parent
+        return "ansiwhite"
+
+    def _diff_tokenize_lines(self, code_text: str, path: str | None) -> list[list[tuple[str, str]]] | None:
+        """Tokenize a whole block of code and return highlighted segments per line.
+
+        Pygments lexers are designed to work on whole files; splitting by diff
+        lines and lexing each one independently breaks multiline strings and
+        indentation-sensitive languages.  We therefore lex the assembled code
+        block once and split the resulting token stream back into lines.
+        """
+        if pygments is None or not path:
+            return None
+        try:
+            lexer = get_lexer_for_filename(path, stripnl=False)
+        except Exception:
+            return None
+        try:
+            tokens = lexer.get_tokens(code_text)
+        except Exception:
+            return None
+
+        lines: list[list[tuple[str, str]]] = [[]]
+        for token_type, value in tokens:
+            style = self._diff_hl_style(token_type)
+            parts = value.split("\n")
+            for i, part in enumerate(parts):
+                if i > 0:
+                    lines.append([])
+                if part:
+                    lines[-1].append((style, part))
+        return lines
+
     def diff_segments(self, text: str) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
+
+        # Determine the target file path from the diff header.  The `+++` line
+        # names the resulting file; for created files `---` is /dev/null.
+        file_path: str | None = None
+        for header in lines:
+            if header.startswith("+++"):
+                candidate = header[4:].strip()
+                if candidate != "/dev/null":
+                    file_path = candidate
+                break
+
+        # Collect lines that belong to the new file version: context lines and
+        # added lines.  These are lexed together so the highlighted diff is
+        # syntactically coherent.  Removed lines are left in plain diff red so
+        # the "before" state does not interfere with lexing the "after" state.
+        new_code_lines: list[str] = []
+        new_code_indices: list[int] = []
+        for i, line in enumerate(lines):
+            # Skip the unified-diff file headers / hunk markers (the trailing space avoids matching a
+            # real added line whose content starts with "+++"); feed only actual code to the lexer.
+            if line.startswith(("+++ ", "--- ", "@@ ")):
+                continue
+            if line.startswith(("+", " ")):
+                new_code_lines.append(line[1:])
+                new_code_indices.append(i)
+
+        highlighted: list[list[tuple[str, str]]] | None = None
+        if new_code_lines:
+            highlighted = self._diff_tokenize_lines("\n".join(new_code_lines), file_path)
+
+        hl_by_index: dict[int, list[tuple[str, str]]] = {}
+        if highlighted is not None:
+            for hl_index, line_index in enumerate(new_code_indices):
+                if hl_index < len(highlighted):
+                    hl_by_index[line_index] = highlighted[hl_index]
 
         def hunk_start(part: str, prefix: str) -> int | None:
             if not part.startswith(prefix):
@@ -6588,6 +6524,12 @@ class UiPrinter:
             old_text = "" if old is None else str(old)
             new_text = "" if new is None else str(new)
             segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} | "))
+
+        def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str) -> None:
+            segments.append((prefix_style, prefix))
+            for style, piece in content_hl:
+                segments.append((style, piece))
+            segments.append(("", suffix))
 
         for index, line in enumerate(lines):
             suffix = "\n" if index < len(lines) - 1 else ""
@@ -6603,7 +6545,8 @@ class UiPrinter:
                 segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
                 number(None, new_line)
-                segments.append(("ansigreen", line + suffix))
+                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
+                append_hl("+", "ansigreen", content_hl, suffix)
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
                 number(old_line, None)
@@ -6611,7 +6554,8 @@ class UiPrinter:
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
-                segments.append(("ansiwhite", line + suffix))
+                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
+                append_hl(" ", "ansiwhite", content_hl, suffix)
                 old_line = None if old_line is None else old_line + 1
                 new_line = None if new_line is None else new_line + 1
             else:
@@ -6649,6 +6593,9 @@ class BashLivePreview:
         self.started_at = 0.0
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
+        # A standing divider row (raw-colour fragments) drawn above the frame so the boundary between
+        # the log and the running command stays put — the bottom UI does not look like it vanished.
+        self.divider: list[tuple[str, str]] = []
 
     def start(self, command: str = "") -> None:
         if not sys.stderr.isatty():
@@ -6680,45 +6627,41 @@ class BashLivePreview:
         with self.lock:
             if not self.active:
                 return
+            # The frozen frame stays in the scrollback (keep-output-visible), but the divider is only a
+            # live "working" marker — redraw once without it so the output shifts up over it and the
+            # divider does not linger in the log for every command.
+            if self.divider:
+                self.divider = []
+                self.render()
             self.active = False
         timer = self.timer
         if timer is not None:
             timer.join()
         with self.lock:
-            self.clear()
             self.rendered_lines, self.text = 0, ""
-
-    def clear(self) -> None:
-        if not self.rendered_lines:
-            return
-        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        for _ in range(self.rendered_lines):
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            self.output.write_raw("\n")
-        self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        self.output.flush()
 
     def render(self) -> None:
         if not self.active:
             return
-        lines = self.frame_lines()
+        rows: list[list[tuple[str, str]]] = [[("ansibrightblack", line)] for line in self.frame_lines()]
+        if self.divider:
+            rows = [self.divider, [("", "")], *rows]  # divider + a blank line, then the frame
         previous = self.rendered_lines
         if self.rendered_lines:
             self.output.write_raw(f"\x1b[{self.rendered_lines}A")
-        for line in lines:
+        for row in rows:
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
-            print_formatted_text(FormattedText([("ansibrightblack", line)]), output=self.output, end="", flush=True)
+            print_formatted_text(FormattedText(row), output=self.output, end="", flush=True)
             self.output.write_raw("\n")
-        for _ in range(max(0, previous - len(lines))):
+        for _ in range(max(0, previous - len(rows))):
             self.output.write_raw("\r")
             self.output.erase_end_of_line()
             self.output.write_raw("\n")
-        if previous > len(lines):
-            self.output.write_raw(f"\x1b[{previous - len(lines)}A")
+        if previous > len(rows):
+            self.output.write_raw(f"\x1b[{previous - len(rows)}A")
         self.output.flush()
-        self.rendered_lines = len(lines)
+        self.rendered_lines = len(rows)
 
     def elapsed_label(self) -> str:
         elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
@@ -6734,7 +6677,10 @@ class BashLivePreview:
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         limit = width - 3
-        clip = lambda line: line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+
+        def clip(line: str) -> str:
+            return line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+
         # Always emit a header (the running command + a live elapsed timer) so the frame is visible
         # even before any output arrives and the user can see what is executing.
         status = f"output · {label}" if body else f"running… {label}"
@@ -6802,17 +6748,12 @@ class StatusBar:
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
     BASE_STYLE: ClassVar[str] = "#e6edf3"
     SEP_STYLE: ClassVar[str] = "#4b5563"
+    # fmt: off
     STYLES: ClassVar[dict[str, str]] = {
-        "provider": "#e6edf3",
-        "reason": "#a5b4fc",
-        "debug": "#64748b",
-        "mcp": "#93c5fd",
-        "ctx": "#facc15",
-        "update": "#fb923c",
-        "index": "#94a3b8",
-        "warn": "#fb7185",
-        "runtime": "#c084fc",
+        "provider": "#e6edf3", "reason": "#a5b4fc", "debug": "#64748b", "mcp": "#93c5fd", "ctx": "#facc15",
+        "update": "#fb923c", "index": "#94a3b8", "warn": "#fb7185", "runtime": "#c084fc",
     }
+    # fmt: on
 
     def __init__(self, session: Session):
         self.session = session
@@ -6900,6 +6841,9 @@ class StatusBar:
         skill_count = len(self.session.skills.skills) if self.session.skills else 0
         if skill_count:
             parts.append((f"skills {skill_count}", "mcp"))
+        running_jobs = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        if running_jobs:
+            parts.append((f"jobs {running_jobs}", "warn"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
             parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
@@ -6918,11 +6862,6 @@ class StatusBar:
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
             )
-        if show_elapsed and self.session.pending_user_inputs:
-            parts.append(("+" + str(len(self.session.pending_user_inputs)), "warn"))
-        if show_elapsed:
-            minutes, rest = divmod(int(elapsed), 60)
-            parts.append((f"{elapsed:.1f}s" if elapsed < 60 else f"{minutes}m{rest:02d}s", "runtime"))
             if self.retry_notice_until > time.monotonic():
                 parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
@@ -6999,7 +6938,7 @@ class StatusBar:
 class CommandLoop:
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/mcp", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -7034,14 +6973,15 @@ class CommandLoop:
         (ALWAYS, "`/index` manages the code symbol index for fast symbol navigation."),
         (ALWAYS, "`/yolo` skips tool confirmations when you want to move fast."),
         (ALWAYS, "`/set runtime.max_parallel_tools N` tunes how many reads run at once."),
+        (ALWAYS, "`/ps` shows active background jobs started with the Job tool."),
         (lambda s: bool(s.config.mcp), "Mention an MCP tool inline with `@server.tool` to pull in its schema."),
         (lambda s: bool(s.config.mcp), "`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow."),
         # Config & setup
         (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
         (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
         (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
-        (ALWAYS, "Filter MCP servers at launch with `--mcp \"name*,!exclude\"`."),
-        (ALWAYS, "Silence these hints with `/set runtime.tips off`."),
+        (ALWAYS, 'Filter MCP servers at launch with `--mcp "name*,!exclude"`.'),
+        (ALWAYS, "Silence these hints by setting `tips = false` under `[runtime]` in your config."),
     )
 
     def startup_tip(self) -> str:
@@ -7049,11 +6989,13 @@ class CommandLoop:
             return ""
         eligible = [tip for predicate, tip in self.TIPS if predicate(self.session)]
         return random.choice(eligible) if eligible else ""
+
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
   /help              Show this help.
   /status            Show runtime status.
+  /ps                Show active background jobs.
   /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
@@ -7080,7 +7022,7 @@ CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
-  Read, LineCount, List, Find, InspectCode, Search, Edit, Bash, Git, Recall, Note, Question, MCP, Skill.
+  Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
   Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
 """
 
@@ -7093,8 +7035,6 @@ Tools:
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
         self.live_queue_paused = False
-        self.transient_tool_lines = 0
-        self.approval_full_preview = ""
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
         self.queue_input_active = threading.Event()
@@ -7115,10 +7055,9 @@ Tools:
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
+        self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
-        self.agent.tools.preview_fn = self.tool_preview
-        self.agent.tools.preview_full_fn = lambda text: setattr(self, "approval_full_preview", text)
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.question_fn = self.question_interaction
@@ -7144,6 +7083,89 @@ Tools:
                 continue
             self.run_queue_input_app(stop_event)
 
+    def flush_queued_to_log(self, texts: list[str]) -> None:
+        # Move flushed queued messages from the live bottom region up into the scrollback log, then
+        # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
+        # emitted lines above the still-running queue-input app.
+        for text in texts:
+            if text.strip():
+                self.emit("+ " + text)
+        if self.queue_input_app is not None:
+            self.queue_input_app.invalidate()
+
+    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 34.0
+    # A comet: a bright head with a fading tail, by distance from the head. Beyond the tail the dash
+    # falls back to the dim rule. The divider is only ever drawn while working, so there is no idle look.
+    GLOW_STYLES: ClassVar[tuple[str, ...]] = (
+        "class:divider.glow0",
+        "class:divider.glow1",
+        "class:divider.glow2",
+        "class:divider.glow3",
+        "class:divider.glow4",
+    )
+
+    def turn_elapsed_label(self) -> str:
+        elapsed = int(max(0.0, time.monotonic() - self.status_bar.started_at)) if self.status_bar.started_at else 0
+        if elapsed < 60:
+            return f"{elapsed}s"
+        minutes, rest = divmod(elapsed, 60)
+        return f"{minutes}m{rest:02d}s"
+
+    def divider_label(self, queued: int = 0) -> str:
+        # e.g. "working (4m02s) [ 2 queued ]" or just "working (4m02s)".
+        label = f"working ({self.turn_elapsed_label()})"
+        return f"{label} [ {queued} queued ]" if queued else label
+
+    def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
+        cols = shutil.get_terminal_size((80, 20)).columns
+        width = width if width is not None else max(20, min(52, cols - 2))
+        body_len = len(label) + 2  # " label "
+        lead = 3
+        trail = max(3, width - lead - body_len)
+        dash_count = lead + trail
+        # The comet head bounces over the horizontal rule only. The label stays stable and readable
+        # while the glow appears to pass through the dash track on either side.
+        span = max(1, dash_count - 1)
+        phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
+        head = phase if phase <= span else 2 * span - phase
+
+        def dashes(offset: int, count: int) -> list[tuple[str, str]]:
+            fragments = []
+            for i in range(count):
+                distance = round(abs(offset + i - head))
+                fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
+            return fragments
+
+        return [
+            *dashes(0, lead),
+            ("class:queue.rule", " "),
+            ("class:divider.working", label),
+            ("class:queue.rule", " "),
+            *dashes(lead, trail),
+        ]
+
+    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
+        return self.sweep_divider_fragments(self.divider_label(queued))
+
+    def bash_divider_fragments(self) -> list[tuple[str, str]]:
+        # A static divider for the BashLivePreview, which renders raw colour names (no style dict).
+        # Kept in sync with the divider.working style so it matches the prompt-toolkit dividers.
+        label = self.divider_label(len([t for t in self.session.pending_user_inputs if t.strip()]))
+        width = max(20, min(52, shutil.get_terminal_size((80, 20)).columns - 2))
+        lead, trail = 3, max(3, width - 3 - (len(label) + 2))
+        return [("ansibrightblack", "-" * lead + " "), ("ansimagenta bold", label), ("ansibrightblack", " " + "-" * trail)]
+
+    def queue_region_fragments(self) -> list[tuple[str, str]]:
+        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        # The divider is a standing boundary for the whole turn: flushed messages move up into the log
+        # above it, so it stays put even once the queue empties rather than vanishing.
+        fragments = self.queue_divider_fragments(len(pending))
+        for text in pending:
+            fragments.append(("", "\n"))
+            fragments.append(("class:prompt", "+ "))
+            fragments.append(("", Text.clean(text)))
+        return fragments
+
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
         prompt = FormattedText([("class:prompt", "+> ")])
 
@@ -7167,15 +7189,13 @@ Tools:
                 return
             queued = [text for text in texts if not text.startswith("/")]
             commands = [text for text in texts if text.startswith("/")]
+            # Queued messages live in the bottom region (below the sweep divider) until the turn
+            # flushes them up into the log — they are not echoed to scrollback here.
             self.session.pending_user_inputs.extend(queued)
-
-            def show() -> None:
-                for text in queued:
-                    self.emit("+ " + text)
-                for text in commands:
-                    self.run_queued_command(text)
-
-            run_in_terminal(show)
+            if queued and self.queue_input_app is not None:
+                self.queue_input_app.invalidate()
+            if commands:
+                run_in_terminal(lambda: [self.run_queued_command(text) for text in commands])
 
         @bindings.add("enter", eager=True)
         def _enter(event):
@@ -7220,8 +7240,22 @@ Tools:
             buffer.reset(Document(self.queue_input_text))
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
+        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
+        queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
+        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
+        # against the divider and the log above.
         root = FloatContainer(
-            HSplit([input_window, completion_space, self.status_window(active=True)]),
+            HSplit(
+                [
+                    Window(height=1, dont_extend_height=True),
+                    queued_region,
+                    Window(height=1, dont_extend_height=True),
+                    input_window,
+                    completion_space,
+                    self.status_window(active=True),
+                ]
+            ),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
@@ -7231,13 +7265,19 @@ Tools:
         def stop_when_needed() -> None:
             while not stop_event.is_set() and not self.queue_input_paused.is_set():
                 stop_event.wait(0.05)
-            self.exit_app(app)
+            # Retry the exit until the app has actually torn down. A single exit can be lost if it
+            # fires before app.run() has started its event loop, which would leave this app running
+            # concurrently with the next prompt and spam the animated divider into the scrollback.
+            deadline = time.monotonic() + 2.0
+            while self.queue_input_active.is_set() and time.monotonic() < deadline:
+                self.exit_app(app)
+                time.sleep(0.02)
 
         threading.Thread(target=stop_when_needed, daemon=True).start()
         try:
             with patch_stdout():
                 app.run()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, ValueError, OSError):
             pass
         finally:
             self.queue_input_text = buffer.text
@@ -7265,11 +7305,14 @@ Tools:
 
     def pause_queue_input(self) -> None:
         self.queue_input_paused.set()
-        if self.queue_input_app is not None:
-            self.exit_app(self.queue_input_app)
-        deadline = time.monotonic() + 1.0
+        # Keep re-issuing the exit until the app is actually down: a single exit can be lost if it
+        # fires before app.run() has started its event loop, leaving the app running behind the next
+        # prompt. Retry until queue_input_active clears (the app's finally) or we time out.
+        deadline = time.monotonic() + 1.5
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
-            time.sleep(0.01)
+            if self.queue_input_app is not None:
+                self.exit_app(self.queue_input_app)
+            time.sleep(0.02)
 
     def take_entered_input(self) -> str:
         """Enter-committed queue input (pending_user_inputs), joined and cleared."""
@@ -7283,10 +7326,6 @@ Tools:
         self.queue_input_text = ""
         return typed
 
-    def drain_queued_input(self) -> str:
-        """Entered input first, then still-typed text (used for the headless combined path)."""
-        return "\n".join(text for text in (self.take_entered_input(), self.take_typed_input()) if text)
-
     def echo_input_line(self, text: str) -> None:
         print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
 
@@ -7294,7 +7333,7 @@ Tools:
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
-        self.session.clean_expired_snapshots()
+        SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
@@ -7314,7 +7353,7 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text))
+                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), pad=True)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
@@ -7372,6 +7411,7 @@ Tools:
         tool_record_index = 0
         for message in messages:
             tool_record_index = self.render_transcript_message(message, tool_record_index)
+        self.render_remaining_tool_records(tool_record_index)
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
         role = str(message.get("role") or "")
@@ -7397,6 +7437,11 @@ Tools:
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
             self.emit(self.agent.tools.finish_display(call, record.key if record else "", "", failed=False))
         return tool_record_index
+
+    def render_remaining_tool_records(self, tool_record_index: int) -> None:
+        for record in self.session.tool_records[tool_record_index:]:
+            call = ToolCall(id="", name=record.name, args=record.args)
+            self.emit(self.agent.tools.finish_display(call, record.key, "", failed=False))
 
     @staticmethod
     def transcript_tool_call(raw: Any) -> ToolCall | None:
@@ -7465,6 +7510,14 @@ Tools:
         return Style.from_dict(
             {
                 "prompt": "ansicyan bold",
+                "queue.rule": "ansibrightblack",
+                "divider.working": "ansimagenta bold",
+                # Comet gradient: bright head fading through cyan into the dim rule.
+                "divider.glow0": "ansibrightcyan bold",
+                "divider.glow1": "ansicyan bold",
+                "divider.glow2": "ansicyan",
+                "divider.glow3": "ansibrightblack",
+                "divider.glow4": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -7502,6 +7555,7 @@ Tools:
             style=self.style(),
             refresh_interval=StatusBar.INTERVAL,
             erase_when_done=True,
+            output=create_prompt_output(),
         )
 
     def run_input_app(self, app: Application) -> Any:
@@ -7526,6 +7580,7 @@ Tools:
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
         initial_text: str = "",
+        pad: bool = False,
     ) -> str:
         if self.input_history is None:
             return initial_text or self.input_fn(prompt_text)
@@ -7583,10 +7638,6 @@ Tools:
             else:
                 pt_search.start_search(direction=direction)
 
-        @bindings.add("c-a", filter=Condition(lambda: bool(self.approval_full_preview)), eager=True)
-        def _ctrl_a(event):
-            run_in_terminal(self.open_approval_preview)
-
         @bindings.add("tab")
         def _tab(event):
             if buffer.complete_state:
@@ -7608,8 +7659,12 @@ Tools:
             event.app.invalidate()
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        # The idle nano> prompt shows no divider (the divider is a working-state marker only); keep a
+        # blank line above and below the input so it is not crowded against the log or status bar.
+        top: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
+        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
         root = FloatContainer(
-            HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
+            HSplit([*top, input_window, completion_space, search_toolbar, *bottom, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
@@ -7621,9 +7676,10 @@ Tools:
         self.ui.emit(str(text))
 
     def with_status_paused(self, action):
-        had_queue = self.queue_input_active.is_set()
-        if had_queue:
-            self.pause_queue_input()
+        # Only quiet the standalone status-bar thread (headless turns). We deliberately do NOT tear
+        # down the queue-input app here: while it runs, patch_stdout already places emitted log lines
+        # cleanly above it, so pausing per line just flickered the whole bottom region. The one caller
+        # that needs the queue app down — the approval prompt — pauses it itself via run_input_app.
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()
@@ -7632,105 +7688,36 @@ Tools:
         finally:
             if was_running:
                 self.status_bar.start(reset=False)
-            if had_queue:
-                self.queue_input_paused.clear()
 
     def tool_output(self, text: str = "") -> None:
-        if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
-            self.with_status_paused(lambda: self.show_transient_tool_output(text))
-            return
-
-        def emit() -> None:
-            self.clear_transient_tool_output()
-            self.emit(text)
-
-        self.with_status_paused(emit)
+        self.with_status_paused(lambda: self.emit(text))
 
     def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
-            try:
-                return (
-                    self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval")
-                    if self.interactive_input
-                    else self.input_fn(prompt)
-                )
-            finally:
-                if self.interactive_input and sys.stdout.isatty():
-                    self.clear_transient_tool_output()
-                    self.approval_full_preview = ""
+            return (
+                self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval")
+                if self.interactive_input
+                else self.input_fn(prompt)
+            )
 
         return self.with_status_paused(read)
 
-    def show_transient_tool_output(self, text: str) -> None:
-        self.clear_transient_tool_output()
-        self.emit(text)
-        self.transient_tool_lines = len(text.splitlines() or [""])
-
-    def tool_preview(self, text: str) -> bool:
-        if not text.startswith("approve Edit ") or not self.interactive_input or not sys.stdout.isatty():
-            return False
-        self.with_status_paused(lambda: self.show_transient_tool_preview(text))
-        return True
-
-    def open_approval_preview(self) -> None:
-        if not self.approval_full_preview:
-            return
-        fd, path = tempfile.mkstemp(prefix="nanocode-preview-", suffix=".diff")
-        try:
-            pager_env = os.environ.get("PAGER", "")
-            pager = shlex.split(pager_env) if pager_env else ([less, "-R"] if (less := shutil.which("less")) else [])
-            text = self.ansi_diff_preview(self.approval_full_preview) if pager and os.path.basename(pager[0]) == "less" else self.approval_full_preview
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
-                file.write(text.rstrip() + "\n")
-            if pager:
-                subprocess.run([*pager, path])
-            else:
-                print(self.approval_full_preview)
-                input("Press Enter to return...")
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-    @staticmethod
-    def ansi_diff_preview(text: str) -> str:
-        colors = [("---", "\033[90m"), ("+++", "\033[90m"), ("@@", "\033[36m"), ("+", "\033[32m"), ("-", "\033[31m")]
-        lines = []
-        for line in text.splitlines():
-            style = next((color for prefix, color in colors if line.lstrip().startswith(prefix)), "")
-            lines.append(style + line + ("\033[0m" if style else ""))
-        return "\n".join(lines)
-
-    def show_transient_tool_preview(self, text: str) -> None:
-        self.clear_transient_tool_output()
-        lines = text.rstrip().splitlines()
-        if not lines:
-            return
-        height, width = 12, max(20, shutil.get_terminal_size((120, 20)).columns)
-        shown = lines[:height] + ([f"... preview truncated: {len(lines) - height} more lines (Ctrl-A: full preview) ..."] if len(lines) > height else [])
-        self.emit("\n".join(line[: max(0, width - 1)] for line in shown))
-        self.transient_tool_lines = len(shown)
-
     def emit_agent_output(self, text: str) -> None:
-        self.clear_transient_tool_output()
         if self.ui.color and text.strip():
             self.emit()
-            self.ui.emit_answer(text)
+            capture = self.queue_input_active.is_set()
+            previous_capture = self.ui.capture_ansi
+            self.ui.capture_ansi = previous_capture or capture
+            try:
+                self.ui.emit_answer(text)
+            finally:
+                self.ui.capture_ansi = previous_capture
             self.emit()
             return
         self.emit(text)
-
-    def clear_transient_tool_output(self) -> None:
-        if not self.transient_tool_lines:
-            return
-        for _ in range(self.transient_tool_lines):
-            sys.stdout.write("\x1b[1A\r\x1b[2K")
-        sys.stdout.flush()
-        self.transient_tool_lines = 0
 
     def tool_live_start(self, command: str = "") -> None:
         if not self.ui.color:
@@ -7741,6 +7728,7 @@ Tools:
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
+        self.live_preview.divider = self.bash_divider_fragments()
         self.live_preview.start(command)
 
     def tool_live_output(self, _stream: str, text: str) -> None:
@@ -7754,6 +7742,7 @@ Tools:
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
+                self.live_preview.divider = self.bash_divider_fragments()
                 self.live_preview.start()
             self.live_preview.update(text)
             return
@@ -7773,24 +7762,15 @@ Tools:
         if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
+        # fmt: off
         handlers = {
-            "/help": self.help,
-            "/status": self.status,
-            "/context": self.context_view,
-            "/skills": self.skills_command,
-            "/config": self.config,
-            "/api": self.api,
-            "/debug": self.debug,
-            "/compact": self.compact,
-            "/index": self.index,
-            "/provider": self.provider,
-            "/model": self.model,
-            "/reason": self.reason,
-            "/set": self.set_value,
-            "/yolo": self.yolo,
-            "/strict": self.strict,
+            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view,
+            "/skills": self.skills_command, "/config": self.config, "/api": self.api, "/debug": self.debug,
+            "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
+            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
             "/mcp": self.mcp_command,
         }
+        # fmt: on
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
@@ -7936,7 +7916,7 @@ Tools:
                 parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
             if preview_fn and options:
                 sel = int(state["selected"])
-                preview_text = preview_fn(options[sel]) if 0 <= sel < len(options) else ""
+                preview_text = preview_fn(options[sel]).replace("\\n", "\n") if 0 <= sel < len(options) else ""
                 if preview_text:
                     parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
                     for line in preview_text.splitlines():
@@ -8024,23 +8004,25 @@ Tools:
         options = enabled()
         state["selected"] = options.index(current) if current in options else 0
         content = FormattedTextControl(fragments, focusable=True)
-        choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
+        choice_window = Window(content, wrap_lines=False)
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
-    def question_application(self, spec: QuestionSpec, position: str = "") -> str:
+    def question_application(self, spec: AskSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
         choices = spec.choices
         # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
         # markdown — no separate styled line, hence no ANSI escapes to mangle.
         prompt = f"({position}) {spec.question}" if position else spec.question
         if not choices or not self.interactive_input:
-            return self.read_input(prompt)
+            return self.read_input("\n" + prompt)
 
+        # Blank separator line before each question so multi-question prompts don't run together.
         if self.ui.color:
-            self.ui.console.print(Markdown(prompt))
+            self.emit("")
+            self.ui.emit_markdown(prompt)
         else:
-            self.emit(prompt + "\n")
+            self.emit("\n" + prompt + "\n")
 
         # An optional recommended choice is pre-selected (via current) and marked (via labels),
         # reusing the selector's existing machinery.
@@ -8060,13 +8042,16 @@ Tools:
             free_text=True,
         )
         if result is SELECTION_FREE_TEXT:
-            return self.read_input(spec.question + " (type freely)")
+            # The question was already rendered before the choice selector; do not repeat a long
+            # raw prompt when the user switches to free text.
+            self.emit("")
+            return self.read_input("> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
-    def question_interaction(self, spec: QuestionSpec, position: str = "") -> str:
-        """Entry point for Question tool — shows the chosen answer in CLI after selection."""
+    def question_interaction(self, spec: AskSpec, position: str = "") -> str:
+        """Entry point for Ask tool — shows the chosen answer in CLI after selection."""
         result = self.question_application(spec, position)
         # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
         if spec.choices and result in spec.choices:
@@ -8099,30 +8084,20 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
+        # fmt: off
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
-            (
-                "model",
-                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`",
-            ),
-            (
-                "context",
-                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`",
-            ),
+            ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            (
-                "usage",
-                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"
-                + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else ""),
-            ),
-            (
-                "runtime",
-                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`",
-            ),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else "")),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
+            ("jobs", f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
+        # fmt: on
         return "\n".join(
             [
                 "| status | value |",
@@ -8141,6 +8116,17 @@ Tools:
             [(f"`{skill.name}`", skill.source, skill.description or "(no description)") for skill in skills],
         )
         return "\n".join([f"### Skills · {len(skills)}", "", "Load with `Skill(name)` or reference inline with `$name`.", "", table])
+
+    def ps_command(self, args: str) -> str:
+        if args.strip():
+            return "Usage: /ps"
+        running = [job for job in self.session.jobs.values() if job.status == "running"]
+        if not running:
+            total = len(self.session.jobs)
+            return f"No active jobs ({total} total)."
+        rows = [(job.id, job.status, f"{job.elapsed():.1f}s", job.command[:80]) for job in running]
+        table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
+        return f"### Active jobs · {len(running)}\n\n{table}"
 
     def context_view(self, args: str) -> str | None:
         context = self.agent.context
@@ -8181,7 +8167,9 @@ Tools:
             visible = lines[state["scroll"] : state["scroll"] + height]
             parts.append(("", "\n"))
             scroll_hint = "↑/↓ scroll" if scrollable else "↑/↓ scroll (fits)"
-            parts.append(("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n"))
+            parts.append(
+                ("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n")
+            )
             for line in visible:
                 parts.extend(line)
                 parts.append(("", "\n"))
@@ -8298,7 +8286,7 @@ Tools:
         status = "on" if self.session.settings.debug else "off"
         lines = ["debug: " + status]
         if self.session.settings.debug:
-            lines.append("debug_dir: " + self.session.debug_dir())
+            lines.append("debug_dir: " + self.session.data_path("debug"))
         return "\n".join(lines)
 
     def compact(self, args: str) -> str:
@@ -8323,15 +8311,10 @@ Tools:
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        fallback_note = " (fallback)" if fallback else ""
         return (
-            "Compacted context: messages "
-            + str(before)
-            + " -> "
-            + str(len(self.session.messages))
-            + ", prior summary inserted, ctx "
-            + str(self.session.state.context_percent)
-            + "%"
-            + (" (fallback)" if fallback else "")
+            f"Compacted context: messages {before} -> {len(self.session.messages)}, "
+            f"prior summary inserted, ctx {self.session.state.context_percent}%{fallback_note}"
         )
 
     def index(self, args: str) -> str:
@@ -8493,8 +8476,6 @@ Tools:
                 runtime.shell_timeout = max(1, int(value))
             elif key == "runtime.max_parallel_tools":
                 runtime.max_parallel_tools = max(1, int(value))
-            elif key == "runtime.tips":
-                runtime.tips = Config.bool({key: value}, key)
             else:
                 return "Unknown config key: " + key
         except (ConfigError, ValueError):

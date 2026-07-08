@@ -72,11 +72,6 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert params["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in params
 
-    params = {}
-    client.apply_provider_params(params, n.ProviderConfig(url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen-plus", reasoning="medium"))
-    assert params["extra_body"]["enable_thinking"] is True
-    assert isinstance(params["extra_body"]["thinking_budget"], int)
-
 
 def _strict_check(node, path="root"):
     if isinstance(node, dict):
@@ -136,6 +131,16 @@ def test_strict_tools_gating_and_beta_routing():
     assert provider("https://api.openai.com/v1", strict=True).base_url() == "https://api.openai.com/v1"
 
 
+
+def test_stripped_url_removes_known_suffixes():
+    p = lambda url: n.ProviderConfig(url=url)._stripped_url()
+    assert p("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/responses") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/messages") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/") == "https://api.openai.com/v1"
+    assert p("https://api.openai.com/v1/chat/completions/") == "https://api.openai.com/v1"
+
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     for name, tool in n.TOOL_REGISTRY.items():
@@ -149,11 +154,11 @@ def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     assert before == after  # deepcopy keeps shared ClassVar schemas intact
 
-    find_type = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["type"]
-    assert "null" in find_type["type"] and None in find_type["enum"]
+    search_context = n.TOOL_REGISTRY["Search"].schema(True)["function"]["parameters"]["properties"]["context"]
+    assert "null" in search_context["type"]
     # Optional array/object params use anyOf (never object/array inside a type union).
-    find_queries = n.TOOL_REGISTRY["Find"].schema(True)["function"]["parameters"]["properties"]["queries"]
-    assert find_queries["anyOf"][1] == {"type": "null"}
+    search_queries = n.TOOL_REGISTRY["Search"].schema(True)["function"]["parameters"]["properties"]["queries"]
+    assert search_queries["anyOf"][1] == {"type": "null"}
 
 
 def test_strict_tools_skips_free_form_object_schemas():

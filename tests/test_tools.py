@@ -14,7 +14,7 @@ def anchor(index, line):
     return f"{index}:{n.ReadTool.line_hash(line)}"
 
 
-def test_read_linecount_list_search_success_paths(tmp_path):
+def test_read_and_search_success_paths(tmp_path):
     (tmp_path / "sample.py").write_text("alpha\nNeedle\nomega\n", encoding="utf-8")
     (tmp_path / "blob.bin").write_bytes(b"a\0b")
     s = session(tmp_path)
@@ -31,14 +31,7 @@ def test_read_linecount_list_search_success_paths(tmp_path):
     assert f"anchor=0:{alpha_hash} | alpha" in single_range
     assert f"anchor=1:{needle_hash} | Needle" in single_range
     assert f"anchor=2:{omega_hash} | omega" in full_default
-
-    counts = n.LineCountTool(s, ["sample.py", "missing.py"]).call()
-    assert "<total>3</total>" in counts
-    assert "missing.py" in counts
-
-    listed = n.ListTool(s, ["."]).call()
-    assert "file text: sample.py" in listed
-    assert "file binary: blob.bin" in listed
+    assert "<total_lines>3</total_lines>" in full_default  # Read reports the line count (replaces LineCount)
 
     found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
     assert f"sample.py anchor=1:{needle_hash} | Needle" in found
@@ -52,6 +45,24 @@ def test_line_hash_is_short_lowercase_base36(tmp_path):
     assert len(line_hash) == 5
     assert line_hash == line_hash.lower()
     assert set(line_hash) <= set("0123456789abcdefghijklmnopqrstuvwxyz")
+
+
+def test_line_hash_ignores_trailing_newline():
+    # An anchor must depend only on the visible content, so a line's anchor stays stable when only
+    # the trailing newline changes (e.g. the last line gaining/losing the final "\n"). It must also
+    # agree with the newline-stripping indexed hash the anchor matcher accepts.
+    assert n.ReadTool.line_hash("code") == n.ReadTool.line_hash("code\n") == n.ReadTool.line_hash("code\n\n")
+    assert n.ReadTool.anchor_matches("code\n", n.ReadTool.line_hash("code"))
+    assert n.ReadTool.anchor_matches("code", n.ReadTool.line_hash("code\n"))
+
+
+def test_split_lines_matches_readlines_only_on_newline():
+    # Edit's line model must number lines exactly like Read (file.readlines), i.e. split on "\n"
+    # only. str.splitlines(True) also breaks on \x0c and friends, which would desync anchors.
+    assert n.ReadTool.split_lines("a\nb\x0cc\nd\n") == ["a\n", "b\x0cc\n", "d\n"]
+    assert n.ReadTool.split_lines("a\nb") == ["a\n", "b"]
+    assert n.ReadTool.split_lines("") == []
+    assert n.ReadTool.split_lines("a\nb\x0cc\nd\n") != "a\nb\x0cc\nd\n".splitlines(True)
 
 
 def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
@@ -77,31 +88,6 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     assert "ignored_dir/inside.txt anchor=0:" not in direct_ignored
 
 
-def test_find_files_dirs_limits_and_ignores(tmp_path):
-    (tmp_path / ".gitignore").write_text("ignored.py\nignored_dir/\n", encoding="utf-8")
-    (tmp_path / "app.py").write_text("", encoding="utf-8")
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_app.py").write_text("", encoding="utf-8")
-    (tmp_path / ".hidden.py").write_text("", encoding="utf-8")
-    (tmp_path / "ignored.py").write_text("", encoding="utf-8")
-    (tmp_path / "ignored_dir").mkdir()
-    (tmp_path / "ignored_dir" / "keep.py").write_text("", encoding="utf-8")
-    s = session(tmp_path)
-
-    found = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 10}]).call()
-    limited = n.FindTool(s, [{"name": "*.py", "path": ".", "limit": 1}]).call()
-    dirs = n.FindTool(s, [{"name": "test*", "path": ".", "type": "dir"}]).call()
-
-    assert "* file: app.py" in found
-    assert "* file: tests/test_app.py" in found
-    assert ".hidden" not in found
-    assert "ignored" not in found
-    assert 'matches=2' in limited
-    assert "* omitted: 1" in limited
-    assert "* dir: tests/" in dirs
-    assert n.FindTool(s, [{"name": "*", "path": str(tmp_path.parent)}]).needs_confirmation()
-
-
 def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
@@ -114,10 +100,6 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
         n.BashTool(s, []).call()
     with pytest.raises(n.ToolError):
         n.SearchTool(s, [{"pattern": "["}]).call()
-    with pytest.raises(n.ToolError):
-        n.FindTool(s, [{"name": "*.py", "type": "bad"}]).call()
-    with pytest.raises(n.ToolError):
-        n.GitTool(s, ["cwd=..", "status"]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["inspect", "two words"]).call()
 
@@ -163,6 +145,61 @@ def test_edit_creates_and_patches_file(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
+
+
+def test_diff_segments_syntax_highlights_python(tmp_path):
+    ui = n.UiPrinter()
+    diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
+    segments = ui.diff_segments(diff)
+
+    # The added line starts with the green diff prefix and keyword `return` is
+    # highlighted as a keyword.
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "return" and s == "ansimagenta" for s, t in segments)
+
+    # Removed lines are plain diff red; no syntax highlight tokens for the
+    # removed content.
+    removed_raw = [t for s, t in segments if s == "ansired"]
+    assert any("pass" in t for t in removed_raw)
+
+    # Line numbers are preserved.
+    assert any("1" in t and "|" in t for s, t in segments)
+
+
+def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
+    ui = n.UiPrinter()
+    diff = "--- foo.unknownxyz\n+++ foo.unknownxyz\n@@ -1,1 +1,1 @@\n- old\n+ new\n"
+    segments = ui.diff_segments(diff)
+
+    # Unknown extension should fall back to plain diff coloring.
+    assert any(s == "ansired" and "-" in t for s, t in segments)
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+
+
+def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
+    ui = n.UiPrinter()
+    # No +++ line, so pygments cannot pick a lexer.
+    diff = "@@ -1,1 +1,1 @@\n- old\n+ new\n"
+    segments = ui.diff_segments(diff)
+
+    # Should still render without crashing; removed line is red, added line is
+    # green even though no lexer could be selected.
+    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+
+
+def test_approval_segments_highlight_inline_edit_preview():
+    full = (
+        "approve Edit foo.py\n  preview\n"
+        "  --- foo.py\n  +++ foo.py\n  @@ -1,2 +1,2 @@\n   def hello():\n  -    pass\n  +    return 42\n"
+    )
+    segments = n.UiPrinter().approval_segments(full)
+
+    assert any(style == "ansimagenta" and "return" in text for style, text in segments)
+    assert any(style == "ansigreen" and text == "+" for style, text in segments)
+    assert any(style == "ansired" and text.startswith("-    pass") for style, text in segments)
+
+
 def test_edit_stale_anchor_reports_current_line(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
@@ -173,6 +210,32 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
 
     assert "stale anchor" in str(error.value)
     assert "current is anchor=0:" + n.ReadTool.line_hash("old\n") + " | old" in str(error.value)
+
+
+def test_edit_anchor_survives_trailing_newline_change(tmp_path):
+    # Regression: line_hash used to fold the trailing newline into the hash, so an anchor captured
+    # for a last line without a newline went stale once an edit gave the file a trailing newline,
+    # even though the line's visible text never changed.
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    # Anchor built from the newline-less form of the line (as captured when "b" was the last line
+    # before a trailing newline was added). It must still resolve against the current "b\n".
+    anc = anchor(1, "b")
+    n.EditTool(s, ["note.txt", [{"op": "replace", "start": anc, "end": anc, "content": "B\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "a\nB\n"
+
+
+def test_edit_anchor_consistent_with_read_on_exotic_line_boundary(tmp_path):
+    # Regression: Edit split lines with str.splitlines(True) while Read uses readlines, so a file
+    # containing a form-feed numbered lines differently and a valid Read anchor went stale in Edit.
+    s = session(tmp_path)
+    path = tmp_path / "ff.txt"
+    path.write_text("a\nb\x0cc\nd\n", encoding="utf-8")  # form-feed inside the middle line
+    read = n.ReadTool(s, [{"path": "ff.txt"}]).call()
+    assert f"anchor=2:{n.ReadTool.line_hash('d')} | d" in read  # Read numbers "d" as line 2
+    n.EditTool(s, ["ff.txt", [{"op": "replace", "start": anchor(2, "d\n"), "end": anchor(2, "d\n"), "content": "D\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "a\nb\x0cc\nD\n"
 
 
 def test_edit_accepts_inspect_code_anchor(tmp_path):
@@ -224,7 +287,7 @@ def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     assert "<Edit path=" in output
 
 
-def test_bash_and_git_behaviors(tmp_path):
+def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
     bash = n.BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
     assert "* exit_code: 3" in bash
@@ -237,88 +300,60 @@ def test_bash_and_git_behaviors(tmp_path):
     assert "�" not in wide
     assert wide.count(chr(0x4e2d)) == 3000
 
-    if not shutil.which("git"):
-        pytest.skip("git unavailable")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    (tmp_path / "sub").mkdir()
-    git = n.GitTool(s, ["cwd=sub", "rev-parse", "--show-toplevel"]).call()
-    assert str(tmp_path) in git
-    assert not n.GitTool(s, ["status"]).needs_confirmation()
-    assert n.GitTool(s, ["commit"]).needs_confirmation()
 
-
-def test_git_yolo_refuses_branch_changes_without_explicit_confirmation(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(n.shutil, "which", lambda name: "/usr/bin/git" if name == "git" else None)
-
-    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
-        n.GitTool(s, ["switch", "feature"]).call()
-
-    with pytest.raises(n.ToolError, match="yolo cannot auto-approve"):
-        n.GitTool(s, ["branch", "-D", "feature"]).call()
-
-
-def test_git_commit_refuses_when_branch_changed_since_session_start(tmp_path):
-    if not shutil.which("git"):
-        pytest.skip("git unavailable")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    s = session(tmp_path)
-    subprocess.run(["git", "switch", "-c", "other"], cwd=tmp_path, check=True, capture_output=True, text=True)
-
-    with pytest.raises(n.ToolError, match="branch changed from .* to other"):
-        n.GitTool(s, ["commit", "-m", "blocked"]).call()
-
-def test_expected_git_branch_refreshed_only_after_tool_branch_switch(tmp_path):
-    if not shutil.which("git"):
-        pytest.skip("git unavailable")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    (tmp_path / "README.md").write_text("# test\n")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    s = session(tmp_path)
-    initial = s.expected_git_branch
-    assert initial  # e.g., "master" or "main"
-
-    # A read-only git command does not move the baseline.
-    n.GitTool(s, ["status", "--short"]).call()
-    assert s.expected_git_branch == initial
-
-    # A tool-driven branch switch refreshes the baseline to the new branch.
-    n.GitTool(s, ["switch", "-c", "other"]).call()
-    assert s.expected_git_branch == "other"
-
-    # An external switch is NOT reflected by a later read-only command: the baseline
-    # stays put so validate_branch_safety still guards commits against surprise switches.
-    subprocess.run(["git", "switch", initial], cwd=tmp_path, check=True, capture_output=True, text=True)
-    n.GitTool(s, ["status", "--short"]).call()
-    assert s.expected_git_branch == "other"
-
-
-def test_git_commit_allowed_after_tool_branch_switch(tmp_path):
-    if not shutil.which("git"):
-        pytest.skip("git unavailable")
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    (tmp_path / "README.md").write_text("# test\n")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
-
+def test_bash_readonly_auto_approval_classification(tmp_path):
     s = session(tmp_path)
 
-    # Switch branch via the tool — this refreshes expected_git_branch.
-    n.GitTool(s, ["switch", "-c", "feature"]).call()
-    assert s.expected_git_branch == "feature"
+    def readonly(command):
+        return not n.BashTool(s, [command]).needs_confirmation()
 
-    # Now commit should succeed
-    (tmp_path / "feature.txt").write_text("hello\n")
-    n.GitTool(s, ["add", "feature.txt"]).call()
-    result = n.GitTool(s, ["commit", "-m", "feat: add feature.txt"]).call()
-    assert "<GitToolResult>" in result
-    assert "feature.txt" in result or "insertion" in result or "changed" in result
+    # Safe read-only commands auto-run (no confirmation prompt in non-yolo mode).
+    assert readonly("ls -la")
+    assert readonly("cat file.txt")
+    assert readonly("wc -l nanocode.py")
+    assert readonly("find . -name '*.py'")
+    assert readonly("rg needle src")
+    assert readonly("git status --short")
+    assert readonly("git --no-pager status --short")
+    assert readonly("git diff HEAD~1")
+    assert readonly("cat a | grep foo | wc -l")  # pipeline of safe commands
+    assert readonly("ls && cat README.md")       # sequence of safe commands
+    assert readonly("cd /Users/x/proj && git log --oneline -10")  # cd prefix is a benign builtin
+    assert readonly("cd a; ls")
+    assert readonly("ls -la && find . -maxdepth 2 -type f | grep -v .git | sort | head -80")
+    assert readonly("cat f | sort -u | uniq -c")  # sort/uniq are read-only in pipelines
+    assert readonly("grep foo f 2>/dev/null")            # discarding stderr is not a file write
+    assert readonly("ls -la >/dev/null 2>&1")            # /dev/null + stderr-merge
+    assert readonly("cat f | sed -n '1,20p'")            # sed for read-only filtering
+    assert readonly("tree -L 2 src")
+
+    # Anything that writes, executes code, mutates git, or hides execution still asks.
+    assert not readonly("rm -rf build")
+    # Every stage of a chain is validated — a safe first command must not whitelist a mutating one.
+    assert not readonly("git log && rm -rf x")
+    assert not readonly("ls ; rm x")
+    assert not readonly("cat f && python3 evil.py")
+    assert not readonly("git log & rm x")             # backgrounding
+    assert not readonly("git commit -m x")
+    assert not readonly("git checkout main")
+    assert not readonly("echo hi > out.txt")          # redirection
+    assert not readonly("cat $(cmd)")                  # command substitution
+    assert not readonly("python3 script.py")          # arbitrary code
+    assert not readonly("find . -delete")             # destructive flag
+    assert not readonly("find . -name x -fprint0 out") # file-writing flag
+    assert not readonly("cat f > g")                   # redirection to a real file
+    assert not readonly("sed -i s/a/b/ f")             # in-place edit
+    assert not readonly("sort -o out.txt f")           # sort output file
+    assert not readonly("tree -o out.txt")             # tree output file
+    assert not readonly("sed -i s/a/b/ f")            # in-place edit
+    assert not readonly("git diff --output=patch.txt") # file-writing git option
+    assert not readonly("git grep -O needle")          # opens files via pager/editor
+    assert not readonly("git --paginate log")          # can invoke configured pager
+    assert not readonly("ls & rm x")                  # backgrounding
+    assert not readonly("ls; rm x")                   # unsafe stage in a sequence
+    assert not readonly("FOO=1 env")                  # env assignment / wrapper
+
+
 
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -416,6 +451,28 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "bogus"}]).call()
     with pytest.raises(n.ToolError):
         n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
+
+
+def test_inspect_code_strips_kind_prefix_from_target(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    calls = []
+    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(query) or "ok")
+
+    # "class Config" with kind "class" -> the redundant leading kind word is dropped.
+    n.InspectCodeTool(s, ["find", "class Config", {"kind": "class"}]).call()
+    assert calls[-1] == "Config"
+
+    # Works when the kind option lists several kinds.
+    n.InspectCodeTool(s, ["find", "function handoff", {"kind": "class,function"}]).call()
+    assert calls[-1] == "handoff"
+
+    # Only the declared kind is stripped: a bare language keyword is not, and still errors.
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["find", "def foo", {"kind": "function"}]).call()
+    # No kind provided -> nothing to key off, still rejected.
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["find", "class Config"]).call()
 
 
 def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
@@ -547,13 +604,9 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     assert note_params["properties"]["replace_plan"]["items"]["properties"]["status"]["enum"] == ["todo", "doing", "done", "blocked"]
     assert "minItems" not in note_params["properties"]["replace_known"]
 
-    find_params = n.FindTool.schema()["function"]["parameters"]
-    assert {"name", "queries"} <= set(find_params["properties"])
-    find_item = find_params["properties"]["queries"]["items"]
-    assert find_item["properties"]["type"]["enum"] == ["file", "dir", "any"]
-
     search_params = n.SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
+    assert search_params["properties"]["queries"]["items"]["properties"]["context"]["type"] == "integer"
     def walk(value):
         if isinstance(value, dict):
             assert "anyOf" not in value
@@ -580,8 +633,6 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
     assert n.ReadTool(n.Session(cwd="."), [{"path": "nanocode.py"}]).targets()[0][1] == [(0, 0)]
-    assert n.ModelClient.tool_payload("Find", {"name": "*.py"}) == [{"name": "*.py"}]
-    assert n.ModelClient.tool_payload("Find", {"queries": [{"name": "*.py"}]}) == [{"name": "*.py"}]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
@@ -1027,6 +1078,38 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     assert events[-1] == ("", "")
 
 
+def test_bash_live_preview_finish_erases_divider(monkeypatch):
+    # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
+    # marker only — finish must redraw once without it so it does not linger in the log per command.
+    printed = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+
+    class FakeOut:
+        def write_raw(self, s=""):
+            pass
+
+        def erase_end_of_line(self):
+            pass
+
+        def flush(self):
+            pass
+
+    p = n.BashLivePreview()
+    p.output = FakeOut()
+    p.active = True
+    p.divider = [("ansimagenta bold", "--- working ---")]
+    p.command = "echo hi"
+    p.text = "hi\n"
+    p.render()
+    assert any("working" in line for line in printed)  # divider is drawn while the command runs
+
+    before = len(printed)
+    p.finish()
+    assert p.divider == []  # cleared
+    finish_rows = printed[before:]
+    assert finish_rows and not any("working" in line for line in finish_rows)  # redrawn without it
+
+
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -1070,7 +1153,7 @@ def test_gitignore_cache_populated_and_reused(tmp_path):
     """Cache stores parsed patterns and reuses them on subsequent calls."""
     (tmp_path / ".gitignore").write_text("ignored.txt\nbuild/\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     # First call populates the cache
     patterns1 = tool.gitignore_patterns(str(tmp_path))
@@ -1095,7 +1178,7 @@ def test_gitignore_cache_invalidates_on_file_change(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("old.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns1 = tool.gitignore_patterns(str(tmp_path))
     assert patterns1 == ["old.txt"]
@@ -1117,7 +1200,7 @@ def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("delete_me.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     tool.gitignore_patterns(str(tmp_path))
     ws_gitignore = str(gitignore)
@@ -1131,11 +1214,11 @@ def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
 
 
 def test_gitignore_cache_shared_across_tools(tmp_path):
-    """FindTool and SearchTool share the same cache via Session."""
+    """SearchTool instances share the same gitignore cache via Session."""
     (tmp_path / ".gitignore").write_text("secret.log\n", encoding="utf-8")
     s = session(tmp_path)
 
-    find = n.FindTool(s, [{"name": "*.py"}])
+    find = n.SearchTool(s, [{"pattern": "x"}])
     search = n.SearchTool(s, [{"pattern": "needle", "path": "."}])
 
     # Find populates the cache
@@ -1160,7 +1243,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
     (sub / ".gitignore").write_text("sub_ignored.txt\n", encoding="utf-8")
 
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     # Root patterns include only workspace .gitignore
     root_patterns = tool.gitignore_patterns(str(tmp_path))
@@ -1179,7 +1262,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
 def test_gitignore_cache_noop_when_no_gitignore(tmp_path):
     """When no .gitignore exists, returns empty list and cache stays empty."""
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == []
@@ -1190,7 +1273,7 @@ def test_gitignore_cache_preserves_order(tmp_path):
     """After a no-op stat (no change), patterns come from cache unchanged."""
     (tmp_path / ".gitignore").write_text("a.txt\nb.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     p1 = tool.gitignore_patterns(str(tmp_path))
     p2 = tool.gitignore_patterns(str(tmp_path))
@@ -1205,7 +1288,7 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
         "keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8"
     )
     s = session(tmp_path)
-    tool = n.FindTool(s, [{"name": "*.py"}])
+    tool = n.SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == ["keep.txt"]
@@ -1213,18 +1296,18 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
     assert s.tool_errors == []
 
 # ---------------------------------------------------------------------------
-# QuestionTool
+# AskTool
 # ---------------------------------------------------------------------------
 
 
 def _q(*items):
-    """Wrap question item dicts into the Question tool payload args."""
+    """Wrap question item dicts into the Ask tool payload args."""
     return [{"questions": list(items)}]
 
 
-def test_question_tool_schema():
+def test_ask_tool_schema():
     """params_schema requires a questions array of question objects, strict."""
-    schema = n.QuestionTool.params_schema()
+    schema = n.AskTool.params_schema()
     assert schema["type"] == "object"
     assert schema["required"] == ["questions"]
     assert schema["additionalProperties"] is False
@@ -1241,28 +1324,31 @@ def test_question_tool_schema():
     assert props["recommended"]["type"] == "integer"
 
 
-def test_question_tool_registered():
-    """QuestionTool is in TOOLS and TOOL_REGISTRY."""
-    assert n.QuestionTool.NAME == "Question"
-    assert n.TOOL_REGISTRY["Question"] is n.QuestionTool
+def test_ask_tool_registered():
+    """AskTool is in TOOLS and TOOL_REGISTRY."""
+    assert n.AskTool.NAME == "Ask"
+    assert n.AskTool in n.TOOLS
+    assert n.TOOL_REGISTRY["Ask"] is n.AskTool
+    assert "Question" not in n.TOOL_REGISTRY
+    assert not hasattr(n, "QuestionTool")
 
 
-def test_question_tool_call_basic(tmp_path):
+def test_ask_tool_call_basic(tmp_path):
     """call() returns question text when question_fn is None."""
     s = session(tmp_path)
-    assert n.QuestionTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
+    assert n.AskTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
 
 
-def test_question_tool_call_with_choices(tmp_path):
+def test_ask_tool_call_with_choices(tmp_path):
     """call() accepts choices and returns fallback question text."""
     s = session(tmp_path)
-    assert n.QuestionTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
+    assert n.AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
 
 
-def test_question_tool_call_with_choices_and_previews(tmp_path):
+def test_ask_tool_call_with_choices_and_previews(tmp_path):
     """call() accepts choices + previews."""
     s = session(tmp_path)
-    tool = n.QuestionTool(s, _q({
+    tool = n.AskTool(s, _q({
         "question": "Which?",
         "choices": ["A", "B"],
         "previews": ["Preview A", "Preview B"],
@@ -1270,7 +1356,7 @@ def test_question_tool_call_with_choices_and_previews(tmp_path):
     assert tool.call() == "Which?"
 
 
-def test_question_tool_call_invokes_callback(tmp_path):
+def test_ask_tool_call_invokes_callback(tmp_path):
     """call() invokes question_fn with question/choices/previews/recommended."""
     s = session(tmp_path)
     calls = []
@@ -1279,7 +1365,7 @@ def test_question_tool_call_invokes_callback(tmp_path):
         calls.append((spec, position))
         return "user chose B"
 
-    tool = n.QuestionTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
+    tool = n.AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
     result = tool.call()
     assert result == "user chose B"
@@ -1288,7 +1374,7 @@ def test_question_tool_call_invokes_callback(tmp_path):
     assert position == ""  # a single question carries no position indicator
 
 
-def test_question_tool_call_multiple_questions(tmp_path):
+def test_ask_tool_call_multiple_questions(tmp_path):
     """call() asks each question in sequence and labels the combined answers."""
     s = session(tmp_path)
     asked = []
@@ -1297,7 +1383,7 @@ def test_question_tool_call_multiple_questions(tmp_path):
         asked.append((spec.question, position))
         return {"Runtime?": "Node", "Name?": "core"}[spec.question]
 
-    tool = n.QuestionTool(s, _q(
+    tool = n.AskTool(s, _q(
         {"question": "Runtime?", "choices": ["Node", "Deno"]},
         {"question": "Name?"},
     ))
@@ -1307,7 +1393,7 @@ def test_question_tool_call_multiple_questions(tmp_path):
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
 
 
-def test_question_tool_validates_batch_before_asking(tmp_path):
+def test_ask_tool_validates_batch_before_asking(tmp_path):
     """A malformed later question raises before any question is asked."""
     s = session(tmp_path)
     asked = []
@@ -1316,7 +1402,7 @@ def test_question_tool_validates_batch_before_asking(tmp_path):
         asked.append(spec.question)
         return "x"
 
-    tool = n.QuestionTool(s, _q(
+    tool = n.AskTool(s, _q(
         {"question": "First?", "choices": ["A"]},
         {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
     ))
@@ -1326,7 +1412,7 @@ def test_question_tool_validates_batch_before_asking(tmp_path):
     assert asked == []  # validation happens up front, so nothing was asked
 
 
-def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
+def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
     """call() passes choices/previews/recommended as None when not provided."""
     s = session(tmp_path)
     calls = []
@@ -1335,7 +1421,7 @@ def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
         calls.append((spec, position))
         return "free text answer"
 
-    tool = n.QuestionTool(s, _q({"question": "Name?"}))
+    tool = n.AskTool(s, _q({"question": "Name?"}))
     tool.question_fn = fake_fn
     assert tool.call() == "free text answer"
     (spec, position) = calls[0]
@@ -1345,83 +1431,83 @@ def test_question_tool_call_callback_passthrough_choices_none(tmp_path):
     assert position == ""
 
 
-def test_question_tool_call_empty_question_raises(tmp_path):
+def test_ask_tool_call_empty_question_raises(tmp_path):
     """call() raises ToolError for empty/missing question text."""
     s = session(tmp_path)
     with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
-        n.QuestionTool(s, _q({"question": ""})).call()
+        n.AskTool(s, _q({"question": ""})).call()
     with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
-        n.QuestionTool(s, _q({})).call()
+        n.AskTool(s, _q({})).call()
 
 
-def test_question_tool_call_empty_list_raises(tmp_path):
+def test_ask_tool_call_empty_list_raises(tmp_path):
     """call() raises ToolError when questions list is missing or empty."""
     s = session(tmp_path)
     with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
-        n.QuestionTool(s, [{"questions": []}]).call()
+        n.AskTool(s, [{"questions": []}]).call()
     with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
-        n.QuestionTool(s, [{}]).call()
+        n.AskTool(s, [{}]).call()
 
 
-def test_question_tool_call_invalid_args_raises(tmp_path):
+def test_ask_tool_call_invalid_args_raises(tmp_path):
     """call() raises ToolError for malformed top-level args."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Question requires named fields"):
-        n.QuestionTool(s, ["just a string"]).call()
-    with pytest.raises(n.ToolError, match="Question requires named fields"):
-        n.QuestionTool(s, []).call()
+    with pytest.raises(n.ToolError, match="Ask requires named fields"):
+        n.AskTool(s, ["just a string"]).call()
+    with pytest.raises(n.ToolError, match="Ask requires named fields"):
+        n.AskTool(s, []).call()
 
 
-def test_question_tool_call_invalid_choices_raises(tmp_path):
+def test_ask_tool_call_invalid_choices_raises(tmp_path):
     """call() validates choices type."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Question choices must be a list of strings"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
-    with pytest.raises(n.ToolError, match="Question choices must be a list of strings"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
+    with pytest.raises(n.ToolError, match="Ask choices must be a list of strings"):
+        n.AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
+    with pytest.raises(n.ToolError, match="Ask choices must be a list of strings"):
+        n.AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
 
 
-def test_question_tool_call_invalid_previews_raises(tmp_path):
+def test_ask_tool_call_invalid_previews_raises(tmp_path):
     """call() validates previews type and length."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Question previews must be a list of strings"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
-    with pytest.raises(n.ToolError, match="Question previews must match choices length"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
+    with pytest.raises(n.ToolError, match="Ask previews must be a list of strings"):
+        n.AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
+    with pytest.raises(n.ToolError, match="Ask previews must match choices length"):
+        n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
 
 
-def test_question_tool_call_no_previews_with_choices(tmp_path):
+def test_ask_tool_call_no_previews_with_choices(tmp_path):
     """call() allows choices without previews."""
     s = session(tmp_path)
-    assert n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
+    assert n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
 
 
-def test_question_tool_call_invalid_recommended_raises(tmp_path):
+def test_ask_tool_call_invalid_recommended_raises(tmp_path):
     """call() validates recommended is an in-range choice index."""
     s = session(tmp_path)
     with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
+        n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
     with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.QuestionTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
+        n.AskTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
     with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.QuestionTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
+        n.AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
 
 
-def test_question_tool_short_args(tmp_path):
+def test_ask_tool_short_args(tmp_path):
     """short_args() shows the first question and a count of the rest."""
     s = session(tmp_path)
-    tool = n.QuestionTool(s, _q({"question": "Which approach should I use?"}))
+    tool = n.AskTool(s, _q({"question": "Which approach should I use?"}))
     args = tool.short_args()
     assert len(args) == 1
     assert "Which approach" in args[0]
     assert "more" not in args[0]
-    multi = n.QuestionTool(s, _q({"question": "First?"}, {"question": "Second?"}))
+    multi = n.AskTool(s, _q({"question": "First?"}, {"question": "Second?"}))
     assert "(+1 more)" in multi.short_args()[0]
-    assert len(n.QuestionTool(s, []).short_args()) == 1
+    assert len(n.AskTool(s, []).short_args()) == 1
 
 
-def test_question_tool_wired_in_tool_runner(tmp_path):
-    """ToolRunner injects question_fn into QuestionTool instances."""
+def test_ask_tool_wired_in_tool_runner(tmp_path):
+    """ToolRunner injects question_fn into AskTool instances."""
     s = session(tmp_path)
     ctx = n.ContextManager(s)
     captured = []
@@ -1432,7 +1518,7 @@ def test_question_tool_wired_in_tool_runner(tmp_path):
 
     runner = n.ToolRunner(s, ctx, output_fn=lambda text: None)
     runner.question_fn = fake_question_fn
-    results = runner.run([n.ToolCall("q", "Question", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
+    results = runner.run([n.ToolCall("q", "Ask", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
     assert len(results) == 1
     assert results[0]["tool_call_id"] == "q"
     assert results[0]["role"] == "tool"
@@ -1440,9 +1526,10 @@ def test_question_tool_wired_in_tool_runner(tmp_path):
     (spec, position) = captured[0]
     assert (spec.question, spec.choices, spec.recommended, position) == ("A or B?", ["A", "B"], 0, "")
 
-def test_question_tool_schema_strict(tmp_path):
+
+def test_ask_tool_schema_strict(tmp_path):
     """schema() enforces additionalProperties=False at both levels."""
-    schema = n.QuestionTool.schema()
+    schema = n.AskTool.schema()
     params = schema["function"]["parameters"]
     assert params["additionalProperties"] is False
     assert "questions" in params["properties"]
@@ -1460,7 +1547,7 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
     s.settings.yolo = True
     out = []
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
-    runner.run([n.ToolCall("b0", "Bash", ["printf hi"])])
+    runner.run([n.ToolCall("b0", "Bash", [":"])])
     assert len(out) == 1
     assert out[0].startswith("tool Bash")
     assert out[0].rstrip().endswith("[auto]")
@@ -1468,8 +1555,8 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
 
 
 def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
-    # Edit's "auto …" pre-line carries the diff preview, which the result line (-> FILE STATE) omits,
-    # so it must still be surfaced; the result line is tagged [auto].
+    # Edit's "auto …" pre-line carries the full diff preview, which the result line (-> FILE STATE)
+    # omits, so it must still be surfaced; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")

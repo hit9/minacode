@@ -1,5 +1,38 @@
 # Changelog
 
+
+## 0.9.0 - 2026-07-07
+
+### Added
+- Syntax-highlight inline Edit diff previews with Pygments. Added and context lines (the "new" file version) are lexed together as one code block so multiline strings and indentation-sensitive languages highlight correctly; removed lines stay plain diff-red. Degrades gracefully to plain diff coloring when Pygments is unavailable, the file extension is unknown, or the lexer fails.
+- Add background jobs via a `Job` tool (`start`/`status`/`wait`/`list`/`kill`). Long-running or non-blocking work — dev servers, watchers, long builds and test suites — runs in its own process group without blocking the agent; output is buffered (capped per stream), drained non-blockingly on `status`, and returned as a tail. Concurrency is capped (`MAX_JOBS`), running jobs surface in the status bar (`jobs N`), the `/status` row, and a new read-only `/ps` command; `kill` sends SIGTERM then SIGKILL to the group. Jobs run until they exit or are killed (no foreground `shell_timeout` cap), and `Job(action="wait")` with no/zero timeout blocks until the process exits.
+
+### Changed
+
+- Rename the interactive `Question` tool to `Ask`; the old `Question` tool name is no longer registered.
+- Replace the status-bar `+N` queued-message counter with a live queue region. While the agent works, messages you type sit below the +> input under a dim "── queued" divider with a left→right sweep animation, instead of being echoed into the scrollback log; when the turn flushes them they move up into the log as `+ <text>` lines and the region shrinks (the divider disappears once nothing is queued).
+- Cache the Anthropic request's stable `tools`+`system` prefix with a `cache_control` breakpoint on the system block, so each turn no longer reprocesses the system prompt and tool schemas from scratch (Anthropic prompt caching only activates at an explicit breakpoint).
+- Strengthen the system prompt for faster convergence: batch independent reads/searches into one parallel request by default, and drive each Bash call to complete in a single pass (chain known steps, split only on genuinely unpredictable dependencies).
+- Replace the dedicated `LineCount`, `List`, `Find`, and `Git` tools with Bash-driven equivalents. The model now sees available shell commands near the top of Environment, read-only Bash commands (including safe `git status`/`diff`/`log` style commands) auto-run without confirmation, and mutating shell/git commands still require approval.
+- Bash output is no longer erased from the terminal after the command finishes; the live preview output stays in the scrollback history.
+- Edit diff previews and approve messages remain visible in the CLI history instead of being transiently cleared.
+- Remove the Ctrl-A expanded Edit preview and fixed-height transient preview window. Edit approvals still show the full inline diff preview in the CLI history, with Pygments highlighting preserved.
+- Git branch is no longer shown in the environment context sent to the model.
+- Removed branch-change detection protection that prevented `git commit` after an external branch switch.
+
+### Fixed
+- Close a hole in Bash read-only auto-approval: `&&`/`||` were flattened to spaces and only the first command in a chain was validated, so `git log && rm -rf x` auto-ran without confirmation. Every stage of a `&& || | ; newline` chain is now validated independently, a lone background `&` is rejected, and a `cd` prefix (a benign builtin the model routinely adds) no longer forces a prompt on an otherwise read-only command.
+- Follow common sense in the Bash read-only classifier rather than blanket strictness: `sort`, `uniq`, `sed`, and `tree` auto-run (with guards only on their real file-writing forms — `sort -o`, `uniq IN OUT`, `sed -i`, `tree -o`), and the ubiquitous harmless redirections (`2>/dev/null`, `>/dev/null`, `< /dev/null`, `2>&1`, `>&2`) no longer trigger a prompt. Real writes to a file and command substitution still ask.
+- Suppress prompt-toolkit's CPR warning in terminals that do not answer cursor position requests by disabling CPR probing for nanocode's prompt applications.
+- Stop closed stdin from escaping as an unhandled exception in the queue-input background thread.
+- Stable Edit anchors, eliminating spurious "stale anchor" errors. `line_hash` no longer folds the trailing newline into the hash, so a line's anchor stays valid when only its final newline changes (e.g. the last line gaining or losing its `\n`) and Read/Search/Edit anchors now agree with InspectCode's. Edit also numbers lines exactly like Read — both split on `\n` only via a shared `ReadTool.split_lines`, replacing `str.splitlines(True)`, which additionally breaks on `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028`, `\u2029` and desynced line numbering (and thus anchors) for any file containing those characters.
+- Bump `code-symbol-index` to `>=0.3.5`, fixing a tree-sitter range extraction crash that could terminate `nanocode --resume last` with SIGSEGV and leave a core dump during background index refresh, while using the package's validated tree-sitter dependency floor.
+- Render Ask choice previews with escaped `\n` sequences expanded into real lines, allow the choice window to use available vertical space above the status bar, and stop repeating the full raw question text when switching to "Type freely...".
+- Render intermediate assistant markdown correctly while the `+>` queue prompt is active; Rich ANSI output is now replayed through prompt-toolkit instead of leaking as `?[90m`-style text.
+- Move the active-turn elapsed timer into the animated `working` divider; the sweep now scans only the horizontal rule so the label stays readable.
+- Show saved tool summaries on `--resume` even when the compacted transcript no longer contains the original assistant tool-call messages.
+- Add regression coverage for Ask preview/free-text rendering, whole-second working timers, and restored saved tool summaries.
+
 ## 0.8.2 - 2026-07-03
 
 ### Fixed

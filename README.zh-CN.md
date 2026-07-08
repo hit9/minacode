@@ -115,13 +115,13 @@ nanocode --resume last
 
 工具：
 
-- 文件：`Read`, `LineCount`, `List`, `Find`, `Search`。
+- 文件：`Read`, `Search`。
 - 代码索引：`InspectCode`。
 - 编辑：`Edit` 创建或修改文件内容。
-- Shell：`Bash`, `Git`。
+- Shell：`Bash`（包括 `ls`、`find`、`wc` 和 `git`）。
 - 工具结果：`Recall`。
 - 工作笔记：`Note`。
-- 询问用户：`Question`。
+- 询问用户：`Ask`。
 - MCP：`MCP`。
 - Skills：`Skill` 按需加载某个 skill 的完整说明（只要存在任一 skill 即提供——内置的 `nanocode-help` 意味着它通常始终可用）。
 

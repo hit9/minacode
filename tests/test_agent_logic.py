@@ -41,14 +41,6 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert messages[-1]["content"].startswith("--- FILE STATE ---")
 
 
-def test_environment_includes_current_git_branch(tmp_path):
-    s = session(tmp_path)
-    s.git_branch = lambda cwd=None: "feature"
-
-    env = n.ContextManager(s).environment()
-
-    assert "- git_branch: feature" in env
-
 
 def test_empty_file_context_is_empty(tmp_path):
     assert n.ContextManager(session(tmp_path)).file_context() == ""
@@ -75,8 +67,16 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- cwd: " + str(tmp_path) in first
     assert "- os: TestOS" in first
     assert "- arch: test-arch" in first
-    assert "- detected_commands: bash, rg, sed" in first
-    assert "- detected_commands: bash, rg, sed" in second
+    assert "- detected_commands (available via Bash): bash, rg, sed" in first
+    assert "- detected_commands (available via Bash): bash, rg, sed" in second
+
+
+def test_prompt_output_disables_cpr_probe(monkeypatch):
+    output = SimpleNamespace(enable_cpr=True)
+    monkeypatch.setattr(n, "create_output", lambda: output)
+
+    assert n.create_prompt_output() is output
+    assert output.enable_cpr is False
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):
@@ -512,7 +512,7 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run([call("Bash", ["printf first"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
+    runner.run([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -531,7 +531,7 @@ def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    runner.run([call("Bash", ["printf first"])])
+    runner.run([call("Bash", [":"])])
 
     assert s.tool_errors[0].error == "Cancelled: user refused tool call"
 
@@ -540,7 +540,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
 
-    runner.run([call("Bash", ["printf first"])])
+    runner.run([call("Bash", [":"])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -593,7 +593,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
 
     class LoopingModel:
         def request(self, messages):
-            return {}, [call("LineCount", ["a.txt"])], ""
+            return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
     answer = limited_agent.run("keep going")
@@ -627,7 +627,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.pending_user_inputs.append("second instruction")
-                return {}, [call("LineCount", ["missing.txt"])], "checking"
+                return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
@@ -643,7 +643,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[1]["content"] == "extra instruction"
     assert s.messages[2]["content"] == "checking"
     assert s.messages[3]["role"] == "tool"
-    assert s.messages[3]["content"].startswith("tool tr.1 LineCount")
+    assert s.messages[3]["content"].startswith("tool tr.1 Bash wc -l missing.txt")
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
@@ -700,6 +700,26 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         reader.close()
 
 
+def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
+    class ClosedInputApp:
+        def __init__(self):
+            self.loop = None
+
+        def run(self):
+            raise ValueError("I/O operation on closed file")
+
+        def exit(self, result=None):
+            pass
+
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop._make_app = lambda *args, **kwargs: ClosedInputApp()
+
+    loop.run_queue_input_app(threading.Event())
+
+    assert not loop.queue_input_active.is_set()
+
+
 
 def test_queued_text_auto_submits_at_round_end(tmp_path):
     """queue_input_text set during agent run is auto-submitted as next input."""
@@ -746,6 +766,68 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert s.pending_user_inputs == []
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
+
+def test_queue_live_region_shows_divider_and_pending(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    s.pending_user_inputs = ["run tests", "then push"]
+
+    text = "".join(t for _, t in loop.queue_region_fragments())
+    assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
+    assert "+ run tests" in text and "+ then push" in text
+
+    # The divider animates a comet head (glow0) across the dashes only; the label remains stable.
+    with pytest.MonkeyPatch.context() as mp:
+        seen_head = False
+        for tick in range(200):
+            mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
+            fragments = loop.queue_divider_fragments()
+            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
+            assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
+        assert seen_head
+
+    # The divider is a standing boundary: it persists even once the queue empties, so flushed
+    # messages can move up into the log above it.
+    s.pending_user_inputs = []
+    empty = "".join(t for _, t in loop.queue_region_fragments())
+    # Bare rule with just the state word, no count, and no queued messages.
+    assert "working" in empty and "queued" not in empty and "run tests" not in empty
+
+
+def test_queue_flush_moves_messages_into_log(tmp_path):
+    s = session(tmp_path)
+    out = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=out.append)
+    # The agent's flush hook is wired to move queued messages up into the scrollback log.
+    assert loop.agent.on_queue_flush == loop.flush_queued_to_log
+    loop.flush_queued_to_log(["do a thing", "  "])
+    assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
+
+
+def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
+    # A single app.exit() can be lost if it fires before app.run() starts its event loop, which used
+    # to leave the queue app running behind the next prompt and spam the animated divider. pause must
+    # keep re-issuing the exit until the app has actually torn down (queue_input_active clears).
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.queue_input_active.set()
+    loop.queue_input_app = object()  # sentinel standing in for a running app
+    calls = {"n": 0}
+
+    def fake_exit(app):
+        calls["n"] += 1
+        if calls["n"] >= 3:  # the first couple of exits are "lost"; a later one lands
+            loop.queue_input_active.clear()
+
+    monkeypatch.setattr(loop, "exit_app", fake_exit)
+    monkeypatch.setattr(n.time, "sleep", lambda *_: None)
+
+    loop.pause_queue_input()
+
+    assert loop.queue_input_paused.is_set()
+    assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
+    assert not loop.queue_input_active.is_set()
 
 
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
@@ -910,31 +992,18 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
     assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
 
 
-def test_tool_preview_handles_only_interactive_edit_approval(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-    shown = []
-    loop.interactive_input = True
-    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(loop, "show_transient_tool_preview", shown.append)
-
-    assert loop.tool_preview("approve Edit a.py\n  preview\n  diff")
-    assert shown == ["approve Edit a.py\n  preview\n  diff"]
-    assert not loop.tool_preview("approve Bash echo ok")
-
-
-def test_tool_runner_edit_approval_can_use_preview_callback(tmp_path, monkeypatch):
+def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
-    previews = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=outputs.append)
-    runner.preview_fn = lambda text: previews.append(text) or True
+    content = "".join(f"line {index}\n" for index in range(50))
 
-    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": "x\n"}]])])
+    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert previews and previews[0].startswith("approve Edit new.txt\n  preview")
-    assert not any(output.startswith("approve Edit") for output in outputs)
+    assert outputs[0].startswith("approve Edit new.txt\n  preview")
+    assert "+line 49" in outputs[0]
+    assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
 
 
@@ -1084,6 +1153,30 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "raw tool result" not in text
 
 
+def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "compacted answer"},
+        ]
+    )
+    s.tool_records.append(
+        n.ToolResultRecord("tr.1", "Bash", ["wc -l nanocode.py"], "999 nanocode.py", "wc -l nanocode.py")
+    )
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert f"Restored session: {s.uid}" in text
+    assert "compacted answer" in text
+    assert "tool Bash wc -l nanocode.py -> tr.1" in text
+    assert "999 nanocode.py" not in text
+
+
 def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
@@ -1102,6 +1195,70 @@ def test_select_choice_noninteractive_does_not_prompt(tmp_path):
 
     assert loop.select_choice("Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
     assert output == []
+
+
+def test_choice_application_expands_escaped_preview_newlines(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    rendered = []
+
+    def fake_run_input_app(app):
+        rendered.extend(app.layout.current_control.text())
+        return "A"
+
+    loop.run_input_app = fake_run_input_app
+
+    result = loop.choice_application(
+        "Select:",
+        ("A", "B"),
+        {},
+        "",
+        set(),
+        preview_fn=lambda choice: "one\\ntwo" if choice == "A" else "",
+        free_text=True,
+    )
+
+    assert result == "A"
+    previews = [text for style, text in rendered if style == "class:choice.preview"]
+    assert previews == ["  │ one\n", "  │ two\n"]
+    assert all("\\n" not in text for _, text in rendered)
+
+
+def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    emitted = []
+    prompts = []
+    loop.emit = emitted.append
+    loop.choice_application = lambda *args, **kwargs: n.SELECTION_FREE_TEXT
+
+    def fake_read_input(prompt_text="nano> ", **kwargs):
+        prompts.append(prompt_text)
+        return "typed answer"
+
+    loop.read_input = fake_read_input
+
+    assert loop.question_application(n.AskSpec("Pick?", choices=["A"], previews=["preview"])) == "typed answer"
+    assert prompts == ["> "]
+    assert all(not prompt.startswith("\n") for prompt in prompts)
+    assert emitted[-1] == ""
+
+
+def test_turn_elapsed_label_uses_whole_seconds(tmp_path, monkeypatch):
+    loop = n.CommandLoop(
+        n.Agent(session(tmp_path), output_fn=lambda text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda text: None,
+    )
+    loop.status_bar.started_at = 100.0
+
+    monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
+    assert loop.turn_elapsed_label() == "4s"
+
+    monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
+    assert loop.turn_elapsed_label() == "1m02s"
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
@@ -1249,7 +1406,8 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     ]
 
     params = client.anthropic_params(messages, [n.ReadTool.schema()])
-    assert params["system"] == "system"
+    # system is a cache_control-marked block so the tools+system prefix is cached across turns.
+    assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
@@ -1272,16 +1430,16 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
 
 
 def test_malformed_tool_args_defer_to_execution_chat(tmp_path):
-    """A live chat tool call whose args fail payload validation (Git with empty argv) must not
+    """A live chat tool call whose args fail payload validation (Bash with empty command) must not
     raise out of parsing; the error is deferred onto the call so the turn is not aborted."""
     s = n.Session(cwd=str(tmp_path))
     client = n.ModelClient(s)
-    raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Git", arguments='{"argv": []}'))
+    raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Bash", arguments='{"command": ""}'))
     message = SimpleNamespace(tool_calls=[raw])
     calls = client.tool_calls(message)  # must not raise ToolError
     assert len(calls) == 1
     assert calls[0].args == []
-    assert "non-empty 'argv'" in calls[0].error
+    assert "non-empty" in calls[0].error
 
 
 def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
@@ -1289,7 +1447,7 @@ def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
     s = n.Session(cwd=str(tmp_path))
     client = n.ModelClient(s)
     result = SimpleNamespace(
-        content=[SimpleNamespace(type="tool_use", id="a1", name="Git", input={"argv": []})],
+        content=[SimpleNamespace(type="tool_use", id="a1", name="Bash", input={"command": ""})],
         usage={},
     )
     _, calls, _ = client.anthropic_result(result)  # must not raise ToolError
@@ -1303,11 +1461,11 @@ def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
     s = n.Session(cwd=str(tmp_path))
     ctx = n.ContextManager(s)
     runner = n.ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
-    call = n.ToolCall(id="x1", name="Git", args=[], error="Git requires a non-empty 'argv' list")
+    call = n.ToolCall(id="x1", name="Bash", args=[], error="Bash command must be non-empty")
     results = runner.run([call])
     assert len(results) == 1
     assert results[0]["role"] == "tool"
-    assert "non-empty 'argv'" in results[0]["content"]
+    assert "non-empty" in results[0]["content"]
 
 
 def _runner(tmp_path, input_reply=""):
@@ -1323,11 +1481,11 @@ def test_parallel_safe_classification(tmp_path):
 
     assert safe("Read", [{"path": "f.txt"}])
     assert safe("Search", [{"pattern": "x"}])
-    assert safe("Git", ["status"])  # read-only subcommand
-    assert not safe("Git", ["commit", "-m", "x"])  # mutating subcommand
-    assert not safe("Bash", ["echo hi"])  # mutates + streams live output
+    assert not safe("Bash", ["git status --short"])  # Bash streams live output, so it stays serial
+    assert not safe("Bash", ["git commit -m x"])  # mutating command
+    assert not safe("Bash", ["echo hi"])  # live-output command
     assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
-    assert not safe("Question", [{"question": "q?"}])  # interactive
+    assert not safe("Ask", [{"question": "q?"}])  # interactive
     assert not safe("Nope", [])  # unknown tool
 
 
@@ -1404,7 +1562,7 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
     calls = [
         n.ToolCall(id="r0", name="Read", args=[{"path": "f0.txt", "ranges": [[0, 0]]}]),
         n.ToolCall(id="r1", name="Read", args=[{"path": "f1.txt", "ranges": [[0, 0]]}]),
-        n.ToolCall(id="b0", name="Bash", args=["echo hi"]),  # mutating, refused
+        n.ToolCall(id="b0", name="Bash", args=[":"]),  # confirmation required, refused
         n.ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
     ]
     messages = runner.run(calls)
@@ -1552,7 +1710,7 @@ def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     assert skill is not None and skill.source == "builtin"
     body = n.SkillTool(s, ["nanocode-help"]).call()
     # Authored manual prose so how-to / feature / troubleshooting questions need no source read.
-    assert "## How the agent works" in body and "## Troubleshooting" in body
+    assert "## How it works" in body and "## Troubleshooting" in body
     assert "prefix churn" in body  # a concept /help does not explain
     # Plus lists assembled from in-code constants (so they cannot drift).
     assert "/context" in body and "/skills" in body  # command list (from /help)
