@@ -7275,19 +7275,25 @@ Tools:
     def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
-        body = f" {label} "
+        body_len = len(label) + 2  # " label "
         lead = 3
-        trail = max(3, width - lead - len(body))
-        line = "-" * lead + body + "-" * trail
+        trail = max(3, width - lead - body_len)
         # A short bright window slides left→right across the dashes while working; idle it parks
-        # off-screen, leaving a calm static rule. Only the dashes sweep — the label stays readable.
-        period = len(line) + 6
+        # off-screen, leaving a calm static rule. Only the dashes sweep — the coloured state label stays.
+        period = lead + body_len + trail + 6
         pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.working else -period
-        fragments: list[tuple[str, str]] = []
-        for index, char in enumerate(line):
-            swept = char == "-" and abs(index - pos) <= 1
-            fragments.append(("class:queue.sweep" if swept else "class:queue.rule", char))
-        return fragments
+
+        def dashes(start: int, count: int) -> list[tuple[str, str]]:
+            return [("class:queue.sweep" if abs(start + i - pos) <= 1 else "class:queue.rule", "-") for i in range(count)]
+
+        label_style = "class:divider.working" if self.working else "class:divider.idle"
+        return [
+            *dashes(0, lead),
+            ("class:queue.rule", " "),
+            (label_style, label),
+            ("class:queue.rule", " "),
+            *dashes(lead + body_len, trail),
+        ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         return self.sweep_divider_fragments(self.divider_label(queued))
@@ -7632,6 +7638,8 @@ Tools:
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "queue.sweep": "ansicyan bold",
+                "divider.working": "ansicyan bold",
+                "divider.idle": "ansigreen",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
