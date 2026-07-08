@@ -778,8 +778,11 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     # The divider carries a moving bright "sweep" cell.
     assert any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
 
+    # The divider is a standing boundary: it persists even once the queue empties, so flushed
+    # messages can move up into the log above it.
     s.pending_user_inputs = []
-    assert loop.queue_region_fragments() == []  # region hidden when nothing is queued
+    empty = "".join(t for _, t in loop.queue_region_fragments())
+    assert "queued" in empty and "run tests" not in empty
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):

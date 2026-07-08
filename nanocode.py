@@ -7283,8 +7283,8 @@ Tools:
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
-        if not pending:
-            return []
+        # The divider is a standing boundary for the whole turn: flushed messages move up into the log
+        # above it, so it stays put even once the queue empties rather than vanishing.
         fragments = self.queue_divider_fragments()
         for text in pending:
             fragments.append(("", "\n"))
@@ -7367,11 +7367,8 @@ Tools:
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
         # Live region above the +> input: a sweep divider plus the still-pending queued messages.
-        # Shown only while something is queued; the turn flushes them up into the scrollback log.
-        queued_region = ConditionalContainer(
-            Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True),
-            filter=Condition(lambda: any(text.strip() for text in self.session.pending_user_inputs)),
-        )
+        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
+        queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
         root = FloatContainer(
             HSplit([queued_region, input_window, completion_space, self.status_window(active=True)]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
