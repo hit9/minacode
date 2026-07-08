@@ -2018,16 +2018,12 @@ class SearchTool(Tool):
 
 class CodeIndex:
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
+    # fmt: off
     SYMBOLS: ClassVar[dict[str, str]] = {
-        "ready": "✓",
-        "synced": "✓",
-        "stale": "*",
-        "syncing": "~",
-        "updating": "~",
-        "missing": "?",
-        "unavailable": "!",
-        "error": "!",
+        "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~",
+        "updating": "~", "missing": "?", "unavailable": "!", "error": "!",
     }
+    # fmt: on
 
     def __init__(self, session: Session):
         self.session = session
@@ -3348,19 +3344,12 @@ class SkillTool(Tool):
         return f"<Skill name={json.dumps(skill.name)}>\n{library.expand(skill)}\n</Skill>"
 
 
+# fmt: off
 TOOLS: tuple[type[Tool], ...] = (
-    MCPTool,
-    SkillTool,
-    ReadTool,
-    InspectCodeTool,
-    SearchTool,
-    EditTool,
-    BashTool,
-    JobTool,
-    RecallTool,
-    NoteTool,
-    QuestionTool,
+    MCPTool, SkillTool, ReadTool, InspectCodeTool, SearchTool, EditTool,
+    BashTool, JobTool, RecallTool, NoteTool, QuestionTool,
 )
+# fmt: on
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
@@ -3379,9 +3368,7 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
-    CODE_EXTENSIONS: ClassVar[set[str]] = set(
-        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
-    )
+    CODE_EXTENSIONS: ClassVar[set[str]] = set(".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split())
     CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
     @dataclass
