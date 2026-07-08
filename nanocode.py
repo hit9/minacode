@@ -7203,6 +7203,7 @@ Tools:
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
         self.live_queue_paused = False
+        self.working = False  # a turn is in flight — drives the sweeping divider animation
         self.approval_full_preview = ""
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
@@ -7273,7 +7274,7 @@ Tools:
         # A short bright window slides left→right across the dim rule while the agent is working; when
         # it goes idle the sweep parks off-screen, leaving a calm static rule (no motion at the prompt).
         period = rule + 6
-        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.status_bar.is_running() else -period
+        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.working else -period
         fragments: list[tuple[str, str]] = [("class:queue.rule", label)] if label else []
         for index in range(rule):
             char = "─" if index < rule * 0.6 else ("╌" if index < rule * 0.85 else "┈")
@@ -7489,6 +7490,7 @@ Tools:
             started = time.monotonic()
             stop_input = threading.Event()
             watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
+            self.working = True
             try:
                 if watcher:
                     self.status_bar.begin()
@@ -7512,6 +7514,7 @@ Tools:
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
+                self.working = False
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")

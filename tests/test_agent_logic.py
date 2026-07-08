@@ -784,9 +784,9 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
         return seen
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(loop.status_bar, "is_running", lambda: False)
+        loop.working = False
         assert not has_sweep_over_time(mp)  # idle: static, never sweeps
-        mp.setattr(loop.status_bar, "is_running", lambda: True)
+        loop.working = True
         assert has_sweep_over_time(mp)  # working: the bright cell slides across
 
     # The divider is a standing boundary: it persists even once the queue empties, so flushed
