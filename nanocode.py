@@ -696,14 +696,6 @@ class MCPFileTokenStore:
             value = entry.get("value")
             return dict(value) if isinstance(value, dict) else None
 
-    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
-        collection = collection or self.DEFAULT_COLLECTION
-        expires_at = time.time() + float(ttl) if ttl is not None else None
-        with self.lock:
-            data = self.load()
-            data.setdefault(collection, {})[key] = {"value": dict(value), "expires_at": expires_at}
-            self.save(data)
-
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
         collection = collection or self.DEFAULT_COLLECTION
         with self.lock:
@@ -1480,32 +1472,11 @@ class Session:
         except ValueError:
             return False
 
-    def git_branch(self, cwd: str | None = None) -> str:
-        # Read live each call: a few tens of ms is negligible against a model request, and it is
-        # the only way to reflect an external `git checkout` (caching it would go stale silently).
-        if self.system_info is not None and "git" not in self.system_info.commands:
-            return ""
-        git = "git" if self.system_info is not None else shutil.which("git")
-        if not git:
-            return ""
-        try:
-            proc = subprocess.run(
-                [git, "branch", "--show-current"],
-                cwd=cwd or self.cwd,
-                text=True,
-                capture_output=True,
-                timeout=max(1, min(5, self.settings.shell_timeout)),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ""
-        return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
 
-    def debug_dir(self) -> str:
-        return self.data_path("debug")
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -1529,8 +1500,6 @@ class Session:
     def save_snapshot(self) -> str:
         return SessionSnapshotStore(self).save()
 
-    def clean_expired_snapshots(self) -> int:
-        return SessionSnapshotStore.clean_expired(self)
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -5814,7 +5783,7 @@ class DebugTrace:
     def write(cls, session: Session, *, activity: str, label: str, payload: Any) -> str:
         if not session.settings.debug:
             return ""
-        directory = session.debug_dir()
+        directory = session.data_path("debug")
         os.makedirs(directory, exist_ok=True)
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
         path = os.path.join(directory, f"last-{safe_label}.json")
@@ -7493,9 +7462,6 @@ Tools:
         self.queue_input_text = ""
         return typed
 
-    def drain_queued_input(self) -> str:
-        """Entered input first, then still-typed text (used for the headless combined path)."""
-        return "\n".join(text for text in (self.take_entered_input(), self.take_typed_input()) if text)
 
     def echo_input_line(self, text: str) -> None:
         print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
@@ -7504,7 +7470,7 @@ Tools:
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
-        self.session.clean_expired_snapshots()
+        SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show nano> immediately, discover in background
@@ -8525,7 +8491,7 @@ Tools:
         status = "on" if self.session.settings.debug else "off"
         lines = ["debug: " + status]
         if self.session.settings.debug:
-            lines.append("debug_dir: " + self.session.debug_dir())
+            lines.append("debug_dir: " + self.session.data_path("debug"))
         return "\n".join(lines)
 
     def compact(self, args: str) -> str:

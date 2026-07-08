@@ -429,7 +429,7 @@ def test_clean_expired_sessions_removes_old_files_and_latest(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(old_path, (stale_time, stale_time))
 
-    assert s.clean_expired_snapshots() == 1
+    assert n.SessionSnapshotStore.clean_expired(s) == 1
 
     assert not old_path.exists()
     assert not (tmp_path / "latest").exists()
@@ -443,7 +443,7 @@ def test_clean_expired_sessions_skips_current_session(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(path, (stale_time, stale_time))
 
-    assert s.clean_expired_snapshots() == 0
+    assert n.SessionSnapshotStore.clean_expired(s) == 0
 
     assert path.exists()
 
