@@ -7482,11 +7482,11 @@ Tools:
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "divider.working": "ansimagenta bold",
-                # Comet gradient: warm head, cool tail, then back into the dim rule.
-                "divider.glow0": "ansibrightyellow bold",
-                "divider.glow1": "ansiyellow bold",
-                "divider.glow2": "ansigreen",
-                "divider.glow3": "ansicyan",
+                # Comet gradient: bright head fading through cyan into the dim rule.
+                "divider.glow0": "ansibrightcyan bold",
+                "divider.glow1": "ansicyan bold",
+                "divider.glow2": "ansicyan",
+                "divider.glow3": "ansibrightblack",
                 "divider.glow4": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
