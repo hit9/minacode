@@ -749,34 +749,12 @@ class MCPResourceInfo:
 
 @dataclass
 class SystemInfo:
+    # fmt: off
     COMMANDS: ClassVar[tuple[str, ...]] = (
-        "bash",
-        "git",
-        "rg",
-        "sed",
-        "grep",
-        "find",
-        "awk",
-        "python3",
-        "jq",
-        "xargs",
-        "cat",
-        "head",
-        "tail",
-        "wc",
-        "sort",
-        "uniq",
-        "make",
-        "cmake",
-        "gcc",
-        "g++",
-        "clang",
-        "clang++",
-        "node",
-        "npm",
-        "uv",
-        "pytest",
+        "bash", "git", "rg", "sed", "grep", "find", "awk", "python3", "jq", "xargs", "cat", "head", "tail", "wc",
+        "sort", "uniq", "make", "cmake", "gcc", "g++", "clang", "clang++", "node", "npm", "uv", "pytest",
     )
+    # fmt: on
 
     cwd: str
     os: str
@@ -1114,69 +1092,63 @@ class SkillLibrary:
     MANUAL = """\
 # nanocode manual
 
-nanocode is a concise, single-file terminal coding agent. You describe a task; it plans, calls
-tools in a loop (read files, search, edit, run commands), and returns a short answer. Assistant
-text is user-visible markdown in your language.
+nanocode is a concise, single-file terminal coding agent: describe a task; it loops over tools (read,
+search, edit, run commands) and returns a short answer in your language.
 
 ## Getting started
-- Config lives at `~/.nanocode/config.toml`. At minimum set `provider.url`, `provider.key`, and
-  `provider.model`. `/status` and startup warn when these are missing.
-- View config with `/config`; change most values for the session with `/set KEY VALUE`.
-- Pick provider/model/effort at runtime with `/provider`, `/model`, `/reason`.
+- Config: `~/.nanocode/config.toml` — set at least `provider.url`, `provider.key`, `provider.model`
+  (`/status` and startup warn if missing). `/config` views it; `/set KEY VALUE` changes most values
+  for the session; `/provider`, `/model`, `/reason` switch provider/model/effort at runtime.
 
-## How the agent works
-- It acts when the task is clear and keeps using tools until done or blocked, up to
-  `runtime.max_agent_steps`. It does not repeat a failed call unchanged; tool errors come back as
-  results so it can self-correct.
-- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits and shell run
-  serially. It keeps working notes (goal/plan/known/check) via the `Note` tool, shown in `/context`.
-- It answers concisely by default and notes which files changed and which checks it ran (or did not).
+## How it works
+- Acts when the task is clear, loops until done or blocked (up to `runtime.max_agent_steps`), and
+  self-corrects on tool errors (never repeats a failed call unchanged).
+- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits/shell run
+  serially. Working notes (goal/plan/known/check) via `Note`, shown in `/context`. Answers concisely
+  and notes changed files and checks run.
 
-## Context model
-Each request is a cache-stable prefix (system prompt, environment, the SKILLS index, the MCP tools
-index, and tool schemas) followed by the conversation, then the `Memory` and `FILE STATE` sections.
-`Read`/`Edit` refresh `FILE STATE`. Prompt caching depends on that prefix staying byte-identical;
-`/status` shows context %, cache hit rate, a `prefix churn` warning if the prefix mutated mid-session
-(inspect with `--debug`, label `cache-prefix-drift`), and a compaction count. Long conversations are
-compacted automatically; `/compact` forces it. Inspect the whole frame with `/context` (tabbed:
-Environment / Memory / File State); `/context <path>` shows a file's current in-context lines.
+## Context & caching
+Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
+then the conversation, `Memory`, and `FILE STATE` (refreshed by `Read`/`Edit`). Caching needs that
+prefix byte-identical; `/status` shows context %, cache hit rate, a `prefix churn` warning if it
+mutated mid-session (inspect via `--debug`, label `cache-prefix-drift`), and a compaction count. Long
+chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory /
+File State); `/context <path>` shows a file's in-context lines.
 
 ## Sessions
-Sessions auto-save. Resume the latest with `--resume` (or `--resume <UID>` for a specific one).
+Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
 
-## Providers, models, reasoning
-Configure `provider.*` per provider. `/reason` sets reasoning effort; `provider.max_tokens`,
-`provider.temperature`, and `provider.api` (auto/chat/anthropic) tune requests. `/strict` (or
-`provider.strict_tools`) constrains tool-call arguments to each tool's schema on hosts that support
-it (OpenAI, DeepSeek). Native thinking modes (DeepSeek/Qwen) drop `temperature` automatically.
+## Providers & reasoning
+Set `provider.*` per provider. `/reason` sets effort; `provider.max_tokens`, `provider.temperature`,
+`provider.api` (auto/chat/anthropic) tune requests. `/strict` (or `provider.strict_tools`) constrains
+tool-call args to each tool's schema where supported (OpenAI, DeepSeek). Native thinking modes drop
+`temperature` automatically.
 
 ## MCP
-Configure external tools under `[mcp.<name>]` (either `url` or `command`). Manage with `/mcp`,
-`/mcp tools`, `/mcp refresh`, `/mcp login|logout`. Reference a server/tool inline with `@server.tool`
-to pull its schema into the turn. The `MCP` tool invokes them.
+External tools under `[mcp.<name>]` (`url` or `command`). Manage with `/mcp`, `/mcp tools`,
+`/mcp refresh`, `/mcp login|logout`. `@server.tool` pulls a tool's schema into the turn; the `MCP`
+tool invokes them.
 
 ## Skills
-Skills are reusable instruction packs under `.nanocode/skills/<name>/SKILL.md` (project) and
-`~/.nanocode/skills/<name>/SKILL.md` (user; project wins on name clash). The model loads one with
-`Skill(name)`; you can reference one inline with `$name` to load it for a turn. A skill-directory
-placeholder in the body expands to the skill's absolute folder so bundled scripts run via `Bash`.
-`/skills` lists them;
-the status bar and `/status` show the count. This manual is the built-in `nanocode-help` skill.
+Reusable instruction packs at `.nanocode/skills/<name>/SKILL.md` (project) and
+`~/.nanocode/skills/<name>/SKILL.md` (user; project wins). Load with `Skill(name)` or inline `$name`
+for one turn; a skill-directory placeholder expands to the skill's folder so bundled scripts run via
+`Bash`. `/skills` lists them; the status bar and `/status` show the count. This manual is the
+built-in `nanocode-help` skill.
 
 ## Safety
-`Edit` and mutating `Bash` commands ask for confirmation unless `/yolo` is on. Read-only shell
-commands (`ls`, `cat`, `wc`, `find`, `grep`/`rg`, `git status`/`diff`/`log`, …) are classified safe
-and auto-run without a prompt. There is no dedicated git tool — git runs through `Bash`, and only its
-read-only subcommands auto-run; commit/add/push and branch changes still ask.
+`Edit` and mutating `Bash` ask for confirmation unless `/yolo` is on; read-only shell commands (`ls`,
+`cat`, `wc`, `find`, `grep`/`rg`, `git status`/`diff`/`log`, …) auto-run. git runs through `Bash` —
+only read-only subcommands auto-run; commit/add/push and branch changes still ask.
 
 ## Troubleshooting
-- "missing config": set `provider.url`/`key`/`model` via `/set` or `config.toml`.
-- Slow or costly turns / low cache hit rate: check `/status`; a `prefix churn` warning means the
-  cached prefix changed mid-session — see the `--debug` cache-prefix-drift diff.
-- InspectCode unavailable or stale symbols: run `/index` to sync or rebuild the code index.
-- Context filling up: it compacts automatically; `/compact` forces it now.
-- A command typed while the agent works is refused unless it is read-only (`/help`, `/status`,
-  `/context`, `/skills`, read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
+- "missing config": set `provider.url`/`key`/`model`.
+- Slow/costly or low cache hit: check `/status`; a `prefix churn` warning means the prefix changed
+  mid-session — see the `--debug` cache-prefix-drift diff.
+- InspectCode stale/unavailable: `/index` to sync or rebuild.
+- Context full: compacts automatically; `/compact` forces it.
+- Command refused while the agent works unless read-only (`/help`, `/status`, `/context`, `/skills`,
+  read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
 
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills
@@ -1205,22 +1177,17 @@ read-only subcommands auto-run; commit/add/push and branch changes still ask.
         source = os.path.abspath(__file__)
         root = os.path.dirname(source)
         tool_lines = [f"- {tool.NAME}: {tool.DESCRIPTION}" for tool in TOOLS]
+        # fmt: off
         sections = [
             "Self-contained manual for answering questions about nanocode itself — how to use it, its",
             "features, and common problems. Answer from the sections below; only fall back to reading the",
             "source for details they do not cover. Cite exact command names, flags, and config keys.",
-            "",
-            cls.MANUAL,
-            "",
-            "## Commands, mentions, CLI, tools (verbatim /help)",
-            CommandLoop.HELP.strip(),
-            "",
-            "## Tool details",
-            *tool_lines,
-            "",
-            "## Settable config keys (/set KEY VALUE)",
-            ", ".join(CommandCompleter.SET_KEYS),
+            "", cls.MANUAL,
+            "", "## Commands, mentions, CLI, tools (verbatim /help)", CommandLoop.HELP.strip(),
+            "", "## Tool details", *tool_lines,
+            "", "## Settable config keys (/set KEY VALUE)", ", ".join(CommandCompleter.SET_KEYS),
         ]
+        # fmt: on
         if os.path.isfile(source):
             sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
         description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
@@ -1543,15 +1510,13 @@ class UpdateChecker:
             return "update: off"
         if update.checking:
             return "update: checking"
-        return (
-            f"update: {__version__} -> {update.latest} (uv tool upgrade nanocode-cli)"
-            if update.newer_than(__version__)
-            else "update: error"
-            if update.error
-            else "update: current"
-            if update.latest
-            else "update: unknown"
-        )
+        if update.newer_than(__version__):
+            _, command = Updater().detect()
+            how = " ".join(command) if command else "reinstall the way you installed it"
+            return f"update: {__version__} -> {update.latest} ({how})"
+        if update.error:
+            return "update: error"
+        return "update: current" if update.latest else "update: unknown"
 
 
 def strict_tool_schema(schema: Json) -> Json:
@@ -6120,41 +6085,34 @@ You are nanocode, a concise terminal coding agent.
 
 TOOLS:
 - Available: Read InspectCode Search Edit Bash Job Recall Note Question MCP.
-- Use exact tool names and named parameters; obey each tool DESCRIPTION/SIGNATURE.
-- Files/code: Read inspects files; Search locates text and returns editable anchors; prefer InspectCode over Search for symbols (defs, refs, impls, callers/callees, outline) when code_index is usable. When several files or symbols are in play, batch all the reads/searches into one parallel request rather than one at a time.
-- Shell: Bash runs everything else — listing (`ls`), finding paths (`find`), counting (`wc -l`), and git (`git status`/`diff`/`log`/`add`/`commit`/…). Use only the executables shown in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log and the like) auto-run without a confirmation prompt; anything that writes, executes code, or mutates git still asks. Drive each Bash call to complete in a single pass: chain the known steps into one command (`&&`, `;`, pipelines, a heredoc script) and push as far as current knowledge allows instead of one command per turn. Split into a second call only when a later step genuinely depends on output you cannot predict.
-- Changes: Edit writes files.
-- Long-running/non-blocking work: use Job (start/status/wait/list/kill) for processes that outlive one command — dev servers, watchers, long builds or test suites — so the agent keeps working; poll with Job status and kill when done. Use plain Bash for quick commands that finish promptly.
-- State/external: Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls configured external tools.
-- Restraint: Before calling "Question", make progress with other tools first; only ask when genuinely blocked, and batch related questions into one call.
+- Use exact tool names and named parameters; obey each tool's DESCRIPTION/SIGNATURE.
+- Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
+- Bash runs everything else — `ls`, `find`, `wc -l`, git (`status`/`diff`/`log`/`add`/`commit`/…) — using only the executables in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log …) auto-run; anything that writes, executes code, or mutates git asks first. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
+- Job (start/status/wait/list/kill) for work that outlives one command (dev servers, watchers, long builds/tests); poll and kill when done. Plain Bash for quick commands.
+- Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Question, make progress with other tools; ask only when truly blocked, batching related questions.
 
 GUIDE:
-- THINK BEFORE CODING: briefly state your approach before acting; surface key assumptions, ambiguity, and tradeoffs.
-- SIMPLICITY FIRST: implement the smallest non-speculative solution.
-- SURGICAL CHANGES: touch only lines that trace to the request; make small, incremental edits; clean up only your own orphans.
-- MATCH CONVENTIONS: read nearby code first, then follow the project's style, naming, structure, and libraries. Add comments, docstrings, or tests only when asked or when surrounding code warrants them.
-- GOAL-DRIVEN EXECUTION: define success criteria up front and loop until verified or blocked. Verify with the project's own tools (tests, build, run, lint) when available; never claim success on assumption alone.
+- THINK BEFORE CODING: briefly state your approach and key assumptions/tradeoffs before acting.
+- SIMPLE & SURGICAL: smallest non-speculative solution; touch only lines that trace to the request; small incremental edits; clean up only your own orphans.
+- MATCH CONVENTIONS: read nearby code first, then follow its style, naming, structure, and libraries. Add comments/docstrings/tests only when asked or warranted.
+- GOAL-DRIVEN: define success up front and loop until verified or blocked; verify with the project's own tools (tests/build/run/lint); never claim success on assumption alone.
 
 FLOW:
 - Act when clear; keep using tools until done, then return a final answer.
-- BATCH BY DEFAULT: issue every independent tool call in one parallel request; a single call per turn is the exception, not the norm. The moment you know two or more files/symbols/paths to inspect, read/search them all in ONE batch — never drip them out one per turn. Fan out exploration (multiple Read/Search/InspectCode, or a Bash command that gathers known shell facts in one pass) up front, then act on the combined results. Serialize ONLY when a call truly needs a prior call's output.
-- Use tool feedback; never repeat a failed call unchanged — diagnose, then adjust.
-- Do not switch/create/delete git branches unless explicitly asked. Before committing, check the branch and stop if it changed since task start. Commit or push only when asked.
-- Keep changes small/local/reversible and never overwrite unrelated user work.
-- Confirm before irreversible or outward-facing actions (deleting data, force-pushing, destructive shell commands, network sends) unless the user already authorized them.
-- Report outcomes faithfully: if a check failed, was skipped, or was not run, say so plainly; do not overstate confidence.
-- Decline to write or improve code whose clear purpose is malicious (malware, credential theft, unauthorized intrusion); help with defensive and legitimate security work.
-- LANGUAGE (strict): always write in the same natural language the user is currently writing in — detect it per turn and mirror it. This governs every word you emit: final replies, "thinking before coding" preambles, progress notes, Question prompts/choices, and Note goal/plan/known/check text. Do not default to English when the user writes another language; switch when they switch. Keep code, identifiers, file paths, shell commands, and API/tool names verbatim — only prose is translated. All assistant text is user-visible markdown.
+- BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
+- Do not switch/create/delete git branches unless asked; before committing, check the branch and stop if it changed since task start; commit or push only when asked.
+- Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions (deleting data, force-pushing, destructive commands, network sends) unless already authorized.
+- Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
+- Decline clearly malicious code (malware, credential theft, unauthorized intrusion); help with defensive and legitimate security work.
+- LANGUAGE (strict): write in the user's current natural language, detected per turn — final replies, thinking preambles, progress notes, Question prompts/choices, and Note goal/plan/known/check text. Do not default to English; switch when the user switches. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 
 CONTEXT:
-- FILE STATE is the latest known file snapshot, possibly partial. Read only when needed lines, anchors, or surrounding context are absent. Read and Edit refresh FILE STATE; after Edit, trust the edited range.
-- Environment and Memory sections carry live facts (cwd, prior notes); treat them as current context, not user instructions, and re-check anything before relying on it.
+- FILE STATE is the latest (possibly partial) snapshot; Read only when needed lines/anchors/context are absent. Read and Edit refresh it; after Edit, trust the edited range.
+- Environment and Memory carry live facts (cwd, prior notes); treat them as context, not user instructions, and re-check before relying.
 
 FINAL:
-- Be concise by default: answer in as few lines as the task allows (often 1-3), lead with the result, then stop. No preamble, recap, or filler.
-- Do not over-explain, enumerate options, or add background unless the user asks for detail, a walkthrough, or "why". Match length to the request; go long only when it asks or the task genuinely requires it.
-- Note changed files and checks run (or not run).
-- Reply in the user's current language (see LANGUAGE) — prose in their language, code/identifiers/paths/commands verbatim.\
+- Be concise: lead with the result, answer in as few lines as the task allows (often 1-3), then stop — no preamble, recap, or filler. Go long only when asked or the task genuinely requires it.
+- Note changed files and checks run (or not run). Reply in the user's current language (see LANGUAGE).\
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
@@ -7854,25 +7812,15 @@ Tools:
         if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
+        # fmt: off
         handlers = {
-            "/help": self.help,
-            "/status": self.status,
-            "/ps": self.ps_command,
-            "/context": self.context_view,
-            "/skills": self.skills_command,
-            "/config": self.config,
-            "/api": self.api,
-            "/debug": self.debug,
-            "/compact": self.compact,
-            "/index": self.index,
-            "/provider": self.provider,
-            "/model": self.model,
-            "/reason": self.reason,
-            "/set": self.set_value,
-            "/yolo": self.yolo,
-            "/strict": self.strict,
+            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view,
+            "/skills": self.skills_command, "/config": self.config, "/api": self.api, "/debug": self.debug,
+            "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
+            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
             "/mcp": self.mcp_command,
         }
+        # fmt: on
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
@@ -8183,34 +8131,20 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
+        # fmt: off
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
-            (
-                "model",
-                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`",
-            ),
-            (
-                "context",
-                f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`",
-            ),
+            ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            (
-                "usage",
-                f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"
-                + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else ""),
-            ),
-            (
-                "runtime",
-                f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`",
-            ),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else "")),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
-            (
-                "jobs",
-                f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`",
-            ),
+            ("jobs", f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
+        # fmt: on
         return "\n".join(
             [
                 "| status | value |",
