@@ -7266,20 +7266,30 @@ Tools:
 
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 14.0
 
-    def queue_divider_fragments(self) -> list[tuple[str, str]]:
+    def sweep_divider_fragments(self, label: str = "", width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
-        width = max(16, min(46, cols - 2))
-        label = "── queued "
+        width = width if width is not None else max(16, min(46, cols - 2))
         rule = max(4, width - len(label))
-        # A short bright window slides left→right across the dim, fading rule, looping — the sweep.
+        # A short bright window slides left→right across the dim rule while the agent is working; when
+        # it goes idle the sweep parks off-screen, leaving a calm static rule (no motion at the prompt).
         period = rule + 6
-        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3
-        fragments: list[tuple[str, str]] = [("class:queue.rule", label)]
+        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.status_bar.is_running() else -period
+        fragments: list[tuple[str, str]] = [("class:queue.rule", label)] if label else []
         for index in range(rule):
             char = "─" if index < rule * 0.6 else ("╌" if index < rule * 0.85 else "┈")
             style = "class:queue.sweep" if abs(index - pos) <= 1 else "class:queue.rule"
             fragments.append((style, char))
         return fragments
+
+    def queue_divider_fragments(self) -> list[tuple[str, str]]:
+        return self.sweep_divider_fragments("── queued ")
+
+    def prompt_divider_fragments(self) -> list[tuple[str, str]]:
+        # A sweeping rule between the log and the nano> prompt while it waits. Stay a couple of cells
+        # short of full width: a rule that fills the last column makes terminals auto-wrap, which
+        # desyncs this non-fullscreen app's redraw (visible when a paste changes the input height).
+        cols = shutil.get_terminal_size((80, 20)).columns
+        return self.sweep_divider_fragments(width=max(16, cols - 2))
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
@@ -7460,7 +7470,7 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text))
+                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), divider=True)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
@@ -7675,6 +7685,7 @@ Tools:
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
         initial_text: str = "",
+        divider: bool = False,
     ) -> str:
         if self.input_history is None:
             return initial_text or self.input_fn(prompt_text)
@@ -7757,8 +7768,15 @@ Tools:
             event.app.invalidate()
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        # A sweeping rule between the log and the prompt while it waits, with a blank line below it so
+        # the prompt is not crowded up against the divider.
+        top: list[Any] = (
+            [Window(FormattedTextControl(self.prompt_divider_fragments), height=1, dont_extend_height=True), Window(height=1, dont_extend_height=True)]
+            if divider
+            else []
+        )
         root = FloatContainer(
-            HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
+            HSplit([*top, input_window, completion_space, search_toolbar, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)

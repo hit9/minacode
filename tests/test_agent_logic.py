@@ -775,8 +775,19 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     text = "".join(t for _, t in loop.queue_region_fragments())
     assert "queued" in text
     assert "+ run tests" in text and "+ then push" in text
-    # The divider carries a moving bright "sweep" cell.
-    assert any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
+    # The divider sweeps a bright cell only while the agent is working; idle it is a calm static rule.
+    def has_sweep_over_time(monkeypatch):
+        seen = False
+        for tick in range(200):
+            monkeypatch.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
+            seen = seen or any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
+        return seen
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(loop.status_bar, "is_running", lambda: False)
+        assert not has_sweep_over_time(mp)  # idle: static, never sweeps
+        mp.setattr(loop.status_bar, "is_running", lambda: True)
+        assert has_sweep_over_time(mp)  # working: the bright cell slides across
 
     # The divider is a standing boundary: it persists even once the queue empties, so flushed
     # messages can move up into the log above it.
