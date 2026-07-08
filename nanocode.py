@@ -8091,9 +8091,9 @@ Tools:
             free_text=True,
         )
         if result is SELECTION_FREE_TEXT:
-            # Leading newline so the input gets its own prompt line below the question (the choice
-            # selector has just cleared), matching the no-choices branch above.
-            return self.read_input("\n" + spec.question + "\n> ")
+            # The question was already rendered before the choice selector; do not repeat a long
+            # raw prompt when the user switches to free text.
+            return self.read_input("\n> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
