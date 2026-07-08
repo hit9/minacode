@@ -1407,7 +1407,7 @@ def test_parallel_safe_classification(tmp_path):
     assert not safe("Bash", ["git commit -m x"])  # mutating command
     assert not safe("Bash", ["echo hi"])  # live-output command
     assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
-    assert not safe("Question", [{"question": "q?"}])  # interactive
+    assert not safe("Ask", [{"question": "q?"}])  # interactive
     assert not safe("Nope", [])  # unknown tool
 
 

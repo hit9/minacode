@@ -121,7 +121,7 @@ Tools:
 - Shell: `Bash` (including `ls`, `find`, `wc`, and `git`).
 - Tool results: `Recall`.
 - Working notes: `Note`.
-- Ask the user: `Question`.
+- Ask the user: `Ask`.
 - MCP: `MCP`.
 - Skills: `Skill` loads a skill's full instructions on demand (offered whenever any skill exists — the built-in `nanocode-help` means it is normally always available).
 

@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Rename the interactive `Question` tool to `Ask`; the old `Question` tool name is no longer registered.
 - Replace the status-bar `+N` queued-message counter with a live queue region. While the agent works, messages you type sit below the +> input under a dim "── queued" divider with a left→right sweep animation, instead of being echoed into the scrollback log; when the turn flushes them they move up into the log as `+ <text>` lines and the region shrinks (the divider disappears once nothing is queued).
 - Cache the Anthropic request's stable `tools`+`system` prefix with a `cache_control` breakpoint on the system block, so each turn no longer reprocesses the system prompt and tool schemas from scratch (Anthropic prompt caching only activates at an explicit breakpoint).
 - Strengthen the system prompt for faster convergence: batch independent reads/searches into one parallel request by default, and drive each Bash call to complete in a single pass (chain known steps, split only on genuinely unpredictable dependencies).
@@ -25,7 +26,7 @@
 - Stop closed stdin from escaping as an unhandled exception in the queue-input background thread.
 - Stable Edit anchors, eliminating spurious "stale anchor" errors. `line_hash` no longer folds the trailing newline into the hash, so a line's anchor stays valid when only its final newline changes (e.g. the last line gaining or losing its `\n`) and Read/Search/Edit anchors now agree with InspectCode's. Edit also numbers lines exactly like Read — both split on `\n` only via a shared `ReadTool.split_lines`, replacing `str.splitlines(True)`, which additionally breaks on `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028`, `\u2029` and desynced line numbering (and thus anchors) for any file containing those characters.
 - Bump `code-symbol-index` to `>=0.3.5`, fixing a tree-sitter range extraction crash that could terminate `nanocode --resume last` with SIGSEGV and leave a core dump during background index refresh, while using the package's validated tree-sitter dependency floor.
-- Render Question choice previews with escaped `\n` sequences expanded into real lines, allow the choice window to use available vertical space above the status bar, and stop repeating the full raw question text when switching to "Type freely...".
+- Render Ask choice previews with escaped `\n` sequences expanded into real lines, allow the choice window to use available vertical space above the status bar, and stop repeating the full raw question text when switching to "Type freely...".
 - Render intermediate assistant markdown correctly while the `+>` queue prompt is active; Rich ANSI output is now replayed through prompt-toolkit instead of leaking as `?[90m`-style text.
 - Move the active-turn elapsed timer into the animated `working` divider and let the sweep highlight pass across the divider label itself.
 - Show saved tool summaries on `--resume` even when the compacted transcript no longer contains the original assistant tool-call messages.

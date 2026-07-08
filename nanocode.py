@@ -3145,7 +3145,7 @@ class NoteTool(Tool):
 
 
 @dataclass(frozen=True)
-class QuestionSpec:
+class AskSpec:
     """One validated question the model wants to ask the user."""
 
     question: str
@@ -3154,10 +3154,10 @@ class QuestionSpec:
     recommended: int | None = None
 
 
-class QuestionTool(Tool):
-    NAME = "Question"
+class AskTool(Tool):
+    NAME = "Ask"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
-    SIGNATURE = "Question(questions=[{question, choices?, previews?, recommended?}, ...])"
+    SIGNATURE = "Ask(questions=[{question, choices?, previews?, recommended?}, ...])"
     # fmt: off
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
@@ -3166,7 +3166,7 @@ class QuestionTool(Tool):
     # fmt: on
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[QuestionSpec, str], str] | None = None
+    question_fn: Callable[[AskSpec, str], str] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -3181,12 +3181,12 @@ class QuestionTool(Tool):
         }, ["questions"])
 
     def call(self) -> str:
-        questions = self.single_dict_arg("Question requires named fields").get("questions")
+        questions = self.single_dict_arg(f"{self.NAME} requires named fields").get("questions")
         if not isinstance(questions, list) or not questions:
-            raise ToolError("Question requires a non-empty 'questions' list")
+            raise ToolError(f"{self.NAME} requires a non-empty 'questions' list")
         # Validate the whole batch up front, so a malformed later question never strands the
         # user after they have already answered earlier ones.
-        prepared: list[QuestionSpec] = []
+        prepared: list[AskSpec] = []
         for item in questions:
             if not isinstance(item, dict):
                 raise ToolError("each question must be an object with a 'question' field")
@@ -3198,17 +3198,17 @@ class QuestionTool(Tool):
             recommended = item.get("recommended")
             if choices is not None:
                 if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
-                    raise ToolError("Question choices must be a list of strings")
+                    raise ToolError(f"{self.NAME} choices must be a list of strings")
                 if previews is not None:
                     if not isinstance(previews, list) or not all(isinstance(p, str) for p in previews):
-                        raise ToolError("Question previews must be a list of strings")
+                        raise ToolError(f"{self.NAME} previews must be a list of strings")
                     if len(previews) != len(choices):
-                        raise ToolError("Question previews must match choices length")
+                        raise ToolError(f"{self.NAME} previews must match choices length")
             if recommended is not None and (
                 isinstance(recommended, bool) or not isinstance(recommended, int) or not choices or not 0 <= recommended < len(choices)
             ):
-                raise ToolError("Question recommended must be a valid 0-based choice index")
-            prepared.append(QuestionSpec(question, choices, previews, recommended))
+                raise ToolError(f"{self.NAME} recommended must be a valid 0-based choice index")
+            prepared.append(AskSpec(question, choices, previews, recommended))
         total = len(prepared)
         answers: list[tuple[str, str]] = []
         for index, spec in enumerate(prepared):
@@ -3347,7 +3347,7 @@ class SkillTool(Tool):
 # fmt: off
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool, SkillTool, ReadTool, InspectCodeTool, SearchTool, EditTool,
-    BashTool, JobTool, RecallTool, NoteTool, QuestionTool,
+    BashTool, JobTool, RecallTool, NoteTool, AskTool,
 )
 # fmt: on
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
@@ -5249,7 +5249,7 @@ class ToolRunner:
         self.preview_full_fn: Callable[[str], None] | None = None
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[str], None] | None = None
-        self.question_fn: Callable[[QuestionSpec, str], str] | None = None
+        self.question_fn: Callable[[AskSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
@@ -5320,9 +5320,9 @@ class ToolRunner:
         # A call may run concurrently only if it neither mutates state nor blocks on interactive
         # input: read-only, auto-approved, non-interactive tools (Read/Search/Recall/InspectCode,
         # read-only MCP). Edit is coordinated serially by EditBatchPlan;
-        # Bash streams live output and mutates; Question blocks on the user.
+        # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name in {"Edit", "Question"} or tool_class in (BashTool, JobTool):
+        if tool_class is None or call.name == "Edit" or tool_class in (BashTool, JobTool, AskTool):
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
@@ -5390,7 +5390,7 @@ class ToolRunner:
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
         started, approved, auto, display = time.monotonic(), False, False, None
-        if isinstance(tool, QuestionTool):
+        if isinstance(tool, AskTool):
             tool.question_fn = self.question_fn
         try:
             display = self.short_call(call, tool.short_args())
@@ -6071,12 +6071,12 @@ class Agent:
 You are nanocode, a concise terminal coding agent.
 
 TOOLS:
-- Available: Read InspectCode Search Edit Bash Job Recall Note Question MCP.
+- Available: Read InspectCode Search Edit Bash Job Recall Note Ask MCP.
 - Use exact tool names and named parameters; obey each tool's DESCRIPTION/SIGNATURE.
 - Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
 - Bash runs everything else — `ls`, `find`, `wc -l`, git (`status`/`diff`/`log`/`add`/`commit`/…) — using only the executables in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log …) auto-run; anything that writes, executes code, or mutates git asks first. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
 - Job (start/status/wait/list/kill) for work that outlives one command (dev servers, watchers, long builds/tests); poll and kill when done. Plain Bash for quick commands.
-- Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Question, make progress with other tools; ask only when truly blocked, batching related questions.
+- Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
 
 GUIDE:
 - THINK BEFORE CODING: briefly state your approach and key assumptions/tradeoffs before acting.
@@ -6091,7 +6091,7 @@ FLOW:
 - Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions (deleting data, force-pushing, destructive commands, network sends) unless already authorized.
 - Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
 - Decline clearly malicious code (malware, credential theft, unauthorized intrusion); help with defensive and legitimate security work.
-- LANGUAGE (strict): write in the user's current natural language, detected per turn — final replies, thinking preambles, progress notes, Question prompts/choices, and Note goal/plan/known/check text. Do not default to English; switch when the user switches. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
+- LANGUAGE (strict): write in the user's current natural language, detected per turn — final replies, thinking preambles, progress notes, Ask prompts/choices, and Note goal/plan/known/check text. Do not default to English; switch when the user switches. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 
 CONTEXT:
 - FILE STATE is the latest (possibly partial) snapshot; Read only when needed lines/anchors/context are absent. Read and Edit refresh it; after Edit, trust the edited range.
@@ -6317,7 +6317,7 @@ class UiPrinter:
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
-        # while a prompt app is running (e.g. the Question selector) lets patch_stdout mangle the ANSI
+        # while a prompt app is running (e.g. the Ask selector) lets patch_stdout mangle the ANSI
         # into raw escapes; capturing first and emitting as ANSI avoids that.
         if not self.color:
             self.emit(text)
@@ -7018,7 +7018,7 @@ CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
-  Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Question, MCP, Skill.
+  Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
   Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
 """
 
@@ -8088,7 +8088,7 @@ Tools:
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
-    def question_application(self, spec: QuestionSpec, position: str = "") -> str:
+    def question_application(self, spec: AskSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
         choices = spec.choices
         # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
@@ -8130,8 +8130,8 @@ Tools:
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
-    def question_interaction(self, spec: QuestionSpec, position: str = "") -> str:
-        """Entry point for Question tool — shows the chosen answer in CLI after selection."""
+    def question_interaction(self, spec: AskSpec, position: str = "") -> str:
+        """Entry point for Ask tool — shows the chosen answer in CLI after selection."""
         result = self.question_application(spec, position)
         # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
         if spec.choices and result in spec.choices:
