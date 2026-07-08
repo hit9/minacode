@@ -657,7 +657,11 @@ class MCPFileTokenStore:
         return server_url.rstrip("/") + suffix
 
     def has_server_tokens(self, server_url: str) -> bool:
-        return self.has_key(self.token_key(server_url, "/tokens"), collection="mcp-oauth-token")
+        key = self.token_key(server_url, "/tokens")
+        collection = "mcp-oauth-token"
+        with self.lock:
+            entry = self.load().get(collection, {}).get(key)
+            return bool(entry and not self.expired(entry))
 
     def clear_server(self, server_url: str) -> None:
         with self.lock:
@@ -670,17 +674,6 @@ class MCPFileTokenStore:
                 data.get(collection, {}).pop(key, None)
             self.save(data)
 
-    def clear_client_info(self, server_url: str) -> None:
-        with self.lock:
-            data = self.load()
-            data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
-            self.save(data)
-
-    def has_key(self, key: str, *, collection: str | None = None) -> bool:
-        collection = collection or self.DEFAULT_COLLECTION
-        with self.lock:
-            entry = self.load().get(collection, {}).get(key)
-            return bool(entry and not self.expired(entry))
 
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
         collection = collection or self.DEFAULT_COLLECTION
@@ -820,15 +813,13 @@ class SessionSnapshotCodec:
         messages = cls.persistable_messages(session.messages)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
+        # fmt: off
         return {
-            "messages_len": len(messages),
-            "messages_digest": cls.digest(messages),
-            "tool_counter": session.tool_counter,
-            "tool_records_len": len(records),
-            "tool_records_digest": cls.digest(records),
-            "tool_errors_len": len(errors),
-            "tool_errors_digest": cls.digest(errors),
+            "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
+            "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
+            "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
         }
+        # fmt: on
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
@@ -860,42 +851,33 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def state(state: AgentState) -> Json:
+        # fmt: off
         return {
-            "goal": state.goal,
-            "plan": [item.to_json() for item in AgentState.plan_items(state.plan)],
-            "known": state.known,
-            "check": state.check,
-            "summary": state.summary,
-            "compaction_count": state.compaction_count,
-            "prefix_fingerprint": state.prefix_fingerprint,
-            "prefix_fingerprints": state.prefix_fingerprints,
+            "goal": state.goal, "plan": [item.to_json() for item in AgentState.plan_items(state.plan)], "known": state.known, "check": state.check,
+            "summary": state.summary, "compaction_count": state.compaction_count,
+            "prefix_fingerprint": state.prefix_fingerprint, "prefix_fingerprints": state.prefix_fingerprints,
         }
+        # fmt: on
 
     @staticmethod
     def usage(usage: ModelUsage) -> Json:
+        # fmt: off
         return {
-            "calls": usage.calls,
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "cached_prompt_tokens": usage.cached_prompt_tokens,
-            "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
-            "last_prompt_tokens": usage.last_prompt_tokens,
-            "last_total_tokens": usage.last_total_tokens,
+            "calls": usage.calls, "prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens, "cached_prompt_tokens": usage.cached_prompt_tokens, "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
+            "last_prompt_tokens": usage.last_prompt_tokens, "last_total_tokens": usage.last_total_tokens,
         }
+        # fmt: on
 
     @classmethod
     def snapshot(cls, session: "Session") -> Json:
+        # fmt: off
         return {
-            "uid": session.uid,
-            "cwd": session.cwd,
-            "messages": cls.persistable_messages(session.messages),
-            "state": cls.state(session.state),
-            "usage": cls.usage(session.usage),
-            "tool_counter": session.tool_counter,
-            "tool_records": [cls.tool_record(record) for record in session.tool_records],
-            "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
+            "uid": session.uid, "cwd": session.cwd, "messages": cls.persistable_messages(session.messages),
+            "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
+            "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
         }
+        # fmt: on
 
     @classmethod
     def delta(cls, session: "Session", saved: Json) -> Json:
@@ -972,9 +954,9 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def tool_records(data: list[Json]) -> list[ToolResultRecord]:
-        return [
-            ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", "")) for rec in data
-        ]
+        # fmt: off
+        return [ToolResultRecord(key=rec["key"], name=rec["name"], args=rec.get("args", []), output=rec.get("output", ""), note=rec.get("note", "")) for rec in data]
+        # fmt: on
 
     @staticmethod
     def tool_errors(data: list[Json]) -> list[ToolErrorRecord]:
@@ -1762,10 +1744,12 @@ class ReadTool(Tool):
     NAME = "Read"
     DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, anchor=line:hash(line_content) text, and updates FILE STATE."
     SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
+    # fmt: off
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
         'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
     )
+    # fmt: on
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -1892,11 +1876,13 @@ class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path anchor=line:hash matches."
     SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
+    # fmt: off
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
         'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
         'Batch regex terms. Example: {"queries":[{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]}',
     )
+    # fmt: on
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
 
@@ -2250,6 +2236,7 @@ class InspectCodeTool(Tool):
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
     DESCRIPTION = "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; refs lists classified references; impls lists implementors; callers/callees walk the call chain."
     SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?,depth?,offset?,all_kinds?,ref_kind?,loose?)"
+    # fmt: off
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
         'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
@@ -2258,6 +2245,7 @@ class InspectCodeTool(Tool):
         'List implementors of an interface/base. Example: {"mode":"impls","target":"Tool","kind":"class"}',
         'Walk transitive callers/callees up to depth; callees loose includes ambiguous cross-module matches. Example: {"mode":"callers","target":"handle_job","depth":3}',
     )
+    # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2383,6 +2371,7 @@ class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
     SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=create|replace|delete|insert_before|insert_after|replace_all"
+    # fmt: off
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
@@ -2391,6 +2380,7 @@ class EditTool(Tool):
         'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:0dd44","content":"cleanup()\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
+    # fmt: on
     MUTATES = True
 
     @classmethod
@@ -2651,10 +2641,12 @@ class BashTool(Tool):
     NAME = "Bash"
     DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
+    # fmt: off
     EXAMPLE = (
         'Check environment. Example: {"command":"python3 --version"}',
         'Run a project command. Example: {"command":"python3 -m py_compile nanocode.py"}',
     )
+    # fmt: on
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
@@ -2772,14 +2764,11 @@ class BashTool(Tool):
             return False
         return True
 
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}},
-            "required": ["command"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}}, "required": ["command"], "additionalProperties": False}
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3054,23 +3043,19 @@ class RecallTool(Tool):
     NAME = "Recall"
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
     SIGNATURE = "Recall(keys=[tr.N,...], ranges?); ranges are 0-based [start,end] output lines"
+    # fmt: off
     EXAMPLE = (
         'Recall full result. Example: {"keys":["tr.1"]}',
         'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
     )
+    # fmt: on
     STORES_RESULT = False
 
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
-            },
-            "required": ["keys"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"}}, "required": ["keys"], "additionalProperties": False}
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3139,9 +3124,11 @@ class NoteTool(Tool):
     NAME = "Note"
     DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. Plan items are objects with status todo|doing|done|blocked and text."
     SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
+    # fmt: off
     EXAMPLE = (
         'Set memory. Example: {"set_goal":"ship parser fix","replace_plan":[{"status":"doing","text":"inspect parser"},{"status":"todo","text":"patch bug"}],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',
     )
+    # fmt: on
     STORES_RESULT = False
 
     @classmethod
@@ -3251,10 +3238,12 @@ class QuestionTool(Tool):
     NAME = "Question"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
     SIGNATURE = "Question(questions=[{question, choices?, previews?, recommended?}, ...])"
+    # fmt: off
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
     )
+    # fmt: on
     MUTATES = False
     STORES_RESULT = True
     question_fn: Callable[[QuestionSpec, str], str] | None = None
@@ -3474,14 +3463,11 @@ class SkillTool(Tool):
     SIGNATURE = "Skill(name)"
     EXAMPLE = ('Load a skill. Example: {"name":"release-notes"}',)
 
+    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {"name": {"type": "string", "description": "Skill name from the SKILLS section"}},
-            "required": ["name"],
-            "additionalProperties": False,
-        }
+        return {"type": "object", "properties": {"name": {"type": "string", "description": "Skill name from the SKILLS section"}}, "required": ["name"], "additionalProperties": False}
+    # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -5011,7 +4997,11 @@ class MCPManager:
         # Drop any stale client registration so the fresh authorization uses a client
         # whose registered redirect_uri matches this run's callback port. Reusing a
         # client registered against an earlier random port yields invalid_request.
-        self.oauth_token_store().clear_client_info(config.url)
+        store = self.oauth_token_store()
+        with store.lock:
+            data = store.load()
+            data.setdefault("mcp-client-info", {}).pop(config.url, None)
+            store.save(data)
         try:
             tools = self.run_async(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
         except Exception as error:
@@ -6359,58 +6349,29 @@ FINAL:
 
 
 class CommandCompleter(Completer):
+    # fmt: off
     COMMANDS = (
-        "/help",
-        "/ps",
-        "/status",
-        "/context",
-        "/skills",
-        "/config",
-        "/api",
-        "/debug",
-        "/compact",
-        "/index",
-        "/model",
-        "/provider",
-        "/reason",
-        "/set",
-        "/yolo",
-        "/strict",
-        "/exit",
-        "/quit",
+        "/help", "/ps", "/status", "/context", "/skills", "/config", "/api", "/debug",
+        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
     )
+    # fmt: on
+    # fmt: off
     SET_KEYS = (
-        "provider.model",
-        "provider.url",
-        "provider.key",
-        "provider.api",
-        "provider.prompt_cache_key",
-        "provider.reasoning",
-        "provider.chat_reasoning",
-        "provider.available_models",
-        "provider.temperature",
-        "provider.max_tokens",
-        "provider.strict_tools",
-        "provider.timeout",
-        "runtime.yolo",
-        "runtime.max_agent_steps",
-        "runtime.max_context_tokens",
-        "runtime.max_parallel_tools",
-        "runtime.shell_timeout",
-        "runtime.check_updates",
-        "runtime.tips",
+        "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
+        "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature",
+        "provider.max_tokens", "provider.strict_tools", "provider.timeout", "runtime.yolo", "runtime.max_agent_steps",
+        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout", "runtime.check_updates", "runtime.tips",
     )
+    # fmt: on
+    # fmt: off
     SET_VALUES = {
-        "provider.api": PROVIDER_API_CHOICES,
-        "provider.prompt_cache_key": ("auto", "off"),
-        "provider.reasoning": REASONING_CHOICES,
-        "provider.chat_reasoning": CHAT_REASONING_CHOICES,
-        "provider.temperature": ("off",),
-        "provider.strict_tools": ("on", "off", "true", "false"),
-        "runtime.yolo": ("on", "off", "true", "false"),
-        "runtime.check_updates": ("on", "off", "true", "false"),
+        "provider.api": PROVIDER_API_CHOICES, "provider.prompt_cache_key": ("auto", "off"),
+        "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES,
+        "provider.temperature": ("off",), "provider.strict_tools": ("on", "off", "true", "false"),
+        "runtime.yolo": ("on", "off", "true", "false"), "runtime.check_updates": ("on", "off", "true", "false"),
         "runtime.tips": ("on", "off", "true", "false"),
     }
+    # fmt: on
 
     def __init__(
         self,

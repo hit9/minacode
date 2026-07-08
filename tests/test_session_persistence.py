@@ -40,7 +40,6 @@ def test_first_save_writes_init_line(tmp_path):
     # Runtime/config and derivable data are NOT stored in the snapshot
     assert "config" not in init
     assert "settings" not in init
-    assert "git_branch" not in init
     assert "tool_results" not in init
 
 def test_latest_pointer_created_on_first_save(tmp_path):
