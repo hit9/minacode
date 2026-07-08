@@ -7775,9 +7775,10 @@ Tools:
         self.ui.emit(str(text))
 
     def with_status_paused(self, action):
-        had_queue = self.queue_input_active.is_set()
-        if had_queue:
-            self.pause_queue_input()
+        # Only quiet the standalone status-bar thread (headless turns). We deliberately do NOT tear
+        # down the queue-input app here: while it runs, patch_stdout already places emitted log lines
+        # cleanly above it, so pausing per line just flickered the whole bottom region. The one caller
+        # that needs the queue app down — the approval prompt — pauses it itself via run_input_app.
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()
@@ -7786,8 +7787,6 @@ Tools:
         finally:
             if was_running:
                 self.status_bar.start(reset=False)
-            if had_queue:
-                self.queue_input_paused.clear()
 
     def tool_output(self, text: str = "") -> None:
         if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
