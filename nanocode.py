@@ -8124,7 +8124,8 @@ Tools:
         if result is SELECTION_FREE_TEXT:
             # The question was already rendered before the choice selector; do not repeat a long
             # raw prompt when the user switches to free text.
-            return self.read_input("\n> ")
+            self.emit("")
+            return self.read_input("> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
