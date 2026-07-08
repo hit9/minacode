@@ -208,12 +208,9 @@ class ProviderConfig:
         return url[:url.rfind("/")] if url.endswith(("/chat/completions", "/responses", "/messages")) else url
 
     def base_url(self) -> str:
+        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.
         url = self._stripped_url()
-        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only
-        # when strict is actually active, so non-strict users stay on the stable endpoint.
-        if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta"):
-            url = url + "/beta"
-        return url
+        return url + "/beta" if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta") else url
 
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
@@ -227,8 +224,7 @@ class ProviderConfig:
     def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
         if configured != "auto":
             return configured
-        profile = self.PROFILES.get(self.host())
-        if not profile:
+        if not (profile := self.PROFILES.get(self.host())):
             return default
         model = self.model.lower()
         for value, prefixes in profile.get(rules_attr, ()):
