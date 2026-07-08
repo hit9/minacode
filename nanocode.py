@@ -6315,6 +6315,18 @@ class UiPrinter:
         self.console.print(Rule(style="bright_black", characters="─"))
         self.console.print(Markdown(text))
 
+    def emit_markdown(self, text: str) -> None:
+        # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
+        # while a prompt app is running (e.g. the Question selector) lets patch_stdout mangle the ANSI
+        # into raw escapes; capturing first and emitting as ANSI avoids that.
+        if not self.color:
+            self.emit(text)
+            return
+        console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+        with console.capture() as capture:
+            console.print(Markdown(text))
+        print_formatted_text(ANSI(capture.get()), end="", flush=True)
+
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith("tool "):
             return self.tool_segments(text)
@@ -8056,8 +8068,8 @@ Tools:
 
         # Blank separator line before each question so multi-question prompts don't run together.
         if self.ui.color:
-            self.ui.console.print()
-            self.ui.console.print(Markdown(prompt))
+            self.emit("")
+            self.ui.emit_markdown(prompt)
         else:
             self.emit("\n" + prompt + "\n")
 
@@ -8079,7 +8091,9 @@ Tools:
             free_text=True,
         )
         if result is SELECTION_FREE_TEXT:
-            return self.read_input(spec.question + " (type freely)")
+            # Leading newline so the input gets its own prompt line below the question (the choice
+            # selector has just cleared), matching the no-choices branch above.
+            return self.read_input("\n" + spec.question + "\n> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
