@@ -28,6 +28,7 @@
 - Render Question choice previews with escaped `\n` sequences expanded into real lines, allow the choice window to use available vertical space above the status bar, and stop repeating the full raw question text when switching to "Type freely...".
 - Render intermediate assistant markdown correctly while the `+>` queue prompt is active; Rich ANSI output is now replayed through prompt-toolkit instead of leaking as `?[90m`-style text.
 - Move the active-turn elapsed timer into the animated `working` divider and let the sweep highlight pass across the divider label itself.
+- Show saved tool summaries on `--resume` even when the compacted transcript no longer contains the original assistant tool-call messages.
 
 ## 0.8.2 - 2026-07-03
 

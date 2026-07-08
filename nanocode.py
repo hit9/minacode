@@ -7421,6 +7421,7 @@ Tools:
         tool_record_index = 0
         for message in messages:
             tool_record_index = self.render_transcript_message(message, tool_record_index)
+        self.render_remaining_tool_records(tool_record_index)
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
         role = str(message.get("role") or "")
@@ -7446,6 +7447,11 @@ Tools:
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
             self.emit(self.agent.tools.finish_display(call, record.key if record else "", "", failed=False))
         return tool_record_index
+
+    def render_remaining_tool_records(self, tool_record_index: int) -> None:
+        for record in self.session.tool_records[tool_record_index:]:
+            call = ToolCall(id="", name=record.name, args=record.args)
+            self.emit(self.agent.tools.finish_display(call, record.key, "", failed=False))
 
     @staticmethod
     def transcript_tool_call(raw: Any) -> ToolCall | None:
