@@ -391,7 +391,9 @@ class Config:
 
 class ConfigFile:
     DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
-    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration
+    # Only the provider block is required; every other key falls back to its built-in default, so the
+    # commented lines below just document the common knobs and their defaults.
+    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration — unset keys use built-in defaults.
 
 [provider]
 active = "default"
@@ -400,50 +402,29 @@ active = "default"
 url = ""
 key = ""
 model = ""
-api = "auto"
-prompt_cache_key = "auto"
+# api = "auto"                 # auto | anthropic | openai | ...
+# reasoning = "medium"
+# timeout = 180
 # available_models = ["gpt-5", "gpt-5-mini"]
-# temperature = 0.2
-# max_tokens = 16384
-# strict_tools = false  # constrain tool-call args to the schema (OpenAI / DeepSeek beta)
-reasoning = "medium"
-# chat_reasoning = "auto"
-timeout = 180
 
-[paths]
-data_dir = "~/.nanocode"
+# [runtime]                    # optional overrides (defaults shown)
+# yolo = false
+# max_context_tokens = 128000
+# max_agent_steps = 200
+# shell_timeout = 60
 
-[runtime]
-shell_timeout = 60
-max_agent_steps = 200
-max_context_tokens = 128000
-max_parallel_tools = 4
-check_updates = true
-update_check_interval_hours = 24
-session_retention_days = 7
-yolo = false
-tips = true
-
-# [mcp.example]
+# [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
-# bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
-# enabled = true
-#
-# [mcp.oauth_example]
-# url = "https://example.com/mcp"
-# auth = "oauth"
-# enabled = true
-#
-# [mcp.stdio_example]
-# command = "npx"
-# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-# env = { EXAMPLE = "value" }
 # enabled = true
 """
 
     @classmethod
+    def resolve_path(cls, path: str | None) -> str:
+        return os.path.expanduser(path or cls.DEFAULT_PATH)
+
+    @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:
-        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
+        config_path = cls.resolve_path(path)
         if os.path.exists(config_path):
             return config_path, False
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -453,7 +434,7 @@ tips = true
 
     @classmethod
     def load(cls, path: str | None = None) -> Json:
-        config_path = os.path.expanduser(path or cls.DEFAULT_PATH)
+        config_path = cls.resolve_path(path)
         try:
             with open(config_path, "rb") as file:
                 data = tomllib.load(file)
