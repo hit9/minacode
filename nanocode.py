@@ -155,18 +155,11 @@ class Text:
 
 @dataclass
 class ProviderConfig:
-    ALIYUN_CHAT_REASONING_RULES: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
-        ("enable_thinking", ("qwen", "qwq", "qvq")),
-        ("thinking", ("deepseek-v4",)),
-    )
     PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
         "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
         "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
-        "dashscope.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
-        "dashscope-intl.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
-        "dashscope-us.aliyuncs.com": {"chat_reasoning_rules": ALIYUN_CHAT_REASONING_RULES},
     }
 
     url: str = ""

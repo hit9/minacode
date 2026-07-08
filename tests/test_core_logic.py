@@ -72,11 +72,6 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert params["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in params
 
-    params = {}
-    client.apply_provider_params(params, n.ProviderConfig(url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen-plus", reasoning="medium"))
-    assert params["extra_body"]["enable_thinking"] is True
-    assert isinstance(params["extra_body"]["thinking_budget"], int)
-
 
 def _strict_check(node, path="root"):
     if isinstance(node, dict):
