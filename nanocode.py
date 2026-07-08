@@ -205,10 +205,7 @@ class ProviderConfig:
 
     def _stripped_url(self) -> str:
         url = self.url.rstrip("/")
-        for suffix in ("/chat/completions", "/responses", "/messages"):
-            if url.endswith(suffix):
-                return url[: -len(suffix)]
-        return url
+        return url[:url.rfind("/")] if url.endswith(("/chat/completions", "/responses", "/messages")) else url
 
     def base_url(self) -> str:
         url = self._stripped_url()
