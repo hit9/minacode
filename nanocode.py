@@ -7105,10 +7105,10 @@ Tools:
     )
 
     def turn_elapsed_label(self) -> str:
-        elapsed = max(0.0, time.monotonic() - self.status_bar.started_at) if self.status_bar.started_at else 0.0
+        elapsed = int(max(0.0, time.monotonic() - self.status_bar.started_at)) if self.status_bar.started_at else 0
         if elapsed < 60:
-            return f"{elapsed:.1f}s"
-        minutes, rest = divmod(int(elapsed), 60)
+            return f"{elapsed}s"
+        minutes, rest = divmod(elapsed, 60)
         return f"{minutes}m{rest:02d}s"
 
     def divider_label(self, queued: int = 0) -> str:
