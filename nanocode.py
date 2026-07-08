@@ -7260,36 +7260,31 @@ Tools:
         # emitted lines above the still-running queue-input app.
         for text in texts:
             if text.strip():
-                self.emit("+ " + text)
+                self.emit("  " + text)
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
-    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 14.0
-
-    def queue_divider_fragments(self) -> list[tuple[str, str]]:
+    def queue_divider_fragments(self, count: int) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
-        width = max(16, min(46, cols - 2))
-        label = "── queued "
-        rule = max(4, width - len(label))
-        # A short bright window slides left→right across the dim, fading rule, looping — the sweep.
-        period = rule + 6
-        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3
-        fragments: list[tuple[str, str]] = [("class:queue.rule", label)]
-        for index in range(rule):
-            char = "─" if index < rule * 0.6 else ("╌" if index < rule * 0.85 else "┈")
-            style = "class:queue.sweep" if abs(index - pos) <= 1 else "class:queue.rule"
-            fragments.append((style, char))
-        return fragments
+        width = max(20, min(52, cols - 2))
+        # The count settles at the right while anything is queued; it drops off once the queue empties,
+        # leaving a bare rule as the standing boundary between the log and the input.
+        label = f"{count} queued" if count else ""
+        # Airy spaced dashes on the left — a quiet section rule.
+        dashes = max(2, (width - len(label) - 2) // 2)
+        rule = " ".join("-" * dashes)
+        gap = " " * max(2, width - len(rule) - len(label)) if label else ""
+        return [("class:queue.rule", rule + gap + label)]
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
-        if not pending:
-            return []
-        fragments = self.queue_divider_fragments()
+        # The rule stays put for the whole turn (flushed messages move up into the log above it); the
+        # queued messages hang below it as a quiet indented block until they flush.
+        fragments: list[tuple[str, str]] = [("", "\n")]
+        fragments.extend(self.queue_divider_fragments(len(pending)))
         for text in pending:
             fragments.append(("", "\n"))
-            fragments.append(("class:prompt", "+ "))
-            fragments.append(("", Text.clean(text)))
+            fragments.append(("class:queue.item", "  " + Text.clean(text)))
         return fragments
 
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
@@ -7366,12 +7361,9 @@ Tools:
             buffer.reset(Document(self.queue_input_text))
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
-        # Shown only while something is queued; the turn flushes them up into the scrollback log.
-        queued_region = ConditionalContainer(
-            Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True),
-            filter=Condition(lambda: any(text.strip() for text in self.session.pending_user_inputs)),
-        )
+        # Live region above the +> input: a standing divider plus any still-pending queued messages.
+        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
+        queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
         root = FloatContainer(
             HSplit([queued_region, input_window, completion_space, self.status_window(active=True)]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
@@ -7437,7 +7429,7 @@ Tools:
 
 
     def echo_input_line(self, text: str) -> None:
-        print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
+        print_formatted_text(FormattedText([("", "\n"), ("class:prompt", "nano> "), ("", text)]), style=self.style())
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -7463,7 +7455,7 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text))
+                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), lead_blank=True)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
@@ -7615,7 +7607,7 @@ Tools:
             {
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
-                "queue.sweep": "ansicyan bold",
+                "queue.item": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -7678,6 +7670,7 @@ Tools:
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
         initial_text: str = "",
+        lead_blank: bool = False,
     ) -> str:
         if self.input_history is None:
             return initial_text or self.input_fn(prompt_text)
@@ -7760,13 +7753,16 @@ Tools:
             event.app.invalidate()
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        # A blank line above the prompt gives the input room to breathe apart from the log.
+        top: list[Any] = [Window(height=1, dont_extend_height=True)] if lead_blank else []
         root = FloatContainer(
-            HSplit([input_window, completion_space, search_toolbar, self.status_window()]),
+            HSplit([*top, input_window, completion_space, search_toolbar, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
-        print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
+        echo = [("", "\n")] if lead_blank else []
+        print_formatted_text(FormattedText([*echo, (prompt_style, prompt_text), ("", text)]), style=self.style())
         return text
 
     def emit(self, text: str = "") -> None:
