@@ -459,6 +459,28 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
 
 
+def test_inspect_code_strips_kind_prefix_from_target(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    calls = []
+    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(query) or "ok")
+
+    # "class Config" with kind "class" -> the redundant leading kind word is dropped.
+    n.InspectCodeTool(s, ["find", "class Config", {"kind": "class"}]).call()
+    assert calls[-1] == "Config"
+
+    # Works when the kind option lists several kinds.
+    n.InspectCodeTool(s, ["find", "function handoff", {"kind": "class,function"}]).call()
+    assert calls[-1] == "handoff"
+
+    # Only the declared kind is stripped: a bare language keyword is not, and still errors.
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["find", "def foo", {"kind": "function"}]).call()
+    # No kind provided -> nothing to key off, still rejected.
+    with pytest.raises(n.ToolError):
+        n.InspectCodeTool(s, ["find", "class Config"]).call()
+
+
 def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
     s = session(tmp_path)
     monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)

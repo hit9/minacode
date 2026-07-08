@@ -2301,7 +2301,15 @@ class InspectCodeTool(Tool):
         if not target:
             raise ToolError("InspectCode target is required")
         if mode in self.SYMBOL_MODES and re.search(r"\s", target):
-            raise ToolError("InspectCode symbol target must not contain whitespace")
+            # Models often repeat the kind inside the target, e.g. target "class Config" with
+            # kind "class". When the first word duplicates a declared kind, drop it — that is the one
+            # case we can strip deterministically (no guessing at per-language keywords).
+            kinds = {token.strip().lower() for token in str(options.get("kind") or "").split(",") if token.strip()}
+            first, _, rest = target.partition(" ")
+            if kinds and first.lower() in kinds and rest.strip():
+                target = rest.strip()
+            if re.search(r"\s", target):
+                raise ToolError("InspectCode symbol target must not contain whitespace")
         if mode in self.RESOLVE_MODES and (target.endswith(".py") or os.path.exists(self.session.resolve_path(target))):
             raise ToolError(f"InspectCode {mode} target must be a symbol, not a file")
         if mode == "outline" and not os.path.isfile(self.session.resolve_path(target)):
