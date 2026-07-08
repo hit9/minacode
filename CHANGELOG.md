@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.0 - 2026-07-07
 
 ### Added
 - Syntax-highlight Edit diff previews with Pygments. Added and context lines (the "new" file version) are lexed together as one code block so multiline strings and indentation-sensitive languages highlight correctly; removed lines stay plain diff-red. The same highlighting now also renders in the Ctrl-A expanded preview (via `less -R`), not just the inline preview. Degrades gracefully to plain diff coloring when Pygments is unavailable, the file extension is unknown, or the lexer fails.
