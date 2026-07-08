@@ -7667,10 +7667,6 @@ Tools:
                 self.status_bar.start(reset=False)
 
     def tool_output(self, text: str = "") -> None:
-        if text.startswith("approve ") and self.interactive_input and sys.stdout.isatty():
-            self.with_status_paused(lambda: self.show_transient_tool_output(text))
-            return
-
         self.with_status_paused(lambda: self.emit(text))
 
     def agent_output(self, text: str = "") -> None:
@@ -7685,9 +7681,6 @@ Tools:
             )
 
         return self.with_status_paused(read)
-
-    def show_transient_tool_output(self, text: str) -> None:
-        self.emit(text)
 
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
