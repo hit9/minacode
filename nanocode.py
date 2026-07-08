@@ -240,11 +240,8 @@ class ProviderConfig:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
     def resolved_max_tokens(self) -> int:
-        if self.max_tokens > 0:
-            return self.max_tokens
-        # No global default: generic OpenAI-compatible providers keep their own server-side cap.
-        # Only profiles that opt in (e.g. DeepSeek thinking mode) get an explicit ceiling.
-        return int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
+        # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.
+        return self.max_tokens or int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
 
     def supports_prompt_cache_key(self) -> bool:
         # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
