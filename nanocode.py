@@ -6257,7 +6257,7 @@ class CommandCompleter(Completer):
         "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
         "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature",
         "provider.max_tokens", "provider.strict_tools", "provider.timeout", "runtime.yolo", "runtime.max_agent_steps",
-        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout", "runtime.check_updates", "runtime.tips",
+        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout", "runtime.check_updates",
     )
     # fmt: on
     # fmt: off
@@ -6266,7 +6266,6 @@ class CommandCompleter(Completer):
         "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",), "provider.strict_tools": ("on", "off", "true", "false"),
         "runtime.yolo": ("on", "off", "true", "false"), "runtime.check_updates": ("on", "off", "true", "false"),
-        "runtime.tips": ("on", "off", "true", "false"),
     }
     # fmt: on
 
@@ -6465,32 +6464,16 @@ class UiPrinter:
     # consulted if a specific type is not listed, so highlighting degrades
     # gracefully for unanticipated tokens.  Empty when Pygments is unavailable
     # (Token is None then, so the dict literal cannot be built).
-    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = (
-        {
-            Token.Comment: "ansibrightblack italic",
-            Token.Keyword: "ansimagenta",
-            Token.Keyword.Constant: "ansimagenta",
-            Token.Keyword.Type: "ansicyan",
-            Token.Name: "ansiwhite",
-            Token.Name.Builtin: "ansicyan",
-            Token.Name.Builtin.Pseudo: "ansicyan",
-            Token.Name.Class: "ansicyan bold",
-            Token.Name.Decorator: "ansiyellow",
-            Token.Name.Function: "ansigreen",
-            Token.Name.Function.Magic: "ansigreen",
-            Token.Name.Namespace: "ansicyan",
-            Token.Number: "ansiyellow",
-            Token.Operator: "ansiwhite",
-            Token.Operator.Word: "ansimagenta",
-            Token.Punctuation: "ansiwhite",
-            Token.String: "ansigreen",
-            Token.String.Affix: "ansimagenta",
-            Token.String.Interpol: "ansiyellow",
-            Token.Text: "ansiwhite",
-        }
-        if pygments is not None
-        else {}
-    )
+    # fmt: off
+    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = {
+        Token.Comment: "ansibrightblack italic", Token.Keyword: "ansimagenta", Token.Keyword.Constant: "ansimagenta",
+        Token.Keyword.Type: "ansicyan", Token.Name: "ansiwhite", Token.Name.Builtin: "ansicyan", Token.Name.Builtin.Pseudo: "ansicyan",
+        Token.Name.Class: "ansicyan bold", Token.Name.Decorator: "ansiyellow", Token.Name.Function: "ansigreen",
+        Token.Name.Function.Magic: "ansigreen", Token.Name.Namespace: "ansicyan", Token.Number: "ansiyellow",
+        Token.Operator: "ansiwhite", Token.Operator.Word: "ansimagenta", Token.Punctuation: "ansiwhite",
+        Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
+    } if pygments is not None else {}
+    # fmt: on
 
     @classmethod
     def _diff_hl_style(cls, token_type: Any) -> str:
@@ -6805,17 +6788,12 @@ class StatusBar:
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
     BASE_STYLE: ClassVar[str] = "#e6edf3"
     SEP_STYLE: ClassVar[str] = "#4b5563"
+    # fmt: off
     STYLES: ClassVar[dict[str, str]] = {
-        "provider": "#e6edf3",
-        "reason": "#a5b4fc",
-        "debug": "#64748b",
-        "mcp": "#93c5fd",
-        "ctx": "#facc15",
-        "update": "#fb923c",
-        "index": "#94a3b8",
-        "warn": "#fb7185",
-        "runtime": "#c084fc",
+        "provider": "#e6edf3", "reason": "#a5b4fc", "debug": "#64748b", "mcp": "#93c5fd", "ctx": "#facc15",
+        "update": "#fb923c", "index": "#94a3b8", "warn": "#fb7185", "runtime": "#c084fc",
     }
+    # fmt: on
 
     def __init__(self, session: Session):
         self.session = session
@@ -7046,7 +7024,7 @@ class CommandLoop:
         (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
         (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
         (ALWAYS, "Filter MCP servers at launch with `--mcp \"name*,!exclude\"`."),
-        (ALWAYS, "Silence these hints with `/set runtime.tips off`."),
+        (ALWAYS, "Silence these hints by setting `tips = false` under `[runtime]` in your config."),
     )
 
     def startup_tip(self) -> str:
@@ -8447,15 +8425,10 @@ Tools:
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        fallback_note = " (fallback)" if fallback else ""
         return (
-            "Compacted context: messages "
-            + str(before)
-            + " -> "
-            + str(len(self.session.messages))
-            + ", prior summary inserted, ctx "
-            + str(self.session.state.context_percent)
-            + "%"
-            + (" (fallback)" if fallback else "")
+            f"Compacted context: messages {before} -> {len(self.session.messages)}, "
+            f"prior summary inserted, ctx {self.session.state.context_percent}%{fallback_note}"
         )
 
     def index(self, args: str) -> str:
@@ -8617,8 +8590,6 @@ Tools:
                 runtime.shell_timeout = max(1, int(value))
             elif key == "runtime.max_parallel_tools":
                 runtime.max_parallel_tools = max(1, int(value))
-            elif key == "runtime.tips":
-                runtime.tips = Config.bool({key: value}, key)
             else:
                 return "Unknown config key: " + key
         except (ConfigError, ValueError):
