@@ -26,6 +26,7 @@
 - Stable Edit anchors, eliminating spurious "stale anchor" errors. `line_hash` no longer folds the trailing newline into the hash, so a line's anchor stays valid when only its final newline changes (e.g. the last line gaining or losing its `\n`) and Read/Search/Edit anchors now agree with InspectCode's. Edit also numbers lines exactly like Read — both split on `\n` only via a shared `ReadTool.split_lines`, replacing `str.splitlines(True)`, which additionally breaks on `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028`, `\u2029` and desynced line numbering (and thus anchors) for any file containing those characters.
 - Bump `code-symbol-index` to `>=0.3.5`, fixing a tree-sitter range extraction crash that could terminate `nanocode --resume last` with SIGSEGV and leave a core dump during background index refresh, while using the package's validated tree-sitter dependency floor.
 - Render Question choice previews with escaped `\n` sequences expanded into real lines, allow the choice window to use available vertical space above the status bar, and stop repeating the full raw question text when switching to "Type freely...".
+- Render intermediate assistant markdown correctly while the `+>` queue prompt is active; Rich ANSI output is now replayed through prompt-toolkit instead of leaking as `?[90m`-style text.
 
 ## 0.8.2 - 2026-07-03
 

@@ -7763,7 +7763,13 @@ Tools:
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
             self.emit()
-            self.ui.emit_answer(text)
+            capture = self.queue_input_active.is_set()
+            previous_capture = self.ui.capture_ansi
+            self.ui.capture_ansi = previous_capture or capture
+            try:
+                self.ui.emit_answer(text)
+            finally:
+                self.ui.capture_ansi = previous_capture
             self.emit()
             return
         self.emit(text)
