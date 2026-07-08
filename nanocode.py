@@ -456,24 +456,26 @@ class ModelUsage:
     last_prompt_tokens: int = 0
     last_cached_prompt_tokens: int = 0
 
-    def add(self, usage: Any) -> None:
-        def value(*paths: str) -> int:
-            for path in paths:
-                raw = usage
-                for key in path.split("."):
-                    raw = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
-                    if raw is None:
-                        break
-                else:
-                    return int(raw or 0)
-            return 0
+    @staticmethod
+    def field(usage: Any, *paths: str) -> int:
+        """First present dotted path in `usage` (dict keys or attributes) as an int, else 0."""
+        for path in paths:
+            raw = usage
+            for key in path.split("."):
+                raw = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+                if raw is None:
+                    break
+            else:
+                return int(raw or 0)
+        return 0
 
+    def add(self, usage: Any) -> None:
         self.calls += 1
-        prompt_tokens = value("prompt_tokens", "input_tokens")
-        completion_tokens = value("completion_tokens", "output_tokens")
-        total_tokens = value("total_tokens") or prompt_tokens + completion_tokens
-        cached_tokens = value(
-            "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+        prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
+        completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
+        total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
+        cached_tokens = self.field(
+            usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
         )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
