@@ -7293,11 +7293,10 @@ Tools:
         return self.sweep_divider_fragments(self.divider_label(queued))
 
     def prompt_divider_fragments(self) -> list[tuple[str, str]]:
-        # A sweeping rule between the log and the nano> prompt while it waits. Stay a couple of cells
-        # short of full width: a rule that fills the last column makes terminals auto-wrap, which
-        # desyncs this non-fullscreen app's redraw (visible when a paste changes the input height).
-        cols = shutil.get_terminal_size((80, 20)).columns
-        return self.sweep_divider_fragments(self.divider_label(), width=max(20, cols - 2))
+        # A short sweeping rule between the log and the nano> prompt. Keep it well short of full width:
+        # a near-full line reflows/duplicates on a terminal resize and can desync this non-fullscreen
+        # app's redraw, so cap it rather than tracking the column count.
+        return self.sweep_divider_fragments(self.divider_label())
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
