@@ -1672,6 +1672,11 @@ class Tool:
     def needs_confirmation(self) -> bool:
         return self.MUTATES
 
+    def single_dict_arg(self, message: str) -> Json:
+        if len(self.args) != 1 or not isinstance(self.args[0], dict):
+            raise ToolError(message)
+        return self.args[0]
+
     def preview(self) -> str:
         return f"{self.NAME}({', '.join(self.short_args())})"
 
@@ -2914,14 +2919,8 @@ class JobTool(Tool):
             "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
         }, ["action"])
 
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
-
     def payload(self) -> Json:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Job requires a single object argument")
-        return self.args[0]
+        return self.single_dict_arg("Job requires a single object argument")
 
     def resolved_action(self, payload: Json) -> str:
         action = str(payload.get("action") or "").strip()
@@ -3088,9 +3087,7 @@ class RecallTool(Tool):
         return ["; ".join(rows)]
 
     def requests(self) -> list[tuple[str, tuple[tuple[int, int], ...]]]:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Recall requires keys")
-        payload = self.args[0]
+        payload = self.single_dict_arg("Recall requires keys")
         if unexpected := sorted(set(payload) - {"keys", "ranges"}):
             raise ToolError("Recall unexpected field: " + ", ".join(unexpected))
         raw_keys = payload.get("keys")
@@ -3146,14 +3143,8 @@ class NoteTool(Tool):
             "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
         })
 
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
-
     def call(self) -> str:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Note requires named fields")
-        data = self.args[0]
+        data = self.single_dict_arg("Note requires named fields")
         if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
         changed = []
@@ -3252,14 +3243,8 @@ class QuestionTool(Tool):
             "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
         }, ["questions"])
 
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
-
     def call(self) -> str:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("Question requires named fields")
-        questions = self.args[0].get("questions")
+        questions = self.single_dict_arg("Question requires named fields").get("questions")
         if not isinstance(questions, list) or not questions:
             raise ToolError("Question requires a non-empty 'questions' list")
         # Validate the whole batch up front, so a malformed later question never strands the
@@ -3321,14 +3306,8 @@ class MCPTool(Tool):
             "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
         }, ["action", "server"])
 
-    @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
-        return [payload]
-
     def payload(self) -> Json:
-        if len(self.args) != 1 or not isinstance(self.args[0], dict):
-            raise ToolError("MCP requires named fields")
-        return self.args[0]
+        return self.single_dict_arg("MCP requires named fields")
 
     ACTIONS: ClassVar[tuple[str, ...]] = ("call", "describe", "list_resources", "read_resource")
 
