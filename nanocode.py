@@ -158,7 +158,13 @@ class ProviderConfig:
         "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
+        "api.deepseek.com": {
+            "chat_reasoning": "thinking",
+            "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS,
+            "prompt_cache_key": False,
+            "strict_tools": True,
+            "strict_beta": True,
+        },
     }
 
     url: str = ""
@@ -214,9 +220,9 @@ class ProviderConfig:
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
-
     def _profile(self) -> Json:
         return self.PROFILES.get(self.host()) or {}
+
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
@@ -460,7 +466,12 @@ class ModelUsage:
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
         total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
         cached_tokens = self.field(
-            usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"
+            usage,
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "prompt_tokens_details.cached_tokens",
+            "input_tokens_details.cached_tokens",
         )
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
@@ -648,7 +659,6 @@ class MCPFileTokenStore:
             data = self.load()
             data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
             self.save(data)
-
 
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
         collection = collection or self.DEFAULT_COLLECTION
@@ -1181,7 +1191,11 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
         ]
         # fmt: on
         if os.path.isfile(source):
-            sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
+            sections += [
+                "",
+                "## Source (last-resort fallback)",
+                f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present).",
+            ]
         description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
         return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
@@ -1343,10 +1357,11 @@ class BackgroundJob:
         stdout = "".join(self.stdout_buf)
         stderr = "".join(self.stderr_buf)
         if len(stdout) > limit:
-            stdout = "..." + stdout[-(limit - 3):]
+            stdout = "..." + stdout[-(limit - 3) :]
         if len(stderr) > limit:
-            stderr = "..." + stderr[-(limit - 3):]
+            stderr = "..." + stderr[-(limit - 3) :]
         return stdout, stderr
+
 
 @dataclass
 class Session:
@@ -1404,11 +1419,9 @@ class Session:
         except ValueError:
             return False
 
-
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
-
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -1431,7 +1444,6 @@ class Session:
 
     def save_snapshot(self) -> str:
         return SessionSnapshotStore(self).save()
-
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -1713,18 +1725,38 @@ class ReadTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return cls.object_schema({
-            "path": {"type": "string", "description": "File path to read"},
-            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-        }, ["path"])
+        return cls.object_schema(
+            {
+                "path": {"type": "string", "description": "File path to read"},
+                "ranges": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": cls.RANGE_SCHEMA,
+                    "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file",
+                },
+            },
+            ["path"],
+        )
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({
-            "path": {"type": "string", "description": "File path to read (single-file form)"},
-            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-            "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
-        })
+        return cls.object_schema(
+            {
+                "path": {"type": "string", "description": "File path to read (single-file form)"},
+                "ranges": {
+                    "type": "array",
+                    "items": cls.RANGE_SCHEMA,
+                    "minItems": 1,
+                    "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file",
+                },
+                "files": {
+                    "type": "array",
+                    "items": cls.arg_schema(),
+                    "minItems": 1,
+                    "description": "Batch form: list of {path, ranges} to read several files in one call",
+                },
+            }
+        )
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1839,12 +1871,20 @@ class SearchTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return cls.object_schema({
-            "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
-            "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
-            "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
-            "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
-        }, ["pattern"])
+        return cls.object_schema(
+            {
+                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": cls.MAX_CONTEXT,
+                    "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}",
+                },
+            },
+            ["pattern"],
+        )
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2335,18 +2375,24 @@ class EditTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        edit = cls.object_schema({
-            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
-            "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
-            "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
-            "content": {"type": "string", "description": "New text for create/replace/insert"},
-            "old": {"type": "string", "description": "Text to find for replace_all"},
-            "new": {"type": "string", "description": "Replacement text for replace_all"},
-        }, ["op"])
-        return cls.object_schema({
-            "path": {"type": "string", "description": "File to create or patch"},
-            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
-        }, ["path", "edits"])
+        edit = cls.object_schema(
+            {
+                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+                "content": {"type": "string", "description": "New text for create/replace/insert"},
+                "old": {"type": "string", "description": "Text to find for replace_all"},
+                "new": {"type": "string", "description": "Replacement text for replace_all"},
+            },
+            ["op"],
+        )
+        return cls.object_schema(
+            {
+                "path": {"type": "string", "description": "File to create or patch"},
+                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+            },
+            ["path", "edits"],
+        )
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2598,17 +2644,72 @@ class BashTool(Tool):
             # Common read-only inspection commands. The obvious file-writing forms (`sort -o`,
             # `uniq IN OUT`, `sed -i`, `tree -o`) are guarded below; we do not chase exotic paths
             # like sed's `w` command — common sense over exhaustive safety.
-            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg", "sort", "uniq",
-            "sed", "tree", "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
-            "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
-            "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
+            "ls",
+            "cat",
+            "head",
+            "tail",
+            "wc",
+            "find",
+            "grep",
+            "egrep",
+            "fgrep",
+            "rg",
+            "sort",
+            "uniq",
+            "sed",
+            "tree",
+            "cut",
+            "tr",
+            "nl",
+            "comm",
+            "column",
+            "fold",
+            "paste",
+            "join",
+            "echo",
+            "printf",
+            "pwd",
+            "stat",
+            "file",
+            "basename",
+            "dirname",
+            "realpath",
+            "readlink",
+            "which",
+            "type",
+            "diff",
+            "cmp",
+            "date",
+            "printenv",
+            "du",
+            "df",
+            "jq",
+            "true",
+            "test",
+            "uname",
+            "hostname",
             # Benign builtin the model routinely prefixes (cd changes the subshell dir only).
             "cd",
         }
     )
     SAFE_GIT_SUBCOMMANDS: ClassVar[frozenset[str]] = frozenset(
-        {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe",
-         "shortlog", "cat-file", "ls-tree", "rev-list", "for-each-ref", "diff-tree"}
+        {
+            "status",
+            "diff",
+            "log",
+            "show",
+            "rev-parse",
+            "ls-files",
+            "grep",
+            "blame",
+            "describe",
+            "shortlog",
+            "cat-file",
+            "ls-tree",
+            "rev-list",
+            "for-each-ref",
+            "diff-tree",
+        }
     )
 
     def needs_confirmation(self) -> bool:
@@ -2651,8 +2752,24 @@ class BashTool(Tool):
             return False
         cmd = tokens[0]
         # Env assignments and wrapper commands can hide arbitrary execution — never auto-approve.
-        if "=" in cmd or cmd in {"env", "sudo", "eval", "exec", "command", "xargs", "nohup", "time",
-                                 "watch", "bash", "sh", "zsh", "tee", "awk", "python", "python3"}:
+        if "=" in cmd or cmd in {
+            "env",
+            "sudo",
+            "eval",
+            "exec",
+            "command",
+            "xargs",
+            "nohup",
+            "time",
+            "watch",
+            "bash",
+            "sh",
+            "zsh",
+            "tee",
+            "awk",
+            "python",
+            "python3",
+        }:
             return False
         if cmd == "git":
             return cls._safe_git(tokens)
@@ -2697,7 +2814,7 @@ class BashTool(Tool):
         sub = tokens[index]
         if sub not in cls.SAFE_GIT_SUBCOMMANDS:
             return False
-        args = tokens[index + 1:]
+        args = tokens[index + 1 :]
         if any(t == "--output" or t.startswith("--output=") for t in args):
             return False
         if sub == "grep" and any(t == "-O" or t.startswith("-O") or t == "--open-files-in-pager" or t.startswith("--open-files-in-pager=") for t in args):
@@ -2828,10 +2945,7 @@ class BashTool(Tool):
 
 class JobTool(Tool):
     NAME = "Job"
-    DESCRIPTION = (
-        "Start, monitor, wait for, list, and kill background shell jobs. "
-        "Processes run in their own process group and do not block the agent."
-    )
+    DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs. Processes run in their own process group and do not block the agent."
     SIGNATURE = 'Job(action="start"|"status"|"wait"|"list"|"kill", command?, job?, timeout?, limit?)'
     MUTATES = True
     ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
@@ -2840,13 +2954,16 @@ class JobTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({
-            "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
-            "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
-            "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-            "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
-            "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
-        }, ["action"])
+        return cls.object_schema(
+            {
+                "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
+                "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
+                "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
+                "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+                "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+            },
+            ["action"],
+        )
 
     def payload(self) -> Json:
         return self.single_dict_arg("Job requires a single object argument")
@@ -2968,6 +3085,7 @@ class JobTool(Tool):
             lines.extend(["--- stderr ---", stderr])
         return "\n".join(lines)
 
+
 class RecallTool(Tool):
     NAME = "Recall"
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
@@ -3060,17 +3178,22 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        plan_item = cls.object_schema({
-            "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
-            "text": {"type": "string", "description": "Plan step description"},
-        }, ["status", "text"])
-        return cls.object_schema({
-            "set_goal": {"type": "string", "description": "Replace the current goal"},
-            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
-            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
-            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-            "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
-        })
+        plan_item = cls.object_schema(
+            {
+                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+                "text": {"type": "string", "description": "Plan step description"},
+            },
+            ["status", "text"],
+        )
+        return cls.object_schema(
+            {
+                "set_goal": {"type": "string", "description": "Replace the current goal"},
+                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
+            }
+        )
 
     def call(self) -> str:
         data = self.single_dict_arg("Note requires named fields")
@@ -3162,15 +3285,21 @@ class AskTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        question = cls.object_schema({
-            "question": {"type": "string", "description": "The question to ask the user"},
-            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
-            "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
-        }, ["question"])
-        return cls.object_schema({
-            "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
-        }, ["questions"])
+        question = cls.object_schema(
+            {
+                "question": {"type": "string", "description": "The question to ask the user"},
+                "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
+                "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
+                "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
+            },
+            ["question"],
+        )
+        return cls.object_schema(
+            {
+                "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
+            },
+            ["questions"],
+        )
 
     def call(self) -> str:
         questions = self.single_dict_arg(f"{self.NAME} requires named fields").get("questions")
@@ -3227,13 +3356,20 @@ class MCPTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({
-            "action": {"type": "string", "enum": ["call", "describe", "list_resources", "read_resource"], "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri'},
-            "server": {"type": "string", "description": "MCP server name from config"},
-            "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
-            "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
-            "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
-        }, ["action", "server"])
+        return cls.object_schema(
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["call", "describe", "list_resources", "read_resource"],
+                    "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri',
+                },
+                "server": {"type": "string", "description": "MCP server name from config"},
+                "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
+                "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
+                "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
+            },
+            ["action", "server"],
+        )
 
     def payload(self) -> Json:
         return self.single_dict_arg("MCP requires named fields")
@@ -3360,7 +3496,9 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
-    CODE_EXTENSIONS: ClassVar[set[str]] = set(".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split())
+    CODE_EXTENSIONS: ClassVar[set[str]] = set(
+        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
+    )
     CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
     @dataclass
@@ -3510,9 +3648,7 @@ class ContextManager:
             return
         previous = self.session._cache_prefix_text
         if state.prefix_fingerprint and previous is not None:
-            diff = "\n".join(
-                list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40]
-            )
+            diff = "\n".join(list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40])
             DebugTrace.cache_drift(self.session, expected=state.prefix_fingerprint, actual=fingerprint, diff=diff)
         if not state.prefix_fingerprint:
             state.prefix_fingerprint = fingerprint
@@ -3639,7 +3775,12 @@ class ContextManager:
         chunks = ["#### File State" + (f"  ·  focus: {focus}" if focus else "")]
         if paths:
             rows = [
-                (f"`{path}`", ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])), len(lines_by_path[path]), self.latest_source(lines_by_path[path]))
+                (
+                    f"`{path}`",
+                    ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])),
+                    len(lines_by_path[path]),
+                    self.latest_source(lines_by_path[path]),
+                )
                 for path in paths
             ]
             chunks.append(self.md_table(["file", "ranges", "lines", "source"], rows))
@@ -6317,7 +6458,7 @@ class UiPrinter:
         if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
         if text.startswith("tip: "):
-            return self.tip_segments(text[len("tip: "):])
+            return self.tip_segments(text[len("tip: ") :])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
         return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
@@ -6953,7 +7094,7 @@ class CommandLoop:
         (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
         (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
         (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
-        (ALWAYS, "Filter MCP servers at launch with `--mcp \"name*,!exclude\"`."),
+        (ALWAYS, 'Filter MCP servers at launch with `--mcp "name*,!exclude"`.'),
         (ALWAYS, "Silence these hints by setting `tips = false` under `[runtime]` in your config."),
     )
 
@@ -6962,6 +7103,7 @@ class CommandLoop:
             return ""
         eligible = [tip for predicate, tip in self.TIPS if predicate(self.session)]
         return random.choice(eligible) if eligible else ""
+
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
@@ -7297,7 +7439,6 @@ Tools:
         typed = self.queue_input_text if self.queue_input_text.strip() else ""
         self.queue_input_text = ""
         return typed
-
 
     def echo_input_line(self, text: str) -> None:
         print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
@@ -8097,10 +8238,7 @@ Tools:
         if not running:
             total = len(self.session.jobs)
             return f"No active jobs ({total} total)."
-        rows = [
-            (job.id, job.status, f"{job.elapsed():.1f}s", job.command[:80])
-            for job in running
-        ]
+        rows = [(job.id, job.status, f"{job.elapsed():.1f}s", job.command[:80]) for job in running]
         table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
         return f"### Active jobs · {len(running)}\n\n{table}"
 
@@ -8143,7 +8281,9 @@ Tools:
             visible = lines[state["scroll"] : state["scroll"] + height]
             parts.append(("", "\n"))
             scroll_hint = "↑/↓ scroll" if scrollable else "↑/↓ scroll (fits)"
-            parts.append(("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n"))
+            parts.append(
+                ("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n")
+            )
             for line in visible:
                 parts.extend(line)
                 parts.append(("", "\n"))
