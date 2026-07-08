@@ -773,14 +773,13 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s.pending_user_inputs = ["run tests", "then push"]
 
     text = "".join(t for _, t in loop.queue_region_fragments())
-    assert "2 queued" in text
-    assert "  run tests" in text and "  then push" in text
+    assert "queued" in text
+    assert "+ run tests" in text and "+ then push" in text
+    # The divider carries a moving bright "sweep" cell.
+    assert any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
 
-    # The divider is a standing boundary: it persists (as a bare rule, count dropped) even once the
-    # queue empties, so flushed messages can move up into the log above it.
     s.pending_user_inputs = []
-    empty = "".join(t for _, t in loop.queue_region_fragments())
-    assert "-" in empty and "queued" not in empty
+    assert loop.queue_region_fragments() == []  # region hidden when nothing is queued
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
@@ -790,7 +789,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["  do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
