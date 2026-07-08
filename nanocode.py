@@ -1654,9 +1654,16 @@ class Tool:
             function["strict"] = True
         return {"type": "function", "function": function}
 
+    @staticmethod
+    def object_schema(properties: Json, required: list[str] | None = None) -> Json:
+        schema: Json = {"type": "object", "properties": properties, "additionalProperties": False}
+        if required:
+            schema["required"] = required
+        return schema
+
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {}, "additionalProperties": False}
+        return cls.object_schema({})
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1768,27 +1775,18 @@ class ReadTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path to read"},
-                "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read"},
+            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+        }, ["path"])
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path to read (single-file form)"},
-                "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
-                "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
-            },
-            "additionalProperties": False,
-        }
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read (single-file form)"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
+        })
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1903,23 +1901,18 @@ class SearchTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
-                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
-                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
-                "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
-            },
-            "required": ["pattern"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({
+            "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+            "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+            "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+            "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
+        }, ["pattern"])
 
     @classmethod
     def params_schema(cls) -> Json:
         props = dict(cls.arg_schema()["properties"])
         props["queries"] = {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of search queries to run in one call"}
-        return {"type": "object", "properties": props, "additionalProperties": False}
+        return cls.object_schema(props)
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2278,7 +2271,7 @@ class InspectCodeTool(Tool):
             "ref_kind": {"type": "string", "description": "Restrict refs to a specific reference kind"},
             "loose": {"type": "boolean", "description": "Loosen call-chain matching (callees)"},
         }
-        return {"type": "object", "properties": props, "required": ["mode", "target"], "additionalProperties": False}
+        return cls.object_schema(props, ["mode", "target"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2408,28 +2401,18 @@ class EditTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        edit = {
-            "type": "object",
-            "properties": {
-                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
-                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
-                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
-                "content": {"type": "string", "description": "New text for create/replace/insert"},
-                "old": {"type": "string", "description": "Text to find for replace_all"},
-                "new": {"type": "string", "description": "Replacement text for replace_all"},
-            },
-            "required": ["op"],
-            "additionalProperties": False,
-        }
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File to create or patch"},
-                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
-            },
-            "required": ["path", "edits"],
-            "additionalProperties": False,
-        }
+        edit = cls.object_schema({
+            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+            "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+            "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+            "content": {"type": "string", "description": "New text for create/replace/insert"},
+            "old": {"type": "string", "description": "Text to find for replace_all"},
+            "new": {"type": "string", "description": "Replacement text for replace_all"},
+        }, ["op"])
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File to create or patch"},
+            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+        }, ["path", "edits"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2790,7 +2773,7 @@ class BashTool(Tool):
     # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}}, "required": ["command"], "additionalProperties": False}
+        return cls.object_schema({"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}}, ["command"])
     # fmt: on
 
     @classmethod
@@ -2923,18 +2906,13 @@ class JobTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
-                "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
-                "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-                "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
-                "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
-            },
-            "required": ["action"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({
+            "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
+            "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
+            "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
+            "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+            "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+        }, ["action"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3077,7 +3055,7 @@ class RecallTool(Tool):
     # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"}}, "required": ["keys"], "additionalProperties": False}
+        return cls.object_schema({"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"}}, ["keys"])
     # fmt: on
 
     @classmethod
@@ -3156,26 +3134,17 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        plan_item = {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
-                "text": {"type": "string", "description": "Plan step description"},
-            },
-            "required": ["status", "text"],
-            "additionalProperties": False,
-        }
-        return {
-            "type": "object",
-            "properties": {
-                "set_goal": {"type": "string", "description": "Replace the current goal"},
-                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
-                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
-                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
-            },
-            "additionalProperties": False,
-        }
+        plan_item = cls.object_schema({
+            "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+            "text": {"type": "string", "description": "Plan step description"},
+        }, ["status", "text"])
+        return cls.object_schema({
+            "set_goal": {"type": "string", "description": "Replace the current goal"},
+            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+            "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
+        })
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3273,41 +3242,15 @@ class QuestionTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Questions to ask, one after another",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "question": {"type": "string", "description": "The question to ask the user"},
-                            "choices": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional predefined choices the user can pick from",
-                            },
-                            "previews": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional preview text per choice, shown as the user navigates",
-                            },
-                            "recommended": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": "Optional 0-based index of the recommended choice; pre-selected and marked",
-                            },
-                        },
-                        "required": ["question"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["questions"],
-            "additionalProperties": False,
-        }
+        question = cls.object_schema({
+            "question": {"type": "string", "description": "The question to ask the user"},
+            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
+            "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
+        }, ["question"])
+        return cls.object_schema({
+            "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
+        }, ["questions"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3370,34 +3313,13 @@ class MCPTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["call", "describe", "list_resources", "read_resource"],
-                    "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri',
-                },
-                "server": {
-                    "type": "string",
-                    "description": "MCP server name from config",
-                },
-                "tool": {
-                    "type": "string",
-                    "description": "Remote MCP tool name (required for call/describe)",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the remote tool (required for call)",
-                },
-                "uri": {
-                    "type": "string",
-                    "description": "Resource URI (required for read_resource), e.g. scheme://path",
-                },
-            },
-            "required": ["action", "server"],
-            "additionalProperties": False,
-        }
+        return cls.object_schema({
+            "action": {"type": "string", "enum": ["call", "describe", "list_resources", "read_resource"], "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri'},
+            "server": {"type": "string", "description": "MCP server name from config"},
+            "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
+            "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
+            "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
+        }, ["action", "server"])
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -3489,7 +3411,7 @@ class SkillTool(Tool):
     # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return {"type": "object", "properties": {"name": {"type": "string", "description": "Skill name from the SKILLS section"}}, "required": ["name"], "additionalProperties": False}
+        return cls.object_schema({"name": {"type": "string", "description": "Skill name from the SKILLS section"}}, ["name"])
     # fmt: on
 
     @classmethod

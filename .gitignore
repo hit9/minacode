@@ -13,3 +13,7 @@ uv.lock
 .python-version
 .code-symbol-index/
 .code-workflow-probe.json
+
+# crash core dumps
+core
+core.*
