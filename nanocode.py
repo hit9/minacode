@@ -6677,7 +6677,10 @@ class BashLivePreview:
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         limit = width - 3
-        clip = lambda line: line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+
+        def clip(line: str) -> str:
+            return line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+
         # Always emit a header (the running command + a live elapsed timer) so the frame is visible
         # even before any output arrives and the user can see what is executing.
         status = f"output · {label}" if body else f"running… {label}"

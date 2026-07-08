@@ -2,7 +2,11 @@ PYTHON ?= python3
 VERSION := $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 DIST_FILES := dist/nanocode_cli-$(VERSION)*
 
-.PHONY: test clean-dist build publish-check publish
+.PHONY: lint test clean-dist build publish-check publish
+
+lint:
+	$(PYTHON) -m ruff check nanocode.py
+	$(PYTHON) -m ruff format --check nanocode.py
 
 test:
 	$(PYTHON) -m py_compile nanocode.py
