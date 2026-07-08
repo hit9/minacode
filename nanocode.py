@@ -154,18 +154,14 @@ class Text:
 
 @dataclass
 class ProviderConfig:
+    # fmt: off
     PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
         "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
         "openrouter.ai": {"chat_reasoning": "reasoning"},
         "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {
-            "chat_reasoning": "thinking",
-            "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS,
-            "prompt_cache_key": False,
-            "strict_tools": True,
-            "strict_beta": True,
-        },
+        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
     }
+    # fmt: on
 
     url: str = ""
     key: str = ""
@@ -465,14 +461,9 @@ class ModelUsage:
         prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
         total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
-        cached_tokens = self.field(
-            usage,
-            "prompt_cache_hit_tokens",
-            "cached_tokens",
-            "cache_read_input_tokens",
-            "prompt_tokens_details.cached_tokens",
-            "input_tokens_details.cached_tokens",
-        )
+        # fmt: off
+        cached_tokens = self.field(usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
+        # fmt: on
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
@@ -1191,11 +1182,9 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
         ]
         # fmt: on
         if os.path.isfile(source):
-            sections += [
-                "",
-                "## Source (last-resort fallback)",
-                f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present).",
-            ]
+            # fmt: off
+            sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
+            # fmt: on
         description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
         return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
@@ -1725,38 +1714,22 @@ class ReadTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return cls.object_schema(
-            {
-                "path": {"type": "string", "description": "File path to read"},
-                "ranges": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": cls.RANGE_SCHEMA,
-                    "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file",
-                },
-            },
-            ["path"],
-        )
+        # fmt: off
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read"},
+            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+        }, ["path"])
+        # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema(
-            {
-                "path": {"type": "string", "description": "File path to read (single-file form)"},
-                "ranges": {
-                    "type": "array",
-                    "items": cls.RANGE_SCHEMA,
-                    "minItems": 1,
-                    "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file",
-                },
-                "files": {
-                    "type": "array",
-                    "items": cls.arg_schema(),
-                    "minItems": 1,
-                    "description": "Batch form: list of {path, ranges} to read several files in one call",
-                },
-            }
-        )
+        # fmt: off
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File path to read (single-file form)"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
+        })
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -1871,20 +1844,14 @@ class SearchTool(Tool):
 
     @classmethod
     def arg_schema(cls) -> Json:
-        return cls.object_schema(
-            {
-                "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
-                "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
-                "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
-                "context": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": cls.MAX_CONTEXT,
-                    "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}",
-                },
-            },
-            ["pattern"],
-        )
+        # fmt: off
+        return cls.object_schema({
+            "pattern": {"type": "string", "description": "Case-insensitive regex; alternation A|B|C is allowed"},
+            "path": {"type": "string", "description": "File or directory to search under; defaults to repo root"},
+            "glob": {"type": "string", "description": "Optional glob limiting which files are searched, e.g. *.py"},
+            "context": {"type": "integer", "minimum": 0, "maximum": cls.MAX_CONTEXT, "description": f"Context lines around each match, 0..{cls.MAX_CONTEXT}"},
+        }, ["pattern"])
+        # fmt: on
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -2375,24 +2342,20 @@ class EditTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        edit = cls.object_schema(
-            {
-                "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
-                "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
-                "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
-                "content": {"type": "string", "description": "New text for create/replace/insert"},
-                "old": {"type": "string", "description": "Text to find for replace_all"},
-                "new": {"type": "string", "description": "Replacement text for replace_all"},
-            },
-            ["op"],
-        )
-        return cls.object_schema(
-            {
-                "path": {"type": "string", "description": "File to create or patch"},
-                "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
-            },
-            ["path", "edits"],
-        )
+        # fmt: off
+        edit = cls.object_schema({
+            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+            "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
+            "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+            "content": {"type": "string", "description": "New text for create/replace/insert"},
+            "old": {"type": "string", "description": "Text to find for replace_all"},
+            "new": {"type": "string", "description": "Replacement text for replace_all"},
+        }, ["op"])
+        return cls.object_schema({
+            "path": {"type": "string", "description": "File to create or patch"},
+            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+        }, ["path", "edits"])
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
@@ -2639,78 +2602,25 @@ class BashTool(Tool):
     # Read-only executables that only inspect the filesystem/repo. A command built solely from these
     # (and safe git subcommands) auto-runs without a confirmation prompt in non-yolo mode, replacing
     # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
+    # fmt: off
     SAFE_COMMANDS: ClassVar[frozenset[str]] = frozenset(
         {
             # Common read-only inspection commands. The obvious file-writing forms (`sort -o`,
             # `uniq IN OUT`, `sed -i`, `tree -o`) are guarded below; we do not chase exotic paths
             # like sed's `w` command — common sense over exhaustive safety.
-            "ls",
-            "cat",
-            "head",
-            "tail",
-            "wc",
-            "find",
-            "grep",
-            "egrep",
-            "fgrep",
-            "rg",
-            "sort",
-            "uniq",
-            "sed",
-            "tree",
-            "cut",
-            "tr",
-            "nl",
-            "comm",
-            "column",
-            "fold",
-            "paste",
-            "join",
-            "echo",
-            "printf",
-            "pwd",
-            "stat",
-            "file",
-            "basename",
-            "dirname",
-            "realpath",
-            "readlink",
-            "which",
-            "type",
-            "diff",
-            "cmp",
-            "date",
-            "printenv",
-            "du",
-            "df",
-            "jq",
-            "true",
-            "test",
-            "uname",
-            "hostname",
+            "ls", "cat", "head", "tail", "wc", "find", "grep", "egrep", "fgrep", "rg", "sort", "uniq",
+            "sed", "tree", "cut", "tr", "nl", "comm", "column", "fold", "paste", "join", "echo", "printf", "pwd",
+            "stat", "file", "basename", "dirname", "realpath", "readlink", "which", "type",
+            "diff", "cmp", "date", "printenv", "du", "df", "jq", "true", "test", "uname", "hostname",
             # Benign builtin the model routinely prefixes (cd changes the subshell dir only).
             "cd",
         }
     )
     SAFE_GIT_SUBCOMMANDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "status",
-            "diff",
-            "log",
-            "show",
-            "rev-parse",
-            "ls-files",
-            "grep",
-            "blame",
-            "describe",
-            "shortlog",
-            "cat-file",
-            "ls-tree",
-            "rev-list",
-            "for-each-ref",
-            "diff-tree",
-        }
+        {"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "describe",
+         "shortlog", "cat-file", "ls-tree", "rev-list", "for-each-ref", "diff-tree"}
     )
+    # fmt: on
 
     def needs_confirmation(self) -> bool:
         try:
@@ -2752,25 +2662,11 @@ class BashTool(Tool):
             return False
         cmd = tokens[0]
         # Env assignments and wrapper commands can hide arbitrary execution — never auto-approve.
-        if "=" in cmd or cmd in {
-            "env",
-            "sudo",
-            "eval",
-            "exec",
-            "command",
-            "xargs",
-            "nohup",
-            "time",
-            "watch",
-            "bash",
-            "sh",
-            "zsh",
-            "tee",
-            "awk",
-            "python",
-            "python3",
-        }:
+        # fmt: off
+        if "=" in cmd or cmd in {"env", "sudo", "eval", "exec", "command", "xargs", "nohup", "time",
+                                 "watch", "bash", "sh", "zsh", "tee", "awk", "python", "python3"}:
             return False
+        # fmt: on
         if cmd == "git":
             return cls._safe_git(tokens)
         if cmd not in cls.SAFE_COMMANDS:
@@ -2954,16 +2850,15 @@ class JobTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema(
-            {
-                "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
-                "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
-                "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-                "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
-                "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
-            },
-            ["action"],
-        )
+        # fmt: off
+        return cls.object_schema({
+            "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
+            "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
+            "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
+            "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+            "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+        }, ["action"])
+        # fmt: on
 
     def payload(self) -> Json:
         return self.single_dict_arg("Job requires a single object argument")
@@ -3178,22 +3073,19 @@ class NoteTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        plan_item = cls.object_schema(
-            {
-                "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
-                "text": {"type": "string", "description": "Plan step description"},
-            },
-            ["status", "text"],
-        )
-        return cls.object_schema(
-            {
-                "set_goal": {"type": "string", "description": "Replace the current goal"},
-                "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
-                "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
-                "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-                "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
-            }
-        )
+        # fmt: off
+        plan_item = cls.object_schema({
+            "status": {"type": "string", "enum": list(PlanItem.STATUSES), "description": "todo|doing|done|blocked"},
+            "text": {"type": "string", "description": "Plan step description"},
+        }, ["status", "text"])
+        return cls.object_schema({
+            "set_goal": {"type": "string", "description": "Replace the current goal"},
+            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
+            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
+            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
+            "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
+        })
+        # fmt: on
 
     def call(self) -> str:
         data = self.single_dict_arg("Note requires named fields")
@@ -3285,21 +3177,17 @@ class AskTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        question = cls.object_schema(
-            {
-                "question": {"type": "string", "description": "The question to ask the user"},
-                "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-                "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
-                "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
-            },
-            ["question"],
-        )
-        return cls.object_schema(
-            {
-                "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
-            },
-            ["questions"],
-        )
+        # fmt: off
+        question = cls.object_schema({
+            "question": {"type": "string", "description": "The question to ask the user"},
+            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
+            "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
+        }, ["question"])
+        return cls.object_schema({
+            "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
+        }, ["questions"])
+        # fmt: on
 
     def call(self) -> str:
         questions = self.single_dict_arg(f"{self.NAME} requires named fields").get("questions")
@@ -3356,20 +3244,15 @@ class MCPTool(Tool):
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema(
-            {
-                "action": {
-                    "type": "string",
-                    "enum": ["call", "describe", "list_resources", "read_resource"],
-                    "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri',
-                },
-                "server": {"type": "string", "description": "MCP server name from config"},
-                "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
-                "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
-                "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
-            },
-            ["action", "server"],
-        )
+        # fmt: off
+        return cls.object_schema({
+            "action": {"type": "string", "enum": ["call", "describe", "list_resources", "read_resource"], "description": '"call" invokes a tool; "describe" returns a tool\'s schema; "list_resources" lists a server\'s resources; "read_resource" reads one by uri'},
+            "server": {"type": "string", "description": "MCP server name from config"},
+            "tool": {"type": "string", "description": "Remote MCP tool name (required for call/describe)"},
+            "arguments": {"type": "object", "description": "Arguments for the remote tool (required for call)"},
+            "uri": {"type": "string", "description": "Resource URI (required for read_resource), e.g. scheme://path"},
+        }, ["action", "server"])
+        # fmt: on
 
     def payload(self) -> Json:
         return self.single_dict_arg("MCP requires named fields")
@@ -3496,9 +3379,9 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
-    CODE_EXTENSIONS: ClassVar[set[str]] = set(
-        ".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split()
-    )
+    # fmt: off
+    CODE_EXTENSIONS: ClassVar[set[str]] = set(".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split())
+    # fmt: on
     CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
 
     @dataclass
