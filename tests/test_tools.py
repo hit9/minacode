@@ -1084,6 +1084,38 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     assert events[-1] == ("", "")
 
 
+def test_bash_live_preview_finish_erases_divider(monkeypatch):
+    # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
+    # marker only — finish must redraw once without it so it does not linger in the log per command.
+    printed = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+
+    class FakeOut:
+        def write_raw(self, s=""):
+            pass
+
+        def erase_end_of_line(self):
+            pass
+
+        def flush(self):
+            pass
+
+    p = n.BashLivePreview()
+    p.output = FakeOut()
+    p.active = True
+    p.divider = [("ansimagenta bold", "--- working ---")]
+    p.command = "echo hi"
+    p.text = "hi\n"
+    p.render()
+    assert any("working" in line for line in printed)  # divider is drawn while the command runs
+
+    before = len(printed)
+    p.finish()
+    assert p.divider == []  # cleared
+    finish_rows = printed[before:]
+    assert finish_rows and not any("working" in line for line in finish_rows)  # redrawn without it
+
+
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True

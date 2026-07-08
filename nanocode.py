@@ -6732,6 +6732,12 @@ class BashLivePreview:
         with self.lock:
             if not self.active:
                 return
+            # The frozen frame stays in the scrollback (keep-output-visible), but the divider is only a
+            # live "working" marker — redraw once without it so the output shifts up over it and the
+            # divider does not linger in the log for every command.
+            if self.divider:
+                self.divider = []
+                self.render()
             self.active = False
         timer = self.timer
         if timer is not None:
