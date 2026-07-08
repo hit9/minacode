@@ -7778,8 +7778,10 @@ Tools:
             if divider
             else []
         )
+        # A blank line below the input too, so the prompt is not crowded against the status bar.
+        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if divider else []
         root = FloatContainer(
-            HSplit([*top, input_window, completion_space, search_toolbar, self.status_window()]),
+            HSplit([*top, input_window, completion_space, search_toolbar, *bottom, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
