@@ -5365,14 +5365,8 @@ class ToolRunner:
         return end
 
     def edit_barrier(self, call: ToolCall) -> bool:
-        if call.name == "Edit":
-            return False
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None:
-            return True
-        if tool_class.MUTATES:
-            return True
-        return False
+        return call.name != "Edit" and (tool_class is None or tool_class.MUTATES)
 
     def run_one(
         self,
@@ -6230,7 +6224,7 @@ class CommandCompleter(Completer):
         self.mcp_tools = mcp_tools
         self.skills = skills
 
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document, _complete_event):
         text = document.text_before_cursor
         if text.startswith("/set "):
             tail = text[len("/set ") :]
@@ -7031,7 +7025,6 @@ Tools:
         self.live_preview = BashLivePreview()
         self.live_status_paused = False
         self.live_queue_paused = False
-        self.working = False  # a turn is in flight — drives the sweeping divider animation
         self.approval_full_preview = ""
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         self.queue_input_paused = threading.Event()
@@ -7380,7 +7373,6 @@ Tools:
             started = time.monotonic()
             stop_input = threading.Event()
             watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
-            self.working = True
             try:
                 if watcher:
                     self.status_bar.begin()
@@ -7404,7 +7396,6 @@ Tools:
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
-                self.working = False
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
