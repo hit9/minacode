@@ -674,6 +674,13 @@ class MCPFileTokenStore:
                 data.get(collection, {}).pop(key, None)
             self.save(data)
 
+    def clear_client_info(self, server_url: str) -> None:
+        # Same collection/key convention as clear_server above — keep them in sync.
+        with self.lock:
+            data = self.load()
+            data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
+            self.save(data)
+
 
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
         collection = collection or self.DEFAULT_COLLECTION
@@ -688,6 +695,14 @@ class MCPFileTokenStore:
                 return None
             value = entry.get("value")
             return dict(value) if isinstance(value, dict) else None
+
+    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
+        collection = collection or self.DEFAULT_COLLECTION
+        expires_at = time.time() + float(ttl) if ttl is not None else None
+        with self.lock:
+            data = self.load()
+            data.setdefault(collection, {})[key] = {"value": dict(value), "expires_at": expires_at}
+            self.save(data)
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
         collection = collection or self.DEFAULT_COLLECTION
@@ -4997,11 +5012,7 @@ class MCPManager:
         # Drop any stale client registration so the fresh authorization uses a client
         # whose registered redirect_uri matches this run's callback port. Reusing a
         # client registered against an earlier random port yields invalid_request.
-        store = self.oauth_token_store()
-        with store.lock:
-            data = store.load()
-            data.setdefault("mcp-client-info", {}).pop(config.url, None)
-            store.save(data)
+        self.oauth_token_store().clear_client_info(config.url)
         try:
             tools = self.run_async(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
         except Exception as error:
