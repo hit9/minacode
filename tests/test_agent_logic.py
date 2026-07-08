@@ -989,31 +989,18 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
     assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
 
 
-def test_tool_preview_handles_only_interactive_edit_approval(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-    shown = []
-    loop.interactive_input = True
-    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(loop, "show_transient_tool_preview", shown.append)
-
-    assert loop.tool_preview("approve Edit a.py\n  preview\n  diff")
-    assert shown == ["approve Edit a.py\n  preview\n  diff"]
-    assert not loop.tool_preview("approve Bash echo ok")
-
-
-def test_tool_runner_edit_approval_can_use_preview_callback(tmp_path, monkeypatch):
+def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
-    previews = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=outputs.append)
-    runner.preview_fn = lambda text: previews.append(text) or True
+    content = "".join(f"line {index}\n" for index in range(50))
 
-    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": "x\n"}]])])
+    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert previews and previews[0].startswith("approve Edit new.txt\n  preview")
-    assert not any(output.startswith("approve Edit") for output in outputs)
+    assert outputs[0].startswith("approve Edit new.txt\n  preview")
+    assert "+line 49" in outputs[0]
+    assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
 
 

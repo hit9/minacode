@@ -188,22 +188,16 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
     assert any(t == "+" and s == "ansigreen" for s, t in segments)
 
 
-def test_ansi_diff_preview_carries_syntax_highlighting():
-    # The Ctrl-A expanded preview (rendered for `less -R`) must carry the same syntax highlighting
-    # as the inline preview. Its input is the full approval text: an "approve …" header, a "preview"
-    # line, and a 2-space-indented unified diff — not a raw diff.
-    loop = n.CommandLoop.__new__(n.CommandLoop)
-    loop.ui = n.UiPrinter()
+def test_approval_segments_highlight_inline_edit_preview():
     full = (
         "approve Edit foo.py\n  preview\n"
         "  --- foo.py\n  +++ foo.py\n  @@ -1,2 +1,2 @@\n   def hello():\n  -    pass\n  +    return 42\n"
     )
-    ansi = loop.ansi_diff_preview(full)
+    segments = n.UiPrinter().approval_segments(full)
 
-    assert "\033[" in ansi                 # contains ANSI escape codes
-    assert "\033[35m" in ansi              # `return` keyword highlighted magenta (not just diff green)
-    assert "\033[32m" in ansi              # added content stays diff green
-    assert "\033[31m" in ansi              # removed line stays diff red
+    assert any(style == "ansimagenta" and "return" in text for style, text in segments)
+    assert any(style == "ansigreen" and text == "+" for style, text in segments)
+    assert any(style == "ansired" and text.startswith("-    pass") for style, text in segments)
 
 
 def test_edit_stale_anchor_reports_current_line(tmp_path):
@@ -1561,8 +1555,8 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
 
 
 def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
-    # Edit's "auto …" pre-line carries the diff preview, which the result line (-> FILE STATE) omits,
-    # so it must still be surfaced; the result line is tagged [auto].
+    # Edit's "auto …" pre-line carries the full diff preview, which the result line (-> FILE STATE)
+    # omits, so it must still be surfaced; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
