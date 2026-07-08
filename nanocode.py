@@ -7965,7 +7965,7 @@ Tools:
                 parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
             if preview_fn and options:
                 sel = int(state["selected"])
-                preview_text = preview_fn(options[sel]) if 0 <= sel < len(options) else ""
+                preview_text = preview_fn(options[sel]).replace("\\n", "\n") if 0 <= sel < len(options) else ""
                 if preview_text:
                     parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
                     for line in preview_text.splitlines():
@@ -8053,7 +8053,7 @@ Tools:
         options = enabled()
         state["selected"] = options.index(current) if current in options else 0
         content = FormattedTextControl(fragments, focusable=True)
-        choice_window = Window(content, dont_extend_height=True, wrap_lines=False)
+        choice_window = Window(content, wrap_lines=False)
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
         return self.run_input_app(app)
 
