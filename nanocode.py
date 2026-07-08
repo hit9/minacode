@@ -209,11 +209,14 @@ class ProviderConfig:
     def base_url(self) -> str:
         # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.
         url = self._stripped_url()
-        return url + "/beta" if self.resolved_strict_tools() and (self.PROFILES.get(self.host()) or {}).get("strict_beta") and not url.endswith("/beta") else url
+        return url + "/beta" if self.resolved_strict_tools() and self._profile().get("strict_beta") and not url.endswith("/beta") else url
 
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
+
+    def _profile(self) -> Json:
+        return self.PROFILES.get(self.host()) or {}
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
@@ -223,7 +226,7 @@ class ProviderConfig:
     def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
         if configured != "auto":
             return configured
-        if not (profile := self.PROFILES.get(self.host())):
+        if not (profile := self._profile()):
             return default
         model = self.model.lower()
         for value, prefixes in profile.get(rules_attr, ()):
@@ -236,15 +239,15 @@ class ProviderConfig:
 
     def resolved_max_tokens(self) -> int:
         # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.
-        return self.max_tokens or int((self.PROFILES.get(self.host()) or {}).get("max_tokens", 0))
+        return self.max_tokens or int(self._profile().get("max_tokens", 0))
 
     def supports_prompt_cache_key(self) -> bool:
         # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
         # (e.g. DeepSeek caches automatically by prefix and ignores the key).
-        return bool((self.PROFILES.get(self.host()) or {}).get("prompt_cache_key", True))
+        return bool(self._profile().get("prompt_cache_key", True))
 
     def supports_strict_tools(self) -> bool:
-        return bool((self.PROFILES.get(self.host()) or {}).get("strict_tools"))
+        return bool(self._profile().get("strict_tools"))
 
     def resolved_strict_tools(self) -> bool:
         # Only emit strict schemas on the chat path of a host known to support strict mode.
