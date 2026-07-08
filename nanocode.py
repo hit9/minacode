@@ -7392,8 +7392,19 @@ Tools:
         # Live region above the +> input: a sweep divider plus the still-pending queued messages.
         # The divider persists for the whole turn; queued messages flush up into the scrollback log.
         queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
+        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
+        # against the divider and the log above.
         root = FloatContainer(
-            HSplit([queued_region, input_window, completion_space, self.status_window(active=True)]),
+            HSplit(
+                [
+                    Window(height=1, dont_extend_height=True),
+                    queued_region,
+                    Window(height=1, dont_extend_height=True),
+                    input_window,
+                    completion_space,
+                    self.status_window(active=True),
+                ]
+            ),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
