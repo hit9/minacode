@@ -802,6 +802,31 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
+def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
+    # A single app.exit() can be lost if it fires before app.run() starts its event loop, which used
+    # to leave the queue app running behind the next prompt and spam the animated divider. pause must
+    # keep re-issuing the exit until the app has actually torn down (queue_input_active clears).
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.queue_input_active.set()
+    loop.queue_input_app = object()  # sentinel standing in for a running app
+    calls = {"n": 0}
+
+    def fake_exit(app):
+        calls["n"] += 1
+        if calls["n"] >= 3:  # the first couple of exits are "lost"; a later one lands
+            loop.queue_input_active.clear()
+
+    monkeypatch.setattr(loop, "exit_app", fake_exit)
+    monkeypatch.setattr(n.time, "sleep", lambda *_: None)
+
+    loop.pause_queue_input()
+
+    assert loop.queue_input_paused.is_set()
+    assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
+    assert not loop.queue_input_active.is_set()
+
+
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
     """pending_user_inputs comes first, then queue_input_text."""
     s = session(tmp_path)

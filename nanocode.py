@@ -7358,7 +7358,13 @@ Tools:
         def stop_when_needed() -> None:
             while not stop_event.is_set() and not self.queue_input_paused.is_set():
                 stop_event.wait(0.05)
-            self.exit_app(app)
+            # Retry the exit until the app has actually torn down. A single exit can be lost if it
+            # fires before app.run() has started its event loop, which would leave this app running
+            # concurrently with the next prompt and spam the animated divider into the scrollback.
+            deadline = time.monotonic() + 2.0
+            while self.queue_input_active.is_set() and time.monotonic() < deadline:
+                self.exit_app(app)
+                time.sleep(0.02)
 
         threading.Thread(target=stop_when_needed, daemon=True).start()
         try:
@@ -7392,11 +7398,14 @@ Tools:
 
     def pause_queue_input(self) -> None:
         self.queue_input_paused.set()
-        if self.queue_input_app is not None:
-            self.exit_app(self.queue_input_app)
-        deadline = time.monotonic() + 1.0
+        # Keep re-issuing the exit until the app is actually down: a single exit can be lost if it
+        # fires before app.run() has started its event loop, leaving the app running behind the next
+        # prompt. Retry until queue_input_active clears (the app's finally) or we time out.
+        deadline = time.monotonic() + 1.5
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
-            time.sleep(0.01)
+            if self.queue_input_app is not None:
+                self.exit_app(self.queue_input_app)
+            time.sleep(0.02)
 
     def take_entered_input(self) -> str:
         """Enter-committed queue input (pending_user_inputs), joined and cleared."""
