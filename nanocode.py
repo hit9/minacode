@@ -7270,12 +7270,14 @@ Tools:
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
-    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 14.0
+    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 26.0
+    # A comet: a bright head with a fading tail, by distance from the head. Beyond the tail the dash
+    # falls back to the dim rule. The divider is only ever drawn while working, so there is no idle look.
+    GLOW_STYLES: ClassVar[tuple[str, ...]] = ("class:divider.glow0", "class:divider.glow1", "class:divider.glow2", "class:divider.glow3")
 
     def divider_label(self, queued: int = 0) -> str:
-        # e.g. "working [ 2 queued ]" or just "idle".
-        state = "working" if self.working else "idle"
-        return f"{state} [ {queued} queued ]" if queued else state
+        # e.g. "working [ 2 queued ]" or just "working" — the divider only shows while working.
+        return f"working [ {queued} queued ]" if queued else "working"
 
     def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
@@ -7283,19 +7285,24 @@ Tools:
         body_len = len(label) + 2  # " label "
         lead = 3
         trail = max(3, width - lead - body_len)
-        # A short bright window slides left→right across the dashes while working; idle it parks
-        # off-screen, leaving a calm static rule. Only the dashes sweep — the coloured state label stays.
-        period = lead + body_len + trail + 6
-        pos = int(time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC) % period - 3 if self.working else -period
+        total = lead + body_len + trail
+        # The comet head bounces back and forth across the whole width (a triangle wave, so it never
+        # jumps), gliding behind the label and out the other side. Its glowing tail follows it.
+        span = max(1, total - 1)
+        phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
+        head = phase if phase <= span else 2 * span - phase
 
         def dashes(start: int, count: int) -> list[tuple[str, str]]:
-            return [("class:queue.sweep" if abs(start + i - pos) <= 1 else "class:queue.rule", "-") for i in range(count)]
+            fragments = []
+            for i in range(count):
+                distance = round(abs(start + i - head))
+                fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
+            return fragments
 
-        label_style = "class:divider.working" if self.working else "class:divider.idle"
         return [
             *dashes(0, lead),
             ("class:queue.rule", " "),
-            (label_style, label),
+            ("class:divider.working", label),
             ("class:queue.rule", " "),
             *dashes(lead + body_len, trail),
         ]
@@ -7310,12 +7317,6 @@ Tools:
         width = max(20, min(52, shutil.get_terminal_size((80, 20)).columns - 2))
         lead, trail = 3, max(3, width - 3 - (len(label) + 2))
         return [("ansibrightblack", "-" * lead + " "), ("ansimagenta bold", label), ("ansibrightblack", " " + "-" * trail)]
-
-    def prompt_divider_fragments(self) -> list[tuple[str, str]]:
-        # A short sweeping rule between the log and the nano> prompt. Keep it well short of full width:
-        # a near-full line reflows/duplicates on a terminal resize and can desync this non-fullscreen
-        # app's redraw, so cap it rather than tracking the column count.
-        return self.sweep_divider_fragments(self.divider_label())
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
@@ -7507,7 +7508,7 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), divider=True)
+                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), pad=True)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()
@@ -7661,9 +7662,12 @@ Tools:
             {
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
-                "queue.sweep": "ansicyan bold",
                 "divider.working": "ansimagenta bold",
-                "divider.idle": "ansicyan",
+                # Comet gradient: bright head fading through cyan into the dim rule.
+                "divider.glow0": "ansibrightcyan bold",
+                "divider.glow1": "ansicyan bold",
+                "divider.glow2": "ansicyan",
+                "divider.glow3": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -7726,7 +7730,7 @@ Tools:
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
         initial_text: str = "",
-        divider: bool = False,
+        pad: bool = False,
     ) -> str:
         if self.input_history is None:
             return initial_text or self.input_fn(prompt_text)
@@ -7809,19 +7813,10 @@ Tools:
             event.app.invalidate()
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # A sweeping rule between the log and the prompt while it waits, with a blank line above and
-        # below it so it is not crowded against the log above or the prompt below.
-        top: list[Any] = (
-            [
-                Window(height=1, dont_extend_height=True),
-                Window(FormattedTextControl(self.prompt_divider_fragments), height=1, dont_extend_height=True),
-                Window(height=1, dont_extend_height=True),
-            ]
-            if divider
-            else []
-        )
-        # A blank line below the input too, so the prompt is not crowded against the status bar.
-        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if divider else []
+        # The idle nano> prompt shows no divider (the divider is a working-state marker only); keep a
+        # blank line above and below the input so it is not crowded against the log or status bar.
+        top: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
+        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
         root = FloatContainer(
             HSplit([*top, input_window, completion_space, search_toolbar, *bottom, self.status_window()]),
             [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],

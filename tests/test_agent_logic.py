@@ -773,29 +773,23 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s.pending_user_inputs = ["run tests", "then push"]
 
     text = "".join(t for _, t in loop.queue_region_fragments())
-    assert "2 queued" in text and "idle" in text  # "--- idle [ 2 queued ] ---"
+    assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
     assert "+ run tests" in text and "+ then push" in text
-    # The divider sweeps a bright cell only while the agent is working; idle it is a calm static rule.
-    def has_sweep_over_time(monkeypatch):
-        seen = False
-        for tick in range(200):
-            monkeypatch.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
-            seen = seen or any(style == "class:queue.sweep" for style, _ in loop.queue_divider_fragments())
-        return seen
 
+    # The divider animates a comet head (glow0) that bounces across the dashes over time.
     with pytest.MonkeyPatch.context() as mp:
-        loop.working = False
-        assert not has_sweep_over_time(mp)  # idle: static, never sweeps
-        loop.working = True
-        assert has_sweep_over_time(mp)  # working: the bright cell slides across
+        seen_head = False
+        for tick in range(200):
+            mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
+            seen_head = seen_head or any(style == "class:divider.glow0" for style, _ in loop.queue_divider_fragments())
+        assert seen_head
 
     # The divider is a standing boundary: it persists even once the queue empties, so flushed
     # messages can move up into the log above it.
-    loop.working = False
     s.pending_user_inputs = []
     empty = "".join(t for _, t in loop.queue_region_fragments())
     # Bare rule with just the state word, no count, and no queued messages.
-    assert "idle" in empty and "queued" not in empty and "run tests" not in empty
+    assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
