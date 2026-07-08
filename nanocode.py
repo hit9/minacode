@@ -6859,9 +6859,6 @@ class StatusBar:
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
             )
-        if show_elapsed:
-            minutes, rest = divmod(int(elapsed), 60)
-            parts.append((f"{elapsed:.1f}s" if elapsed < 60 else f"{minutes}m{rest:02d}s", "runtime"))
             if self.retry_notice_until > time.monotonic():
                 parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
@@ -7096,14 +7093,28 @@ Tools:
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
-    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 26.0
+    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 34.0
     # A comet: a bright head with a fading tail, by distance from the head. Beyond the tail the dash
     # falls back to the dim rule. The divider is only ever drawn while working, so there is no idle look.
-    GLOW_STYLES: ClassVar[tuple[str, ...]] = ("class:divider.glow0", "class:divider.glow1", "class:divider.glow2", "class:divider.glow3")
+    GLOW_STYLES: ClassVar[tuple[str, ...]] = (
+        "class:divider.glow0",
+        "class:divider.glow1",
+        "class:divider.glow2",
+        "class:divider.glow3",
+        "class:divider.glow4",
+    )
+
+    def turn_elapsed_label(self) -> str:
+        elapsed = max(0.0, time.monotonic() - self.status_bar.started_at) if self.status_bar.started_at else 0.0
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes, rest = divmod(int(elapsed), 60)
+        return f"{minutes}m{rest:02d}s"
 
     def divider_label(self, queued: int = 0) -> str:
-        # e.g. "working [ 2 queued ]" or just "working" — the divider only shows while working.
-        return f"working [ {queued} queued ]" if queued else "working"
+        # e.g. "working (4m02s) [ 2 queued ]" or just "working (4m02s)".
+        label = f"working ({self.turn_elapsed_label()})"
+        return f"{label} [ {queued} queued ]" if queued else label
 
     def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
@@ -7125,10 +7136,17 @@ Tools:
                 fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
             return fragments
 
+        def label_fragments(start: int) -> list[tuple[str, str]]:
+            fragments = []
+            for i, char in enumerate(label):
+                distance = round(abs(start + i - head))
+                fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:divider.working", char))
+            return fragments
+
         return [
             *dashes(0, lead),
             ("class:queue.rule", " "),
-            ("class:divider.working", label),
+            *label_fragments(lead + 1),
             ("class:queue.rule", " "),
             *dashes(lead + body_len, trail),
         ]
@@ -7503,6 +7521,7 @@ Tools:
                 "divider.glow1": "ansicyan bold",
                 "divider.glow2": "ansicyan",
                 "divider.glow3": "ansibrightblack",
+                "divider.glow4": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
