@@ -776,12 +776,15 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
     assert "+ run tests" in text and "+ then push" in text
 
-    # The divider animates a comet head (glow0) that bounces across the dashes over time.
+    # The divider animates a comet head (glow0) across the dashes only; the label remains stable.
     with pytest.MonkeyPatch.context() as mp:
         seen_head = False
         for tick in range(200):
             mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
-            seen_head = seen_head or any(style == "class:divider.glow0" for style, _ in loop.queue_divider_fragments())
+            fragments = loop.queue_divider_fragments()
+            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
+            assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
         assert seen_head
 
     # The divider is a standing boundary: it persists even once the queue empties, so flushed

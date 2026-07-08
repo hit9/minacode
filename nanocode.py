@@ -7091,33 +7091,26 @@ Tools:
         body_len = len(label) + 2  # " label "
         lead = 3
         trail = max(3, width - lead - body_len)
-        total = lead + body_len + trail
-        # The comet head bounces back and forth across the whole width (a triangle wave, so it never
-        # jumps), gliding behind the label and out the other side. Its glowing tail follows it.
-        span = max(1, total - 1)
+        dash_count = lead + trail
+        # The comet head bounces over the horizontal rule only. The label stays stable and readable
+        # while the glow appears to pass through the dash track on either side.
+        span = max(1, dash_count - 1)
         phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
         head = phase if phase <= span else 2 * span - phase
 
-        def dashes(start: int, count: int) -> list[tuple[str, str]]:
+        def dashes(offset: int, count: int) -> list[tuple[str, str]]:
             fragments = []
             for i in range(count):
-                distance = round(abs(start + i - head))
+                distance = round(abs(offset + i - head))
                 fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
-            return fragments
-
-        def label_fragments(start: int) -> list[tuple[str, str]]:
-            fragments = []
-            for i, char in enumerate(label):
-                distance = round(abs(start + i - head))
-                fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:divider.working", char))
             return fragments
 
         return [
             *dashes(0, lead),
             ("class:queue.rule", " "),
-            *label_fragments(lead + 1),
+            ("class:divider.working", label),
             ("class:queue.rule", " "),
-            *dashes(lead + body_len, trail),
+            *dashes(lead, trail),
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
@@ -7489,11 +7482,11 @@ Tools:
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "divider.working": "ansimagenta bold",
-                # Comet gradient: bright head fading through cyan into the dim rule.
-                "divider.glow0": "ansibrightcyan bold",
-                "divider.glow1": "ansicyan bold",
-                "divider.glow2": "ansicyan",
-                "divider.glow3": "ansibrightblack",
+                # Comet gradient: warm head, cool tail, then back into the dim rule.
+                "divider.glow0": "ansibrightyellow bold",
+                "divider.glow1": "ansiyellow bold",
+                "divider.glow2": "ansigreen",
+                "divider.glow3": "ansicyan",
                 "divider.glow4": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
