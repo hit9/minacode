@@ -463,6 +463,23 @@ def test_startup_tip_respects_toggle_and_context(tmp_path):
     assert strict_tip in [tip for predicate, tip in n.CommandLoop.TIPS if predicate(s)]
 
 
+def test_ps_command_uses_markdown_renderer(tmp_path):
+    s = session(tmp_path)
+    s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    rendered = []
+    plain = []
+    loop.ui.emit_answer = rendered.append
+    loop.emit = plain.append
+
+    assert loop.command("/ps") == (True, False)
+
+    assert plain == []
+    assert len(rendered) == 1
+    assert rendered[0].startswith("### Active jobs")
+    assert "| id | status | elapsed | command |" in rendered[0]
+
+
 def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
     read_fd, write_fd = os.pipe()
     reader = os.fdopen(read_fd, encoding="utf-8")

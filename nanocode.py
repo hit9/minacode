@@ -7860,7 +7860,7 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/mcp", "/context", "/skills", "/diff"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/context", "/skills", "/diff"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
