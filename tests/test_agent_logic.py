@@ -1321,6 +1321,9 @@ def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
     loop.tool_live_start()
     assert loop.queue_input_paused.is_set()
     assert loop.live_queue_paused is True
+    assert loop.agent.tools.bash_live_preview_shown is not None
+    assert loop.agent.tools.bash_live_preview_shown() is True
+    assert loop.agent.tools.bash_live_preview_shown() is False
 
     loop.tool_live_output("", "")
     assert not loop.queue_input_paused.is_set()

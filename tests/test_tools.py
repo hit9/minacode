@@ -1095,6 +1095,38 @@ def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
     assert "    err" in display
 
 
+def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner.bash_live_preview_shown = lambda: True
+    output = n.Tool.process_result("BashToolResult", 0, "live output", "")
+
+    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False)
+
+    assert display == "tool Bash printf live -> tr.1"
+
+
+def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    output = n.Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
+
+    preview = runner.bash_result_preview(output)
+
+    assert "before </stdout> after" in preview
+    assert "before </stderr> after" in preview
+
+
+def test_tool_runner_bash_preview_does_not_omit_single_line(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    lines = [f"line {index}" for index in range(n.ToolRunner.BASH_PREVIEW_LINES + 1)]
+
+    preview = runner.preview_lines("\n".join(lines))
+
+    assert preview == lines
+
+
 def test_bash_live_preview_finish_erases_divider(monkeypatch):
     # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
     # marker only — finish must redraw once without it so it does not linger in the log per command.

@@ -5427,6 +5427,7 @@ class ToolRunner:
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[str], None] | None = None
+        self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
@@ -5744,6 +5745,7 @@ class ToolRunner:
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
+        bash_live_preview_shown = call.name == "Bash" and self.consume_bash_live_preview_shown()
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
@@ -5753,11 +5755,14 @@ class ToolRunner:
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
                 lines.append("  " + summary)
-        elif call.name == "Bash":
+        elif call.name == "Bash" and not bash_live_preview_shown:
             preview = self.bash_result_preview(output)
             if preview:
                 lines.extend("  " + line for line in preview.splitlines())
         return "\n".join(lines)
+
+    def consume_bash_live_preview_shown(self) -> bool:
+        return bool(self.bash_live_preview_shown and self.bash_live_preview_shown())
 
     def bash_result_preview(self, output: str) -> str:
         sections = []
@@ -5769,17 +5774,30 @@ class ToolRunner:
 
     @staticmethod
     def tagged_output(output: str, name: str) -> str:
-        match = re.search(rf"(?s)<{name}>\n?(.*?)\n?</{name}>", output)
-        return match.group(1) if match else ""
+        start_tag = f"<{name}>"
+        end_tag = f"</{name}>"
+        start = output.find(start_tag)
+        if start < 0:
+            return ""
+        start += len(start_tag)
+        if output.startswith("\n", start):
+            start += 1
+        next_section = output.find("\n<stderr>\n", start) if name == "stdout" else output.find("\n</BashToolResult>", start)
+        end = output.rfind(end_tag, start, next_section if next_section >= 0 else len(output))
+        if end < 0:
+            return ""
+        text = output[start:end]
+        return text[:-1] if text.endswith("\n") else text
 
     def preview_lines(self, text: str) -> list[str]:
         lines = [self.clip_preview_line(line) for line in text.splitlines()]
-        if len(lines) <= self.BASH_PREVIEW_LINES:
+        if len(lines) <= self.BASH_PREVIEW_LINES + 1:
             return lines
         head = self.BASH_PREVIEW_LINES // 2
         tail = self.BASH_PREVIEW_LINES - head
         omitted = len(lines) - self.BASH_PREVIEW_LINES
-        return [*lines[:head], f"... {omitted} lines omitted ...", *lines[-tail:]]
+        noun = "line" if omitted == 1 else "lines"
+        return [*lines[:head], f"... {omitted} {noun} omitted ...", *lines[-tail:]]
 
     def clip_preview_line(self, line: str) -> str:
         line = line.rstrip()
@@ -7429,6 +7447,7 @@ Tools:
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
+        self.bash_live_preview_rendered = False
         self.live_status_paused = False
         self.live_queue_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
@@ -7456,6 +7475,7 @@ Tools:
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
 
     @staticmethod
@@ -8136,6 +8156,7 @@ Tools:
         self.emit(text)
 
     def tool_live_start(self, command: str = "") -> None:
+        self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
         self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
@@ -8146,6 +8167,7 @@ Tools:
             self.status_bar.stop()
         self.live_preview.divider = self.bash_divider_fragments()
         self.live_preview.start(command)
+        self.bash_live_preview_rendered = self.live_preview.active
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
@@ -8160,6 +8182,7 @@ Tools:
                     self.status_bar.stop()
                 self.live_preview.divider = self.bash_divider_fragments()
                 self.live_preview.start()
+                self.bash_live_preview_rendered = self.live_preview.active
             self.live_preview.update(text)
             return
         if self.live_preview.active:
@@ -8170,6 +8193,11 @@ Tools:
         if self.live_queue_paused:
             self.queue_input_paused.clear()
             self.live_queue_paused = False
+
+    def consume_bash_live_preview_rendered(self) -> bool:
+        rendered = self.bash_live_preview_rendered
+        self.bash_live_preview_rendered = False
+        return rendered
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
