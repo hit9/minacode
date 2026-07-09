@@ -522,6 +522,7 @@ class AgentState:
     turn_step: int = 0
     turn_tool_calls: int = 0
     turn_messages: int = 0
+    round_count: int = 0
     current_model_call_started_at: float = 0.0
     current_model_request_pending_inputs: list[str] = field(default_factory=list)
     manual_model_retry_requested: bool = False
@@ -608,6 +609,7 @@ class TurnDiff:
     diff: str
     before: str = ""
     after: str = ""
+    round: int = 0
 
 
 @dataclass
@@ -804,6 +806,7 @@ class SessionSnapshotCodec:
             "diff": diff.diff,
             "before": diff.before,
             "after": diff.after,
+            "round": diff.round,
         }
 
     @staticmethod
@@ -824,6 +827,7 @@ class SessionSnapshotCodec:
                 diff=d["diff"],
                 before=d.get("before", ""),
                 after=d.get("after", ""),
+                round=d.get("round", 0),
             )
             for d in data
         ]
@@ -836,7 +840,7 @@ class SessionSnapshotCodec:
                 continue
             path, diff = SessionSnapshotCodec.edit_diff_from_output(record.output)
             if path and diff:
-                diffs.append(TurnDiff(record.key, turn, path, diff))
+                diffs.append(TurnDiff(record.key, turn, path, diff, round=turn))
         return diffs
 
     @staticmethod
@@ -889,6 +893,7 @@ class SessionSnapshotCodec:
             "goal": state.goal, "plan": [item.to_json() for item in AgentState.plan_items(state.plan)], "known": state.known, "check": state.check,
             "summary": state.summary, "compaction_count": state.compaction_count,
             "prefix_fingerprint": state.prefix_fingerprint, "prefix_fingerprints": state.prefix_fingerprints,
+            "round_count": state.round_count,
         }
         # fmt: on
 
@@ -1482,8 +1487,9 @@ class Session:
         *,
         before: str = "",
         after: str = "",
+        round: int = 0,
     ) -> None:
-        self.turn_diffs.append(TurnDiff(key, turn, path, diff, before, after))
+        self.turn_diffs.append(TurnDiff(key, turn, path, diff, before, after, round))
         if len(self.turn_diffs) > 100:
             self.turn_diffs.pop(0)
 
@@ -1527,37 +1533,52 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def turn_diffs_by_turn(self) -> dict[int, list[TurnDiff]]:
+    def turn_diffs_by_round(self) -> dict[int, list[TurnDiff]]:
         grouped: dict[int, list[TurnDiff]] = {}
         for diff in self.turn_diffs:
-            grouped.setdefault(diff.turn, []).append(diff)
+            grouped.setdefault(diff.round or diff.turn, []).append(diff)
         return grouped
 
-    def latest_turn_diffs(self) -> tuple[int, list[TurnDiff]] | None:
-        grouped = self.turn_diffs_by_turn()
+    def latest_round_diffs(self) -> tuple[int, list[TurnDiff]] | None:
+        grouped = self.turn_diffs_by_round()
         if not grouped:
             return None
-        turn = max(grouped)
-        return turn, grouped[turn]
+        round = max(grouped)
+        return round, grouped[round]
 
-    def session_diff_sections(self) -> list[tuple[str, str, str]]:
+    @staticmethod
+    def net_diff_section(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
+        if before == after:
+            return None
+        text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
+        return (status, path, text) if text else None
+
+    @classmethod
+    def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, include_legacy: bool = True) -> list[tuple[str, str, str]]:
         states: dict[str, tuple[str, str]] = {}
-        for diff in self.turn_diffs:
+        legacy: list[tuple[str, str, str]] = []
+        for diff in diffs:
             if not diff.before and not diff.after:
+                if include_legacy:
+                    legacy.append((status, diff.path, diff.diff))
                 continue
             if diff.path not in states:
                 states[diff.path] = (diff.before, diff.after)
             else:
                 before, _after = states[diff.path]
                 states[diff.path] = (before, diff.after)
-        sections: list[tuple[str, str, str]] = []
-        for path, (before, after) in states.items():
-            if before == after:
-                continue
-            text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
-            if text:
-                sections.append(("overall", path, text))
-        return sections
+        sections = [section for path, (before, after) in states.items() if (section := cls.net_diff_section(status, path, before, after))]
+        return sections + legacy
+
+    def latest_round_diff_sections(self) -> tuple[int, list[tuple[str, str, str]]] | None:
+        latest = self.latest_round_diffs()
+        if latest is None:
+            return None
+        round, diffs = latest
+        return round, self.net_diff_sections(diffs, "edit")
+
+    def session_diff_sections(self) -> list[tuple[str, str, str]]:
+        return self.net_diff_sections(self.turn_diffs, "overall", include_legacy=False)
 
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
@@ -5634,6 +5655,7 @@ class ToolRunner:
                     turn_diff_text,
                     before=turn_diff_before,
                     after=turn_diff_after,
+                    round=self.session.state.round_count,
                 )
         self.output_fn(
             self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed)
@@ -6282,6 +6304,7 @@ FINAL:
         self.on_queue_flush: Callable[[list[str]], None] | None = None
 
     def run(self, user_input: str) -> str:
+        self.session.state.round_count += 1
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
         tool_batches = 0
@@ -8500,25 +8523,25 @@ Tools:
             return "Usage: /diff"
         service = GitDiffService(self.agent.session.cwd)
         if service.git_root() is None:
-            latest = self._latest_turn_diff_text(service)
+            latest = self._latest_round_diff_text(service)
             return latest or "Not in a git repository"
         if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
             self.diff_viewer(service)
             return None
         return self._diff_text(service)
 
-    def _latest_turn_diff_text(self, service: GitDiffService) -> str:
-        latest = self.agent.session.latest_turn_diffs()
+    def _latest_round_diff_text(self, service: GitDiffService) -> str:
+        latest = self.agent.session.latest_round_diff_sections()
         if latest is None:
             return ""
-        turn, diffs = latest
-        lines = [f"### Latest · Round {turn}"]
-        for diff in diffs:
-            lines.append(f"#### {diff.path}")
-            bounded, truncated = service.bounded(diff.diff)
+        round, sections = latest
+        lines = [f"### Latest · Round {round}"]
+        for _status, path, diff in sections:
+            lines.append(f"#### {path}")
+            bounded, truncated = service.bounded(diff)
             lines.append(f"```diff\n{bounded}\n```")
             if truncated:
-                lines.append(f"\n*Diff truncated. Full edit output is stored at `{diff.key}`.*")
+                lines.append("\n*Diff truncated. Full edit output is stored in the session.*")
         return "\n".join(lines)
 
     def _diff_text(self, service: GitDiffService) -> str:
@@ -8533,7 +8556,7 @@ Tools:
                 untracked_parts.append(piece)
             else:
                 untracked_omitted.append(path)
-        latest = self._latest_turn_diff_text(service)
+        latest = self._latest_round_diff_text(service)
         if not latest and not staged and not unstaged and not untracked_parts and not untracked_omitted:
             return "No changes"
         lines: list[str] = []
@@ -8576,10 +8599,10 @@ Tools:
         state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
 
         def build_latest_sections() -> list[tuple[str, str, str]]:
-            latest = self.agent.session.latest_turn_diffs()
+            latest = self.agent.session.latest_round_diff_sections()
             if latest is not None:
-                _turn, diffs = latest
-                return [("edit", diff.path, diff.diff) for diff in diffs]
+                _round, sections = latest
+                return sections
             return []
 
         def build_current_sections() -> list[tuple[str, str, str]]:
@@ -8613,7 +8636,6 @@ Tools:
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
-            parts.append(("ansicyan", "  Files\n"))
             for index, (status, path, _) in enumerate(sections):
                 selected = index == state["file"]
                 marker = "> " if selected else "  "

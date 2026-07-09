@@ -327,6 +327,7 @@ def test_agent_state_roundtrip(tmp_path):
     s.state.known = ["file at src/a.py"]
     s.state.check = "assert x == 1"
     s.state.summary = "working on it"
+    s.state.round_count = 7
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
@@ -335,6 +336,7 @@ def test_agent_state_roundtrip(tmp_path):
     assert s2.state.known == ["file at src/a.py"]
     assert s2.state.check == "assert x == 1"
     assert s2.state.summary == "working on it"
+    assert s2.state.round_count == 7
 
 def test_multiple_deltas_accumulate_correctly(tmp_path):
     """Multiple delta saves accumulate data correctly."""

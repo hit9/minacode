@@ -49,11 +49,11 @@ def test_diff_clean_repo(tmp_path):
     assert lp.diff_command("") == "No changes"
 
 
-def test_diff_shows_latest_turn_in_clean_repo(tmp_path):
+def test_diff_shows_latest_round_in_clean_repo(tmp_path):
     git_init(tmp_path)
     s = session(tmp_path)
-    s.store_turn_diff("tr.1", 1, "old.py", "-old\n+older\n")
-    s.store_turn_diff("tr.2", 2, "new.py", "-old\n+new\n")
+    s.store_turn_diff("tr.1", 1, "old.py", "-old\n+older\n", round=1)
+    s.store_turn_diff("tr.2", 2, "new.py", "-old\n+new\n", round=2)
 
     lp = loop(s)
     result = lp.diff_command("")
@@ -64,7 +64,7 @@ def test_diff_shows_latest_turn_in_clean_repo(tmp_path):
     assert "old.py" not in result
 
 
-def test_diff_shows_latest_turn_outside_git_repo(tmp_path):
+def test_diff_shows_latest_round_outside_git_repo(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 3, "x.py", "-a\n+b\n")
 
@@ -177,6 +177,7 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
     s = session(tmp_path)
     s.state.turn_step = 1
+    s.state.round_count = 1
     s.settings.yolo = True
 
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -188,6 +189,7 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     td = s.turn_diffs[0]
     assert td.path == "a.py"
     assert td.turn == 1
+    assert td.round == 1
     assert td.key.startswith("tr.")
     assert "-old" in td.diff
     assert "+new" in td.diff
@@ -218,24 +220,43 @@ def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path
     assert s.session_diff_sections() == []
 
 
-def test_session_latest_turn_diffs_returns_newest_turn(tmp_path):
+def test_session_latest_round_diffs_returns_newest_round(tmp_path):
     s = session(tmp_path)
-    s.store_turn_diff("tr.1", 1, "a.py", "-a\n+b\n")
-    s.store_turn_diff("tr.2", 3, "c.py", "-c\n+d\n")
-    s.store_turn_diff("tr.3", 2, "b.py", "-b\n+c\n")
+    s.store_turn_diff("tr.1", 1, "a.py", "-a\n+b\n", round=1)
+    s.store_turn_diff("tr.2", 3, "c.py", "-c\n+d\n", round=2)
+    s.store_turn_diff("tr.3", 2, "b.py", "-b\n+c\n", round=1)
 
-    latest = s.latest_turn_diffs()
+    latest = s.latest_round_diffs()
 
     assert latest is not None
-    turn, diffs = latest
-    assert turn == 3
+    round, diffs = latest
+    assert round == 2
     assert [diff.path for diff in diffs] == ["c.py"]
+
+
+def test_latest_round_diffs_include_all_steps_in_round(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-old\n+mid\n", before="old\n", after="mid\n", round=1)
+    s.store_turn_diff("tr.2", 2, "b.py", "-one\n+two\n", before="one\n", after="two\n", round=1)
+    s.store_turn_diff("tr.3", 2, "a.py", "-mid\n+new\n", before="mid\n", after="new\n", round=1)
+    s.store_turn_diff("tr.4", 0, "older.py", "-x\n+y\n", before="x\n", after="y\n", round=0)
+
+    latest = s.latest_round_diff_sections()
+
+    assert latest is not None
+    round, sections = latest
+    assert round == 1
+    assert [path for _status, path, _diff in sections] == ["a.py", "b.py"]
+    a_diff = sections[0][2]
+    assert "-old" in a_diff
+    assert "+new" in a_diff
+    assert "mid" not in a_diff
 
 
 def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "seed"})
-    s.store_turn_diff("tr.1", 2, "x.py", "-a\n+b\n")
+    s.store_turn_diff("tr.1", 2, "x.py", "-a\n+b\n", round=1)
 
     store = n.SessionSnapshotStore(s)
     uid = store.save()
@@ -245,9 +266,10 @@ def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     assert loaded.turn_diffs[0].path == "x.py"
     assert loaded.turn_diffs[0].diff == "-a\n+b\n"
     assert loaded.turn_diffs[0].turn == 2
+    assert loaded.turn_diffs[0].round == 1
 
 
-def test_resume_recovers_latest_turn_diff_from_old_edit_records(tmp_path):
+def test_resume_recovers_latest_round_diff_from_old_edit_records(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "data" / "sessions" / f"{s.uid}.jsonl"
     path.parent.mkdir(parents=True)
