@@ -8428,7 +8428,6 @@ Tools:
         Diff mode: ↑/↓ scroll one line, PgUp/PgDn scroll a page, Esc/← returns to list,
         r refreshes, q closes.
         """
-        """
         width = max(20, shutil.get_terminal_size().columns - 2)
         state: dict[str, Any] = {"view": 0, "mode": "list", "file": 0, "scroll": 0}
 
