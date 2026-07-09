@@ -800,13 +800,17 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "Enter queues next request" not in empty
 
 
-def test_queue_placeholder_shows_hint_only_when_empty():
-    placeholder = n.QueuePlaceholder("hint")
+def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
+    pending = {"value": False}
+    placeholder = n.QueuePlaceholder("first", "second", lambda: pending["value"])
 
     empty = placeholder.apply_transformation(SimpleNamespace(document=n.Document(""), fragments=[]))
+    pending["value"] = True
+    queued = placeholder.apply_transformation(SimpleNamespace(document=n.Document(""), fragments=[]))
     typed = placeholder.apply_transformation(SimpleNamespace(document=n.Document("x"), fragments=[("", "x")]))
 
-    assert empty.fragments == [("class:queue.hint", "hint")]
+    assert empty.fragments == [("class:queue.hint", "first")]
+    assert queued.fragments == [("class:queue.hint", "second")]
     assert typed.fragments == [("", "x")]
 
 
@@ -848,7 +852,7 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
 def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.pending_user_inputs = ["already sent", "queued instruction"]
+    s.pending_user_inputs = ["already sent"]
     s.state.current_model_request_pending_inputs = ["already sent"]
     s.state.current_model_call_started_at = 123.0
     killed = []
@@ -861,7 +865,7 @@ def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypat
     assert killed == [(n.os.getpid(), n.signal.SIGINT)]
 
 
-def test_flush_queued_input_now_ignores_empty_inactive_or_already_sent_queue(tmp_path, monkeypatch):
+def test_flush_queued_input_now_ignores_empty_inactive_or_already_requested_queue(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     killed = []
@@ -874,15 +878,11 @@ def test_flush_queued_input_now_ignores_empty_inactive_or_already_sent_queue(tmp
     s.state.current_model_call_started_at = 0.0
     assert loop.flush_queued_input_now() is False
 
-    s.state.current_model_call_started_at = 123.0
-    s.state.current_model_request_pending_inputs = ["queued instruction"]
-    assert loop.flush_queued_input_now() is False
-
     assert s.state.manual_model_retry_requested is False
     assert s.state.model_retry_count == 0
     assert killed == []
 
-    s.state.current_model_request_pending_inputs = []
+    s.state.current_model_call_started_at = 123.0
     s.state.manual_model_retry_requested = True
     assert loop.flush_queued_input_now() is False
 

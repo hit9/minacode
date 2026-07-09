@@ -7281,16 +7281,20 @@ class GitDiffService:
 
 
 class QueuePlaceholder(Processor):
-    def __init__(self, text: str):
-        self.text = text
+    def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
+        self.empty_text = empty_text
+        self.pending_text = pending_text
+        self.has_pending = has_pending
 
     def apply_transformation(self, ti):
-        fragments = ti.fragments if ti.document.text else [*ti.fragments, ("class:queue.hint", self.text)]
+        text = self.pending_text if self.has_pending() else self.empty_text
+        fragments = ti.fragments if ti.document.text else [*ti.fragments, ("class:queue.hint", text)]
         return Transformation(fragments)
 
 
 class CommandLoop:
-    QUEUE_HINT: ClassVar[str] = "Enter queues next request · blank Enter sends during model call · Ctrl-C stops"
+    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues next request · Ctrl-C stops"
+    QUEUE_PENDING_HINT: ClassVar[str] = "blank Enter sends during model call · Ctrl-C stops"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
@@ -7531,20 +7535,8 @@ Tools:
         os.kill(os.getpid(), signal.SIGINT)
         return True
 
-    def has_queued_input_outside_current_request(self) -> bool:
-        pending = [text for text in self.session.pending_user_inputs if text.strip()]
-        sent = list(self.session.state.current_model_request_pending_inputs)
-        for text in pending:
-            for index, value in enumerate(sent):
-                if value.strip() == text.strip():
-                    del sent[index]
-                    break
-            else:
-                return True
-        return False
-
     def flush_queued_input_now(self) -> bool:
-        if not self.has_queued_input_outside_current_request():
+        if not any(text.strip() for text in self.session.pending_user_inputs):
             return False
         return self.retry_current_model_request()
 
@@ -7561,7 +7553,17 @@ Tools:
             completer=self.input_completer,
             complete_while_typing=False,
         )
-        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt), QueuePlaceholder(self.QUEUE_HINT)])
+        control = BufferControl(
+            buffer=buffer,
+            input_processors=[
+                BeforeInput(prompt),
+                QueuePlaceholder(
+                    self.QUEUE_EMPTY_HINT,
+                    self.QUEUE_PENDING_HINT,
+                    lambda: any(text.strip() for text in self.session.pending_user_inputs),
+                ),
+            ],
+        )
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
 
