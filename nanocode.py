@@ -3562,8 +3562,8 @@ class ContextManager:
         if mcp_tools:
             messages.append({"role": "user", "content": mcp_tools})
 
-        messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
         messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])])))
+        messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
         return Text.value(messages)
 
     def dedup_mcp_describes(self, messages: list[Json]) -> list[Json]:
