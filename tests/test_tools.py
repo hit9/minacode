@@ -1084,9 +1084,26 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
-    assert events[0] == ("start", "printf live")
+    assert events[0] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1] == ("", "")
+
+
+def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
+    s = session(tmp_path)
+    events = []
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: events.append(("display", text)))
+    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+
+    runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
+
+    assert events[0] == ("display", "tool Bash printf live")
+    assert events[1] == ("start", "")
+    assert ("stdout", "live") in events
+    assert events[-1][0] == "display"
+    assert events[-1][1].startswith("tool Bash -> tr.")
+    assert sum("printf live" in text for kind, text in events if kind == "display") == 1
 
 
 def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):

@@ -5100,7 +5100,7 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started, approved, auto, display = time.monotonic(), False, False, None
+        started, approved, auto, display, finish_display = time.monotonic(), False, False, None, None
         if isinstance(tool, AskTool):
             tool.question_fn = self.question_fn
         try:
@@ -5123,14 +5123,16 @@ class ToolRunner:
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
-                self.live_start(str(call.args[0]) if call.args else "")
+                self.output_fn("tool " + (display or self.short_call(call)))
+                finish_display = call.name
+                self.live_start()
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         except Exception as error:
             output = f"ToolError: {error}"
-            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix)
+            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, finish_display=finish_display, batch_suffix=batch_suffix)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, auto=auto, display=display, finish_display=finish_display, batch_suffix=batch_suffix)
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
         if self.session.settings.debug:
@@ -5156,6 +5158,7 @@ class ToolRunner:
         approved: bool = False,
         auto: bool = False,
         display: str | None = None,
+        finish_display: str | None = None,
         store: bool = True,
         batch_suffix: str = "",
     ) -> str:
@@ -5170,7 +5173,17 @@ class ToolRunner:
         elif key:
             self.update_code_index(call, output)
         self.output_fn(
-            self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed)
+            self.finish_display(
+                call,
+                key,
+                output,
+                failed=failed,
+                approved=approved,
+                auto=auto,
+                display=finish_display or display,
+                batch_suffix=batch_suffix,
+                elapsed=elapsed,
+            )
         )
         return self.tool_message(call, key, output, failed=failed, display=display)
 
