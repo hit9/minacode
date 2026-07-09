@@ -5,10 +5,13 @@
 
 ### Added
 - Add immediate queued-input flushing while the agent is waiting on a model request. Pressing Enter in the `+>` queue still records text for the next LLM request; pressing blank Enter with newly queued text interrupts the active model request and retries it with that queued input included.
+- Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
 
 ### Fixed
 - Harden queued-input flushing so stale SIGINT delivery cannot cancel the whole turn after a model request already returned.
 - Avoid needless duplicate retries when the active model request already contains the queued input, prevent repeated blank Enter from stacking retry counts, and clear whitespace-only queue input on Enter.
+- Move queue-input guidance into the `+>` placeholder, keep it contextual for empty versus queued states, and simplify the send-now shortcut to Ctrl-C for queued follow-ups.
+- Keep Bash preview output color consistent and avoid duplicating output after an interactive live preview.
 
 ## 0.9.0 - 2026-07-07
 
