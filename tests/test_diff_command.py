@@ -222,3 +222,47 @@ def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     assert loaded.turn_diffs[0].diff == "-a\n+b\n"
     assert loaded.turn_diffs[0].turn == 2
     assert loaded.turn_diffs[0].accepted is True
+
+
+def test_resume_recovers_latest_turn_diff_from_old_edit_records(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "data" / "sessions" / f"{s.uid}.jsonl"
+    path.parent.mkdir(parents=True)
+    output = "\n".join(
+        [
+            '<Edit path="x.py">',
+            '<file_stat mtime_ns="1" size="2"/>',
+            "--- x.py",
+            "+++ x.py",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "<invalidate>0:1</invalidate>",
+            "</Edit>",
+        ]
+    )
+    n.SessionSnapshotStore.write_jsonl(
+        str(path),
+        {
+            "uid": s.uid,
+            "cwd": str(tmp_path),
+            "messages": [{"role": "user", "content": "seed"}],
+            "tool_records": [{"key": "tr.1", "name": "Edit", "args": ["x.py"], "output": output, "note": ""}],
+            "tool_counter": 1,
+        },
+        mode="w",
+    )
+
+    loaded = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    result = loop(loaded).diff_command("")
+
+    assert len(loaded.turn_diffs) == 1
+    assert loaded.turn_diffs[0].key == "tr.1"
+    assert loaded.turn_diffs[0].path == "x.py"
+    assert "### Latest turn" in result
+    assert "-old" in result
+    assert "+new" in result
+
+
+def test_edit_diff_recovery_ignores_malformed_output():
+    assert n.SessionSnapshotCodec.edit_diff_from_output("<Edit path=bad />") == ("", "")

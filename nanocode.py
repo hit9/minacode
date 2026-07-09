@@ -812,6 +812,38 @@ class SessionSnapshotCodec:
     def turn_diffs(data: list[Json]) -> list[TurnDiff]:
         return [TurnDiff(d["key"], d["turn"], d["timestamp"], d["path"], d["diff"], d.get("accepted", True)) for d in data]
 
+    @staticmethod
+    def turn_diffs_from_tool_records(records: list[ToolResultRecord]) -> list[TurnDiff]:
+        diffs: list[TurnDiff] = []
+        for turn, record in enumerate(records, start=1):
+            if record.name != "Edit":
+                continue
+            path, diff = SessionSnapshotCodec.edit_diff_from_output(record.output)
+            if path and diff:
+                diffs.append(TurnDiff(record.key, turn, 0.0, path, diff, True))
+        return diffs
+
+    @staticmethod
+    def edit_diff_from_output(output: str) -> tuple[str, str]:
+        lines = output.splitlines()
+        if not lines:
+            return "", ""
+        match = re.match(r"<Edit path=(.+)>", lines[0])
+        if match is None:
+            return "", ""
+        try:
+            path = str(json.loads(match.group(1)))
+        except (json.JSONDecodeError, ValueError):
+            return "", ""
+        diff_start = next((index for index, line in enumerate(lines) if line.startswith(("--- ", "diff --git "))), -1)
+        if diff_start < 0:
+            return "", ""
+        diff_end = len(lines)
+        for index in range(diff_start, len(lines)):
+            if lines[index].startswith("<invalidate>") or lines[index] == "</Edit>":
+                diff_end = index
+                break
+        return path, "\n".join(lines[diff_start:diff_end]).rstrip() + "\n"
 
     @classmethod
     def has_content(cls, session: "Session") -> bool:
@@ -821,6 +853,7 @@ class SessionSnapshotCodec:
                 bool(cls.persistable_messages(session.messages)),
                 bool(session.tool_records),
                 bool(session.tool_errors),
+                bool(session.turn_diffs),
                 bool(state.goal or state.plan or state.known or state.check or state.summary),
             )
         )
@@ -1038,6 +1071,9 @@ class SessionSnapshotStore:
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         tool_results = {record.key: record.output for record in tool_records}
         tool_results.update(data.get("tool_results", {}))
+        turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []))
+        if not turn_diffs:
+            turn_diffs = SessionSnapshotCodec.turn_diffs_from_tool_records(tool_records)
         session = Session(
             cwd=data.get("cwd", os.getcwd()),
             config=config,
@@ -1049,7 +1085,7 @@ class SessionSnapshotStore:
             tool_results=tool_results,
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
-            turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", [])),
+            turn_diffs=turn_diffs,
             uid=data.get("uid", uid),
             resumed=True,
         )
