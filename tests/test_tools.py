@@ -583,6 +583,17 @@ def test_uiprinter_renders_note_memory_status_colors():
     assert ("ansigreen", "  + pytest") in segs
 
 
+def test_uiprinter_keeps_bash_preview_output_white():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    segs = ui.tool_segments("tool Bash cmd -> tr.1\n  stderr:\n    Traceback\n      File x\n    AttributeError")
+
+    assert ("ansiwhite", "  stderr:") in segs
+    assert ("ansiwhite", "    Traceback") in segs
+    assert ("ansiwhite", "      File x") in segs
+    assert ("ansiwhite", "    AttributeError") in segs
+    assert not any(style == "ansibrightblack" and text in {"  stderr", "    Trac", "      Fi", "    Attr"} for style, text in segs)
+
+
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = n.BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]

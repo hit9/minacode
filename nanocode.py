@@ -6413,10 +6413,13 @@ class UiPrinter:
 
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
+        in_bash_preview = False
         for line in text.splitlines() or [""]:
             if line.startswith("tool ") and " · rejected:" in line:
+                in_bash_preview = False
                 segments.append(("ansibrightblack", line))
             elif line.startswith("tool "):
+                in_bash_preview = False
                 body = line[5:]
                 call, sep, tail = body.partition(" -> ")
                 failed = body.endswith(" [failed]") or body.endswith(" [refused]")
@@ -6426,11 +6429,19 @@ class UiPrinter:
                 if sep:
                     segments.append((tail_style, sep + tail))
             elif line.startswith("  error "):
+                in_bash_preview = False
                 segments.extend([("ansibrightblack", "  error "), ("ansired", line[8:])])
+            elif line in {"  stdout:", "  stderr:"}:
+                in_bash_preview = True
+                segments.append(("ansiwhite", line))
+            elif in_bash_preview and line.startswith("  "):
+                segments.append(("ansiwhite", line))
             elif line.startswith("  "):
+                in_bash_preview = False
                 label, value = line[:8], line[8:]
                 segments.extend([("ansibrightblack", label), ("ansiwhite", value)])
             else:
+                in_bash_preview = False
                 segments.append(("ansiwhite", line))
             segments.append(("", "\n"))
         return segments
