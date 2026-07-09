@@ -49,6 +49,34 @@ def test_diff_clean_repo(tmp_path):
     assert lp.diff_command("") == "No changes"
 
 
+def test_diff_shows_latest_turn_in_clean_repo(tmp_path):
+    git_init(tmp_path)
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "old.py", "-old\n+older\n")
+    s.store_turn_diff("tr.2", 2, "new.py", "-old\n+new\n")
+
+    lp = loop(s)
+    result = lp.diff_command("")
+
+    assert "### Latest turn · Turn 2" in result
+    assert "#### new.py" in result
+    assert "+new" in result
+    assert "old.py" not in result
+
+
+def test_diff_shows_latest_turn_outside_git_repo(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 3, "x.py", "-a\n+b\n")
+
+    lp = loop(s)
+    result = lp.diff_command("")
+
+    assert "### Latest turn · Turn 3" in result
+    assert "#### x.py" in result
+    assert "+b" in result
+    assert result != "Not in a git repository"
+
+
 def test_diff_unstaged_tracked_file(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
@@ -164,6 +192,20 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     assert "-old" in td.diff
     assert "+new" in td.diff
     assert td.accepted is True
+
+
+def test_session_latest_turn_diffs_returns_newest_turn(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-a\n+b\n")
+    s.store_turn_diff("tr.2", 3, "c.py", "-c\n+d\n")
+    s.store_turn_diff("tr.3", 2, "b.py", "-b\n+c\n")
+
+    latest = s.latest_turn_diffs()
+
+    assert latest is not None
+    turn, diffs = latest
+    assert turn == 3
+    assert [diff.path for diff in diffs] == ["c.py"]
 
 
 def test_session_snapshot_turn_diff_roundtrip(tmp_path):

@@ -1474,6 +1474,13 @@ class Session:
             grouped.setdefault(diff.turn, []).append(diff)
         return grouped
 
+    def latest_turn_diffs(self) -> tuple[int, list[TurnDiff]] | None:
+        grouped = self.turn_diffs_by_turn()
+        if not grouped:
+            return None
+        turn = max(grouped)
+        return turn, grouped[turn]
+
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
@@ -8408,11 +8415,26 @@ Tools:
         service = GitDiffService(self.agent.session.cwd)
         root = service.git_root()
         if root is None:
-            return "Not in a git repository"
+            latest = self._latest_turn_diff_text(service)
+            return latest or "Not in a git repository"
         if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
             self.diff_viewer(service)
             return None
         return self._diff_text(service)
+
+    def _latest_turn_diff_text(self, service: GitDiffService) -> str:
+        latest = self.agent.session.latest_turn_diffs()
+        if latest is None:
+            return ""
+        turn, diffs = latest
+        lines = [f"### Latest turn · Turn {turn}"]
+        for diff in diffs:
+            lines.append(f"#### {diff.path}")
+            bounded, truncated = service.bounded(diff.diff)
+            lines.append(f"```diff\n{bounded}\n```")
+            if truncated:
+                lines.append(f"\n*Diff truncated. Full edit output is stored at `{diff.key}`.*")
+        return "\n".join(lines)
 
     def _diff_text(self, service: GitDiffService) -> str:
         staged = service.git_diff(cached=True)
@@ -8426,9 +8448,12 @@ Tools:
                 untracked_parts.append(piece)
             else:
                 untracked_omitted.append(path)
-        if not staged and not unstaged and not untracked_parts and not untracked_omitted:
+        latest = self._latest_turn_diff_text(service)
+        if not latest and not staged and not unstaged and not untracked_parts and not untracked_omitted:
             return "No changes"
         lines: list[str] = []
+        if latest:
+            lines.append(latest)
         if staged:
             bounded, truncated = service.bounded(staged)
             lines.append("### Staged")
@@ -8467,6 +8492,10 @@ Tools:
 
         def build_views() -> list[tuple[str, list[tuple[str, str, str]]]]:
             views: list[tuple[str, list[tuple[str, str, str]]]] = []
+            latest = self.agent.session.latest_turn_diffs()
+            if latest is not None:
+                turn, diffs = latest
+                views.append((f"Latest turn · {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
             sections: list[tuple[str, str, str]] = []
             for path, diff in service.split_files(service.git_diff(cached=True)):
                 sections.append(("staged", path, diff))
@@ -8479,7 +8508,10 @@ Tools:
                 else:
                     sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
             views.append(("Current git diff", sections))
+            latest_turn = latest[0] if latest is not None else None
             for turn, diffs in sorted(self.agent.session.turn_diffs_by_turn().items(), reverse=True):
+                if turn == latest_turn:
+                    continue
                 views.append((f"Turn {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
             return views
 
