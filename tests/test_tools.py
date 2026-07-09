@@ -583,6 +583,17 @@ def test_uiprinter_renders_note_memory_status_colors():
     assert ("ansigreen", "  + pytest") in segs
 
 
+def test_uiprinter_keeps_bash_preview_output_white():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    segs = ui.tool_segments("tool Bash cmd -> tr.1\n  stderr:\n    Traceback\n      File x\n    AttributeError")
+
+    assert ("ansiwhite", "  stderr:") in segs
+    assert ("ansiwhite", "    Traceback") in segs
+    assert ("ansiwhite", "      File x") in segs
+    assert ("ansiwhite", "    AttributeError") in segs
+    assert not any(style == "ansibrightblack" and text in {"  stderr", "    Trac", "      Fi", "    Attr"} for style, text in segs)
+
+
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = n.BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]
@@ -1076,6 +1087,55 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     assert events[0] == ("start", "printf live")
     assert ("stdout", "live") in events
     assert events[-1] == ("", "")
+
+
+def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    stdout = "\n".join(f"out {index}" for index in range(20))
+    output = n.Tool.process_result("BashToolResult", 0, stdout, "err")
+
+    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False)
+
+    assert "tool Bash printf lots -> tr.1" in display
+    assert "  stdout:" in display
+    assert "    out 0" in display
+    assert "    ... 8 lines omitted ..." in display
+    assert "    out 19" in display
+    assert "  stderr:" in display
+    assert "    err" in display
+
+
+def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner.bash_live_preview_shown = lambda: True
+    output = n.Tool.process_result("BashToolResult", 0, "live output", "")
+
+    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False)
+
+    assert display == "tool Bash printf live -> tr.1"
+
+
+def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    output = n.Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
+
+    preview = runner.bash_result_preview(output)
+
+    assert "before </stdout> after" in preview
+    assert "before </stderr> after" in preview
+
+
+def test_tool_runner_bash_preview_does_not_omit_single_line(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    lines = [f"line {index}" for index in range(n.ToolRunner.BASH_PREVIEW_LINES + 1)]
+
+    preview = runner.preview_lines("\n".join(lines))
+
+    assert preview == lines
 
 
 def test_bash_live_preview_finish_erases_divider(monkeypatch):

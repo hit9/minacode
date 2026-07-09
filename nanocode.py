@@ -53,7 +53,7 @@ from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatC
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor
+from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.output import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -5257,6 +5257,9 @@ class MCPManager:
 
 
 class ToolRunner:
+    BASH_PREVIEW_LINES: ClassVar[int] = 12
+    BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
+
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
         self.context = context
@@ -5264,6 +5267,7 @@ class ToolRunner:
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[str], None] | None = None
+        self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
@@ -5551,6 +5555,7 @@ class ToolRunner:
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
+        bash_live_preview_shown = call.name == "Bash" and self.consume_bash_live_preview_shown()
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
@@ -5560,7 +5565,53 @@ class ToolRunner:
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
                 lines.append("  " + summary)
+        elif call.name == "Bash" and not bash_live_preview_shown:
+            preview = self.bash_result_preview(output)
+            if preview:
+                lines.extend("  " + line for line in preview.splitlines())
         return "\n".join(lines)
+
+    def consume_bash_live_preview_shown(self) -> bool:
+        return bool(self.bash_live_preview_shown and self.bash_live_preview_shown())
+
+    def bash_result_preview(self, output: str) -> str:
+        sections = []
+        for name in ("stdout", "stderr"):
+            text = self.tagged_output(output, name).strip()
+            if text:
+                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text))])
+        return "\n".join(sections)
+
+    @staticmethod
+    def tagged_output(output: str, name: str) -> str:
+        start_tag = f"<{name}>"
+        end_tag = f"</{name}>"
+        start = output.find(start_tag)
+        if start < 0:
+            return ""
+        start += len(start_tag)
+        if output.startswith("\n", start):
+            start += 1
+        next_section = output.find("\n<stderr>\n", start) if name == "stdout" else output.find("\n</BashToolResult>", start)
+        end = output.rfind(end_tag, start, next_section if next_section >= 0 else len(output))
+        if end < 0:
+            return ""
+        text = output[start:end]
+        return text[:-1] if text.endswith("\n") else text
+
+    def preview_lines(self, text: str) -> list[str]:
+        lines = [self.clip_preview_line(line) for line in text.splitlines()]
+        if len(lines) <= self.BASH_PREVIEW_LINES + 1:
+            return lines
+        head = self.BASH_PREVIEW_LINES // 2
+        tail = self.BASH_PREVIEW_LINES - head
+        omitted = len(lines) - self.BASH_PREVIEW_LINES
+        noun = "line" if omitted == 1 else "lines"
+        return [*lines[:head], f"... {omitted} {noun} omitted ...", *lines[-tail:]]
+
+    def clip_preview_line(self, line: str) -> str:
+        line = line.rstrip()
+        return line if len(line) <= self.BASH_PREVIEW_LINE_LIMIT else line[: self.BASH_PREVIEW_LINE_LIMIT - 3].rstrip() + "..."
 
     def mcp_result_summary(self, call: ToolCall, output: str, elapsed: float | None) -> str:
         if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":
@@ -6362,10 +6413,13 @@ class UiPrinter:
 
     def tool_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
+        in_bash_preview = False
         for line in text.splitlines() or [""]:
             if line.startswith("tool ") and " · rejected:" in line:
+                in_bash_preview = False
                 segments.append(("ansibrightblack", line))
             elif line.startswith("tool "):
+                in_bash_preview = False
                 body = line[5:]
                 call, sep, tail = body.partition(" -> ")
                 failed = body.endswith(" [failed]") or body.endswith(" [refused]")
@@ -6375,11 +6429,19 @@ class UiPrinter:
                 if sep:
                     segments.append((tail_style, sep + tail))
             elif line.startswith("  error "):
+                in_bash_preview = False
                 segments.extend([("ansibrightblack", "  error "), ("ansired", line[8:])])
+            elif line in {"  stdout:", "  stderr:"}:
+                in_bash_preview = True
+                segments.append(("ansiwhite", line))
+            elif in_bash_preview and line.startswith("  "):
+                segments.append(("ansiwhite", line))
             elif line.startswith("  "):
+                in_bash_preview = False
                 label, value = line[:8], line[8:]
                 segments.extend([("ansibrightblack", label), ("ansiwhite", value)])
             else:
+                in_bash_preview = False
                 segments.append(("ansiwhite", line))
             segments.append(("", "\n"))
         return segments
@@ -6956,8 +7018,23 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
+class QueuePlaceholder(Processor):
+    def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
+        self.empty_text = empty_text
+        self.pending_text = pending_text
+        self.has_pending = has_pending
+
+    def apply_transformation(self, ti):
+        buffer = ti.buffer_control.buffer
+        if ti.lineno != ti.document.line_count - 1 or buffer is None or buffer.text:
+            return Transformation(ti.fragments)
+        text = self.pending_text if self.has_pending() else self.empty_text
+        return Transformation(ti.fragments + [("class:queue.hint", text)])
+
+
 class CommandLoop:
-    QUEUE_HINT: ClassVar[str] = "Enter queues next request · blank Enter sends during model call · Ctrl-C stops"
+    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
+    QUEUE_PENDING_HINT: ClassVar[str] = "Ctrl-C sends queued now"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
@@ -7056,6 +7133,7 @@ Tools:
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
+        self.bash_live_preview_rendered = False
         self.live_status_paused = False
         self.live_queue_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
@@ -7083,6 +7161,7 @@ Tools:
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
 
     @staticmethod
@@ -7187,8 +7266,6 @@ Tools:
             fragments.append(("", "\n"))
             fragments.append(("class:prompt", "+ "))
             fragments.append(("", Text.clean(text)))
-        fragments.append(("", "\n"))
-        fragments.append(("class:queue.hint", self.QUEUE_HINT))
         return fragments
 
     def retry_current_model_request(self) -> bool:
@@ -7198,23 +7275,6 @@ Tools:
         self.session.state.model_retry_count += 1
         os.kill(os.getpid(), signal.SIGINT)
         return True
-
-    def has_queued_input_outside_current_request(self) -> bool:
-        pending = [text for text in self.session.pending_user_inputs if text.strip()]
-        sent = list(self.session.state.current_model_request_pending_inputs)
-        for text in pending:
-            for index, value in enumerate(sent):
-                if value.strip() == text.strip():
-                    del sent[index]
-                    break
-            else:
-                return True
-        return False
-
-    def flush_queued_input_now(self) -> bool:
-        if not self.has_queued_input_outside_current_request():
-            return False
-        return self.retry_current_model_request()
 
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
         prompt = FormattedText([("class:prompt", "+> ")])
@@ -7229,7 +7289,17 @@ Tools:
             completer=self.input_completer,
             complete_while_typing=False,
         )
-        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt)])
+        control = BufferControl(
+            buffer=buffer,
+            input_processors=[
+                BeforeInput(prompt),
+                QueuePlaceholder(
+                    self.QUEUE_EMPTY_HINT,
+                    self.QUEUE_PENDING_HINT,
+                    lambda: any(text.strip() for text in self.session.pending_user_inputs),
+                ),
+            ],
+        )
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
 
@@ -7256,7 +7326,6 @@ Tools:
             else:
                 self.queue_input_text = ""
                 buffer.reset(Document(""))
-                self.flush_queued_input_now()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):
@@ -7773,6 +7842,7 @@ Tools:
         self.emit(text)
 
     def tool_live_start(self, command: str = "") -> None:
+        self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
         self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
@@ -7783,6 +7853,7 @@ Tools:
             self.status_bar.stop()
         self.live_preview.divider = self.bash_divider_fragments()
         self.live_preview.start(command)
+        self.bash_live_preview_rendered = self.live_preview.active
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
@@ -7797,6 +7868,7 @@ Tools:
                     self.status_bar.stop()
                 self.live_preview.divider = self.bash_divider_fragments()
                 self.live_preview.start()
+                self.bash_live_preview_rendered = self.live_preview.active
             self.live_preview.update(text)
             return
         if self.live_preview.active:
@@ -7807,6 +7879,11 @@ Tools:
         if self.live_queue_paused:
             self.queue_input_paused.clear()
             self.live_queue_paused = False
+
+    def consume_bash_live_preview_rendered(self) -> bool:
+        rendered = self.bash_live_preview_rendered
+        self.bash_live_preview_rendered = False
+        return rendered
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:

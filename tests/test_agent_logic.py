@@ -797,8 +797,30 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     empty = "".join(t for _, t in loop.queue_region_fragments())
     # Bare rule with just the state word, no count, and no queued messages.
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
-    assert "Enter queues next request" in empty
-    assert "blank Enter sends during model call" in empty
+    assert "Enter queues follow-up" not in empty
+
+
+def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
+    pending = {"value": False}
+    placeholder = n.QueuePlaceholder("first", "second", lambda: pending["value"])
+
+    def ti(text: str, fragments=None):
+        document = n.Document(text)
+        return SimpleNamespace(
+            buffer_control=SimpleNamespace(buffer=SimpleNamespace(text=text)),
+            document=document,
+            lineno=document.line_count - 1,
+            fragments=fragments or [],
+        )
+
+    empty = placeholder.apply_transformation(ti(""))
+    pending["value"] = True
+    queued = placeholder.apply_transformation(ti(""))
+    typed = placeholder.apply_transformation(ti("x", [("", "x")]))
+
+    assert empty.fragments == [("class:queue.hint", "first")]
+    assert queued.fragments == [("class:queue.hint", "second")]
+    assert typed.fragments == [("", "x")]
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
@@ -834,52 +856,6 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
     assert loop.queue_input_paused.is_set()
     assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
     assert not loop.queue_input_active.is_set()
-
-
-def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.pending_user_inputs = ["already sent", "queued instruction"]
-    s.state.current_model_request_pending_inputs = ["already sent"]
-    s.state.current_model_call_started_at = 123.0
-    killed = []
-
-    monkeypatch.setattr(n.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    assert loop.flush_queued_input_now() is True
-    assert s.state.manual_model_retry_requested is True
-    assert s.state.model_retry_count == 1
-    assert killed == [(n.os.getpid(), n.signal.SIGINT)]
-
-
-def test_flush_queued_input_now_ignores_empty_inactive_or_already_sent_queue(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    killed = []
-    monkeypatch.setattr(n.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    s.state.current_model_call_started_at = 123.0
-    assert loop.flush_queued_input_now() is False
-
-    s.pending_user_inputs = ["queued instruction"]
-    s.state.current_model_call_started_at = 0.0
-    assert loop.flush_queued_input_now() is False
-
-    s.state.current_model_call_started_at = 123.0
-    s.state.current_model_request_pending_inputs = ["queued instruction"]
-    assert loop.flush_queued_input_now() is False
-
-    assert s.state.manual_model_retry_requested is False
-    assert s.state.model_retry_count == 0
-    assert killed == []
-
-    s.state.current_model_request_pending_inputs = []
-    s.state.manual_model_retry_requested = True
-    assert loop.flush_queued_input_now() is False
-
-    assert s.state.manual_model_retry_requested is True
-    assert s.state.model_retry_count == 0
-    assert killed == []
 
 
 def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
@@ -1345,6 +1321,9 @@ def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
     loop.tool_live_start()
     assert loop.queue_input_paused.is_set()
     assert loop.live_queue_paused is True
+    assert loop.agent.tools.bash_live_preview_shown is not None
+    assert loop.agent.tools.bash_live_preview_shown() is True
+    assert loop.agent.tools.bash_live_preview_shown() is False
 
     loop.tool_live_output("", "")
     assert not loop.queue_input_paused.is_set()
