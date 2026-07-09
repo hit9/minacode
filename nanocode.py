@@ -604,10 +604,8 @@ class ToolErrorRecord:
 class TurnDiff:
     key: str
     turn: int
-    timestamp: float
     path: str
     diff: str
-    accepted: bool = True
     before: str = ""
     after: str = ""
 
@@ -802,14 +800,11 @@ class SessionSnapshotCodec:
         return {
             "key": diff.key,
             "turn": diff.turn,
-            "timestamp": diff.timestamp,
             "path": diff.path,
             "diff": diff.diff,
-            "accepted": diff.accepted,
             "before": diff.before,
             "after": diff.after,
         }
-
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
@@ -823,14 +818,12 @@ class SessionSnapshotCodec:
     def turn_diffs(data: list[Json]) -> list[TurnDiff]:
         return [
             TurnDiff(
-                d["key"],
-                d["turn"],
-                d["timestamp"],
-                d["path"],
-                d["diff"],
-                d.get("accepted", True),
-                d.get("before", ""),
-                d.get("after", ""),
+                key=d["key"],
+                turn=d["turn"],
+                path=d["path"],
+                diff=d["diff"],
+                before=d.get("before", ""),
+                after=d.get("after", ""),
             )
             for d in data
         ]
@@ -843,7 +836,7 @@ class SessionSnapshotCodec:
                 continue
             path, diff = SessionSnapshotCodec.edit_diff_from_output(record.output)
             if path and diff:
-                diffs.append(TurnDiff(record.key, turn, 0.0, path, diff, True))
+                diffs.append(TurnDiff(record.key, turn, path, diff))
         return diffs
 
     @staticmethod
@@ -1487,15 +1480,12 @@ class Session:
         path: str,
         diff: str,
         *,
-        accepted: bool = True,
         before: str = "",
         after: str = "",
     ) -> None:
-        timestamp = time.time()
-        self.turn_diffs.append(TurnDiff(key, turn, timestamp, path, diff, accepted, before, after))
+        self.turn_diffs.append(TurnDiff(key, turn, path, diff, before, after))
         if len(self.turn_diffs) > 100:
             self.turn_diffs.pop(0)
-
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
@@ -1551,17 +1541,17 @@ class Session:
         return turn, grouped[turn]
 
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
-        states: dict[str, tuple[int, str, int, str]] = {}
-        for order, diff in enumerate(self.turn_diffs):
+        states: dict[str, tuple[str, str]] = {}
+        for diff in self.turn_diffs:
             if not diff.before and not diff.after:
                 continue
             if diff.path not in states:
-                states[diff.path] = (order, diff.before, order, diff.after)
+                states[diff.path] = (diff.before, diff.after)
             else:
-                first_order, before, _last_order, _after = states[diff.path]
-                states[diff.path] = (first_order, before, order, diff.after)
+                before, _after = states[diff.path]
+                states[diff.path] = (before, diff.after)
         sections: list[tuple[str, str, str]] = []
-        for path, (_first_order, before, _last_order, after) in states.items():
+        for path, (before, after) in states.items():
             if before == after:
                 continue
             text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
@@ -5642,7 +5632,6 @@ class ToolRunner:
                     self.session.state.turn_step,
                     turn_diff_path,
                     turn_diff_text,
-                    accepted=approved or auto,
                     before=turn_diff_before,
                     after=turn_diff_after,
                 )
@@ -7178,8 +7167,6 @@ class GitDiffService:
     def git_diff(self, cached: bool = False) -> str:
         cmd = [
             "git",
-            "-C",
-            self.cwd,
             "diff",
             "--no-ext-diff",
             "--no-color",
@@ -7192,14 +7179,9 @@ class GitDiffService:
         return result.stdout
 
     def git_untracked(self) -> list[str]:
-        result = self._run(["git", "-C", self.cwd, "ls-files", "--others", "--exclude-standard"])
+        result = self._run(["git", "ls-files", "--others", "--exclude-standard"])
         paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return paths
-
-    def git_status_fingerprint(self) -> str:
-        """Cheap fingerprint for detecting external git changes while the viewer is open."""
-        result = self._run(["git", "-C", self.cwd, "status", "--porcelain=v1", "-uno"], timeout=5)
-        return result.stdout
 
     @classmethod
     def bounded(cls, text: str, max_bytes: int | None = None, max_lines: int | None = None) -> tuple[str, bool]:
@@ -8517,8 +8499,7 @@ Tools:
         if args.strip():
             return "Usage: /diff"
         service = GitDiffService(self.agent.session.cwd)
-        root = service.git_root()
-        if root is None:
+        if service.git_root() is None:
             latest = self._latest_turn_diff_text(service)
             return latest or "Not in a git repository"
         if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
@@ -8591,7 +8572,6 @@ Tools:
         Diff mode: ↑/↓ scroll one line, Ctrl-U/Ctrl-D half a page, PgUp/PgDn a page,
         Esc/← returns to list, r refreshes, q closes.
         """
-        width = max(20, shutil.get_terminal_size().columns - 2)
         tabs = ("Latest", "Uncommitted", "Session")
         state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
 
@@ -8616,11 +8596,8 @@ Tools:
                     sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
             return sections
 
-        def build_session_sections() -> list[tuple[str, str, str]]:
-            return self.agent.session.session_diff_sections()
-
         def build_model() -> dict[str, Any]:
-            return {"latest": build_latest_sections(), "current": build_current_sections(), "session": build_session_sections()}
+            return {"latest": build_latest_sections(), "current": build_current_sections(), "session": self.agent.session.session_diff_sections()}
 
         model = build_model()
 

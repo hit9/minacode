@@ -191,7 +191,6 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     assert td.key.startswith("tr.")
     assert "-old" in td.diff
     assert "+new" in td.diff
-    assert td.accepted is True
     assert td.before == "old\n"
     assert td.after == "new\n"
 
@@ -246,7 +245,6 @@ def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     assert loaded.turn_diffs[0].path == "x.py"
     assert loaded.turn_diffs[0].diff == "-a\n+b\n"
     assert loaded.turn_diffs[0].turn == 2
-    assert loaded.turn_diffs[0].accepted is True
 
 
 def test_resume_recovers_latest_turn_diff_from_old_edit_records(tmp_path):
