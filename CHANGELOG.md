@@ -1,6 +1,15 @@
 # Changelog
 
 
+## 0.9.1 - 2026-07-09
+
+### Added
+- Add immediate queued-input flushing while the agent is waiting on a model request. Pressing Enter in the `+>` queue still records text for the next LLM request; pressing blank Enter with newly queued text interrupts the active model request and retries it with that queued input included.
+
+### Fixed
+- Harden queued-input flushing so stale SIGINT delivery cannot cancel the whole turn after a model request already returned.
+- Avoid needless duplicate retries when the active model request already contains the queued input, prevent repeated blank Enter from stacking retry counts, and clear whitespace-only queue input on Enter.
+
 ## 0.9.0 - 2026-07-07
 
 ### Added
