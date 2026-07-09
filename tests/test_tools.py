@@ -1078,6 +1078,23 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     assert events[-1] == ("", "")
 
 
+def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    stdout = "\n".join(f"out {index}" for index in range(20))
+    output = n.Tool.process_result("BashToolResult", 0, stdout, "err")
+
+    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False)
+
+    assert "tool Bash printf lots -> tr.1" in display
+    assert "  stdout:" in display
+    assert "    out 0" in display
+    assert "    ... 8 lines omitted ..." in display
+    assert "    out 19" in display
+    assert "  stderr:" in display
+    assert "    err" in display
+
+
 def test_bash_live_preview_finish_erases_divider(monkeypatch):
     # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
     # marker only — finish must redraw once without it so it does not linger in the log per command.

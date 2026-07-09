@@ -5257,6 +5257,9 @@ class MCPManager:
 
 
 class ToolRunner:
+    BASH_PREVIEW_LINES: ClassVar[int] = 12
+    BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
+
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
         self.context = context
@@ -5560,7 +5563,37 @@ class ToolRunner:
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
                 lines.append("  " + summary)
+        elif call.name == "Bash":
+            preview = self.bash_result_preview(output)
+            if preview:
+                lines.extend("  " + line for line in preview.splitlines())
         return "\n".join(lines)
+
+    def bash_result_preview(self, output: str) -> str:
+        sections = []
+        for name in ("stdout", "stderr"):
+            text = self.tagged_output(output, name).strip()
+            if text:
+                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text))])
+        return "\n".join(sections)
+
+    @staticmethod
+    def tagged_output(output: str, name: str) -> str:
+        match = re.search(rf"(?s)<{name}>\n?(.*?)\n?</{name}>", output)
+        return match.group(1) if match else ""
+
+    def preview_lines(self, text: str) -> list[str]:
+        lines = [self.clip_preview_line(line) for line in text.splitlines()]
+        if len(lines) <= self.BASH_PREVIEW_LINES:
+            return lines
+        head = self.BASH_PREVIEW_LINES // 2
+        tail = self.BASH_PREVIEW_LINES - head
+        omitted = len(lines) - self.BASH_PREVIEW_LINES
+        return [*lines[:head], f"... {omitted} lines omitted ...", *lines[-tail:]]
+
+    def clip_preview_line(self, line: str) -> str:
+        line = line.rstrip()
+        return line if len(line) <= self.BASH_PREVIEW_LINE_LIMIT else line[: self.BASH_PREVIEW_LINE_LIMIT - 3].rstrip() + "..."
 
     def mcp_result_summary(self, call: ToolCall, output: str, elapsed: float | None) -> str:
         if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":
