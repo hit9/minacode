@@ -6298,6 +6298,8 @@ class UiPrinter:
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith("tool "):
             return self.tool_segments(text)
+        if text.startswith("stored "):
+            return [("ansibrightblack", line + "\n") for line in text.splitlines() or [""]]
         if text.startswith("approve ") or text.startswith("auto "):
             return self.approval_segments(text)
         if text.startswith(("goal:", "check:", "plan:", "known:")):

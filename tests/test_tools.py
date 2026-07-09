@@ -594,6 +594,13 @@ def test_uiprinter_keeps_bash_preview_output_white():
     assert not any(style == "ansibrightblack" and text in {"  stderr", "    Trac", "      Fi", "    Attr"} for style, text in segs)
 
 
+def test_uiprinter_renders_stored_result_dim():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+
+    assert ui.segments("stored tr.50") == [("ansibrightblack", "stored tr.50\n")]
+    assert ui.segments("stored tr.50 [approved]") == [("ansibrightblack", "stored tr.50 [approved]\n")]
+
+
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = n.BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]
