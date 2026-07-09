@@ -612,6 +612,13 @@ class TurnDiff:
     round: int = 0
 
 
+TURN_DIFF_SNAPSHOT_CHAR_LIMIT = 200_000
+
+
+def bounded_turn_diff_snapshots(before: str, after: str) -> tuple[str, str]:
+    return ("", "") if len(before) + len(after) > TURN_DIFF_SNAPSHOT_CHAR_LIMIT else (before, after)
+
+
 @dataclass
 class MCPServerConfig:
     name: str
@@ -800,13 +807,14 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def turn_diff(diff: TurnDiff) -> Json:
+        before, after = bounded_turn_diff_snapshots(diff.before, diff.after)
         return {
             "key": diff.key,
             "turn": diff.turn,
             "path": diff.path,
             "diff": diff.diff,
-            "before": diff.before,
-            "after": diff.after,
+            "before": before,
+            "after": after,
             "round": diff.round,
         }
 
@@ -820,18 +828,11 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def turn_diffs(data: list[Json]) -> list[TurnDiff]:
-        return [
-            TurnDiff(
-                key=d["key"],
-                turn=d["turn"],
-                path=d["path"],
-                diff=d["diff"],
-                before=d.get("before", ""),
-                after=d.get("after", ""),
-                round=d.get("round", 0),
-            )
-            for d in data
-        ]
+        diffs: list[TurnDiff] = []
+        for d in data:
+            before, after = bounded_turn_diff_snapshots(d.get("before", ""), d.get("after", ""))
+            diffs.append(TurnDiff(key=d["key"], turn=d["turn"], path=d["path"], diff=d["diff"], before=before, after=after, round=d.get("round", 0)))
+        return diffs
 
     @staticmethod
     def turn_diffs_from_tool_records(records: list[ToolResultRecord]) -> list[TurnDiff]:
@@ -1494,6 +1495,7 @@ class Session:
         after: str = "",
         round: int = 0,
     ) -> None:
+        before, after = bounded_turn_diff_snapshots(before, after)
         self.turn_diffs.append(TurnDiff(key, turn, path, diff, before, after, round))
         if len(self.turn_diffs) > 100:
             self.turn_diffs.pop(0)

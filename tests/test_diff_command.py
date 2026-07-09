@@ -220,6 +220,21 @@ def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path
     assert s.session_diff_sections() == []
 
 
+def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
+    s = session(tmp_path)
+    large = "x" * (n.TURN_DIFF_SNAPSHOT_CHAR_LIMIT + 1)
+    s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before=large, after="new\n", round=1)
+
+    diff = s.turn_diffs[0]
+    assert diff.diff == "-old\n+new\n"
+    assert diff.before == ""
+    assert diff.after == ""
+    latest = s.latest_round_diff_sections()
+    assert latest is not None
+    assert latest[1] == [("edit", "large.py", "-old\n+new\n")]
+    assert s.session_diff_sections() == []
+
+
 def test_session_latest_round_diffs_returns_newest_round(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-a\n+b\n", round=1)
