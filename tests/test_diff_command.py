@@ -89,6 +89,18 @@ def test_diff_untracked_file_synthesized(tmp_path):
     assert "+hello" in result
 
 
+def test_diff_binary_untracked_file_is_reported(tmp_path):
+    git_init(tmp_path)
+    (tmp_path / "image.bin").write_bytes(b"\xff\x00\x01")
+
+    lp = loop(session(tmp_path))
+    result = lp.diff_command("")
+
+    assert "### Untracked files" in result
+    assert "Binary or unreadable files" in result
+    assert "image.bin" in result
+
+
 def test_diff_bounds_large_output(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("line\n" * 10_000, encoding="utf-8")
@@ -109,6 +121,27 @@ def test_git_diff_service_split_files():
     assert sections[0][0] == "b.py"
     assert "old" in sections[0][1]
     assert sections[1][0] == "d.py"
+
+
+def test_git_diff_service_split_files_keeps_deleted_files():
+    diff = "diff --git a/a.py b/a.py\nindex 123..000 100644\n--- a/a.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"
+    sections = n.GitDiffService.split_files(diff)
+
+    assert len(sections) == 1
+    assert sections[0][0] == "a.py"
+    assert "+++ /dev/null" in sections[0][1]
+
+
+def test_ui_segment_lines_keeps_styled_diff_lines_together():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    diff = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-old\n+return 42\n"
+
+    segments = ui.diff_segments(diff)
+    lines = ui.segment_lines(segments)
+
+    assert len(lines) == len(diff.splitlines())
+    assert "".join(text for line in lines for _style, text in line) == "".join(text for _style, text in segments)
+    assert any("+return 42" in "".join(text for _style, text in line) for line in lines)
 
 
 def test_tool_runner_captures_edit_turn_diff(tmp_path):

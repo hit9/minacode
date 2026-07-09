@@ -6637,6 +6637,21 @@ class UiPrinter:
         return segments
 
     @staticmethod
+    def segment_lines(segments: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
+        lines: list[list[tuple[str, str]]] = [[]]
+        for style, text in segments:
+            parts = text.split("\n")
+            for index, part in enumerate(parts):
+                if index > 0:
+                    lines[-1].append((style, "\n"))
+                    lines.append([])
+                if part:
+                    lines[-1].append((style, part))
+        if lines and not lines[-1]:
+            lines.pop()
+        return lines
+
+    @staticmethod
     def indent_segments(segments: list[tuple[str, str]], indent: str) -> list[tuple[str, str]]:
         indented: list[tuple[str, str]] = []
         at_start = True
@@ -7118,24 +7133,33 @@ class GitDiffService:
         lines = diff_text.splitlines()
         sections: list[tuple[str, str]] = []
         current: list[str] = []
-        path: str | None = None
-        for line in lines:
-            if line.startswith("--- ") or line.startswith("diff --git"):
-                if current and path is not None:
-                    sections.append((path, "\n".join(current)))
-                current = [line]
-                path = None
+        old_path: str | None = None
+        new_path: str | None = None
+
+        def clean_path(value: str | None) -> str | None:
+            if not value or value == "/dev/null":
+                return None
+            return value[2:] if value.startswith(("a/", "b/")) else value
+
+        def flush() -> None:
+            path = clean_path(new_path) or clean_path(old_path)
+            if current and path is not None:
+                sections.append((path, "\n".join(current)))
+
+        for index, line in enumerate(lines):
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+            synthetic_header = line.startswith("--- ") and next_line.startswith("+++ ") and current and not current[0].startswith("diff --git ")
+            if line.startswith("diff --git ") or synthetic_header:
+                flush()
+                current = []
+                old_path = None
+                new_path = None
+            current.append(line)
+            if line.startswith("--- "):
+                old_path = line[4:].strip()
             elif line.startswith("+++ "):
-                current.append(line)
-                candidate = line[4:].strip()
-                if candidate.startswith("b/"):
-                    candidate = candidate[2:]
-                if candidate != "/dev/null":
-                    path = candidate
-            else:
-                current.append(line)
-        if current and path is not None:
-            sections.append((path, "\n".join(current)))
+                new_path = line[4:].strip()
+        flush()
         return sections
 
 
@@ -8395,11 +8419,14 @@ Tools:
         unstaged = service.git_diff(cached=False)
         untracked_paths = service.git_untracked()
         untracked_parts: list[str] = []
+        untracked_omitted: list[str] = []
         for path in untracked_paths[:20]:
             piece = service.read_untracked_diff(path)
             if piece:
                 untracked_parts.append(piece)
-        if not staged and not unstaged and not untracked_parts:
+            else:
+                untracked_omitted.append(path)
+        if not staged and not unstaged and not untracked_parts and not untracked_omitted:
             return "No changes"
         lines: list[str] = []
         if staged:
@@ -8418,6 +8445,13 @@ Tools:
             lines.append("### Untracked files")
             for piece in untracked_parts:
                 lines.append(f"```diff\n{piece}\n```")
+        if untracked_omitted:
+            if not untracked_parts:
+                lines.append("### Untracked files")
+            lines.append("Binary or unreadable files:")
+            lines.extend(f"- `{path}`" for path in untracked_omitted)
+        if len(untracked_paths) > 20:
+            lines.append(f"\n*{len(untracked_paths) - 20} more untracked file(s) omitted.*")
         return "\n".join(lines)
 
     def diff_viewer(self, service: GitDiffService) -> None:
@@ -8442,6 +8476,8 @@ Tools:
                 piece = service.read_untracked_diff(path)
                 if piece:
                     sections.append(("untracked", path, piece))
+                else:
+                    sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
             views.append(("Current git diff", sections))
             for turn, diffs in sorted(self.agent.session.turn_diffs_by_turn().items(), reverse=True):
                 views.append((f"Turn {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
@@ -8454,11 +8490,11 @@ Tools:
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
-            parts.append(("class:ansicyan", "  Files\n"))
+            parts.append(("ansicyan", "  Files\n"))
             for index, (status, path, _) in enumerate(sections):
                 selected = index == state["file"]
                 marker = "> " if selected else "  "
-                style = "class:ansicyan" if selected else "class:choice.disabled"
+                style = "ansicyan" if selected else "class:choice.disabled"
                 parts.append((style, f"{marker}{status.title():10} {path}\n"))
             parts.append(("", "\n"))
 
@@ -8466,13 +8502,14 @@ Tools:
             state["file"] = state["file"] % len(sections)
             status, path, diff = sections[state["file"]]
             parts.append(("", "\n"))
-            parts.append(("class:ansicyan", f"  {status.title()} · {path}\n"))
-            lines = self.ui.diff_segments(diff)
+            parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
+            lines = self.ui.segment_lines(self.ui.diff_segments(diff))
             height = viewport()
             state["scroll"] = min(max(0, int(state["scroll"])), max(0, len(lines) - height))
             visible = lines[state["scroll"] : state["scroll"] + height]
-            parts.extend((style, text) for style, text in visible)
-            if not visible or not visible[-1][1].endswith("\n"):
+            for line in visible:
+                parts.extend(line)
+            if not visible or not visible[-1] or not visible[-1][-1][1].endswith("\n"):
                 parts.append(("", "\n"))
 
         def fragments():
