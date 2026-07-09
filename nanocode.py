@@ -6578,12 +6578,13 @@ class BashLivePreview:
     # Heartbeat tick so the elapsed timer advances even while a command produces no output
     # (e.g. quiet long-runners or `... | tail` that buffers until EOF), so the terminal never
     # looks frozen during a blocking command.
-    TICK: ClassVar[float] = 0.1
+    TICK: ClassVar[float] = 1.0
 
     def __init__(self):
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
+        self.rendered_rows: list[list[tuple[str, str]]] = []
         self.text = ""
         self.command = ""
         self.started_at = 0.0
@@ -6597,7 +6598,7 @@ class BashLivePreview:
         if not sys.stderr.isatty():
             return
         with self.lock:
-            self.active, self.rendered_lines, self.text = True, 0, ""
+            self.active, self.rendered_lines, self.rendered_rows, self.text = True, 0, [], ""
             self.command = " ".join(command.split())
             self.started_at = time.monotonic()
             self.render()
@@ -6634,7 +6635,7 @@ class BashLivePreview:
         if timer is not None:
             timer.join()
         with self.lock:
-            self.rendered_lines, self.text = 0, ""
+            self.rendered_lines, self.rendered_rows, self.text = 0, [], ""
 
     def render(self) -> None:
         if not self.active:
@@ -6642,6 +6643,8 @@ class BashLivePreview:
         rows: list[list[tuple[str, str]]] = [[("ansibrightblack", line)] for line in self.frame_lines()]
         if self.divider:
             rows = [self.divider, [("", "")], *rows]  # divider + a blank line, then the frame
+        if rows == self.rendered_rows:
+            return
         previous = self.rendered_lines
         if self.rendered_lines:
             self.output.write_raw(f"\x1b[{self.rendered_lines}A")
@@ -6658,11 +6661,12 @@ class BashLivePreview:
             self.output.write_raw(f"\x1b[{previous - len(rows)}A")
         self.output.flush()
         self.rendered_lines = len(rows)
+        self.rendered_rows = rows
 
     def elapsed_label(self) -> str:
         elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
         if elapsed < 60:
-            return f"{elapsed:.1f}s"
+            return f"{int(elapsed)}s"
         minutes, rest = divmod(int(elapsed), 60)
         return f"{minutes}m{rest:02d}s"
 
@@ -7553,7 +7557,7 @@ Tools:
     def save_and_emit_resume(self) -> None:
         uid = self.session.save_snapshot()
         if uid:
-            self.emit(f"Resume with: nanocode --resume {uid}")
+            self.emit(f"Resume with:\nnanocode --resume {uid}")
 
     def discover_mcp(self) -> None:
         self.session.mcp.discover_enabled()

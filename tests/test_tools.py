@@ -1233,6 +1233,39 @@ def test_bash_live_preview_finish_erases_divider(monkeypatch):
     assert finish_rows and not any("working" in line for line in finish_rows)  # redrawn without it
 
 
+def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
+    printed = []
+    now = [100.4]
+    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+
+    class FakeOut:
+        def write_raw(self, s=""):
+            pass
+
+        def erase_end_of_line(self):
+            pass
+
+        def flush(self):
+            pass
+
+    p = n.BashLivePreview()
+    p.output = FakeOut()
+    p.active = True
+    p.command = "sleep 30"
+    p.started_at = 100.0
+
+    p.render()
+    first = len(printed)
+    p.render()
+    assert len(printed) == first
+
+    now[0] = 101.1
+    p.render()
+    assert len(printed) > first
+    assert any("running… 1s" in line for line in printed[first:])
+
+
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True

@@ -942,7 +942,7 @@ def test_exit_command_prints_resume_command(tmp_path):
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
-    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
     assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
@@ -1022,7 +1022,7 @@ def test_eof_exit_prints_resume_command(tmp_path):
 
     assert loop.run() == 0
 
-    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
     assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
