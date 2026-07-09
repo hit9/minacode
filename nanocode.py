@@ -2605,6 +2605,8 @@ class EditTool(Tool):
         if os.path.exists(path):
             if creating:
                 raise ToolError("file already exists")
+            if os.path.isdir(path):
+                raise ToolError("path is a directory")
             with open(path, encoding="utf-8") as file:
                 original = file.read()
             created = False
@@ -3934,6 +3936,8 @@ class EditBatchPlan:
             return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
 
         def call(self, tool: EditTool) -> str:
+            if os.path.isdir(self.path):
+                raise ToolError("planned edit is stale; path is a directory")
             if os.path.exists(self.path):
                 with open(self.path, encoding="utf-8") as file:
                     current = file.read()
@@ -4000,6 +4004,8 @@ class EditBatchPlan:
         if os.path.exists(path):
             if creating:
                 raise ToolError("file already exists")
+            if os.path.isdir(path):
+                raise ToolError("path is a directory")
             with open(path, encoding="utf-8") as file:
                 original = file.readlines()
             state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)

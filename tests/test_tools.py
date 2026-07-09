@@ -908,6 +908,27 @@ def test_tool_runner_batch_edit_rejects_patch_missing_file_without_create(tmp_pa
     assert s.tool_errors and "use op=create" in s.tool_errors[0].error
 
 
+def test_edit_rejects_directory_target(tmp_path):
+    s = session(tmp_path)
+    (tmp_path / "pkg").mkdir()
+
+    with pytest.raises(n.ToolError, match="path is a directory"):
+        n.EditTool(s, ["pkg", [{"op": "replace_all", "old": "", "new": "x\n"}]]).call()
+
+
+def test_tool_runner_batch_edit_rejects_directory_target(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    (tmp_path / "pkg").mkdir()
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([n.ToolCall("patch", "Edit", ["pkg", [{"op": "replace_all", "old": "", "new": "x\n"}]])])
+
+    assert s.tool_records == []
+    assert s.tool_errors and "path is a directory" in s.tool_errors[0].error
+
+
 def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
