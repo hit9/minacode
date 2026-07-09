@@ -58,7 +58,7 @@ def test_diff_shows_latest_turn_in_clean_repo(tmp_path):
     lp = loop(s)
     result = lp.diff_command("")
 
-    assert "### Latest edits · Batch 2" in result
+    assert "### Latest · Round 2" in result
     assert "#### new.py" in result
     assert "+new" in result
     assert "old.py" not in result
@@ -71,7 +71,7 @@ def test_diff_shows_latest_turn_outside_git_repo(tmp_path):
     lp = loop(s)
     result = lp.diff_command("")
 
-    assert "### Latest edits · Batch 3" in result
+    assert "### Latest · Round 3" in result
     assert "#### x.py" in result
     assert "+b" in result
     assert result != "Not in a git repository"
@@ -192,6 +192,31 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     assert "-old" in td.diff
     assert "+new" in td.diff
     assert td.accepted is True
+    assert td.before == "old\n"
+    assert td.after == "new\n"
+
+
+def test_session_diff_sections_show_overall_file_effect(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-old\n+mid\n", before="old\n", after="mid\n")
+    s.store_turn_diff("tr.2", 2, "a.py", "-mid\n+new\n", before="mid\n", after="new\n")
+
+    sections = s.session_diff_sections()
+
+    assert len(sections) == 1
+    status, path, diff = sections[0]
+    assert status == "overall"
+    assert path == "a.py"
+    assert "-old" in diff
+    assert "+new" in diff
+    assert "mid" not in diff
+
+
+def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n")
+
+    assert s.session_diff_sections() == []
 
 
 def test_session_latest_turn_diffs_returns_newest_turn(tmp_path):
@@ -259,7 +284,7 @@ def test_resume_recovers_latest_turn_diff_from_old_edit_records(tmp_path):
     assert len(loaded.turn_diffs) == 1
     assert loaded.turn_diffs[0].key == "tr.1"
     assert loaded.turn_diffs[0].path == "x.py"
-    assert "### Latest edits" in result
+    assert "### Latest" in result
     assert "-old" in result
     assert "+new" in result
 

@@ -608,6 +608,8 @@ class TurnDiff:
     path: str
     diff: str
     accepted: bool = True
+    before: str = ""
+    after: str = ""
 
 
 @dataclass
@@ -797,7 +799,16 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def turn_diff(diff: TurnDiff) -> Json:
-        return {"key": diff.key, "turn": diff.turn, "timestamp": diff.timestamp, "path": diff.path, "diff": diff.diff, "accepted": diff.accepted}
+        return {
+            "key": diff.key,
+            "turn": diff.turn,
+            "timestamp": diff.timestamp,
+            "path": diff.path,
+            "diff": diff.diff,
+            "accepted": diff.accepted,
+            "before": diff.before,
+            "after": diff.after,
+        }
 
 
     @staticmethod
@@ -810,7 +821,19 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def turn_diffs(data: list[Json]) -> list[TurnDiff]:
-        return [TurnDiff(d["key"], d["turn"], d["timestamp"], d["path"], d["diff"], d.get("accepted", True)) for d in data]
+        return [
+            TurnDiff(
+                d["key"],
+                d["turn"],
+                d["timestamp"],
+                d["path"],
+                d["diff"],
+                d.get("accepted", True),
+                d.get("before", ""),
+                d.get("after", ""),
+            )
+            for d in data
+        ]
 
     @staticmethod
     def turn_diffs_from_tool_records(records: list[ToolResultRecord]) -> list[TurnDiff]:
@@ -1457,9 +1480,19 @@ class Session:
         if self.skills is None:
             self.skills = SkillLibrary.load(self)
 
-    def store_turn_diff(self, key: str, turn: int, path: str, diff: str, *, accepted: bool = True) -> None:
+    def store_turn_diff(
+        self,
+        key: str,
+        turn: int,
+        path: str,
+        diff: str,
+        *,
+        accepted: bool = True,
+        before: str = "",
+        after: str = "",
+    ) -> None:
         timestamp = time.time()
-        self.turn_diffs.append(TurnDiff(key, turn, timestamp, path, diff, accepted))
+        self.turn_diffs.append(TurnDiff(key, turn, timestamp, path, diff, accepted, before, after))
         if len(self.turn_diffs) > 100:
             self.turn_diffs.pop(0)
 
@@ -1516,6 +1549,25 @@ class Session:
             return None
         turn = max(grouped)
         return turn, grouped[turn]
+
+    def session_diff_sections(self) -> list[tuple[str, str, str]]:
+        states: dict[str, tuple[int, str, int, str]] = {}
+        for order, diff in enumerate(self.turn_diffs):
+            if not diff.before and not diff.after:
+                continue
+            if diff.path not in states:
+                states[diff.path] = (order, diff.before, order, diff.after)
+            else:
+                first_order, before, _last_order, _after = states[diff.path]
+                states[diff.path] = (first_order, before, order, diff.after)
+        sections: list[tuple[str, str, str]] = []
+        for path, (_first_order, before, _last_order, after) in states.items():
+            if before == after:
+                continue
+            text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
+            if text:
+                sections.append(("overall", path, text))
+        return sections
 
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
@@ -2461,6 +2513,8 @@ class EditTool(Tool):
             file.write(result.content)
         self.last_path = self.session.relpath(path)
         self.last_diff = self.diff(path, original, result.content)
+        self.last_before = original
+        self.last_after = result.content
         return "\n".join(
             [
                 f"<Edit path={json.dumps(self.last_path)}>",
@@ -4179,6 +4233,8 @@ class EditBatchPlan:
                 file.write(self.after)
             tool.last_path = tool.session.relpath(self.path)
             tool.last_diff = tool.diff(self.path, self.before, self.after)
+            tool.last_before = self.before
+            tool.last_after = self.after
             return "\n".join(
                 [
                     f"<Edit path={json.dumps(tool.last_path)}>",
@@ -5523,6 +5579,8 @@ class ToolRunner:
             return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         turn_diff_path = getattr(tool, "last_path", "") if isinstance(tool, EditTool) else ""
         turn_diff_text = getattr(tool, "last_diff", "") if isinstance(tool, EditTool) else ""
+        turn_diff_before = getattr(tool, "last_before", "") if isinstance(tool, EditTool) else ""
+        turn_diff_after = getattr(tool, "last_after", "") if isinstance(tool, EditTool) else ""
         return "ok", self.finish(
             call,
             output,
@@ -5533,6 +5591,8 @@ class ToolRunner:
             batch_suffix=batch_suffix,
             turn_diff_path=turn_diff_path,
             turn_diff_text=turn_diff_text,
+            turn_diff_before=turn_diff_before,
+            turn_diff_after=turn_diff_after,
         )
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
@@ -5563,6 +5623,8 @@ class ToolRunner:
         batch_suffix: str = "",
         turn_diff_path: str = "",
         turn_diff_text: str = "",
+        turn_diff_before: str = "",
+        turn_diff_after: str = "",
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = (
@@ -5576,7 +5638,13 @@ class ToolRunner:
             self.update_code_index(call, output)
             if turn_diff_path and turn_diff_text:
                 self.session.store_turn_diff(
-                    key, self.session.state.turn_step, turn_diff_path, turn_diff_text, accepted=approved or auto
+                    key,
+                    self.session.state.turn_step,
+                    turn_diff_path,
+                    turn_diff_text,
+                    accepted=approved or auto,
+                    before=turn_diff_before,
+                    after=turn_diff_after,
                 )
         self.output_fn(
             self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed)
@@ -7271,7 +7339,7 @@ class CommandLoop:
   /status            Show runtime status.
   /ps                Show active background jobs.
   /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
-  /diff              Show current git diff (unstaged, staged, untracked).
+  /diff              Show latest edits, uncommitted git changes, and overall session diff.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
@@ -8463,7 +8531,7 @@ Tools:
         if latest is None:
             return ""
         turn, diffs = latest
-        lines = [f"### Latest edits · Batch {turn}"]
+        lines = [f"### Latest · Round {turn}"]
         for diff in diffs:
             lines.append(f"#### {diff.path}")
             bounded, truncated = service.bounded(diff.diff)
@@ -8518,14 +8586,14 @@ Tools:
     def diff_viewer(self, service: GitDiffService) -> None:
         """Interactive diff viewer. First shows a file list; open a file to see its diff.
 
-        List mode: ↑/↓ or j/k move, Enter opens the selected file, ←/→ switches view,
+        List mode: ↑/↓ or j/k move, h/l or ←/→ switches tabs, Enter opens the selected file,
         r refreshes, q/Esc closes.
         Diff mode: ↑/↓ scroll one line, PgUp/PgDn scroll a page, Esc/← returns to list,
         r refreshes, q closes.
         """
         width = max(20, shutil.get_terminal_size().columns - 2)
-        tabs = ("Latest edits", "Current git diff", "History")
-        state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "history": 0, "scroll": 0}
+        tabs = ("Latest", "Uncommitted", "Session")
+        state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
 
         def build_latest_sections() -> list[tuple[str, str, str]]:
             latest = self.agent.session.latest_turn_diffs()
@@ -8548,19 +8616,11 @@ Tools:
                     sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
             return sections
 
-        def build_history() -> list[tuple[str, list[tuple[str, str, str]]]]:
-            latest = self.agent.session.latest_turn_diffs()
-            latest_turn = latest[0] if latest is not None else None
-            history: list[tuple[str, list[tuple[str, str, str]]]] = []
-            for turn, diffs in sorted(self.agent.session.turn_diffs_by_turn().items(), reverse=True):
-                if turn == latest_turn:
-                    continue
-                label = f"Edit batch {turn} · {len(diffs)} file{'s' if len(diffs) != 1 else ''}"
-                history.append((label, [("edit", diff.path, diff.diff) for diff in diffs]))
-            return history
+        def build_session_sections() -> list[tuple[str, str, str]]:
+            return self.agent.session.session_diff_sections()
 
         def build_model() -> dict[str, Any]:
-            return {"latest": build_latest_sections(), "current": build_current_sections(), "history": build_history()}
+            return {"latest": build_latest_sections(), "current": build_current_sections(), "session": build_session_sections()}
 
         model = build_model()
 
@@ -8572,11 +8632,7 @@ Tools:
                 return model["latest"]
             if state["tab"] == 1:
                 return model["current"]
-            history = model["history"]
-            if not history or state["mode"] != "history_detail":
-                return []
-            state["history"] = int(state["history"]) % len(history)
-            return history[state["history"]][1]
+            return model["session"]
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
@@ -8586,22 +8642,6 @@ Tools:
                 marker = "> " if selected else "  "
                 style = "ansicyan" if selected else "class:choice.disabled"
                 parts.append((style, f"{marker}{status.title():10} {path}\n"))
-            parts.append(("", "\n"))
-
-        def history_fragments(parts: list[tuple[str, str]]) -> None:
-            history = model["history"]
-            parts.append(("", "\n"))
-            parts.append(("ansicyan", "  Edit history\n"))
-            for index, (label, sections) in enumerate(history):
-                selected = index == state["history"]
-                marker = "> " if selected else "  "
-                style = "ansicyan" if selected else "class:choice.disabled"
-                parts.append((style, f"{marker}{label}\n"))
-                if selected:
-                    paths = ", ".join(path for _status, path, _diff in sections[:3])
-                    suffix = "..." if len(sections) > 3 else ""
-                    if paths:
-                        parts.append(("class:choice.disabled", f"    {paths}{suffix}\n"))
             parts.append(("", "\n"))
 
         def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
@@ -8628,24 +8668,15 @@ Tools:
             parts.append(("", "\n"))
 
             sections = active_sections()
-            if state["tab"] == 2 and state["mode"] == "history":
-                if model["history"]:
-                    history_fragments(parts)
-                else:
-                    parts.append(("class:choice.disabled", "  No older edit history\n"))
-            elif not sections:
+            if not sections:
                 parts.append(("class:choice.disabled", "  No diffs\n"))
             elif state["mode"] == "list":
                 list_fragments(parts, sections)
             else:
                 file_fragments(parts, sections)
-            mode_hint = "history" if state["mode"] == "history" else "list" if state["mode"] == "list" else "diff"
-            if state["mode"] == "history":
-                hint = "↑/↓ move · Enter open · ←/→ view · r refresh · Esc/q close"
-                count = len(model["history"])
-                position = f"{int(state['history']) + 1}/{count}" if count else "0/0"
-            elif state["mode"] == "list":
-                hint = "↑/↓ move · Enter open · ←/→ view · r refresh · Esc/q close"
+            mode_hint = "list" if state["mode"] == "list" else "diff"
+            if state["mode"] == "list":
+                hint = "↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close"
                 position = f"{int(state['file']) + 1}/{len(sections) or 0}"
             else:
                 hint = "↑/↓ scroll · PgUp/PgDn page · Esc/← back · r refresh · q close"
@@ -8656,18 +8687,11 @@ Tools:
         def switch_tab(event, delta: int) -> None:
             state["tab"] = (int(state["tab"]) + delta) % len(tabs)
             state["file"] = 0
-            state["history"] = 0
             state["scroll"] = 0
-            state["mode"] = "history" if state["tab"] == 2 else "list"
+            state["mode"] = "list"
             event.app.invalidate()
 
         def move(event, delta: int) -> None:
-            if state["mode"] == "history":
-                history = model["history"]
-                if history:
-                    state["history"] = (int(state["history"]) + delta) % len(history)
-                event.app.invalidate()
-                return
             sections = active_sections()
             if sections and state["mode"] == "list":
                 state["file"] = (int(state["file"]) + delta) % len(sections)
@@ -8681,21 +8705,14 @@ Tools:
                 event.app.invalidate()
 
         def open_file(event):
-            if state["mode"] == "history":
-                if model["history"]:
-                    state["mode"] = "history_detail"
-                    state["file"] = 0
-                    state["scroll"] = 0
-                    event.app.invalidate()
-                return
             if state["mode"] == "list" and active_sections():
                 state["mode"] = "file"
                 state["scroll"] = 0
                 event.app.invalidate()
 
         def back(event):
-            if state["mode"] in {"file", "history_detail"}:
-                state["mode"] = "history" if state["tab"] == 2 else "list"
+            if state["mode"] == "file":
+                state["mode"] = "list"
                 state["scroll"] = 0
                 event.app.invalidate()
 
@@ -8703,25 +8720,26 @@ Tools:
             nonlocal model
             model = build_model()
             state["file"] = 0
-            state["history"] = 0
             state["scroll"] = 0
-            state["mode"] = "history" if state["tab"] == 2 else "list"
+            state["mode"] = "list"
             event.app.invalidate()
 
         bindings = KeyBindings()
 
         def _left(event):
-            if state["mode"] in {"file", "history_detail"}:
+            if state["mode"] == "file":
                 back(event)
             else:
                 switch_tab(event, -1)
 
         def _right(event):
-            if state["mode"] in {"list", "history"}:
+            if state["mode"] == "list":
                 switch_tab(event, 1)
 
         bindings.add("right", eager=True)(_right)
         bindings.add("left", eager=True)(_left)
+        bindings.add("l", eager=True)(lambda event: switch_tab(event, 1))
+        bindings.add("h", eager=True)(lambda event: switch_tab(event, -1))
         bindings.add("tab", eager=True)(lambda event: switch_tab(event, 1))
         bindings.add("down", eager=True)(lambda event: move(event, 1))
         bindings.add("j", eager=True)(lambda event: move(event, 1))
