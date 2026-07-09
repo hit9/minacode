@@ -53,7 +53,7 @@ from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatC
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor
+from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.output import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -7280,6 +7280,15 @@ class GitDiffService:
 
 
 
+class QueuePlaceholder(Processor):
+    def __init__(self, text: str):
+        self.text = text
+
+    def apply_transformation(self, ti):
+        fragments = ti.fragments if ti.document.text else [*ti.fragments, ("class:queue.hint", self.text)]
+        return Transformation(fragments)
+
+
 class CommandLoop:
     QUEUE_HINT: ClassVar[str] = "Enter queues next request · blank Enter sends during model call · Ctrl-C stops"
 
@@ -7512,8 +7521,6 @@ Tools:
             fragments.append(("", "\n"))
             fragments.append(("class:prompt", "+ "))
             fragments.append(("", Text.clean(text)))
-        fragments.append(("", "\n"))
-        fragments.append(("class:queue.hint", self.QUEUE_HINT))
         return fragments
 
     def retry_current_model_request(self) -> bool:
@@ -7554,7 +7561,7 @@ Tools:
             completer=self.input_completer,
             complete_while_typing=False,
         )
-        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt)])
+        control = BufferControl(buffer=buffer, input_processors=[BeforeInput(prompt), QueuePlaceholder(self.QUEUE_HINT)])
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
 

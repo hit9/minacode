@@ -797,8 +797,17 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     empty = "".join(t for _, t in loop.queue_region_fragments())
     # Bare rule with just the state word, no count, and no queued messages.
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
-    assert "Enter queues next request" in empty
-    assert "blank Enter sends during model call" in empty
+    assert "Enter queues next request" not in empty
+
+
+def test_queue_placeholder_shows_hint_only_when_empty():
+    placeholder = n.QueuePlaceholder("hint")
+
+    empty = placeholder.apply_transformation(SimpleNamespace(document=n.Document(""), fragments=[]))
+    typed = placeholder.apply_transformation(SimpleNamespace(document=n.Document("x"), fragments=[("", "x")]))
+
+    assert empty.fragments == [("class:queue.hint", "hint")]
+    assert typed.fragments == [("", "x")]
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
