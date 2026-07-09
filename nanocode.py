@@ -7295,8 +7295,8 @@ class QueuePlaceholder(Processor):
 
 
 class CommandLoop:
-    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues next request · Ctrl-C stops"
-    QUEUE_PENDING_HINT: ClassVar[str] = "blank Enter sends during model call · Ctrl-C stops"
+    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
+    QUEUE_PENDING_HINT: ClassVar[str] = "Ctrl-C sends queued now"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
@@ -7537,11 +7537,6 @@ Tools:
         os.kill(os.getpid(), signal.SIGINT)
         return True
 
-    def flush_queued_input_now(self) -> bool:
-        if not any(text.strip() for text in self.session.pending_user_inputs):
-            return False
-        return self.retry_current_model_request()
-
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
         prompt = FormattedText([("class:prompt", "+> ")])
 
@@ -7592,7 +7587,6 @@ Tools:
             else:
                 self.queue_input_text = ""
                 buffer.reset(Document(""))
-                self.flush_queued_input_now()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):
