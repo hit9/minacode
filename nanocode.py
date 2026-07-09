@@ -601,6 +601,16 @@ class ToolErrorRecord:
 
 
 @dataclass
+class TurnDiff:
+    key: str
+    turn: int
+    timestamp: float
+    path: str
+    diff: str
+    accepted: bool = True
+
+
+@dataclass
 class MCPServerConfig:
     name: str
     url: str = ""
@@ -781,8 +791,14 @@ class SessionSnapshotCodec:
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
+            "turn_diffs_len": len(session.turn_diffs), "turn_diffs_digest": cls.digest([cls.turn_diff(diff) for diff in session.turn_diffs]),
         }
         # fmt: on
+
+    @staticmethod
+    def turn_diff(diff: TurnDiff) -> Json:
+        return {"key": diff.key, "turn": diff.turn, "timestamp": diff.timestamp, "path": diff.path, "diff": diff.diff, "accepted": diff.accepted}
+
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
@@ -791,6 +807,11 @@ class SessionSnapshotCodec:
     @staticmethod
     def tool_error(error: ToolErrorRecord) -> Json:
         return {"key": error.key, "name": error.name, "args": error.args, "error": error.error}
+
+    @staticmethod
+    def turn_diffs(data: list[Json]) -> list[TurnDiff]:
+        return [TurnDiff(d["key"], d["turn"], d["timestamp"], d["path"], d["diff"], d.get("accepted", True)) for d in data]
+
 
     @classmethod
     def has_content(cls, session: "Session") -> bool:
@@ -839,6 +860,7 @@ class SessionSnapshotCodec:
             "uid": session.uid, "cwd": session.cwd, "messages": cls.persistable_messages(session.messages),
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
+            "turn_diffs": [cls.turn_diff(diff) for diff in session.turn_diffs],
         }
         # fmt: on
 
@@ -866,6 +888,14 @@ class SessionSnapshotCodec:
             "tool_errors_len",
             "tool_errors_digest",
         )
+        cls.add_sequence_delta(
+            delta,
+            "turn_diffs",
+            [cls.turn_diff(diff) for diff in session.turn_diffs],
+            saved,
+            "turn_diffs_len",
+            "turn_diffs_digest",
+        )
         return delta
 
     @classmethod
@@ -882,6 +912,7 @@ class SessionSnapshotCodec:
         cls.merge_sequence(data, delta, "messages")
         cls.merge_sequence(data, delta, "tool_records")
         cls.merge_sequence(data, delta, "tool_errors")
+        cls.merge_sequence(data, delta, "turn_diffs")
         # Backward compatibility for snapshots written before tool_results became derived.
         if "tool_results_replace" in delta:
             data["tool_results"] = delta["tool_results_replace"]
@@ -1018,6 +1049,7 @@ class SessionSnapshotStore:
             tool_results=tool_results,
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
+            turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", [])),
             uid=data.get("uid", uid),
             resumed=True,
         )
@@ -1366,6 +1398,7 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[str] = field(default_factory=list)
     tool_counter: int = 0
+    turn_diffs: list[TurnDiff] = field(default_factory=list)
     jobs: dict[str, BackgroundJob] = field(default_factory=dict)
     job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
@@ -1387,6 +1420,13 @@ class Session:
             self.mcp = MCPManager(self)
         if self.skills is None:
             self.skills = SkillLibrary.load(self)
+
+    def store_turn_diff(self, key: str, turn: int, path: str, diff: str, *, accepted: bool = True) -> None:
+        timestamp = time.time()
+        self.turn_diffs.append(TurnDiff(key, turn, timestamp, path, diff, accepted))
+        if len(self.turn_diffs) > 100:
+            self.turn_diffs.pop(0)
+
 
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
@@ -1427,6 +1467,12 @@ class Session:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
         return key
+
+    def turn_diffs_by_turn(self) -> dict[int, list[TurnDiff]]:
+        grouped: dict[int, list[TurnDiff]] = {}
+        for diff in self.turn_diffs:
+            grouped.setdefault(diff.turn, []).append(diff)
+        return grouped
 
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
@@ -2370,11 +2416,13 @@ class EditTool(Tool):
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
             file.write(result.content)
+        self.last_path = self.session.relpath(path)
+        self.last_diff = self.diff(path, original, result.content)
         return "\n".join(
             [
-                f"<Edit path={json.dumps(self.session.relpath(path))}>",
+                f"<Edit path={json.dumps(self.last_path)}>",
                 self.file_stat(path),
-                self.diff(path, original, result.content).rstrip(),
+                self.last_diff.rstrip(),
                 self.edit_context(result.content, result.changes),
                 "</Edit>",
             ]
@@ -4086,11 +4134,13 @@ class EditBatchPlan:
                 os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as file:
                 file.write(self.after)
+            tool.last_path = tool.session.relpath(self.path)
+            tool.last_diff = tool.diff(self.path, self.before, self.after)
             return "\n".join(
                 [
-                    f"<Edit path={json.dumps(tool.session.relpath(self.path))}>",
+                    f"<Edit path={json.dumps(tool.last_path)}>",
                     tool.file_stat(self.path),
-                    tool.diff(self.path, self.before, self.after).rstrip(),
+                    tool.last_diff.rstrip(),
                     tool.edit_context(self.after, self.changes),
                     "</Edit>",
                 ]
@@ -5428,7 +5478,19 @@ class ToolRunner:
         except Exception as error:
             output = f"ToolError: {error}"
             return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix)
+        turn_diff_path = getattr(tool, "last_path", "") if isinstance(tool, EditTool) else ""
+        turn_diff_text = getattr(tool, "last_diff", "") if isinstance(tool, EditTool) else ""
+        return "ok", self.finish(
+            call,
+            output,
+            elapsed=time.monotonic() - started,
+            approved=approved,
+            auto=auto,
+            display=display,
+            batch_suffix=batch_suffix,
+            turn_diff_path=turn_diff_path,
+            turn_diff_text=turn_diff_text,
+        )
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
         if self.session.settings.debug:
@@ -5456,6 +5518,8 @@ class ToolRunner:
         display: str | None = None,
         store: bool = True,
         batch_suffix: str = "",
+        turn_diff_path: str = "",
+        turn_diff_text: str = "",
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = (
@@ -5467,6 +5531,10 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
+            if turn_diff_path and turn_diff_text:
+                self.session.store_turn_diff(
+                    key, self.session.state.turn_step, turn_diff_path, turn_diff_text, accepted=approved or auto
+                )
         self.output_fn(
             self.finish_display(call, key, output, failed=failed, approved=approved, auto=auto, display=display, batch_suffix=batch_suffix, elapsed=elapsed)
         )
@@ -6198,7 +6266,7 @@ FINAL:
 class CommandCompleter(Completer):
     # fmt: off
     COMMANDS = (
-        "/help", "/ps", "/status", "/context", "/skills", "/config", "/api", "/debug",
+        "/help", "/ps", "/status", "/context", "/skills", "/config", "/api", "/debug", "/diff",
         "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
     )
     # fmt: on
@@ -6956,12 +7024,128 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
+class GitDiffService:
+    """Read-only helpers for inspecting a git worktree."""
+
+    GIT_DIFF_TIMEOUT = 10
+    MAX_DIFF_BYTES = 50_000
+    MAX_DIFF_LINES = 1_200
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+
+    def _run(self, args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            args,
+            cwd=self.cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout or self.GIT_DIFF_TIMEOUT,
+        )
+
+    def git_root(self) -> str | None:
+        result = self._run(["git", "rev-parse", "--show-toplevel"], timeout=5)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    def git_diff(self, cached: bool = False) -> str:
+        cmd = [
+            "git",
+            "-C",
+            self.cwd,
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--src-prefix=",
+            "--dst-prefix=",
+        ]
+        if cached:
+            cmd.append("--cached")
+        result = self._run(cmd)
+        return result.stdout
+
+    def git_untracked(self) -> list[str]:
+        result = self._run(["git", "-C", self.cwd, "ls-files", "--others", "--exclude-standard"])
+        paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return paths
+
+    def git_status_fingerprint(self) -> str:
+        """Cheap fingerprint for detecting external git changes while the viewer is open."""
+        result = self._run(["git", "-C", self.cwd, "status", "--porcelain=v1", "-uno"], timeout=5)
+        return result.stdout
+
+    @classmethod
+    def bounded(cls, text: str, max_bytes: int | None = None, max_lines: int | None = None) -> tuple[str, bool]:
+        max_bytes = max_bytes or cls.MAX_DIFF_BYTES
+        max_lines = max_lines or cls.MAX_DIFF_LINES
+        if len(text.encode("utf-8")) <= max_bytes and text.count("\n") <= max_lines:
+            return text, False
+        lines = text.splitlines()
+        clipped: list[str] = []
+        length = 0
+        for line in lines:
+            line_bytes = len(line.encode("utf-8")) + 1
+            if length + line_bytes > max_bytes or len(clipped) >= max_lines:
+                break
+            clipped.append(line)
+            length += line_bytes
+        return "\n".join(clipped), True
+
+    def read_untracked_diff(self, path: str) -> str:
+        """Synthesize a unified diff for an untracked text file, capped in size."""
+        full_path = os.path.join(self.cwd, path)
+        try:
+            with open(full_path, "rb") as fh:
+                raw = fh.read(16_384)
+        except (OSError, UnicodeError):
+            return ""
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+        lines = text.splitlines(keepends=True)
+        out_lines = [f"--- /dev/null", f"+++ b/{path}"] + [f"+{line.rstrip('\n')}" for line in lines]
+        out = "\n".join(out_lines)
+        bounded, truncated = self.bounded(out, max_bytes=8_000, max_lines=200)
+        if truncated:
+            bounded += f"\n\n... truncated; run `git diff --no-index /dev/null {path}` for the full file"
+        return bounded
+
+    @staticmethod
+    def split_files(diff_text: str) -> list[tuple[str, str]]:
+        """Split a unified diff into per-file sections (path, diff)."""
+        lines = diff_text.splitlines()
+        sections: list[tuple[str, str]] = []
+        current: list[str] = []
+        path: str | None = None
+        for line in lines:
+            if line.startswith("--- ") or line.startswith("diff --git"):
+                if current and path is not None:
+                    sections.append((path, "\n".join(current)))
+                current = [line]
+                path = None
+            elif line.startswith("+++ "):
+                current.append(line)
+                candidate = line[4:].strip()
+                if candidate.startswith("b/"):
+                    candidate = candidate[2:]
+                if candidate != "/dev/null":
+                    path = candidate
+            else:
+                current.append(line)
+        if current and path is not None:
+            sections.append((path, "\n".join(current)))
+        return sections
+
+
+
 class CommandLoop:
     QUEUE_HINT: ClassVar[str] = "Enter queues next request · blank Enter sends during model call · Ctrl-C stops"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/diff", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -7020,6 +7204,7 @@ class CommandLoop:
   /status            Show runtime status.
   /ps                Show active background jobs.
   /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
+  /diff              Show current git diff (unstaged, staged, untracked).
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
@@ -7817,7 +8002,7 @@ Tools:
         name, _, args = text.partition(" ")
         # fmt: off
         handlers = {
-            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view,
+            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view, "/diff": self.diff_command,
             "/skills": self.skills_command, "/config": self.config, "/api": self.api, "/debug": self.debug,
             "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
             "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
@@ -7828,7 +8013,7 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/mcp", "/context", "/skills"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/mcp", "/context", "/skills", "/diff"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
@@ -8192,6 +8377,208 @@ Tools:
             self.context_tabs(context)
             return None
         return context.context_overview()
+
+    def diff_command(self, args: str) -> str | None:
+        if args.strip():
+            return "Usage: /diff"
+        service = GitDiffService(self.agent.session.cwd)
+        root = service.git_root()
+        if root is None:
+            return "Not in a git repository"
+        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+            self.diff_viewer(service)
+            return None
+        return self._diff_text(service)
+
+    def _diff_text(self, service: GitDiffService) -> str:
+        staged = service.git_diff(cached=True)
+        unstaged = service.git_diff(cached=False)
+        untracked_paths = service.git_untracked()
+        untracked_parts: list[str] = []
+        for path in untracked_paths[:20]:
+            piece = service.read_untracked_diff(path)
+            if piece:
+                untracked_parts.append(piece)
+        if not staged and not unstaged and not untracked_parts:
+            return "No changes"
+        lines: list[str] = []
+        if staged:
+            bounded, truncated = service.bounded(staged)
+            lines.append("### Staged")
+            lines.append(f"```diff\n{bounded}\n```")
+            if truncated:
+                lines.append(f"\n*Diff truncated. Run `git -C {service.cwd} diff --cached` for the full output.*")
+        if unstaged:
+            bounded, truncated = service.bounded(unstaged)
+            lines.append("### Unstaged")
+            lines.append(f"```diff\n{bounded}\n```")
+            if truncated:
+                lines.append(f"\n*Diff truncated. Run `git -C {service.cwd} diff` for the full output.*")
+        if untracked_parts:
+            lines.append("### Untracked files")
+            for piece in untracked_parts:
+                lines.append(f"```diff\n{piece}\n```")
+        return "\n".join(lines)
+
+    def diff_viewer(self, service: GitDiffService) -> None:
+        """Interactive diff viewer. First shows a file list; open a file to see its diff.
+
+        List mode: ↑/↓ or j/k move, Enter opens the selected file, ←/→ switches view,
+        r refreshes, q/Esc closes.
+        Diff mode: ↑/↓ scroll one line, PgUp/PgDn scroll a page, Esc/← returns to list,
+        r refreshes, q closes.
+        """
+        """
+        width = max(20, shutil.get_terminal_size().columns - 2)
+        state: dict[str, Any] = {"view": 0, "mode": "list", "file": 0, "scroll": 0}
+
+        def build_views() -> list[tuple[str, list[tuple[str, str, str]]]]:
+            views: list[tuple[str, list[tuple[str, str, str]]]] = []
+            sections: list[tuple[str, str, str]] = []
+            for path, diff in service.split_files(service.git_diff(cached=True)):
+                sections.append(("staged", path, diff))
+            for path, diff in service.split_files(service.git_diff(cached=False)):
+                sections.append(("unstaged", path, diff))
+            for path in service.git_untracked()[:20]:
+                piece = service.read_untracked_diff(path)
+                if piece:
+                    sections.append(("untracked", path, piece))
+            views.append(("Current git diff", sections))
+            for turn, diffs in sorted(self.agent.session.turn_diffs_by_turn().items(), reverse=True):
+                views.append((f"Turn {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
+            return views
+
+        views = build_views()
+
+        def viewport() -> int:
+            return max(3, shutil.get_terminal_size().lines - 7)
+
+        def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
+            parts.append(("", "\n"))
+            parts.append(("class:ansicyan", "  Files\n"))
+            for index, (status, path, _) in enumerate(sections):
+                selected = index == state["file"]
+                marker = "> " if selected else "  "
+                style = "class:ansicyan" if selected else "class:choice.disabled"
+                parts.append((style, f"{marker}{status.title():10} {path}\n"))
+            parts.append(("", "\n"))
+
+        def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
+            state["file"] = state["file"] % len(sections)
+            status, path, diff = sections[state["file"]]
+            parts.append(("", "\n"))
+            parts.append(("class:ansicyan", f"  {status.title()} · {path}\n"))
+            lines = self.ui.diff_segments(diff)
+            height = viewport()
+            state["scroll"] = min(max(0, int(state["scroll"])), max(0, len(lines) - height))
+            visible = lines[state["scroll"] : state["scroll"] + height]
+            parts.extend((style, text) for style, text in visible)
+            if not visible or not visible[-1][1].endswith("\n"):
+                parts.append(("", "\n"))
+
+        def fragments():
+            parts: list[tuple[str, str]] = [("", "\n")]
+            for index, (title, _) in enumerate(views):
+                active = index == state["view"]
+                parts.append(("class:tab.active" if active else "class:tab.inactive", f" {title} "))
+                if index < len(views) - 1:
+                    parts.append(("class:choice.disabled", " │ "))
+            parts.append(("", "\n"))
+            _, sections = views[state["view"]]
+            if not sections:
+                parts.append(("class:choice.disabled", "  No diffs\n"))
+            elif state["mode"] == "list":
+                list_fragments(parts, sections)
+            else:
+                file_fragments(parts, sections)
+            mode_hint = "list" if state["mode"] == "list" else "diff"
+            if state["mode"] == "list":
+                hint = "↑/↓ move · Enter open · ←/→ view · r refresh · Esc/q close"
+            else:
+                hint = "↑/↓ scroll · PgUp/PgDn page · Esc/← back · r refresh · q close"
+            parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{state['file'] + 1}/{len(sections) or 0}]\n"))
+            return parts
+
+        def switch_view(event, delta: int) -> None:
+            state["view"] = (int(state["view"]) + delta) % max(1, len(views))
+            state["file"] = 0
+            state["scroll"] = 0
+            state["mode"] = "list"
+            event.app.invalidate()
+
+        def move(event, delta: int) -> None:
+            _, sections = views[state["view"]]
+            if not sections:
+                return
+            if state["mode"] == "list":
+                state["file"] = (int(state["file"]) + delta) % len(sections)
+            else:
+                state["scroll"] = max(0, int(state["scroll"]) + delta)
+            event.app.invalidate()
+
+        def page(event, delta: int) -> None:
+            if state["mode"] == "file":
+                state["scroll"] = max(0, int(state["scroll"]) + delta * viewport())
+                event.app.invalidate()
+
+        def open_file(event):
+            if state["mode"] == "list":
+                _, sections = views[state["view"]]
+                if sections:
+                    state["mode"] = "file"
+                    state["scroll"] = 0
+                    event.app.invalidate()
+
+        def back(event):
+            if state["mode"] == "file":
+                state["mode"] = "list"
+                state["scroll"] = 0
+                event.app.invalidate()
+
+        def refresh(event):
+            nonlocal views
+            views = build_views()
+            state["file"] = 0
+            state["scroll"] = 0
+            state["mode"] = "list"
+            event.app.invalidate()
+
+        bindings = KeyBindings()
+
+        def _left(event):
+            if state["mode"] == "file":
+                back(event)
+            else:
+                switch_view(event, -1)
+
+        def _right(event):
+            if state["mode"] == "list":
+                switch_view(event, 1)
+
+        bindings.add("right", eager=True)(_right)
+        bindings.add("left", eager=True)(_left)
+        bindings.add("tab", eager=True)(lambda event: switch_view(event, 1))
+        bindings.add("down", eager=True)(lambda event: move(event, 1))
+        bindings.add("j", eager=True)(lambda event: move(event, 1))
+        bindings.add("up", eager=True)(lambda event: move(event, -1))
+        bindings.add("k", eager=True)(lambda event: move(event, -1))
+        bindings.add("pagedown", eager=True)(lambda event: page(event, 1))
+        bindings.add("pageup", eager=True)(lambda event: page(event, -1))
+        bindings.add("enter", eager=True)(open_file)
+        bindings.add("escape", eager=True)(lambda event: back(event) if state["mode"] == "file" else event.app.exit(result=None))
+        bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
+        bindings.add("c-c", eager=True)(lambda event: event.app.exit(result=None))
+        bindings.add("r", eager=True)(refresh)
+
+        content = FormattedTextControl(fragments, focusable=True)
+        window = Window(content, dont_extend_height=True, wrap_lines=False)
+        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings)
+        try:
+            self.run_input_app(app)
+        except KeyboardInterrupt:
+            pass
+
+
 
     CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"), ("File State", "files_overview"))
 

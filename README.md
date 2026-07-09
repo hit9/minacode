@@ -96,6 +96,7 @@ Commands:
 - `/help`: show commands and tools.
 - `/status`: show runtime status, including the active session id.
 - `/context [PATH]`: show the model's context frame — environment, memory (goal, plan, known facts, check), and file state; `PATH` shows that file's current in-context lines.
+- `/diff`: show the current git diff (staged, unstaged, untracked). In an interactive prompt it opens a tabbed viewer: first a file list for the current git diff, then one tab per turn of edits; `←/→` switches views, `↑/↓` moves in the list, `Enter` opens a file diff, `↑/↓`/`PgUp`/`PgDn` scroll the diff, `Esc` returns to the file list, `r` refreshes, `q`/`Esc` closes from the list.
 - `/skills`: list installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
