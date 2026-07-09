@@ -6936,6 +6936,8 @@ class StatusBar:
 
 
 class CommandLoop:
+    QUEUE_HINT: ClassVar[str] = "Enter queues for next request · Enter again sends now · Ctrl-C stops"
+
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
     QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/yolo"})
@@ -7164,7 +7166,22 @@ Tools:
             fragments.append(("", "\n"))
             fragments.append(("class:prompt", "+ "))
             fragments.append(("", Text.clean(text)))
+        fragments.append(("", "\n"))
+        fragments.append(("class:queue.hint", self.QUEUE_HINT))
         return fragments
+
+    def retry_current_model_request(self) -> bool:
+        if self.session.state.current_model_call_started_at <= 0:
+            return False
+        self.session.state.manual_model_retry_requested = True
+        self.session.state.model_retry_count += 1
+        os.kill(os.getpid(), signal.SIGINT)
+        return True
+
+    def flush_queued_input_now(self) -> bool:
+        if not any(text.strip() for text in self.session.pending_user_inputs):
+            return False
+        return self.retry_current_model_request()
 
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
         prompt = FormattedText([("class:prompt", "+> ")])
@@ -7199,9 +7216,12 @@ Tools:
 
         @bindings.add("enter", eager=True)
         def _enter(event):
-            record(event, [buffer.text])
-            self.queue_input_text = ""
-            buffer.reset(Document(""))
+            if buffer.text.strip():
+                record(event, [buffer.text])
+                self.queue_input_text = ""
+                buffer.reset(Document(""))
+            else:
+                self.flush_queued_input_now()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):
@@ -7209,10 +7229,7 @@ Tools:
 
         @bindings.add("c-g", eager=True)
         def _ctrl_g(event):
-            if self.session.state.current_model_call_started_at > 0:
-                self.session.state.manual_model_retry_requested = True
-                self.session.state.model_retry_count += 1
-                os.kill(os.getpid(), signal.SIGINT)
+            self.retry_current_model_request()
 
         @bindings.add("tab")
         def _tab(event):
@@ -7511,6 +7528,7 @@ Tools:
             {
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
+                "queue.hint": "ansibrightblack",
                 "divider.working": "ansimagenta bold",
                 # Comet gradient: bright head fading through cyan into the dim rule.
                 "divider.glow0": "ansibrightcyan bold",

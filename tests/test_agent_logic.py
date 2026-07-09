@@ -793,6 +793,8 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     empty = "".join(t for _, t in loop.queue_region_fragments())
     # Bare rule with just the state word, no count, and no queued messages.
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
+    assert "Enter queues for next request" in empty
+    assert "Enter again sends now" in empty
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
@@ -828,6 +830,39 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
     assert loop.queue_input_paused.is_set()
     assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
     assert not loop.queue_input_active.is_set()
+
+
+def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    s.pending_user_inputs = ["queued instruction"]
+    s.state.current_model_call_started_at = 123.0
+    killed = []
+
+    monkeypatch.setattr(n.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    assert loop.flush_queued_input_now() is True
+    assert s.state.manual_model_retry_requested is True
+    assert s.state.model_retry_count == 1
+    assert killed == [(n.os.getpid(), n.signal.SIGINT)]
+
+
+def test_flush_queued_input_now_ignores_empty_or_inactive_queue(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    killed = []
+    monkeypatch.setattr(n.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    s.state.current_model_call_started_at = 123.0
+    assert loop.flush_queued_input_now() is False
+
+    s.pending_user_inputs = ["queued instruction"]
+    s.state.current_model_call_started_at = 0.0
+    assert loop.flush_queued_input_now() is False
+
+    assert s.state.manual_model_retry_requested is False
+    assert s.state.model_retry_count == 0
+    assert killed == []
 
 
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
@@ -883,6 +918,8 @@ def test_queued_blank_text_is_cleared(tmp_path):
         msg.get("content", "").strip() == "" and msg.get("role") == "user"
         for msg in s.messages
     )
+
+
 def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
     """In interactive mode, Enter-committed queue input auto-submits as the next turn (no second
     Enter) and half-typed text is carried back to the box instead of blocking the submit."""
