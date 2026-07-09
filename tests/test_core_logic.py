@@ -505,6 +505,22 @@ def test_cache_prefix_fingerprint_stable_across_read_edit_history(tmp_path, monk
     assert len(set(s.state.prefix_fingerprints)) == 1
 
 
+def test_model_messages_grow_append_only_within_tool_turn(tmp_path):
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    context = n.ContextManager(s)
+    first_turn = [{"role": "user", "content": "change it"}]
+    first = json.dumps(context.model_messages("sys", first_turn), ensure_ascii=False, sort_keys=True)
+    second_turn = [
+        *first_turn,
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "tc.1", "type": "function", "function": {"name": "Bash", "arguments": json.dumps({"command": "pwd"})}}]},
+        {"role": "tool", "tool_call_id": "tc.1", "content": "tool tr.1 Bash pwd\noutput:\n/tmp"},
+    ]
+    second = json.dumps(context.model_messages("sys", second_turn), ensure_ascii=False, sort_keys=True)
+
+    assert second.startswith(first[:-1] + ", ")
+
+
 def test_cache_prefix_drift_detected_when_system_prompt_changes(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
