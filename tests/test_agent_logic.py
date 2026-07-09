@@ -31,19 +31,14 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     ]
     messages = n.ContextManager(s).model_messages(" system ", turn)
 
-    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user", "user"]
+    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user"]
     assert messages[0]["content"] == "system"
     assert messages[1]["content"].startswith("--- Environment ---")
     assert "- cwd: " + str(tmp_path) in messages[1]["content"]
     assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
-    assert messages[-2]["content"].startswith("--- Memory ---")
-    assert "Date:" in messages[-2]["content"]
-    assert messages[-1]["content"].startswith("--- FILE STATE ---")
-
-
-
-def test_empty_file_context_is_empty(tmp_path):
-    assert n.ContextManager(session(tmp_path)).file_context() == ""
+    assert messages[-1]["content"].startswith("--- Memory ---")
+    assert "Date:" in messages[-1]["content"]
+    assert not any("FILE STATE" in message["content"] for message in messages)
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -103,230 +98,22 @@ def test_bounded_output_marks_recall_key(tmp_path):
     assert 'recall="tr.large"' in bounded
 
 
-def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    s.state.plan = ["inspect", "patch"]
-
-    read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
-    assert "| old" in context.file_context()
-
-    path.write_text("changed\nkeep\n", encoding="utf-8")
-    stale = context.file_context()
-    assert "| old" not in stale
-    assert read_key in stale
-
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    edit_output = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("old\n"), "end": "0:" + n.ReadTool.line_hash("old\n"), "content": "new\n"}]],
-    ).call()
-    edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
-
-    rendered = context.file_context()
-    assert edit_key in rendered
-    assert "Current focus: inspect" in rendered
-    assert f"source={edit_key} tool=Edit" in rendered
-    assert "Files:\n- a.txt 0:2" in rendered
-    assert "Read/Edit outputs update this section." in rendered
-    assert f"Recent file events:\n- {read_key} Read" in rendered
-    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
-    assert f"@@ a.txt 0:1 current source={edit_key} tool=Edit" in rendered
-    assert "| new" in rendered
-    assert "| old" not in rendered
-
-
-def test_empty_files_overview(tmp_path):
-    assert n.ContextManager(session(tmp_path)).files_overview() == "#### File State\n(no files in context)"
-
-
-def test_files_overview_and_detail(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    s.state.plan = ["inspect", "patch"]
-
-    read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
-
-    overview = context.files_overview()
-    assert "#### File State  ·  focus: inspect" in overview
-    # markdown table row for the file, with a source column
-    assert f"| `a.txt` | 0:2 | 2 | {read_key} Read |" in overview
-    assert f"**Recent events**\n- {read_key} Read" in overview
-    # overview omits the full anchored content dump
-    assert "| old" not in overview
-    assert "```" not in overview
-
-    detail = context.file_detail("a.txt")
-    assert detail.startswith("**a.txt** — current, 2 lines")
-    assert "```" in detail
-    assert f"@@ 0:2  {read_key} Read" in detail
-    assert "| old" in detail
-
-    # basename resolves the same file; unknown path lists what is available
-    assert context.file_detail("a.txt") == detail
-    missing = context.file_detail("nope.txt")
-    assert "No in-context content for `nope.txt`" in missing
-    assert "- `a.txt`" in missing
-
-
-def test_file_context_marks_full_file_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("one\ntwo\n", encoding="utf-8")
-    s = session(tmp_path)
-    output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call()
-    s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], output, n.ToolRunner(s, n.ContextManager(s)).tool_note(call("Read", []), output))
-
-    rendered = n.ContextManager(s).file_context()
-    assert "- a.txt 0:2 current" in rendered
-    assert "| one" in rendered
-    assert "| two" in rendered
-
-
-def test_file_context_keeps_current_lines_without_local_budget(tmp_path):
-    old_path = tmp_path / "old.txt"
-    new_path = tmp_path / "new.txt"
-    old_path.write_text("old-0\n" + "".join(f"old-{index}\n" for index in range(1, 80)), encoding="utf-8")
-    new_path.write_text("new-0\n" + "".join(f"new-{index}\n" for index in range(1, 80)), encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    s.store_tool_result("Read", [{"path": "old.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "old.txt", "ranges": [[0, 0]]}]).call())
-    new_key = s.store_tool_result(
-        "Read", [{"path": "new.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "new.txt", "ranges": [[0, 0]]}]).call()
-    )
-
-    rendered = context.file_context()
-    assert f"source={new_key} tool=Read" in rendered
-    assert "| old-70" in rendered
-    assert "| new-" in rendered
-
-
-def test_file_context_edit_invalidate_replaces_only_changed_range(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit_output = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
-    ).call()
-    edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
-
-    rendered = context.file_context()
-    assert "| a" in rendered
-    assert "| B" in rendered
-    assert "| c" in rendered
-    assert "| b" not in rendered
-    assert f"@@ a.txt 1:2 current source={edit_key} tool=Edit" in rendered
-    assert f"source={read_key} tool=Read" in rendered
-
-
-def test_file_context_drops_drifted_old_lines_instead_of_guessing(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    n.EditTool(s, ["a.txt", [{"op": "insert_before", "start": "0:" + n.ReadTool.line_hash("a\n"), "content": "x\n"}]]).call()
-
-    rendered = context.file_context()
-    assert "| a" not in rendered
-    assert "| b" not in rendered
-    assert "| c" not in rendered
-    assert f"{read_key}" in rendered
-    assert "Omitted content:" in rendered
-
-
-def test_file_context_uses_raw_current_lines_not_bounded_middle(tmp_path):
+def test_read_tool_message_inlines_bounded_output(tmp_path):
     path = tmp_path / "large.txt"
-    path.write_text("first\n" + "".join(f"middle-{index}\n" for index in range(80)) + "last\n", encoding="utf-8")
+    path.write_text("first\n" + "\n".join(f"middle-{index}" for index in range(20000)) + "\nlast\n", encoding="utf-8")
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    call_obj = call("Read", [{"path": "large.txt", "ranges": [[0, 0]]}])
+    output = n.ReadTool(s, call_obj.args).call()
+    key = s.store_tool_result("Read", call_obj.args, output)
 
-    key = s.store_tool_result("Read", [{"path": "large.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "large.txt", "ranges": [[0, 0]]}]).call())
+    message = runner.tool_message(call_obj, key, output)
 
-    rendered = context.file_context()
-    assert f"source={key} tool=Read" in rendered
-    assert "| first" in rendered
-    assert "| middle-40" in rendered
-    assert "| last" in rendered
-    assert "<bounded_output" not in rendered
-
-
-def test_file_context_merges_current_ranges_within_same_file(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[2, 3]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[2, 3]]}]).call())
-
-    rendered = context.file_context()
-    assert f"source={old_key} tool=Read" in rendered
-    assert f"source={new_key} tool=Read" in rendered
-    assert "| a" in rendered
-    assert "| c" in rendered
-
-
-def test_file_context_edit_read_edit_keeps_final_state(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    edit1 = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("a\n"), "end": "0:" + n.ReadTool.line_hash("a\n"), "content": "A\n"}]],
-    ).call()
-    s.store_tool_result("Edit", ["a.txt"], edit1)
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit2 = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "2:" + n.ReadTool.line_hash("c\n"), "end": "2:" + n.ReadTool.line_hash("c\n"), "content": "C\n"}]],
-    ).call()
-    edit2_key = s.store_tool_result("Edit", ["a.txt"], edit2)
-
-    rendered = context.file_context()
-    assert "| A" in rendered
-    assert "| b" in rendered
-    assert "| C" in rendered
-    assert "| a" not in rendered
-    assert "| c" not in rendered
-    assert f"@@ a.txt 0:2 current source={read_key} tool=Read" in rendered
-    assert f"@@ a.txt 2:3 current source={edit2_key} tool=Edit" in rendered
-
-
-def test_file_context_read_edit_read_uses_latest_read(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read1_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
-    ).call()
-    s.store_tool_result("Edit", ["a.txt"], edit)
-    read2_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-
-    rendered = context.file_context()
-    assert "| a" in rendered
-    assert "| B" in rendered
-    assert "| c" in rendered
-    assert "| b" not in rendered
-    assert f"@@ a.txt 0:3 current source={read2_key} tool=Read" in rendered
-    assert f"source={read1_key} tool=Read" not in rendered
+    assert message.startswith("tool tr.1 Read large.txt 0:0\noutput:\n")
+    assert "<Read" in message
+    assert "<bounded_output" in message
+    assert 'recall="tr.1"' in message
+    assert "-> FILE STATE" not in message
 
 
 def test_tool_error_records_keep_recent_failures(tmp_path):
@@ -453,7 +240,7 @@ def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     assert [record.key for record in s.tool_records] == [kept]
 
 
-def test_compaction_prunes_old_non_file_tool_records(tmp_path):
+def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("one\n", encoding="utf-8")
     s = session(tmp_path)
@@ -465,9 +252,9 @@ def test_compaction_prunes_old_non_file_tool_records(tmp_path):
     context.apply_compaction({"summary": "summary"}, [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
-    assert {record.key for record in s.tool_records} == {read_key, current_key}
-    assert set(s.tool_results) == {read_key, current_key}
-    assert "| one" in context.file_context()
+    assert read_key not in s.tool_results
+    assert {record.key for record in s.tool_records} == {current_key}
+    assert set(s.tool_results) == {current_key}
 
 
 def test_compaction_keeps_current_turn_tool_records(tmp_path):
@@ -488,7 +275,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
     assert [record.key for record in s.tool_records] == [current_key]
 
 
-def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
+def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     s = session(tmp_path)
@@ -502,11 +289,9 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 
     context.apply_compaction({"summary": "summary"}, [])
 
-    rendered = context.file_context()
-    assert {record.key for record in s.tool_records} == {read_key, edit_key}
-    assert "| a" in rendered
-    assert "| b" not in rendered
-    assert "Omitted content:" in rendered
+    assert read_key not in s.tool_results
+    assert edit_key not in s.tool_results
+    assert s.tool_records == []
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -575,13 +360,14 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert [len(messages) for messages in agent.model.messages] == [5, 7]
+    assert [len(messages) for messages in agent.model.messages] == [4, 6]
     assert agent.model.messages[1][3]["role"] == "assistant"
     assert agent.model.messages[1][3]["tool_calls"][0]["id"] == "Read-id"
     assert agent.model.messages[1][4]["role"] == "tool"
     assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
     assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
-    assert any(message["role"] == "tool" and "-> FILE STATE" in message["content"] for message in agent.model.messages[1])
+    assert any(message["role"] == "tool" and "<Read" in message["content"] for message in agent.model.messages[1])
+    assert not any("FILE STATE" in (message.get("content") or "") for message in agent.model.messages[1])
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -1067,11 +853,11 @@ def test_context_command_shows_context_frame(tmp_path):
 
     output = loop.context_view("")
 
-    # unified markdown frame: environment, memory, and file state sections
+    # unified markdown frame: environment and memory sections
     assert "### Context" in output
     assert "#### Environment" in output
     assert "#### Memory" in output
-    assert "#### File State" in output
+    assert "#### File State" not in output
     assert "| goal | ship |" in output
     assert "- [ ] inspect" in output
     assert "- pytest" in output
@@ -1143,7 +929,7 @@ def test_context_tabs_scroll_and_switch_keys(tmp_path):
     # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
     assert _drive_context_tabs(tmp_path, "jjjq")["scroll"] == 3
     assert _drive_context_tabs(tmp_path, "jjjkq")["scroll"] == 2
-    assert _drive_context_tabs(tmp_path, "llq")["tab"] == 2
+    assert _drive_context_tabs(tmp_path, "llq")["tab"] == 0
     assert _drive_context_tabs(tmp_path, "lhq")["tab"] == 0
 
 
@@ -1354,7 +1140,8 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
     assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
-    assert "-> FILE STATE" in s.messages[2]["content"]
+    assert "<Read" in s.messages[2]["content"]
+    assert "-> FILE STATE" not in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 

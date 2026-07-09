@@ -1103,11 +1103,10 @@ search, edit, run commands) and returns a short answer in your language.
 
 ## Context & caching
 Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
-then the conversation, `Memory`, and `FILE STATE` (refreshed by `Read`/`Edit`). Caching needs that
+then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. Caching needs that
 prefix byte-identical; `/status` shows context %, cache hit rate, a `prefix churn` warning if it
 mutated mid-session (inspect via `--debug`, label `cache-prefix-drift`), and a compaction count. Long
-chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory /
-File State); `/context <path>` shows a file's in-context lines.
+chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory).
 
 ## Sessions
 Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
@@ -1704,7 +1703,7 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
-    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, anchor=line:hash(line_content) text, and updates FILE STATE."
+    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; use Recall(tr.N) for full stored output."
     SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
     # fmt: off
     EXAMPLE = (
@@ -3380,30 +3379,11 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
-    # fmt: off
-    CODE_EXTENSIONS: ClassVar[set[str]] = set(".c .cc .cpp .cxx .css .go .h .hpp .html .java .js .json .jsx .kt .lua .php .py .rb .rs .scss .sh .sql .swift .toml .ts .tsx .vue .yaml .yml".split())
-    # fmt: on
-    CODE_FILENAMES: ClassVar[set[str]] = {"CMakeLists.txt", "Dockerfile", "Makefile", "go.mod", "package.json", "pyproject.toml"}
-
-    @dataclass
-    class FileContextItem:
-        order: int
-        phase: int
-        kind: str
-        source: str
-        tool: str
-        path: str
-        start: int
-        end: int
-        line: str
-        mtime_ns: int
-        size: int
 
     def __init__(self, session: Session):
         self.session = session
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
-        file_context = self.file_context() or "(empty)"
         skills_index = self.skills_context()
         mcp_tools = self.mcp_tools_context()
 
@@ -3419,7 +3399,6 @@ class ContextManager:
 
         messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])])))
         messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
-        messages.append({"role": "user", "content": "--- FILE STATE ---\n" + file_context})
         return Text.value(messages)
 
     def dedup_mcp_describes(self, messages: list[Json]) -> list[Json]:
@@ -3503,7 +3482,7 @@ class ContextManager:
     def cache_prefix(self, base_system: str, tools: list[Json] | None) -> str:
         # Canonical text of the bytes a provider can cache: the stable head of every request.
         # Mirrors the leading blocks model_messages() emits (system + environment + mcp index)
-        # plus the tool schemas. Everything mutable (history, memory, FILE STATE) sits after it.
+        # plus the tool schemas. Everything mutable (history and memory) sits after it.
         return "\x00".join(
             [
                 base_system.strip(),
@@ -3574,9 +3553,17 @@ class ContextManager:
             "Check: " + (self.session.state.check or "(empty)"),
             f"Code index: {index_status} (InspectCode usable: {index_usable})",
         ]
+        if errors := self.recent_tool_errors():
+            rows.append("Recent tool errors:\n" + "\n".join(errors))
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
         return "\n\n".join(rows)
+
+    def recent_tool_errors(self) -> list[str]:
+        return [
+            f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
+            for record in self.session.tool_errors[-5:]
+        ]
 
     def environment(self) -> str:
         info = self.session.system_info
@@ -3591,18 +3578,11 @@ class ContextManager:
         ]
         return "\n".join(rows)
 
-    def file_context(self) -> str:
-        lines_by_path, omitted = self.active_file_lines()
-        return self.render_file_lines(lines_by_path, omitted)
-
     def context_overview(self) -> str:
         """Markdown view of the synthesized context frame the model receives each turn:
-        the Environment, Memory, and File State sections (the live transcript is excluded)."""
-        lines_by_path, omitted = self.active_file_lines()
-        paths = sorted(path for path in lines_by_path if lines_by_path[path])
-        total_lines = sum(len(lines_by_path[path]) for path in paths)
-        header = f"### Context  ·  ctx `{self.session.state.context_percent}%` · {len(paths)} files · {total_lines} lines"
-        return "\n\n".join([header, self.environment_md(), self.memory_md(), self.files_overview((lines_by_path, omitted))])
+        the Environment and Memory sections (the live transcript is excluded)."""
+        header = f"### Context  ·  ctx `{self.session.state.context_percent}%`"
+        return "\n\n".join([header, self.environment_md(), self.memory_md()])
 
     @staticmethod
     def md_table(headers: list[str], rows: list[tuple]) -> str:
@@ -3644,243 +3624,6 @@ class ContextManager:
                 "**Known**\n" + known,
             ]
         )
-
-    def files_overview(self, precomputed: tuple[dict, dict] | None = None) -> str:
-        """Markdown summary of the FILE STATE section: which files/ranges are current, recent
-        events, and omissions, without dumping the full anchored content."""
-        lines_by_path, omitted = precomputed if precomputed is not None else self.active_file_lines()
-        paths = sorted(path for path in lines_by_path if lines_by_path[path])
-        state = self.session.state
-        focus = state.focus_text(state.plan)
-        actions, code_edits, errors = self.recent_file_actions(), self.recent_code_edits(), self.recent_tool_errors()
-        check_status = self.check_status(code_edits)
-        if not (paths or omitted or focus or actions or code_edits or check_status or errors):
-            return "#### File State\n(no files in context)"
-        chunks = ["#### File State" + (f"  ·  focus: {focus}" if focus else "")]
-        if paths:
-            rows = [
-                (
-                    f"`{path}`",
-                    ", ".join(f"{start}:{end}" for start, end in self.coverage(lines_by_path[path])),
-                    len(lines_by_path[path]),
-                    self.latest_source(lines_by_path[path]),
-                )
-                for path in paths
-            ]
-            chunks.append(self.md_table(["file", "ranges", "lines", "source"], rows))
-        for label, items in (("Recent events", actions), ("Recent code edits", code_edits), ("Check status", check_status), ("Recent tool errors", errors)):
-            if items:
-                chunks.append(f"**{label}**\n" + "\n".join(items))
-        if omitted:
-            omit_rows = [f"- `{path}` source={source} lines={count}" for path in sorted(omitted) for source, count in sorted(omitted[path].items())]
-            chunks.append("**Omitted** (stale/superseded)\n" + "\n".join(omit_rows))
-        return "\n\n".join(chunks)
-
-    @staticmethod
-    def latest_source(numbered: dict[int, tuple[str, str, str]]) -> str:
-        source, tool, _line = max(numbered.values(), key=lambda value: int(value[0][3:]) if value[0].startswith("tr.") and value[0][3:].isdigit() else -1)
-        return f"{source} {tool}".strip()
-
-    def file_detail(self, path: str) -> str:
-        """Full current anchored content for one in-context file, exactly as the model sees it,
-        wrapped in a fenced block so it renders monospace and unwrapped."""
-        lines_by_path, _ = self.active_file_lines()
-        available = sorted(candidate for candidate in lines_by_path if lines_by_path[candidate])
-        matches = [candidate for candidate in available if candidate == path or os.path.basename(candidate) == path or candidate.endswith("/" + path)]
-        match = matches[0] if len(matches) == 1 else (path if path in available else None)
-        if match is None:
-            listing = "\n".join("- `" + candidate + "`" for candidate in available) or "(none)"
-            return f"No in-context content for `{path}`.\n\n**Files in context**\n{listing}"
-        numbered = lines_by_path[match]
-        body: list[str] = []
-        for start, end, source, tool, segment_lines in self.segments(numbered):
-            body.append(f"@@ {start}:{end}  {source} {tool}")
-            body.extend(segment_lines)
-        return f"**{match}** — current, {len(numbered)} lines\n\n```\n" + "\n".join(body) + "\n```"
-
-    def active_file_lines(self) -> tuple[dict[str, dict[int, tuple[str, str, str]]], dict[str, dict[str, int]]]:
-        lines_by_path: dict[str, dict[int, tuple[str, str, str]]] = {}
-        omitted: dict[str, dict[str, int]] = {}
-        items = sorted(self.file_items(), key=lambda item: (item.order, item.phase, item.path, item.start))
-        wanted: dict[str, set[int]] = {}
-        for item in items:
-            if item.kind == "line":
-                wanted.setdefault(item.path, set()).add(item.start)
-        current_lines: dict[str, dict[int, str] | None] = {}
-        current_stats: dict[str, tuple[int, int] | None] = {}
-        for item in items:
-            file_lines = lines_by_path.setdefault(item.path, {})
-            if item.kind == "clear":
-                for number in list(file_lines):
-                    if number >= item.start and (item.end == 0 or number < item.end):
-                        del file_lines[number]
-                continue
-            if self.item_current(item, wanted, current_stats, current_lines):
-                file_lines[item.start] = (item.source, item.tool, item.line)
-            else:
-                omitted.setdefault(item.path, {}).setdefault(item.source, 0)
-                omitted[item.path][item.source] += 1
-        return lines_by_path, omitted
-
-    def file_items(self) -> list[ContextManager.FileContextItem]:
-        items: list[ContextManager.FileContextItem] = []
-        for order, record in enumerate(self.session.tool_records, start=1):
-            if record.name not in {"Read", "Edit"}:
-                continue
-            for block in re.finditer(r"(?s)<(Read|Edit)\s+path=(\".*?\").*?>(.*?)</\1>", record.output):
-                try:
-                    path = str(json.loads(block.group(2)))
-                except json.JSONDecodeError:
-                    continue
-                body = block.group(3)
-                stat = self.output_stat(body)
-                for match in re.finditer(r"<invalidate>(\d+):(\d+)</invalidate>", body):
-                    items.append(self.FileContextItem(order, 0, "clear", record.key, record.name, path, int(match.group(1)), int(match.group(2)), "", *stat))
-                for match in re.finditer(r"(?s)<content hashline-numbered>\n(.*?)\n</content>", body):
-                    for line in match.group(1).splitlines():
-                        parsed = ReadTool.parse_anchor(line)
-                        if parsed is not None:
-                            items.append(self.FileContextItem(order, 1, "line", record.key, record.name, path, parsed[0], 0, line, *stat))
-        return items
-
-    def file_count(self) -> int:
-        return len({item.path for item in self.file_items() if item.kind == "line"})
-
-    def item_current(
-        self,
-        item: ContextManager.FileContextItem,
-        wanted: dict[str, set[int]],
-        current_stats: dict[str, tuple[int, int] | None],
-        current_lines: dict[str, dict[int, str] | None],
-    ) -> bool:
-        if item.path not in current_stats:
-            current_stats[item.path] = self.current_stat(item.path)
-        stat = current_stats[item.path]
-        if stat is None:
-            return False
-        if item.mtime_ns > 0 and item.size >= 0 and stat == (item.mtime_ns, item.size):
-            return True
-        if item.path not in current_lines:
-            current_lines[item.path] = self.read_lines(item.path, wanted.get(item.path, set()))
-        lines = current_lines[item.path]
-        parsed = ReadTool.parse_anchor(item.line)
-        return bool(lines is not None and parsed is not None and item.start in lines and ReadTool.anchor_matches(lines[item.start], parsed[1]))
-
-    def render_file_lines(self, lines_by_path: dict[str, dict[int, tuple[str, str, str]]], omitted: dict[str, dict[str, int]]) -> str:
-        def recent(path: str) -> int:
-            return max(
-                (int(source[3:]) for source, _tool, _line in lines_by_path[path].values() if source.startswith("tr.") and source[3:].isdigit()),
-                default=-1,
-            )
-
-        paths = sorted((path for path in lines_by_path if lines_by_path[path]), key=lambda path: (-recent(path), path))
-        code_edits = self.recent_code_edits()
-        check_status = self.check_status(code_edits)
-        state = self.session.state
-        focus = state.focus_text(state.plan)
-        actions, errors = self.recent_file_actions(), self.recent_tool_errors()
-        if not paths and not omitted and not focus and not actions and not code_edits and not check_status and not errors:
-            return ""
-        chunks = ["Read/Edit outputs update this section. Treat listed ranges as current file state."] if paths else []
-        if focus:
-            chunks.extend(["", "Current focus: " + focus])
-        if paths:
-            chunks.extend(["", "Files:"])
-            for path in paths:
-                chunks.extend(f"- {path} {start}:{end} current" for start, end in self.coverage(lines_by_path[path]))
-        if actions:
-            chunks.extend(["", "Recent file events:", *actions])
-        if code_edits:
-            chunks.extend(["", "Recent code edits:", *code_edits])
-        if check_status:
-            chunks.extend(["", "Check status:", *check_status])
-        if errors:
-            chunks.extend(["", "Recent tool errors:", *errors])
-        if paths:
-            chunks.extend(["", "Content:", "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors."])
-            for path in paths:
-                for start, end, source, tool, segment_lines in self.segments(lines_by_path[path]):
-                    chunks.append(f"@@ {path} {start}:{end} current source={source} tool={tool}")
-                    chunks.extend(segment_lines)
-                chunks.append("")
-        if omitted:
-            chunks.append("Omitted content:")
-            for path in sorted(omitted):
-                chunks.extend(f"- {path} source={source} lines={count}" for source, count in sorted(omitted[path].items()))
-        return "\n".join(chunks).strip() if len(chunks) > 4 else ""
-
-    def recent_file_actions(self) -> list[str]:
-        actions = [
-            f"- {record.key} {record.name} {record.note or ' '.join(Tool.compact(arg, 80) for arg in record.args)}".strip()
-            for record in self.session.tool_records[-20:]
-            if record.name in {"Read", "Edit"}
-        ]
-        return actions[-10:]
-
-    def recent_tool_errors(self) -> list[str]:
-        return [
-            f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
-            for record in self.session.tool_errors[-5:]
-        ]
-
-    def recent_code_edits(self) -> list[str]:
-        rows: dict[str, str] = {}
-        for record in self.session.tool_records[-20:]:
-            if record.name == "Edit":
-                for match in re.finditer(r'<Edit\s+path=(".*?")', record.output):
-                    try:
-                        path = str(json.loads(match.group(1)))
-                    except json.JSONDecodeError:
-                        continue
-                    if self.code_like_path(path):
-                        rows[path] = f"- {record.key} Edit {path}"
-        return list(rows.values())[-8:]
-
-    def check_status(self, code_edits: list[str]) -> list[str]:
-        if not code_edits:
-            return []
-        check = self.session.state.check.strip()
-        return ["- " + check] if check else ["- Code changed recently. Use Note(set_check=...) after checks, or final must say checks not run."]
-
-    @classmethod
-    def code_like_path(cls, path: str) -> bool:
-        name = os.path.basename(path)
-        return name in cls.CODE_FILENAMES or os.path.splitext(name)[1].lower() in cls.CODE_EXTENSIONS
-
-    def coverage(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int]]:
-        numbers = sorted(numbered)
-        if not numbers:
-            return []
-        ranges = []
-        start = previous = numbers[0]
-        for number in numbers[1:]:
-            if number == previous + 1:
-                previous = number
-                continue
-            ranges.append((start, previous + 1))
-            start = previous = number
-        ranges.append((start, previous + 1))
-        return ranges
-
-    def segments(self, numbered: dict[int, tuple[str, str, str]]) -> list[tuple[int, int, str, str, list[str]]]:
-        items = sorted(numbered.items())
-        if not items:
-            return []
-        segments = []
-        start = previous = items[0][0]
-        source, tool, first = items[0][1]
-        lines = [first]
-        for number, (line_source, line_tool, line) in items[1:]:
-            if number == previous + 1 and line_source == source and line_tool == tool:
-                previous = number
-                lines.append(line)
-                continue
-            segments.append((start, previous + 1, source, tool, lines))
-            start = previous = number
-            source, tool = line_source, line_tool
-            lines = [line]
-        segments.append((start, previous + 1, source, tool, lines))
-        return segments
 
     def compaction_input(self, messages: list[Json]) -> str:
         older, recent = self.compaction_parts_for(messages)
@@ -3941,25 +3684,6 @@ class ContextManager:
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
         keep = set(re.findall(r"\btr\.\d+\b", self.messages_text(keep_messages)))
-        index = {record.key: offset for offset, record in enumerate(records)}
-        paths: dict[str, list[str]] = {}
-        for record in records:
-            paths[record.key] = []
-            for match in re.findall(r"<(?:Read|Edit)\s+path=(\".*?\")", record.output):
-                try:
-                    paths[record.key].append(str(json.loads(match)))
-                except json.JSONDecodeError:
-                    pass
-        mins: dict[str, int] = {}
-        for path, lines in self.active_file_lines()[0].items():
-            for source, _tool, _line in lines.values():
-                if source in index:
-                    mins[path] = min(mins.get(path, index[source]), index[source])
-                    keep.add(source)
-        for offset, record in enumerate(records):
-            if record.name == "Edit" and any(path in mins and offset >= mins[path] for path in paths.get(record.key, [])):
-                keep.add(record.key)
-
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
 
@@ -3995,32 +3719,6 @@ class ContextManager:
         if len(text) <= limit:
             return text
         return text[-limit:].split("\n", 1)[-1] or text[-limit:]
-
-    def output_stat(self, output: str) -> tuple[int, int]:
-        match = re.search(r'<file_stat mtime_ns="(\d+)" size="(\d+)"\s*/>', output)
-        return (int(match.group(1)), int(match.group(2))) if match else (0, -1)
-
-    def current_stat(self, path: str) -> tuple[int, int] | None:
-        try:
-            stat = os.stat(self.session.resolve_path(path))
-            return stat.st_mtime_ns, stat.st_size
-        except OSError:
-            return None
-
-    def read_lines(self, path: str, numbers: set[int]) -> dict[int, str] | None:
-        if not numbers:
-            return {}
-        found = {}
-        try:
-            with open(self.session.resolve_path(path), encoding="utf-8") as file:
-                for index, line in enumerate(file):
-                    if index in numbers:
-                        found[index] = line
-                    if index >= max(numbers):
-                        break
-        except OSError:
-            return None
-        return found
 
     @staticmethod
     def estimated_tokens(messages: list[Json]) -> int:
@@ -4079,9 +3777,9 @@ class EditBatchPlan:
             elif self.created and not self.before:
                 current = ""
             else:
-                raise ToolError("planned edit is stale; file state changed")
+                raise ToolError("planned edit is stale; file changed")
             if current != self.before:
-                raise ToolError("planned edit is stale; file state changed")
+                raise ToolError("planned edit is stale; file changed")
             if self.created:
                 os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as file:
@@ -5463,7 +5161,7 @@ class ToolRunner:
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = (
-            self.session.store_tool_result(call.name, call.args, output, self.tool_note(call, output))
+            self.session.store_tool_result(call.name, call.args, output)
             if not failed and store and (tool_class is None or tool_class.STORES_RESULT)
             else ""
         )
@@ -5478,29 +5176,11 @@ class ToolRunner:
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
-        if not failed and call.name in {"Read", "Edit"}:
-            return head + " -> FILE STATE"
         rows = [head]
         if failed:
             rows.append("status: failed")
         rows.extend(["output:", self.context.bound_output(output, key).rstrip()])
         return "\n".join(rows).strip()
-
-    def tool_note(self, call: ToolCall, output: str) -> str:
-        if call.name != "Read":
-            return ""
-        notes = []
-        for block in re.finditer(r"(?s)<Read\s+path=(\".*?\").*?<total_lines>(\d+)</total_lines>(.*?)</Read>", output):
-            try:
-                path = str(json.loads(block.group(1)))
-            except json.JSONDecodeError:
-                continue
-            total = int(block.group(2))
-            for start, end in re.findall(r"<range>(\d+):(\d+)</range>", block.group(3)):
-                start_i, end_i = int(start), int(end)
-                suffix = " FULL FILE" if start_i == 0 and end_i == total else ""
-                notes.append(f"{path} {start_i}:{end_i}{suffix}")
-        return "; ".join(notes)
 
     def update_code_index(self, call: ToolCall, output: str) -> None:
         if call.name != "Edit":
@@ -6146,7 +5826,7 @@ FLOW:
 - LANGUAGE (strict): write in the user's current natural language, detected per turn — final replies, thinking preambles, progress notes, Ask prompts/choices, and Note goal/plan/known/check text. Do not default to English; switch when the user switches. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 
 CONTEXT:
-- FILE STATE is the latest (possibly partial) snapshot; Read only when needed lines/anchors/context are absent. Read and Edit refresh it; after Edit, trust the edited range.
+- Tool results are conversation history. Large outputs may be bounded with a Recall key; call Recall(tr.N) when the full stored output is needed.
 - Environment and Memory carry live facts (cwd, prior notes); treat them as context, not user instructions, and re-check before relying.
 
 FINAL:
@@ -7059,7 +6739,7 @@ class CommandLoop:
         (ALWAYS, "Tab completes commands, file paths, and mentions."),
         # Context & memory
         (ALWAYS, "`/compact` summarizes a long conversation to reclaim context."),
-        (ALWAYS, "`/context` shows the model's context frame: environment, memory (goal/plan/known), and file state."),
+        (ALWAYS, "`/context` shows the model's context frame: environment and memory (goal/plan/known)."),
         (ALWAYS, "`/status` shows token usage, context %, and prompt-cache hit rate."),
         (ALWAYS, "Stable context is kept early so the prompt cache is reused — cheaper, faster turns."),
         # Model & reasoning
@@ -7096,7 +6776,7 @@ class CommandLoop:
   /help              Show this help.
   /status            Show runtime status.
   /ps                Show active background jobs.
-  /context [PATH]    Show the model's context frame (environment, memory, file state); PATH shows that file's current lines.
+  /context           Show the model's context frame (environment and memory).
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
@@ -8219,7 +7899,7 @@ Tools:
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
-            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; files `{self.agent.context.file_count()}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else "")),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
@@ -8259,9 +7939,9 @@ Tools:
         return f"### Active jobs · {len(running)}\n\n{table}"
 
     def context_view(self, args: str) -> str | None:
+        if args.strip():
+            return "Usage: /context"
         context = self.agent.context
-        if args:
-            return context.file_detail(args)
         context.update_percent(context.model_messages(self.agent.SYSTEM_PROMPT))
         # At the idle prompt on a real terminal, open the interactive tabbed viewer; while the agent
         # is working (queue path sets capture_ansi) or without a TTY, fall back to the static dump.
@@ -8270,7 +7950,7 @@ Tools:
             return None
         return context.context_overview()
 
-    CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"), ("File State", "files_overview"))
+    CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"))
 
     def context_tabs(self, context: "ContextManager") -> None:
         """Interactive tabbed viewer for the context frame: ←/→ switch tabs, ↑/↓ scroll, Esc close.

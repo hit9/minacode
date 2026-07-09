@@ -469,39 +469,6 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok\n"
 
 
-def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("first\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    first_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call()
-    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], first_output)
-    assert "| first" in context.file_context()
-
-    path.unlink()
-    deleted = context.file_context()
-    assert "| first" not in deleted
-    assert first_key in deleted
-
-    path.write_text("first\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-    path.write_text("second\n", encoding="utf-8")
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-
-    rendered = context.file_context()
-    assert "| second" in rendered
-    assert "| first" not in rendered
-    assert f"source={new_key} tool=Read" in rendered
-    assert "Read/Edit outputs update this section." in rendered
-    assert "- a.txt 0:1" in rendered
-    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
-    assert f"@@ a.txt 0:1 current source={new_key} tool=Read" in rendered
-    assert old_key in rendered
-
-
 def test_cache_prefix_fingerprint_stable_across_history_growth(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
@@ -513,6 +480,27 @@ def test_cache_prefix_fingerprint_stable_across_history_growth(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.messages.append({"role": "assistant", "content": "hi"})
     context.check_cache_prefix("sys")
+    assert s.state.prefix_fingerprints == [baseline]
+    assert len(set(s.state.prefix_fingerprints)) == 1
+
+
+def test_cache_prefix_fingerprint_stable_across_read_edit_history(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    context = n.ContextManager(s)
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "a.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    context.check_cache_prefix("sys")
+    baseline = s.state.prefix_fingerprint
+    runner = n.ToolRunner(s, context, output_fn=lambda text: None)
+    read = n.ToolCall("read", "Read", [{"path": "a.txt", "ranges": [[0, 1]]}])
+    edit = n.ToolCall("edit", "Edit", ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("old\n"), "end": "0:" + n.ReadTool.line_hash("old\n"), "content": "new\n"}]])
+    s.messages.extend(runner.run([read, edit]))
+
+    context.check_cache_prefix("sys")
+
     assert s.state.prefix_fingerprints == [baseline]
     assert len(set(s.state.prefix_fingerprints)) == 1
 

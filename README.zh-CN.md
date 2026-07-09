@@ -95,7 +95,7 @@ nanocode --resume last
 
 - `/help`：显示命令和工具。
 - `/status`：显示运行状态，包括当前 session id。
-- `/context [PATH]`：显示模型的上下文帧——环境、记忆（goal、plan、known facts、check）和文件状态；`PATH` 显示该文件当前在上下文中的行。
+- `/context`：显示模型的上下文帧——环境、记忆（goal、plan、known facts、check）。
 - `/skills`：列出已安装的 skills（用 `Skill(name)` 加载，或在消息中用 `$name` 引用）。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。
@@ -227,7 +227,7 @@ description: Draft a CHANGELOG entry from commits since the last release.
 
 ## 上下文模型
 
-每次模型请求都由 nanocode 手动构建成明确的 messages。稳定上下文在前，会话作为 messages 保留，工作记忆随后，最新文件状态放在末尾。
+每次模型请求都由 nanocode 手动构建成明确的 messages。稳定上下文在前，会话作为 messages 保留，工作记忆放在末尾。
 
 ```text
 model request
@@ -244,20 +244,14 @@ model request
 | user                                             |
 |   Memory: goal, plan, known, date                |
 +--------------------------------------------------+
-| user                                             |
-|   FILE STATE: latest Read/Edit file view         |
-+--------------------------------------------------+
 ```
 
 核心规则：
 
 - 回合中的 assistant 文本和用户追加输入都会作为 conversation 保留。
 - 上下文过大时，较早 conversation 会压缩成明确的 summary。
-- FILE STATE 由成功的 `Read` 和 `Edit` 更新，展示当前文件范围，最近文件优先。
-- 更新的文件行会覆盖旧行；edit invalidation 会清理过期范围。
-- 文件行展示前会通过当前文件 stat 或行 hash 校验。
-- 成功的 `Read` 和 `Edit` 工具消息只指向 FILE STATE，不重复塞入文件正文。
-- 其他工具输出在 conversation messages 中保持有界，并可通过 `tr.N` 召回。
+- 包括 `Read` 和 `Edit` 在内的工具输出会保留在 conversation messages 中。
+- 较大的工具输出会在 conversation messages 中保持有界，并可通过 `tr.N` 召回。
 
 ## 安全
 

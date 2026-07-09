@@ -95,7 +95,7 @@ Commands:
 
 - `/help`: show commands and tools.
 - `/status`: show runtime status, including the active session id.
-- `/context [PATH]`: show the model's context frame — environment, memory (goal, plan, known facts, check), and file state; `PATH` shows that file's current in-context lines.
+- `/context`: show the model's context frame — environment and memory (goal, plan, known facts, check).
 - `/skills`: list installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
@@ -227,7 +227,7 @@ The following providers have been tested with nanocode:
 
 ## Context Model
 
-Each model request is built manually from explicit messages. Stable context comes first, conversation stays as messages, working memory follows, and the latest file state is appended at the end.
+Each model request is built manually from explicit messages. Stable context comes first, conversation stays as messages, and working memory follows at the end.
 
 ```text
 model request
@@ -244,9 +244,6 @@ model request
 | user                                             |
 |   Memory: goal, plan, known, code index, date    |
 +--------------------------------------------------+
-| user                                             |
-|   FILE STATE: latest Read/Edit file view         |
-+--------------------------------------------------+
 ```
 
 Core rules:
@@ -254,11 +251,8 @@ Core rules:
 - Environment holds only stable host facts (cwd, os, arch, detected commands) so it stays byte-identical across turns and keeps the conversation prefix cacheable; volatile state like the code index status lives in the late Memory section instead.
 - Mid-turn assistant text and appended user input are kept as conversation.
 - Earlier conversation is compacted into an explicit summary when the context grows too large.
-- FILE STATE is updated by successful `Read` and `Edit` tools and shows current listed file ranges, with recent files first.
-- Newer file lines overwrite older lines; edit invalidations clear stale ranges.
-- File lines are checked against current file stat or line hash before being shown.
-- Successful `Read` and `Edit` tool messages point to FILE STATE instead of repeating file bodies.
-- Other tool outputs are bounded in conversation messages and can be recalled by `tr.N`.
+- Tool outputs, including `Read` and `Edit`, stay in conversation messages.
+- Large tool outputs are bounded in conversation messages and can be recalled by `tr.N`.
 
 ## Safety
 

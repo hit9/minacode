@@ -1615,8 +1615,7 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
 
 
 def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
-    # Edit's "auto …" pre-line carries the full diff preview, which the result line (-> FILE STATE)
-    # omits, so it must still be surfaced; the result line is tagged [auto].
+    # Edit's "auto …" pre-line carries the approval preview; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
