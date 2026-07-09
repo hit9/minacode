@@ -6952,16 +6952,14 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
-class InlineSpinner:
-    FRAMES: ClassVar[tuple[str, ...]] = ("|", "/", "-", "\\")
+class CompactSpinner:
     INTERVAL: ClassVar[float] = 0.12
 
-    def __init__(self, label: str):
-        self.label = label
-        self.output = create_output(sys.stderr)
+    def __init__(self, loop: "CommandLoop"):
+        self.loop = loop
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
-        self.rendered = False
+        self.app: Application | None = None
 
     def start(self) -> None:
         if self.thread is not None or not sys.stderr.isatty():
@@ -6971,15 +6969,26 @@ class InlineSpinner:
         self.thread.start()
 
     def run(self) -> None:
-        index = 0
-        while not self.stop_event.is_set():
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            frame = self.FRAMES[index % len(self.FRAMES)]
-            print_formatted_text(FormattedText([("ansibrightblack", frame + " "), ("ansiwhite", self.label)]), output=self.output, end="", flush=True)
-            self.rendered = True
-            index += 1
-            self.stop_event.wait(self.INTERVAL)
+        window = Window(FormattedTextControl(self.fragments), height=1, dont_extend_height=True)
+        app = self.loop._make_app(Layout(HSplit([window, self.loop.status_window()])), KeyBindings())
+        self.app = app
+
+        def stop_when_needed() -> None:
+            self.stop_event.wait()
+            deadline = time.monotonic() + 2.0
+            while self.app is app and time.monotonic() < deadline:
+                self.loop.exit_app(app)
+                time.sleep(0.02)
+
+        threading.Thread(target=stop_when_needed, daemon=True).start()
+        try:
+            with patch_stdout():
+                app.run()
+        except (EOFError, KeyboardInterrupt, ValueError, OSError):
+            pass
+        finally:
+            if self.app is app:
+                self.app = None
 
     def stop(self) -> None:
         if self.thread is None:
@@ -6987,11 +6996,9 @@ class InlineSpinner:
         self.stop_event.set()
         self.thread.join()
         self.thread = None
-        if self.rendered:
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            self.output.flush()
-            self.rendered = False
+
+    def fragments(self) -> list[tuple[str, str]]:
+        return self.loop.sweep_divider_fragments("compacting context")
 
 
 class DiffText:
@@ -8630,7 +8637,7 @@ Tools:
         if not compacted:
             return "No prior conversation to compact"
         fallback = False
-        spinner = InlineSpinner("Compacting context")
+        spinner = CompactSpinner(self)
         try:
             spinner.start()
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))

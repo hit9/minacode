@@ -1190,8 +1190,8 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch
     spinners = []
 
     class FakeSpinner:
-        def __init__(self, label):
-            self.label = label
+        def __init__(self, command_loop):
+            self.command_loop = command_loop
             self.started = False
             self.stopped = False
             spinners.append(self)
@@ -1202,7 +1202,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch
         def stop(self):
             self.stopped = True
 
-    monkeypatch.setattr(n, "InlineSpinner", FakeSpinner)
+    monkeypatch.setattr(n, "CompactSpinner", FakeSpinner)
 
     class FakeModel:
         def compact(self, text):
@@ -1218,10 +1218,19 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
-    assert spinners[0].label == "Compacting context"
+    assert spinners[0].command_loop is loop
     assert spinners[0].stopped is True
     assert "messages 4 -> 3" in result
     assert "prior summary inserted" in result
+
+
+def test_compact_spinner_uses_standalone_divider(tmp_path, monkeypatch):
+    loop = n.CommandLoop(n.Agent(session(tmp_path)))
+    monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
+    fragments = n.CompactSpinner(loop).fragments()
+
+    assert "compacting context" in "".join(text for _, text in fragments)
+    assert any(style == "class:divider.working" and text == "compacting context" for style, text in fragments)
 
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
