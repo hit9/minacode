@@ -6925,49 +6925,9 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
-class GitDiffService:
-    """Read-only helpers for inspecting a git worktree."""
-
-    GIT_DIFF_TIMEOUT = 10
+class DiffText:
     MAX_DIFF_BYTES = 50_000
     MAX_DIFF_LINES = 1_200
-
-    def __init__(self, cwd: str):
-        self.cwd = cwd
-
-    def _run(self, args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args,
-            cwd=self.cwd,
-            text=True,
-            capture_output=True,
-            timeout=timeout or self.GIT_DIFF_TIMEOUT,
-        )
-
-    def git_root(self) -> str | None:
-        result = self._run(["git", "rev-parse", "--show-toplevel"], timeout=5)
-        if result.returncode != 0:
-            return None
-        return result.stdout.strip() or None
-
-    def git_diff(self, cached: bool = False) -> str:
-        cmd = [
-            "git",
-            "diff",
-            "--no-ext-diff",
-            "--no-color",
-            "--src-prefix=",
-            "--dst-prefix=",
-        ]
-        if cached:
-            cmd.append("--cached")
-        result = self._run(cmd)
-        return result.stdout
-
-    def git_untracked(self) -> list[str]:
-        result = self._run(["git", "ls-files", "--others", "--exclude-standard"])
-        paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        return paths
 
     @classmethod
     def bounded(cls, text: str, max_bytes: int | None = None, max_lines: int | None = None) -> tuple[str, bool]:
@@ -6985,62 +6945,6 @@ class GitDiffService:
             clipped.append(line)
             length += line_bytes
         return "\n".join(clipped), True
-
-    def read_untracked_diff(self, path: str) -> str:
-        """Synthesize a unified diff for an untracked text file, capped in size."""
-        full_path = os.path.join(self.cwd, path)
-        try:
-            with open(full_path, "rb") as fh:
-                raw = fh.read(16_384)
-        except (OSError, UnicodeError):
-            return ""
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return ""
-        lines = text.splitlines(keepends=True)
-        out_lines = [f"--- /dev/null", f"+++ b/{path}"] + [f"+{line.rstrip('\n')}" for line in lines]
-        out = "\n".join(out_lines)
-        bounded, truncated = self.bounded(out, max_bytes=8_000, max_lines=200)
-        if truncated:
-            bounded += f"\n\n... truncated; run `git diff --no-index /dev/null {path}` for the full file"
-        return bounded
-
-    @staticmethod
-    def split_files(diff_text: str) -> list[tuple[str, str]]:
-        """Split a unified diff into per-file sections (path, diff)."""
-        lines = diff_text.splitlines()
-        sections: list[tuple[str, str]] = []
-        current: list[str] = []
-        old_path: str | None = None
-        new_path: str | None = None
-
-        def clean_path(value: str | None) -> str | None:
-            if not value or value == "/dev/null":
-                return None
-            return value[2:] if value.startswith(("a/", "b/")) else value
-
-        def flush() -> None:
-            path = clean_path(new_path) or clean_path(old_path)
-            if current and path is not None:
-                sections.append((path, "\n".join(current)))
-
-        for index, line in enumerate(lines):
-            next_line = lines[index + 1] if index + 1 < len(lines) else ""
-            synthetic_header = line.startswith("--- ") and next_line.startswith("+++ ") and current and not current[0].startswith("diff --git ")
-            if line.startswith("diff --git ") or synthetic_header:
-                flush()
-                current = []
-                old_path = None
-                new_path = None
-            current.append(line)
-            if line.startswith("--- "):
-                old_path = line[4:].strip()
-            elif line.startswith("+++ "):
-                new_path = line[4:].strip()
-        flush()
-        return sections
-
 
 class QueuePlaceholder(Processor):
     def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
@@ -7121,7 +7025,7 @@ class CommandLoop:
   /status            Show runtime status.
   /ps                Show active background jobs.
   /context           Show the model's context frame (environment and memory).
-  /diff              Show latest edits, uncommitted git changes, and overall session diff.
+  /diff              Show latest edits and overall session diff.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
@@ -8298,16 +8202,12 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        service = GitDiffService(self.agent.session.cwd)
-        if service.git_root() is None:
-            latest = self._latest_round_diff_text(service)
-            return latest or "Not in a git repository"
         if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
-            self.diff_viewer(service)
+            self.diff_viewer()
             return None
-        return self._diff_text(service)
+        return self._diff_text()
 
-    def _latest_round_diff_text(self, service: GitDiffService) -> str:
+    def _latest_round_diff_text(self) -> str:
         latest = self.agent.session.latest_round_diff_sections()
         if latest is None:
             return ""
@@ -8315,56 +8215,31 @@ Tools:
         lines = [f"### Latest · Round {round}"]
         for _status, path, diff in sections:
             lines.append(f"#### {path}")
-            bounded, truncated = service.bounded(diff)
+            bounded, truncated = DiffText.bounded(diff)
             lines.append(f"```diff\n{bounded}\n```")
             if truncated:
                 lines.append("\n*Diff truncated. Full edit output is stored in the session.*")
         return "\n".join(lines)
 
-    def _diff_text(self, service: GitDiffService) -> str:
-        staged = service.git_diff(cached=True)
-        unstaged = service.git_diff(cached=False)
-        untracked_paths = service.git_untracked()
-        untracked_parts: list[str] = []
-        untracked_omitted: list[str] = []
-        for path in untracked_paths[:20]:
-            piece = service.read_untracked_diff(path)
-            if piece:
-                untracked_parts.append(piece)
-            else:
-                untracked_omitted.append(path)
-        latest = self._latest_round_diff_text(service)
-        if not latest and not staged and not unstaged and not untracked_parts and not untracked_omitted:
+    def _diff_text(self) -> str:
+        latest = self._latest_round_diff_text()
+        session = self.agent.session.session_diff_sections()
+        if not latest and not session:
             return "No changes"
         lines: list[str] = []
         if latest:
             lines.append(latest)
-        if staged:
-            bounded, truncated = service.bounded(staged)
-            lines.append("### Staged")
-            lines.append(f"```diff\n{bounded}\n```")
-            if truncated:
-                lines.append(f"\n*Diff truncated. Run `git -C {service.cwd} diff --cached` for the full output.*")
-        if unstaged:
-            bounded, truncated = service.bounded(unstaged)
-            lines.append("### Unstaged")
-            lines.append(f"```diff\n{bounded}\n```")
-            if truncated:
-                lines.append(f"\n*Diff truncated. Run `git -C {service.cwd} diff` for the full output.*")
-        if untracked_parts:
-            lines.append("### Untracked files")
-            for piece in untracked_parts:
-                lines.append(f"```diff\n{piece}\n```")
-        if untracked_omitted:
-            if not untracked_parts:
-                lines.append("### Untracked files")
-            lines.append("Binary or unreadable files:")
-            lines.extend(f"- `{path}`" for path in untracked_omitted)
-        if len(untracked_paths) > 20:
-            lines.append(f"\n*{len(untracked_paths) - 20} more untracked file(s) omitted.*")
+        if session:
+            lines.append("### Session")
+            for _status, path, diff in session:
+                lines.append(f"#### {path}")
+                bounded, truncated = DiffText.bounded(diff)
+                lines.append(f"```diff\n{bounded}\n```")
+                if truncated:
+                    lines.append("\n*Diff truncated. Full edit output is stored in the session.*")
         return "\n".join(lines)
 
-    def diff_viewer(self, service: GitDiffService) -> None:
+    def diff_viewer(self) -> None:
         """Interactive diff viewer. First shows a file list; open a file to see its diff.
 
         List mode: ↑/↓ or j/k move, h/l or ←/→ switches tabs, Enter opens the selected file,
@@ -8372,7 +8247,7 @@ Tools:
         Diff mode: ↑/↓ scroll one line, Ctrl-U/Ctrl-D half a page, PgUp/PgDn a page,
         Esc/← returns to list, r refreshes, q closes.
         """
-        tabs = ("Latest", "Uncommitted", "Session")
+        tabs = ("Latest", "Session")
         state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
 
         def build_latest_sections() -> list[tuple[str, str, str]]:
@@ -8382,22 +8257,8 @@ Tools:
                 return sections
             return []
 
-        def build_current_sections() -> list[tuple[str, str, str]]:
-            sections: list[tuple[str, str, str]] = []
-            for path, diff in service.split_files(service.git_diff(cached=True)):
-                sections.append(("staged", path, diff))
-            for path, diff in service.split_files(service.git_diff(cached=False)):
-                sections.append(("unstaged", path, diff))
-            for path in service.git_untracked()[:20]:
-                piece = service.read_untracked_diff(path)
-                if piece:
-                    sections.append(("untracked", path, piece))
-                else:
-                    sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
-            return sections
-
         def build_model() -> dict[str, Any]:
-            return {"latest": build_latest_sections(), "current": build_current_sections(), "session": self.agent.session.session_diff_sections()}
+            return {"latest": build_latest_sections(), "session": self.agent.session.session_diff_sections()}
 
         model = build_model()
 
@@ -8407,8 +8268,6 @@ Tools:
         def active_sections() -> list[tuple[str, str, str]]:
             if state["tab"] == 0:
                 return model["latest"]
-            if state["tab"] == 1:
-                return model["current"]
             return model["session"]
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:

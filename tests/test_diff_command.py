@@ -1,7 +1,5 @@
 import subprocess
 
-import pytest
-
 import nanocode as n
 
 
@@ -40,17 +38,15 @@ def test_diff_rejects_args(tmp_path):
 
 def test_diff_outside_git_repo(tmp_path):
     lp = loop(session(tmp_path))
-    assert lp.diff_command("") == "Not in a git repository"
+    assert lp.diff_command("") == "No changes"
 
 
-def test_diff_clean_repo(tmp_path):
-    git_init(tmp_path)
+def test_diff_clean_session(tmp_path):
     lp = loop(session(tmp_path))
     assert lp.diff_command("") == "No changes"
 
 
-def test_diff_shows_latest_round_in_clean_repo(tmp_path):
-    git_init(tmp_path)
+def test_diff_shows_latest_round(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "old.py", "-old\n+older\n", round=1)
     s.store_turn_diff("tr.2", 2, "new.py", "-old\n+new\n", round=2)
@@ -77,87 +73,26 @@ def test_diff_shows_latest_round_outside_git_repo(tmp_path):
     assert result != "Not in a git repository"
 
 
-def test_diff_unstaged_tracked_file(tmp_path):
+def test_diff_ignores_git_worktree_changes(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
     (tmp_path / "a.py").write_text("new\n", encoding="utf-8")
+    (tmp_path / "untracked.py").write_text("hello\n", encoding="utf-8")
 
     lp = loop(session(tmp_path))
+    assert lp.diff_command("") == "No changes"
+
+
+def test_diff_bounds_large_session_output(tmp_path):
+    s = session(tmp_path)
+    large = "\n".join(f"+line {index}" for index in range(2_000))
+    s.store_turn_diff("tr.1", 1, "a.py", large, round=1)
+
+    lp = loop(s)
     result = lp.diff_command("")
-    assert "### Unstaged" in result
-    assert "-old" in result
-    assert "+new" in result
-
-
-def test_diff_staged_section(tmp_path):
-    git_init(tmp_path)
-    (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
-    (tmp_path / "a.py").write_text("staged\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
-
-    lp = loop(session(tmp_path))
-    result = lp.diff_command("")
-    assert "### Staged" in result
-    assert "-old" in result
-    assert "+staged" in result
-    assert "### Unstaged" not in result
-
-
-def test_diff_untracked_file_synthesized(tmp_path):
-    git_init(tmp_path)
-    (tmp_path / "new.py").write_text("hello\n", encoding="utf-8")
-
-    lp = loop(session(tmp_path))
-    result = lp.diff_command("")
-    assert "### Untracked files" in result
-    assert "+hello" in result
-
-
-def test_diff_binary_untracked_file_is_reported(tmp_path):
-    git_init(tmp_path)
-    (tmp_path / "image.bin").write_bytes(b"\xff\x00\x01")
-
-    lp = loop(session(tmp_path))
-    result = lp.diff_command("")
-
-    assert "### Untracked files" in result
-    assert "Binary or unreadable files" in result
-    assert "image.bin" in result
-
-
-def test_diff_bounds_large_output(tmp_path):
-    git_init(tmp_path)
-    (tmp_path / "a.py").write_text("line\n" * 10_000, encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
-    (tmp_path / "a.py").write_text("changed\n" * 10_000, encoding="utf-8")
-
-    lp = loop(session(tmp_path))
-    result = lp.diff_command("")
-    assert "### Unstaged" in result
     assert "truncated" in result.lower()
-
-
-def test_git_diff_service_split_files():
-    diff = "--- a.py\n+++ b.py\n@@ -1 +1 @@\n-old\n+new\n--- c.py\n+++ d.py\n@@ -1 +1 @@\n-1\n+2\n"
-    sections = n.GitDiffService.split_files(diff)
-    assert len(sections) == 2
-    assert sections[0][0] == "b.py"
-    assert "old" in sections[0][1]
-    assert sections[1][0] == "d.py"
-
-
-def test_git_diff_service_split_files_keeps_deleted_files():
-    diff = "diff --git a/a.py b/a.py\nindex 123..000 100644\n--- a/a.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"
-    sections = n.GitDiffService.split_files(diff)
-
-    assert len(sections) == 1
-    assert sections[0][0] == "a.py"
-    assert "+++ /dev/null" in sections[0][1]
 
 
 def test_ui_segment_lines_keeps_styled_diff_lines_together():
