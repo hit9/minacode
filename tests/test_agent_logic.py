@@ -804,10 +804,19 @@ def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
     pending = {"value": False}
     placeholder = n.QueuePlaceholder("first", "second", lambda: pending["value"])
 
-    empty = placeholder.apply_transformation(SimpleNamespace(document=n.Document(""), fragments=[]))
+    def ti(text: str, fragments=None):
+        document = n.Document(text)
+        return SimpleNamespace(
+            buffer_control=SimpleNamespace(buffer=SimpleNamespace(text=text)),
+            document=document,
+            lineno=document.line_count - 1,
+            fragments=fragments or [],
+        )
+
+    empty = placeholder.apply_transformation(ti(""))
     pending["value"] = True
-    queued = placeholder.apply_transformation(SimpleNamespace(document=n.Document(""), fragments=[]))
-    typed = placeholder.apply_transformation(SimpleNamespace(document=n.Document("x"), fragments=[("", "x")]))
+    queued = placeholder.apply_transformation(ti(""))
+    typed = placeholder.apply_transformation(ti("x", [("", "x")]))
 
     assert empty.fragments == [("class:queue.hint", "first")]
     assert queued.fragments == [("class:queue.hint", "second")]
