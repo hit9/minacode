@@ -96,7 +96,7 @@ nanocode --resume last
 - `/help`：显示命令和工具。
 - `/status`：显示运行状态，包括当前 session id。
 - `/context [PATH]`：显示模型的上下文帧——环境、记忆（goal、plan、known facts、check）和文件状态；`PATH` 显示该文件当前在上下文中的行。
-- `/diff`：显示最新编辑 diff、未提交 git 变更（staged、unstaged、untracked）和本 session 的整体净 diff。交互式 prompt 下打开 `Latest`、`Uncommitted`、`Session` 三个标签；`←/→` 或 `h`/`l` 切换标签，`↑/↓` 或 `j`/`k` 在列表中移动，`Enter` 打开文件 diff，在 diff 视图中 `↑/↓`/`PgUp`/`PgDn` 滚动，`Esc`/`←` 返回文件列表，`r` 刷新，`Esc`/`q` 从列表关闭。
+- `/diff`：显示最新编辑 diff、未提交 git 变更（staged、unstaged、untracked）和本 session 的整体净 diff。交互式 prompt 下打开 `Latest`、`Uncommitted`、`Session` 三个标签；`←/→` 或 `h`/`l` 切换标签，`↑/↓` 或 `j`/`k` 在列表中移动，`Enter` 打开文件 diff，在 diff 视图中 `↑/↓` 滚动，`Ctrl-U`/`Ctrl-D` 滚动半页，`PgUp`/`PgDn` 滚动一页，`Esc`/`←` 返回文件列表，`r` 刷新，`Esc`/`q` 从列表关闭。
 - `/skills`：列出已安装的 skills（用 `Skill(name)` 加载，或在消息中用 `$name` 引用）。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。

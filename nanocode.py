@@ -8588,8 +8588,8 @@ Tools:
 
         List mode: ↑/↓ or j/k move, h/l or ←/→ switches tabs, Enter opens the selected file,
         r refreshes, q/Esc closes.
-        Diff mode: ↑/↓ scroll one line, PgUp/PgDn scroll a page, Esc/← returns to list,
-        r refreshes, q closes.
+        Diff mode: ↑/↓ scroll one line, Ctrl-U/Ctrl-D half a page, PgUp/PgDn a page,
+        Esc/← returns to list, r refreshes, q closes.
         """
         width = max(20, shutil.get_terminal_size().columns - 2)
         tabs = ("Latest", "Uncommitted", "Session")
@@ -8679,7 +8679,7 @@ Tools:
                 hint = "↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close"
                 position = f"{int(state['file']) + 1}/{len(sections) or 0}"
             else:
-                hint = "↑/↓ scroll · PgUp/PgDn page · Esc/← back · r refresh · q close"
+                hint = "↑/↓ scroll · Ctrl-U/D half-page · PgUp/PgDn page · Esc/← back · r refresh · q close"
                 position = f"{int(state['file']) + 1}/{len(sections) or 0}"
             parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
@@ -8702,6 +8702,11 @@ Tools:
         def page(event, delta: int) -> None:
             if state["mode"] == "file":
                 state["scroll"] = max(0, int(state["scroll"]) + delta * viewport())
+                event.app.invalidate()
+
+        def half_page(event, delta: int) -> None:
+            if state["mode"] == "file":
+                state["scroll"] = max(0, int(state["scroll"]) + delta * max(1, viewport() // 2))
                 event.app.invalidate()
 
         def open_file(event):
@@ -8747,6 +8752,8 @@ Tools:
         bindings.add("k", eager=True)(lambda event: move(event, -1))
         bindings.add("pagedown", eager=True)(lambda event: page(event, 1))
         bindings.add("pageup", eager=True)(lambda event: page(event, -1))
+        bindings.add("c-d", eager=True)(lambda event: half_page(event, 1))
+        bindings.add("c-u", eager=True)(lambda event: half_page(event, -1))
         bindings.add("enter", eager=True)(open_file)
         bindings.add("escape", eager=True)(lambda event: back(event) if state["mode"] == "file" else event.app.exit(result=None))
         bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
