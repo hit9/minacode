@@ -788,12 +788,13 @@ class SessionSnapshotCodec:
         messages = cls.persistable_messages(session.messages)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
+        turn_diff_keys = [diff.key for diff in session.turn_diffs]
         # fmt: off
         return {
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
-            "turn_diffs_len": len(session.turn_diffs), "turn_diffs_digest": cls.digest([cls.turn_diff(diff) for diff in session.turn_diffs]),
+            "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
         }
         # fmt: on
 
@@ -942,14 +943,7 @@ class SessionSnapshotCodec:
             "tool_errors_len",
             "tool_errors_digest",
         )
-        cls.add_sequence_delta(
-            delta,
-            "turn_diffs",
-            [cls.turn_diff(diff) for diff in session.turn_diffs],
-            saved,
-            "turn_diffs_len",
-            "turn_diffs_digest",
-        )
+        cls.add_turn_diffs_delta(delta, session.turn_diffs, saved)
         return delta
 
     @classmethod
@@ -960,6 +954,17 @@ class SessionSnapshotCodec:
                 delta[key] = current[last_len:]
         elif cls.digest(current) != saved.get(digest_key):
             delta[key + "_replace"] = current
+
+    @classmethod
+    def add_turn_diffs_delta(cls, delta: Json, current: list[TurnDiff], saved: Json) -> None:
+        keys = [diff.key for diff in current]
+        last_len = int(saved.get("turn_diffs_len", 0) or 0)
+        saved_digest = saved.get("turn_diffs_keys_digest", saved.get("turn_diffs_digest"))
+        if cls.digest(keys[:last_len]) == saved_digest:
+            if len(current) > last_len:
+                delta["turn_diffs"] = [cls.turn_diff(diff) for diff in current[last_len:]]
+        elif cls.digest(keys) != saved_digest:
+            delta["turn_diffs_replace"] = [cls.turn_diff(diff) for diff in current]
 
     @classmethod
     def merge(cls, data: Json, delta: Json) -> None:

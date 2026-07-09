@@ -104,6 +104,23 @@ def test_delta_omits_tool_records_when_nothing_new(tmp_path):
     assert "tool_results" not in delta
 
 
+def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, monkeypatch):
+    s = session_with_data_dir(tmp_path)
+    s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before="old\n" * 1000, after="new\n" * 1000, round=1)
+    s.save_snapshot()  # init
+
+    def fail_turn_diff(_diff):
+        raise AssertionError("unchanged turn diffs should not be serialized")
+
+    monkeypatch.setattr(n.SessionSnapshotCodec, "turn_diff", fail_turn_diff)
+    s.messages.append({"role": "user", "content": "next"})
+    s.save_snapshot()  # delta
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert "turn_diffs" not in lines[1]
+    assert "turn_diffs_replace" not in lines[1]
+
+
 def test_load_merges_init_and_deltas(tmp_path):
     """load_snapshot reads and merges all lines, returning the full session state."""
     s = session_with_data_dir(tmp_path)
