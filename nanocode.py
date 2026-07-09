@@ -8463,7 +8463,7 @@ Tools:
         if latest is None:
             return ""
         turn, diffs = latest
-        lines = [f"### Latest turn · Turn {turn}"]
+        lines = [f"### Latest edits · Batch {turn}"]
         for diff in diffs:
             lines.append(f"#### {diff.path}")
             bounded, truncated = service.bounded(diff.diff)
@@ -8524,14 +8524,17 @@ Tools:
         r refreshes, q closes.
         """
         width = max(20, shutil.get_terminal_size().columns - 2)
-        state: dict[str, Any] = {"view": 0, "mode": "list", "file": 0, "scroll": 0}
+        tabs = ("Latest edits", "Current git diff", "History")
+        state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "history": 0, "scroll": 0}
 
-        def build_views() -> list[tuple[str, list[tuple[str, str, str]]]]:
-            views: list[tuple[str, list[tuple[str, str, str]]]] = []
+        def build_latest_sections() -> list[tuple[str, str, str]]:
             latest = self.agent.session.latest_turn_diffs()
             if latest is not None:
-                turn, diffs = latest
-                views.append((f"Latest turn · {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
+                _turn, diffs = latest
+                return [("edit", diff.path, diff.diff) for diff in diffs]
+            return []
+
+        def build_current_sections() -> list[tuple[str, str, str]]:
             sections: list[tuple[str, str, str]] = []
             for path, diff in service.split_files(service.git_diff(cached=True)):
                 sections.append(("staged", path, diff))
@@ -8543,18 +8546,37 @@ Tools:
                     sections.append(("untracked", path, piece))
                 else:
                     sections.append(("untracked", path, f"Untracked binary or unreadable file: {path}"))
-            views.append(("Current git diff", sections))
+            return sections
+
+        def build_history() -> list[tuple[str, list[tuple[str, str, str]]]]:
+            latest = self.agent.session.latest_turn_diffs()
             latest_turn = latest[0] if latest is not None else None
+            history: list[tuple[str, list[tuple[str, str, str]]]] = []
             for turn, diffs in sorted(self.agent.session.turn_diffs_by_turn().items(), reverse=True):
                 if turn == latest_turn:
                     continue
-                views.append((f"Turn {turn}", [("edit", diff.path, diff.diff) for diff in diffs]))
-            return views
+                label = f"Edit batch {turn} · {len(diffs)} file{'s' if len(diffs) != 1 else ''}"
+                history.append((label, [("edit", diff.path, diff.diff) for diff in diffs]))
+            return history
 
-        views = build_views()
+        def build_model() -> dict[str, Any]:
+            return {"latest": build_latest_sections(), "current": build_current_sections(), "history": build_history()}
+
+        model = build_model()
 
         def viewport() -> int:
             return max(3, shutil.get_terminal_size().lines - 7)
+
+        def active_sections() -> list[tuple[str, str, str]]:
+            if state["tab"] == 0:
+                return model["latest"]
+            if state["tab"] == 1:
+                return model["current"]
+            history = model["history"]
+            if not history or state["mode"] != "history_detail":
+                return []
+            state["history"] = int(state["history"]) % len(history)
+            return history[state["history"]][1]
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
@@ -8564,6 +8586,22 @@ Tools:
                 marker = "> " if selected else "  "
                 style = "ansicyan" if selected else "class:choice.disabled"
                 parts.append((style, f"{marker}{status.title():10} {path}\n"))
+            parts.append(("", "\n"))
+
+        def history_fragments(parts: list[tuple[str, str]]) -> None:
+            history = model["history"]
+            parts.append(("", "\n"))
+            parts.append(("ansicyan", "  Edit history\n"))
+            for index, (label, sections) in enumerate(history):
+                selected = index == state["history"]
+                marker = "> " if selected else "  "
+                style = "ansicyan" if selected else "class:choice.disabled"
+                parts.append((style, f"{marker}{label}\n"))
+                if selected:
+                    paths = ", ".join(path for _status, path, _diff in sections[:3])
+                    suffix = "..." if len(sections) > 3 else ""
+                    if paths:
+                        parts.append(("class:choice.disabled", f"    {paths}{suffix}\n"))
             parts.append(("", "\n"))
 
         def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
@@ -8582,41 +8620,58 @@ Tools:
 
         def fragments():
             parts: list[tuple[str, str]] = [("", "\n")]
-            for index, (title, _) in enumerate(views):
-                active = index == state["view"]
+            for index, title in enumerate(tabs):
+                active = index == state["tab"]
                 parts.append(("class:tab.active" if active else "class:tab.inactive", f" {title} "))
-                if index < len(views) - 1:
+                if index < len(tabs) - 1:
                     parts.append(("class:choice.disabled", " │ "))
             parts.append(("", "\n"))
-            _, sections = views[state["view"]]
-            if not sections:
+
+            sections = active_sections()
+            if state["tab"] == 2 and state["mode"] == "history":
+                if model["history"]:
+                    history_fragments(parts)
+                else:
+                    parts.append(("class:choice.disabled", "  No older edit history\n"))
+            elif not sections:
                 parts.append(("class:choice.disabled", "  No diffs\n"))
             elif state["mode"] == "list":
                 list_fragments(parts, sections)
             else:
                 file_fragments(parts, sections)
-            mode_hint = "list" if state["mode"] == "list" else "diff"
-            if state["mode"] == "list":
+            mode_hint = "history" if state["mode"] == "history" else "list" if state["mode"] == "list" else "diff"
+            if state["mode"] == "history":
                 hint = "↑/↓ move · Enter open · ←/→ view · r refresh · Esc/q close"
+                count = len(model["history"])
+                position = f"{int(state['history']) + 1}/{count}" if count else "0/0"
+            elif state["mode"] == "list":
+                hint = "↑/↓ move · Enter open · ←/→ view · r refresh · Esc/q close"
+                position = f"{int(state['file']) + 1}/{len(sections) or 0}"
             else:
                 hint = "↑/↓ scroll · PgUp/PgDn page · Esc/← back · r refresh · q close"
-            parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{state['file'] + 1}/{len(sections) or 0}]\n"))
+                position = f"{int(state['file']) + 1}/{len(sections) or 0}"
+            parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
 
-        def switch_view(event, delta: int) -> None:
-            state["view"] = (int(state["view"]) + delta) % max(1, len(views))
+        def switch_tab(event, delta: int) -> None:
+            state["tab"] = (int(state["tab"]) + delta) % len(tabs)
             state["file"] = 0
+            state["history"] = 0
             state["scroll"] = 0
-            state["mode"] = "list"
+            state["mode"] = "history" if state["tab"] == 2 else "list"
             event.app.invalidate()
 
         def move(event, delta: int) -> None:
-            _, sections = views[state["view"]]
-            if not sections:
+            if state["mode"] == "history":
+                history = model["history"]
+                if history:
+                    state["history"] = (int(state["history"]) + delta) % len(history)
+                event.app.invalidate()
                 return
-            if state["mode"] == "list":
+            sections = active_sections()
+            if sections and state["mode"] == "list":
                 state["file"] = (int(state["file"]) + delta) % len(sections)
-            else:
+            elif sections:
                 state["scroll"] = max(0, int(state["scroll"]) + delta)
             event.app.invalidate()
 
@@ -8626,42 +8681,48 @@ Tools:
                 event.app.invalidate()
 
         def open_file(event):
-            if state["mode"] == "list":
-                _, sections = views[state["view"]]
-                if sections:
-                    state["mode"] = "file"
+            if state["mode"] == "history":
+                if model["history"]:
+                    state["mode"] = "history_detail"
+                    state["file"] = 0
                     state["scroll"] = 0
                     event.app.invalidate()
+                return
+            if state["mode"] == "list" and active_sections():
+                state["mode"] = "file"
+                state["scroll"] = 0
+                event.app.invalidate()
 
         def back(event):
-            if state["mode"] == "file":
-                state["mode"] = "list"
+            if state["mode"] in {"file", "history_detail"}:
+                state["mode"] = "history" if state["tab"] == 2 else "list"
                 state["scroll"] = 0
                 event.app.invalidate()
 
         def refresh(event):
-            nonlocal views
-            views = build_views()
+            nonlocal model
+            model = build_model()
             state["file"] = 0
+            state["history"] = 0
             state["scroll"] = 0
-            state["mode"] = "list"
+            state["mode"] = "history" if state["tab"] == 2 else "list"
             event.app.invalidate()
 
         bindings = KeyBindings()
 
         def _left(event):
-            if state["mode"] == "file":
+            if state["mode"] in {"file", "history_detail"}:
                 back(event)
             else:
-                switch_view(event, -1)
+                switch_tab(event, -1)
 
         def _right(event):
-            if state["mode"] == "list":
-                switch_view(event, 1)
+            if state["mode"] in {"list", "history"}:
+                switch_tab(event, 1)
 
         bindings.add("right", eager=True)(_right)
         bindings.add("left", eager=True)(_left)
-        bindings.add("tab", eager=True)(lambda event: switch_view(event, 1))
+        bindings.add("tab", eager=True)(lambda event: switch_tab(event, 1))
         bindings.add("down", eager=True)(lambda event: move(event, 1))
         bindings.add("j", eager=True)(lambda event: move(event, 1))
         bindings.add("up", eager=True)(lambda event: move(event, -1))

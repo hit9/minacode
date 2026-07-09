@@ -58,7 +58,7 @@ def test_diff_shows_latest_turn_in_clean_repo(tmp_path):
     lp = loop(s)
     result = lp.diff_command("")
 
-    assert "### Latest turn · Turn 2" in result
+    assert "### Latest edits · Batch 2" in result
     assert "#### new.py" in result
     assert "+new" in result
     assert "old.py" not in result
@@ -71,7 +71,7 @@ def test_diff_shows_latest_turn_outside_git_repo(tmp_path):
     lp = loop(s)
     result = lp.diff_command("")
 
-    assert "### Latest turn · Turn 3" in result
+    assert "### Latest edits · Batch 3" in result
     assert "#### x.py" in result
     assert "+b" in result
     assert result != "Not in a git repository"
@@ -259,7 +259,7 @@ def test_resume_recovers_latest_turn_diff_from_old_edit_records(tmp_path):
     assert len(loaded.turn_diffs) == 1
     assert loaded.turn_diffs[0].key == "tr.1"
     assert loaded.turn_diffs[0].path == "x.py"
-    assert "### Latest turn" in result
+    assert "### Latest edits" in result
     assert "-old" in result
     assert "+new" in result
 
