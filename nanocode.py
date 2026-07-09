@@ -523,6 +523,7 @@ class AgentState:
     turn_tool_calls: int = 0
     turn_messages: int = 0
     current_model_call_started_at: float = 0.0
+    current_model_request_pending_inputs: list[str] = field(default_factory=list)
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
     compaction_count: int = 0
@@ -6130,7 +6131,11 @@ FINAL:
             while True:
                 try:
                     messages, pending = self.messages(turn_messages)
-                    assistant, tool_calls, content = self.model.request(messages)
+                    self.session.state.current_model_request_pending_inputs = pending
+                    try:
+                        assistant, tool_calls, content = self.model.request(messages)
+                    finally:
+                        self.session.state.current_model_request_pending_inputs = []
                     self.accept_pending_inputs(turn_messages, pending)
                     break
                 except ModelRequestRetry:
@@ -6696,8 +6701,11 @@ class ModelRetryShortcut:
         self.fd: int | None = None
         self.original_attrs = None
         self.previous_handler = None
+        self.previous_sigint_handler = None
 
     def __enter__(self):
+        self.previous_sigint_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, self.handle_sigint)
         if not sys.stdin.isatty() or not hasattr(signal, "SIGQUIT"):
             return self
         try:
@@ -6719,6 +6727,11 @@ class ModelRetryShortcut:
         return self
 
     def __exit__(self, *args) -> None:
+        if self.previous_sigint_handler is not None:
+            try:
+                signal.signal(signal.SIGINT, self.previous_sigint_handler)
+            except Exception:
+                pass
         try:
             import termios
 
@@ -6731,10 +6744,18 @@ class ModelRetryShortcut:
         self.fd = None
         self.original_attrs = None
         self.previous_handler = None
+        self.previous_sigint_handler = None
 
     @staticmethod
     def control_char(chars: list[Any], value: int) -> int | bytes:
         return bytes([value]) if chars and isinstance(chars[0], bytes) else value
+
+    def handle_sigint(self, _signum: int, _frame: Any) -> None:
+        if not self.session.state.manual_model_retry_requested:
+            raise KeyboardInterrupt
+        if self.session.state.current_model_call_started_at > 0:
+            raise KeyboardInterrupt
+        self.session.state.manual_model_retry_requested = False
 
     def handle_signal(self, _signum: int, _frame: Any) -> None:
         if self.session.state.current_model_call_started_at > 0:
@@ -6936,7 +6957,7 @@ class StatusBar:
 
 
 class CommandLoop:
-    QUEUE_HINT: ClassVar[str] = "Enter queues for next request · Enter again sends now · Ctrl-C stops"
+    QUEUE_HINT: ClassVar[str] = "Enter queues next request · blank Enter sends during model call · Ctrl-C stops"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
@@ -7171,15 +7192,27 @@ Tools:
         return fragments
 
     def retry_current_model_request(self) -> bool:
-        if self.session.state.current_model_call_started_at <= 0:
+        if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
             return False
         self.session.state.manual_model_retry_requested = True
         self.session.state.model_retry_count += 1
         os.kill(os.getpid(), signal.SIGINT)
         return True
 
+    def has_queued_input_outside_current_request(self) -> bool:
+        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        sent = list(self.session.state.current_model_request_pending_inputs)
+        for text in pending:
+            for index, value in enumerate(sent):
+                if value.strip() == text.strip():
+                    del sent[index]
+                    break
+            else:
+                return True
+        return False
+
     def flush_queued_input_now(self) -> bool:
-        if not any(text.strip() for text in self.session.pending_user_inputs):
+        if not self.has_queued_input_outside_current_request():
             return False
         return self.retry_current_model_request()
 
@@ -7221,6 +7254,8 @@ Tools:
                 self.queue_input_text = ""
                 buffer.reset(Document(""))
             else:
+                self.queue_input_text = ""
+                buffer.reset(Document(""))
                 self.flush_queued_input_now()
 
         @bindings.add("c-c", eager=True)

@@ -622,9 +622,11 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     class FakeModel:
         def __init__(self):
             self.messages = []
+            self.pending_snapshots = []
 
         def request(self, messages):
             self.messages.append(messages)
+            self.pending_snapshots.append(list(s.state.current_model_request_pending_inputs))
             if len(self.messages) == 1:
                 s.pending_user_inputs.append("second instruction")
                 return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
@@ -647,6 +649,8 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
+    assert s.state.current_model_request_pending_inputs == []
+    assert agent.model.pending_snapshots == [["extra instruction"], ["second instruction"]]
 
 
 def test_startup_tip_respects_toggle_and_context(tmp_path):
@@ -793,8 +797,8 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     empty = "".join(t for _, t in loop.queue_region_fragments())
     # Bare rule with just the state word, no count, and no queued messages.
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
-    assert "Enter queues for next request" in empty
-    assert "Enter again sends now" in empty
+    assert "Enter queues next request" in empty
+    assert "blank Enter sends during model call" in empty
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path):
@@ -835,7 +839,8 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
 def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.pending_user_inputs = ["queued instruction"]
+    s.pending_user_inputs = ["already sent", "queued instruction"]
+    s.state.current_model_request_pending_inputs = ["already sent"]
     s.state.current_model_call_started_at = 123.0
     killed = []
 
@@ -847,7 +852,7 @@ def test_flush_queued_input_now_retries_active_model_request(tmp_path, monkeypat
     assert killed == [(n.os.getpid(), n.signal.SIGINT)]
 
 
-def test_flush_queued_input_now_ignores_empty_or_inactive_queue(tmp_path, monkeypatch):
+def test_flush_queued_input_now_ignores_empty_inactive_or_already_sent_queue(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     killed = []
@@ -860,9 +865,42 @@ def test_flush_queued_input_now_ignores_empty_or_inactive_queue(tmp_path, monkey
     s.state.current_model_call_started_at = 0.0
     assert loop.flush_queued_input_now() is False
 
+    s.state.current_model_call_started_at = 123.0
+    s.state.current_model_request_pending_inputs = ["queued instruction"]
+    assert loop.flush_queued_input_now() is False
+
     assert s.state.manual_model_retry_requested is False
     assert s.state.model_retry_count == 0
     assert killed == []
+
+    s.state.current_model_request_pending_inputs = []
+    s.state.manual_model_retry_requested = True
+    assert loop.flush_queued_input_now() is False
+
+    assert s.state.manual_model_retry_requested is True
+    assert s.state.model_retry_count == 0
+    assert killed == []
+
+
+def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
+    s = session(tmp_path)
+    shortcut = n.ModelRetryShortcut(s)
+    s.state.manual_model_retry_requested = True
+    s.state.current_model_call_started_at = 0.0
+
+    shortcut.handle_sigint(n.signal.SIGINT, None)
+
+    assert s.state.manual_model_retry_requested is False
+
+
+def test_flush_sigint_still_interrupts_active_retry_request(tmp_path):
+    s = session(tmp_path)
+    shortcut = n.ModelRetryShortcut(s)
+    s.state.manual_model_retry_requested = True
+    s.state.current_model_call_started_at = 123.0
+
+    with pytest.raises(KeyboardInterrupt):
+        shortcut.handle_sigint(n.signal.SIGINT, None)
 
 
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
