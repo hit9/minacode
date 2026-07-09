@@ -1123,8 +1123,26 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     assert events[1] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1][0] == "display"
-    assert events[-1][1].startswith("tool Bash -> tr.")
+    assert events[-1][1].startswith("stored tr.")
     assert sum("printf live" in text for kind, text in events if kind == "display") == 1
+    assert sum("Bash" in text for kind, text in events if kind == "display") == 1
+
+
+def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
+    s = session(tmp_path)
+    events = []
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", text)))
+    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+
+    runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
+
+    display = [text for kind, text in events if kind == "display"]
+    assert display[0].startswith("approve Bash ")
+    assert display[-1].startswith("stored tr.")
+    assert display[-1].endswith("[approved]")
+    assert not any(text.startswith("tool Bash ") for text in display)
+    assert sum("printf approved" in text for text in display) == 1
 
 
 def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):

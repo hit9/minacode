@@ -5273,7 +5273,8 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started, approved, auto, display, finish_display = time.monotonic(), False, False, None, None
+        started, approved, auto, display = time.monotonic(), False, False, None
+        compact_result_display = False
         if isinstance(tool, AskTool):
             tool.question_fn = self.question_fn
         try:
@@ -5296,15 +5297,24 @@ class ToolRunner:
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
-                self.output_fn("tool " + (display or self.short_call(call)))
-                finish_display = call.name
+                if not approved:
+                    self.output_fn("tool " + (display or self.short_call(call)))
+                compact_result_display = True
                 self.live_start()
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, display=display, batch_suffix=batch_suffix)
         except Exception as error:
             output = f"ToolError: {error}"
-            return "failed", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, display=display, finish_display=finish_display, batch_suffix=batch_suffix)
+            return "failed", self.finish(
+                call,
+                output,
+                failed=True,
+                elapsed=time.monotonic() - started,
+                display=display,
+                compact_result_display=compact_result_display,
+                batch_suffix=batch_suffix,
+            )
         turn_diff_path = getattr(tool, "last_path", "") if isinstance(tool, EditTool) else ""
         turn_diff_text = getattr(tool, "last_diff", "") if isinstance(tool, EditTool) else ""
         turn_diff_before = getattr(tool, "last_before", "") if isinstance(tool, EditTool) else ""
@@ -5316,7 +5326,7 @@ class ToolRunner:
             approved=approved,
             auto=auto,
             display=display,
-            finish_display=finish_display,
+            compact_result_display=compact_result_display,
             batch_suffix=batch_suffix,
             turn_diff_path=turn_diff_path,
             turn_diff_text=turn_diff_text,
@@ -5348,7 +5358,7 @@ class ToolRunner:
         approved: bool = False,
         auto: bool = False,
         display: str | None = None,
-        finish_display: str | None = None,
+        compact_result_display: bool = False,
         store: bool = True,
         batch_suffix: str = "",
         turn_diff_path: str = "",
@@ -5384,7 +5394,8 @@ class ToolRunner:
                 failed=failed,
                 approved=approved,
                 auto=auto,
-                display=finish_display or display,
+                display=display,
+                compact_result_display=compact_result_display,
                 batch_suffix=batch_suffix,
                 elapsed=elapsed,
             )
@@ -5447,6 +5458,7 @@ class ToolRunner:
         approved: bool = False,
         auto: bool = False,
         display: str | None = None,
+        compact_result_display: bool = False,
         batch_suffix: str = "",
         elapsed: float | None = None,
     ) -> str:
@@ -5454,6 +5466,8 @@ class ToolRunner:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
         bash_live_preview_shown = call.name == "Bash" and self.consume_bash_live_preview_shown()
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
+        if compact_result_display and key:
+            return self.with_batch_suffix("stored " + key + tag, batch_suffix)
         line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
         if failed:
