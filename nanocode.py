@@ -7287,9 +7287,11 @@ class QueuePlaceholder(Processor):
         self.has_pending = has_pending
 
     def apply_transformation(self, ti):
+        buffer = ti.buffer_control.buffer
+        if ti.lineno != ti.document.line_count - 1 or buffer is None or buffer.text:
+            return Transformation(ti.fragments)
         text = self.pending_text if self.has_pending() else self.empty_text
-        fragments = ti.fragments if ti.document.text else [*ti.fragments, ("class:queue.hint", text)]
-        return Transformation(fragments)
+        return Transformation(ti.fragments + [("class:queue.hint", text)])
 
 
 class CommandLoop:
