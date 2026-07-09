@@ -1182,14 +1182,32 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert s.messages[1]["content"] == "9"
 
 
-def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
+def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
     s.state.context_percent = 80
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    spinners = []
+
+    class FakeSpinner:
+        def __init__(self, label):
+            self.label = label
+            self.started = False
+            self.stopped = False
+            spinners.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(n, "InlineSpinner", FakeSpinner)
 
     class FakeModel:
         def compact(self, text):
+            assert spinners and spinners[0].started
+            assert not spinners[0].stopped
             return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
 
     loop.agent.model = FakeModel()
@@ -1200,6 +1218,8 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
+    assert spinners[0].label == "Compacting context"
+    assert spinners[0].stopped is True
     assert "messages 4 -> 3" in result
     assert "prior summary inserted" in result
 

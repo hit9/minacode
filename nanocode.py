@@ -6038,7 +6038,7 @@ TOOLS:
 - Use exact tool names and named parameters; obey each tool's DESCRIPTION/SIGNATURE.
 - Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
 - Bash runs everything else — `ls`, `find`, `wc -l`, git (`status`/`diff`/`log`/`add`/`commit`/…) — using only the executables in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log …) auto-run; anything that writes, executes code, or mutates git asks first. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
-- Job (start/status/wait/list/kill) for work that outlives one command (dev servers, watchers, long builds/tests); poll and kill when done. Plain Bash for quick commands.
+- Job for long builds/tests, dev servers, and watchers; poll/kill when done. Bash for quick commands.
 - Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
 
 GUIDE:
@@ -6949,6 +6949,48 @@ class StatusBar:
 
     def stress_after(self) -> float:
         return max(30.0, self.session.config.provider.timeout * 0.5)
+
+
+class InlineSpinner:
+    FRAMES: ClassVar[tuple[str, ...]] = ("|", "/", "-", "\\")
+    INTERVAL: ClassVar[float] = 0.12
+
+    def __init__(self, label: str):
+        self.label = label
+        self.output = create_output(sys.stderr)
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.rendered = False
+
+    def start(self) -> None:
+        if self.thread is not None or not sys.stderr.isatty():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self) -> None:
+        index = 0
+        while not self.stop_event.is_set():
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            frame = self.FRAMES[index % len(self.FRAMES)]
+            print_formatted_text(FormattedText([("ansibrightblack", frame + " "), ("ansiwhite", self.label)]), output=self.output, end="", flush=True)
+            self.rendered = True
+            index += 1
+            self.stop_event.wait(self.INTERVAL)
+
+    def stop(self) -> None:
+        if self.thread is None:
+            return
+        self.stop_event.set()
+        self.thread.join()
+        self.thread = None
+        if self.rendered:
+            self.output.write_raw("\r")
+            self.output.erase_end_of_line()
+            self.output.flush()
+            self.rendered = False
 
 
 class DiffText:
@@ -8587,8 +8629,9 @@ Tools:
         if not compacted:
             return "No prior conversation to compact"
         fallback = False
+        spinner = InlineSpinner("Compacting context")
         try:
-            self.status_bar.start()
+            spinner.start()
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
@@ -8597,7 +8640,7 @@ Tools:
             fallback = True
             data = None
         finally:
-            self.status_bar.stop()
+            spinner.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
