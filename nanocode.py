@@ -6589,7 +6589,7 @@ class BashLivePreview:
     # Heartbeat tick so the elapsed timer advances even while a command produces no output
     # (e.g. quiet long-runners or `... | tail` that buffers until EOF), so the terminal never
     # looks frozen during a blocking command.
-    TICK: ClassVar[float] = 1.0
+    TICK: ClassVar[float] = 0.3
 
     def __init__(self):
         self.output = create_output(sys.stderr)
