@@ -75,11 +75,6 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-try:
-    PYGMENTS_STYLE = get_style_by_name("github-dark") if pygments is not None else None
-except Exception:  # pragma: no cover - older optional Pygments releases
-    PYGMENTS_STYLE = None
-
 __version__ = "0.9.1"
 
 Json = dict[str, Any]
@@ -291,9 +286,10 @@ class RuntimeSettings:
     mcp_selector: str = ""
     yolo: bool = False
     tips: bool = True
+    theme: str = "auto"
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, mcp_selector: str = "", theme: str = "") -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -306,6 +302,7 @@ class RuntimeSettings:
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             tips=Config.bool(runtime, "tips", True),
+            theme=theme or Config.str(runtime, "theme", "auto"),
         )
 
 
@@ -1530,9 +1527,9 @@ class Session:
             self.turn_diffs.pop(0)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, mcp_selector: str = "") -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, mcp_selector: str = "", theme: str = "") -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, mcp_selector=mcp_selector))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, mcp_selector=mcp_selector, theme=theme))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -6480,6 +6477,78 @@ class CommandCompleter(Completer):
         return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
+class Theme:
+    NO_COLOR: ClassVar[bool] = bool(os.environ.get("NO_COLOR"))
+
+    DARK: ClassVar[dict[str, str]] = {
+        "diff.added.bg": "bg:#003b00", "diff.added.fg": "fg:default",
+        "diff.removed.bg": "bg:#520000", "diff.removed.fg": "fg:default",
+        "syntax.assign": "fg:#79c0ff", "syntax.string": "fg:#a5d6ff",
+        "syntax.number": "fg:#d2a8ff", "syntax.ident": "fg:#a5d6ff",
+        "syntax.builtin": "fg:#79c0ff", "syntax.default_hex": "e6edf3",
+        "status.base": "#e6edf3", "status.sep": "#4b5563",
+        "status.provider": "#e6edf3", "status.reason": "#a5b4fc",
+        "status.mcp": "#93c5fd", "status.ctx": "#facc15",
+        "status.update": "#fb923c", "status.index": "#94a3b8",
+        "status.warn": "#fb7185", "status.runtime": "#c084fc",
+        "pygments": "github-dark",
+    }
+
+    LIGHT: ClassVar[dict[str, str]] = {
+        "diff.added.bg": "bg:#d1f0d1", "diff.added.fg": "fg:#003b00",
+        "diff.removed.bg": "bg:#f5c8c8", "diff.removed.fg": "fg:#520000",
+        "syntax.assign": "fg:#005cc5", "syntax.string": "fg:#032f62",
+        "syntax.number": "fg:#6f42c1", "syntax.ident": "fg:#032f62",
+        "syntax.builtin": "fg:#005cc5", "syntax.default_hex": "24292e",
+        "status.base": "#24292e", "status.sep": "#9ca3af",
+        "status.provider": "#24292e", "status.reason": "#5b21b6",
+        "status.mcp": "#1e40af", "status.ctx": "#a16207",
+        "status.update": "#9a3412", "status.index": "#475569",
+        "status.warn": "#b91c1c", "status.runtime": "#6b21a8",
+        "pygments": "default",
+    }
+
+    _mode: ClassVar[str] = "dark"
+    _pygments_cache: ClassVar[dict[str, Any]] = {}
+
+    @classmethod
+    def set_mode(cls, mode: str) -> None:
+        cls._mode = "light" if mode == "light" else "dark"
+
+    @classmethod
+    def style(cls, key: str) -> str:
+        return (cls.LIGHT if cls._mode == "light" else cls.DARK)[key]
+
+    @classmethod
+    def detect(cls) -> str:
+        # COLORFGBG is "fg;bg" (rxvt/urxvt/Konsole) or "fg;;bg" (iTerm2). A high bg index (>=7) means a light background.
+        fgbg = os.environ.get("COLORFGBG", "")
+        if ";" in fgbg:
+            try:
+                bg = int(fgbg.rsplit(";", 1)[1])
+                return "light" if 7 <= bg <= 15 else "dark"
+            except ValueError:
+                pass
+        return "dark"
+
+    @classmethod
+    def resolve(cls, configured: str) -> str:
+        configured = (configured or "auto").strip().lower()
+        return configured if configured in ("light", "dark") else cls.detect()
+
+    @classmethod
+    def pygments_style(cls) -> Any:
+        if pygments is None:
+            return None
+        name = cls.style("pygments")
+        if name not in cls._pygments_cache:
+            try:
+                cls._pygments_cache[name] = get_style_by_name(name)  # type: ignore[possibly-unbound]
+            except Exception:
+                cls._pygments_cache[name] = None
+        return cls._pygments_cache[name]
+
+
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
@@ -6488,7 +6557,7 @@ class UiPrinter:
 
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
-        self.color = output_fn is print and sys.stdout.isatty()
+        self.color = output_fn is print and sys.stdout.isatty() and not Theme.NO_COLOR
         self.console = Console() if self.color else None
         # When set, render Rich answers to an ANSI string and emit via prompt_toolkit, so
         # answers printed from inside a running prompt app (queue input) aren't mangled by patch_stdout.
@@ -6555,9 +6624,9 @@ class UiPrinter:
         if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
         if text.startswith("nano+ "):
-            return [("class:prompt", "nano+ "), ("ansiwhite", text[6:] + "\n")]
+            return [("class:prompt", "nano+ "), ("fg:default", text[6:] + "\n")]
         if text.startswith("+ "):
-            return [("ansibrightblack", "+ "), ("ansiwhite", text[2:] + "\n")]
+            return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
         if text.startswith("[done in "):
             return [("ansibrightblack", text + "\n")]
         if text.startswith("nanocode "):
@@ -6566,7 +6635,7 @@ class UiPrinter:
             return self.tip_segments(text[len("tip: ") :])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
-        return [("ansiwhite", line + "\n") for line in text.splitlines() or [""]]
+        return [("fg:default", line + "\n") for line in text.splitlines() or [""]]
 
     def tip_segments(self, text: str) -> list[tuple[str, str]]:
         # Muted hint line with a labeled marker; `code` spans are highlighted so commands stand out.
@@ -6578,14 +6647,14 @@ class UiPrinter:
         return segments
 
     LOG_STYLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
-        LogRole.TOOL: ("ansigreen", "ansiwhite"),
-        LogRole.APPROVAL: ("ansiyellow", "ansiwhite"),
-        LogRole.AUTO: ("ansiblue", "ansiwhite"),
+        LogRole.TOOL: ("ansigreen", "fg:default"),
+        LogRole.APPROVAL: ("ansiyellow", "fg:default"),
+        LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
-        LogRole.OUTPUT: ("ansiwhite", "ansiwhite"),
-        LogRole.ERROR: ("ansired", "ansiwhite"),
+        LogRole.OUTPUT: ("fg:default", "fg:default"),
+        LogRole.ERROR: ("ansired", "fg:default"),
         LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),
-        LogRole.DIFF: ("ansiwhite", "ansiwhite"),
+        LogRole.DIFF: ("fg:default", "fg:default"),
     }
 
     def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
@@ -6659,15 +6728,15 @@ class UiPrinter:
             if token.isspace():
                 style = fallback_style
             elif token.endswith("="):
-                style = "fg:#79c0ff"
+                style = Theme.style("syntax.assign")
             elif token.startswith(("\"", "'")):
-                style = "fg:#a5d6ff"
+                style = Theme.style("syntax.string")
             elif re.fullmatch(r"(?:tr|job)\.\d+|\d+(?::\d+)?", token):
-                style = "fg:#d2a8ff"
+                style = Theme.style("syntax.number")
             elif token in {";", ","}:
                 style = "ansibrightblack"
             else:
-                style = "fg:#a5d6ff"
+                style = Theme.style("syntax.ident")
             segments.append((style, token))
         return segments or [(fallback_style, text)]
 
@@ -6687,24 +6756,31 @@ class UiPrinter:
             elif line.lstrip().startswith("+ "):
                 segments.append(("ansigreen", line))
             else:
-                segments.append(("ansiwhite", line))
+                segments.append(("fg:default", line))
             segments.append(("", "\n"))
         return segments
 
-    DIFF_ADDED_BG: ClassVar[str] = "bg:#003b00"
-    DIFF_REMOVED_BG: ClassVar[str] = "bg:#520000"
+    @classmethod
+    def diff_added_bg(cls) -> str:
+        return Theme.style("diff.added.bg")
+
+    @classmethod
+    def diff_removed_bg(cls) -> str:
+        return Theme.style("diff.removed.bg")
 
     @classmethod
     def pygments_style(cls, token_type: Any) -> str:
-        if PYGMENTS_STYLE is None:
-            return "ansiwhite"
+        style = Theme.pygments_style()
+        if style is None:
+            return "fg:default"
         if token_type in Token.Text.Whitespace:
-            return "ansiwhite"
+            return "fg:default"
         if token_type in Token.Name.Builtin:
-            return "fg:#79c0ff"
-        definition = PYGMENTS_STYLE.style_for_token(token_type)
+            return Theme.style("syntax.builtin")
+        definition = style.style_for_token(token_type)
         color = definition.get("color")
-        parts = ["ansiwhite" if not color or color.lower() == "e6edf3" else f"fg:#{color}"]
+        default_hex = Theme.style("syntax.default_hex")
+        parts = ["fg:default" if not color or color.lower() == default_hex else f"fg:#{color}"]
         parts.extend(attribute for attribute in ("bold", "italic", "underline") if definition.get(attribute))
         return " ".join(parts)
 
@@ -6820,22 +6896,22 @@ class UiPrinter:
                 segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
                 number(None, new_line)
-                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
-                append_hl("+", "ansigreen", content_hl, suffix, self.DIFF_ADDED_BG)
+                content_hl = hl_by_index.get(index) or [(Theme.style("diff.added.fg"), line[1:])]
+                append_hl("+", "ansigreen", content_hl, suffix, self.diff_added_bg())
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
                 number(old_line, None)
-                append_hl("-", "ansired", [("ansiwhite", line[1:])], suffix, self.DIFF_REMOVED_BG)
+                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, self.diff_removed_bg())
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
-                content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
-                append_hl(" ", "ansiwhite", content_hl, suffix)
+                content_hl = hl_by_index.get(index) or [("fg:default", line[1:])]
+                append_hl(" ", "fg:default", content_hl, suffix)
                 old_line = None if old_line is None else old_line + 1
                 new_line = None if new_line is None else new_line + 1
             else:
                 number(None, None)
-                segments.append(("ansiwhite", line + suffix))
+                segments.append(("fg:default", line + suffix))
         return segments
 
     @staticmethod
@@ -7030,14 +7106,19 @@ class ModelRetryShortcut:
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    BASE_STYLE: ClassVar[str] = "#e6edf3"
-    SEP_STYLE: ClassVar[str] = "#4b5563"
-    # fmt: off
-    STYLES: ClassVar[dict[str, str]] = {
-        "provider": "#e6edf3", "reason": "#a5b4fc", "mcp": "#93c5fd", "ctx": "#facc15",
-        "update": "#fb923c", "index": "#94a3b8", "warn": "#fb7185", "runtime": "#c084fc",
-    }
-    # fmt: on
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "runtime")
+
+    @classmethod
+    def base_style(cls) -> str:
+        return Theme.style("status.base")
+
+    @classmethod
+    def sep_style(cls) -> str:
+        return Theme.style("status.sep")
+
+    @classmethod
+    def role_style(cls, role: str) -> str:
+        return Theme.style("status." + role) if role in cls.ROLE_KEYS else cls.base_style()
 
     def __init__(self, session: Session):
         self.session = session
@@ -7050,7 +7131,7 @@ class StatusBar:
         self.retry_notice_until = 0.0
 
     def start(self, *, reset: bool = True) -> None:
-        if self.thread is not None or not sys.stderr.isatty():
+        if self.thread is not None or not sys.stderr.isatty() or Theme.NO_COLOR:
             return
         self.begin(reset=reset)
         self.stop_event.clear()
@@ -7106,7 +7187,7 @@ class StatusBar:
         columns = shutil.get_terminal_size((120, 20)).columns
         if len(text) >= columns:
             text = text[: max(0, columns - 4)] + "..."
-            return self.sweep_fragments(text, elapsed) if sweep else [(self.BASE_STYLE, text)]
+            return self.sweep_fragments(text, elapsed) if sweep else [(self.base_style(), text)]
         return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
     def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
@@ -7150,8 +7231,8 @@ class StatusBar:
         fragments: list[tuple[str, str]] = []
         for index, (text, role) in enumerate(entries):
             if index:
-                fragments.append((self.SEP_STYLE, " | "))
-            fragments.append((self.STYLES.get(role, self.BASE_STYLE), text))
+                fragments.append((self.sep_style(), " | "))
+            fragments.append((self.role_style(role), text))
         return fragments or [("", "")]
 
     def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
@@ -8028,7 +8109,7 @@ Tools:
                 "tab.active": "bold reverse ansicyan",
                 "tab.inactive": "ansicyan",
                 "completion-menu": "noreverse bg:default",
-                "completion-menu.completion": "noreverse bg:default fg:ansiwhite",
+                "completion-menu.completion": "noreverse bg:default fg:default",
                 "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
                 "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
                 "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
@@ -8036,7 +8117,7 @@ Tools:
                 "bottom-toolbar.text": "noreverse bg:default fg:default",
                 "search-toolbar": "noreverse bg:default fg:default",
                 "search-toolbar.prompt": "ansicyan",
-                "search-toolbar.text": "ansiwhite",
+                "search-toolbar.text": "fg:default",
             }
         )
 
@@ -9201,6 +9282,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
+    parser.add_argument("--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)")
     parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     parser.add_argument("command", nargs="?", choices=["update", "upgrade"], help="Update nanocode to the latest version")
@@ -9220,10 +9302,11 @@ def main(argv: list[str] | None = None) -> int:
             session = Session.load_snapshot(
                 args.resume,
                 config=Config.from_dict(data),
-                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp),
+                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme),
             )
         else:
-            session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp)
+            session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme)
+        Theme.set_mode(Theme.resolve(session.settings.theme))
         try:
             return CommandLoop(Agent(session)).run()
         finally:

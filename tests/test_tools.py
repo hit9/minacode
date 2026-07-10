@@ -153,7 +153,7 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     assert any(t == "return" and s == "fg:#ff7b72 bg:#003b00" for s, t in segments)
 
     assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
-    assert any("pass" in t and s == "ansiwhite bg:#520000" for s, t in segments)
+    assert any("pass" in t and s == "fg:default bg:#520000" for s, t in segments)
 
     # Line-number gutters and context code remain unfilled.
     assert any("1" in text and "|" in text and "bg:" not in style for style, text in segments)
@@ -169,7 +169,7 @@ def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
     segments = ui.diff_segments(diff)
 
     assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
-    assert any("old" in t and s == "ansiwhite bg:#520000" for s, t in segments)
+    assert any("old" in t and s == "fg:default bg:#520000" for s, t in segments)
     assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
 
 
@@ -197,7 +197,7 @@ def test_approval_segments_highlight_inline_edit_preview():
 
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
-    assert any(style == "ansiwhite bg:#520000" and "pass" in text for style, text in segments)
+    assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)
     assert "\n\n" not in rendered
 
 
@@ -566,7 +566,7 @@ def test_uiprinter_renders_tool_root_without_generic_prefix():
     text = "".join(value for _style, value in segments)
 
     assert text == "  Read  nanocode.py 0:100 → tr.6 [auto]\n"
-    assert any(style == "ansiwhite" and "nanocode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
+    assert any(style == "fg:default" and "nanocode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
 
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
@@ -661,10 +661,10 @@ def test_uiprinter_keeps_bash_preview_output_white():
     )
     segs = ui.log_segments(block)
 
-    assert ("ansiwhite", "stderr:") in segs
-    assert ("ansiwhite", "  Traceback") in segs
-    assert ("ansiwhite", "    File x") in segs
-    assert ("ansiwhite", "  AttributeError") in segs
+    assert ("fg:default", "stderr:") in segs
+    assert ("fg:default", "  Traceback") in segs
+    assert ("fg:default", "    File x") in segs
+    assert ("fg:default", "  AttributeError") in segs
 
 
 def test_uiprinter_renders_stored_result_dim():
