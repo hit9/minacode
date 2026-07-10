@@ -7,6 +7,7 @@
 - Add `/diff`, a read-only viewer for edits made by nanocode. It shows the latest user round and the overall net session diff in `Latest` and `Session` tabs, supports keyboard navigation and paging, and persists edit snapshots across `--resume`.
 - Add a standalone animated progress row for manual `/compact` operations while keeping the normal status line visible.
 - Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
+- Automatically move Bash commands still running after five seconds to background jobs without restarting them, and return the job id and follow-up action to the model.
 
 ### Changed
 - Replace blank Enter as the queued-input send-now shortcut with Ctrl-C. Enter queues a follow-up for the next model request; when follow-ups are queued, Ctrl-C interrupts the active request so they can be sent immediately. Queue guidance now appears as a contextual `+>` placeholder and disappears while typing.
