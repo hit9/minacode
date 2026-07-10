@@ -20,6 +20,7 @@
 - Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
 
 ### Fixed
+- Keep transient approval state (`approval required` and `[Y/n or reason]`) out of terminal scrollback after a tool decision.
 - Follow edited files across unambiguous Bash moves so `/diff` reports their final paths and logical net changes.
 - Prevent transient working dividers from leaking into CLI history during Bash previews and approval handoffs.
 - Prioritize queued follow-ups when building the next model request.

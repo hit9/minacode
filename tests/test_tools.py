@@ -188,7 +188,6 @@ def test_approval_segments_highlight_inline_edit_preview():
     block = n.LogBlock.hierarchy(
         n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
         [
-            n.LogLine("approval", "required", n.LogRole.META, n.LogEdge.BRANCH),
             n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
             *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
         ],
@@ -1211,6 +1210,7 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
 
     display = [text for kind, text in events if kind == "display"]
     assert display[0].startswith("  Bash  ")
+    assert "approval required" not in display[0]
     assert display[-1].startswith("    └ stored tr.")
     assert display[-1].endswith("[approved]")
     assert sum(text.startswith("  Bash  ") for text in display) == 1

@@ -993,8 +993,8 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
     calls = []
 
-    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt"):
-        calls.append((prompt, multiline, submit_on_enter, prompt_style))
+    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt", replay=True):
+        calls.append((prompt, multiline, submit_on_enter, prompt_style, replay))
         return ""
 
     loop.interactive_input = True
@@ -1003,7 +1003,21 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
 
     loop.tool_input("[Y/n or reason] ")
 
-    assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
+    assert calls == [("[Y/n or reason] ", True, True, "class:approval", False)]
+
+
+def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.input_history = n.FileHistory(str(tmp_path / "history"))
+    loop.run_input_app = lambda app: "y"
+    printed = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: printed.append(args))
+
+    assert loop.read_input("[Y/n] ", prompt_style="class:approval", replay=False) == "y"
+    assert printed == []
+
+    assert loop.read_input("nano> ") == "y"
+    assert len(printed) == 1
 
 
 def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
@@ -1031,7 +1045,7 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
 
     runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert outputs[0].startswith("  Edit  new.txt\n    ├ approval required\n    ├ preview")
+    assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
     assert "+line 49" in outputs[0]
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)

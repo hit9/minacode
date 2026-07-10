@@ -5722,8 +5722,6 @@ class ToolRunner:
         role = LogRole.APPROVAL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix)
         children = []
-        if status == "confirm":
-            children.append(LogLine("approval", "required", LogRole.META, LogEdge.BRANCH))
         if tool.NAME != "Edit":
             return LogBlock.hierarchy(root, children)
         preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
@@ -7985,6 +7983,7 @@ Tools:
         prompt_style: str = "class:prompt",
         initial_text: str = "",
         pad: bool = False,
+        replay: bool = True,
     ) -> str:
         if self.input_history is None:
             return initial_text or self.input_fn(prompt_text)
@@ -8073,7 +8072,8 @@ Tools:
         )
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
-        print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
+        if replay:
+            print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
         return text
 
     def emit(self, text: str | LogBlock = "") -> None:
@@ -8102,7 +8102,7 @@ Tools:
     def tool_input(self, prompt: str = "") -> str:
         def read() -> str:
             return (
-                self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval")
+                self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval", replay=False)
                 if self.interactive_input
                 else self.input_fn(prompt)
             )
