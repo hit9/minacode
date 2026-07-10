@@ -1092,35 +1092,14 @@ def test_bash_timeout_and_live_output(tmp_path):
     assert events[-1] == ("", "")
 
 
-def test_bash_promotes_same_process_to_job_with_model_guidance(tmp_path, monkeypatch):
+def test_bash_timeout_applies_after_output_streams_close(tmp_path):
     s = session(tmp_path)
-    monkeypatch.setattr(n.BashTool, "BACKGROUND_AFTER", 0.05)
-    assert "after 5 seconds" in n.BashTool.DESCRIPTION
-    assert "after 5 seconds" in n.Agent.SYSTEM_PROMPT
-    output = n.BashTool(s, ["printf run >> count; printf before; sleep 0.2; printf after"]).call()
-    job = s.jobs["job.1"]
-    try:
-        assert "* status: background" in output
-        assert "* job: job.1" in output
-        assert "Do not rerun" in output
-        assert 'Job(action="status", job="job.1")' in output
+    s.settings.shell_timeout = 0.05
 
-        result = n.JobTool(s, [{"action": "wait", "job": "job.1"}]).call()
-        assert "beforeafter" in result
-        assert (tmp_path / "count").read_text(encoding="utf-8") == "run"
-    finally:
-        job.kill()
+    output = n.BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call()
 
-
-def test_bash_promotes_running_process_after_output_streams_close(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    monkeypatch.setattr(n.BashTool, "BACKGROUND_AFTER", 0.05)
-    output = n.BashTool(s, ["exec 1>&- 2>&-; sleep 0.2"]).call()
-    job = s.jobs["job.1"]
-    try:
-        assert "* status: background" in output
-    finally:
-        job.kill()
+    assert "* exit_code: -1" in output
+    assert "timeout" in output
 
 
 def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
@@ -1201,17 +1180,6 @@ def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_pa
     display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False)
 
     assert display == "tool Bash printf live -> tr.1"
-
-
-def test_tool_runner_finish_display_shows_promoted_bash_job(tmp_path):
-    s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    runner.bash_live_preview_shown = lambda: True
-    output = "<BashToolResult>\n* status: background\n* job: job.1\n</BashToolResult>"
-
-    display = runner.finish_display(n.ToolCall("bash", "Bash", ["sleep 10"]), "tr.1", output, failed=False, compact_result_display=True)
-
-    assert display == "stored tr.1\n  job.1 · running in background"
 
 
 def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):

@@ -2761,9 +2761,8 @@ class EditTool(Tool):
 
 class BashTool(Tool):
     NAME = "Bash"
-    DESCRIPTION = "Run one bash shell invocation in the workspace with live output. Commands still running after 5 seconds continue as a background Job; use the returned job id and do not rerun them. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits."
+    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
-    BACKGROUND_AFTER: ClassVar[float] = 5.0
     # fmt: off
     EXAMPLE = (
         'Check environment. Example: {"command":"python3 --version"}',
@@ -2940,8 +2939,7 @@ class BashTool(Tool):
         selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
         selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
         timed_out = False
-        started = time.monotonic()
-        deadline = started + self.session.settings.shell_timeout
+        deadline = time.monotonic() + self.session.settings.shell_timeout
         try:
             while selector.get_map() or proc.poll() is None:
                 now = time.monotonic()
@@ -2952,10 +2950,7 @@ class BashTool(Tool):
                     proc.wait()
                     self.drain_selector(selector, stdout_parts, stderr_parts)
                     break
-                if proc.poll() is None and now - started >= self.BACKGROUND_AFTER:
-                    return self._promote_process(proc, started, stdout_parts, stderr_parts)
-                foreground_left = self.BACKGROUND_AFTER - (now - started) if proc.returncode is None else remaining
-                wait = min(0.2, remaining, foreground_left)
+                wait = min(0.2, remaining)
                 if selector.get_map():
                     for key, _ in selector.select(wait):
                         self.read_stream_chunk(selector, key, stdout_parts, stderr_parts)
@@ -2970,29 +2965,6 @@ class BashTool(Tool):
             stderr += ("\n" if stderr else "") + "timeout"
             return self.process_result("BashToolResult", -1, stdout, stderr)
         return self.process_result("BashToolResult", proc.returncode or 0, stdout, stderr)
-
-    def _promote_process(self, proc: subprocess.Popen[bytes], started: float, stdout: list[str], stderr: list[str]) -> str:
-        self.session.job_counter += 1
-        job_id = f"job.{self.session.job_counter}"
-        self.session.jobs[job_id] = BackgroundJob(
-            id=job_id,
-            command=self.command(),
-            process=proc,
-            started_at=started,
-            stdout_buf=["".join(stdout)[-BackgroundJob.BUFFER_CHARS :]] if stdout else [],
-            stderr_buf=["".join(stderr)[-BackgroundJob.BUFFER_CHARS :]] if stderr else [],
-            _stdout_decoder=self._decoders["stdout"],
-            _stderr_decoder=self._decoders["stderr"],
-        )
-        return "\n".join([
-            "<BashToolResult>",
-            "* status: background",
-            f"* job: {job_id}",
-            f"* elapsed: {time.monotonic() - started:.1f}s",
-            "* message: Command continues in the background. Do not rerun it.",
-            f'* next: Use Job(action="status", job="{job_id}") to inspect progress.',
-            "</BashToolResult>",
-        ])
 
     def drain_selector(self, selector: selectors.BaseSelector, stdout_parts: list[str], stderr_parts: list[str]) -> None:
         for key in list(selector.get_map().values()):
@@ -3047,7 +3019,7 @@ class BashTool(Tool):
 
 class JobTool(Tool):
     NAME = "Job"
-    DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs, including Bash calls automatically moved to a job after 5 seconds. Processes run in their own process group and do not block the agent."
+    DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs. Processes run in their own process group and do not block the agent."
     SIGNATURE = 'Job(action="start"|"status"|"wait"|"list"|"kill", command?, job?, timeout?, limit?)'
     MUTATES = True
     ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
@@ -5518,14 +5490,10 @@ class ToolRunner:
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
                 lines.append("  " + summary)
-        elif call.name == "Bash":
-            background = re.search(r"(?m)^\* status: background\n\* job: (job\.\d+)$", output)
-            if background:
-                lines.append(f"  {background.group(1)} · running in background")
-            elif not bash_live_preview_shown:
-                preview = self.bash_result_preview(output)
-                if preview:
-                    lines.extend("  " + line for line in preview.splitlines())
+        elif call.name == "Bash" and not bash_live_preview_shown:
+            preview = self.bash_result_preview(output)
+            if preview:
+                lines.extend("  " + line for line in preview.splitlines())
         return "\n".join(lines)
 
     def bash_result_preview(self, output: str) -> str:
@@ -6081,7 +6049,7 @@ TOOLS:
 - Use exact tool names and named parameters; obey each tool's DESCRIPTION/SIGNATURE.
 - Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
 - Bash runs everything else — `ls`, `find`, `wc -l`, git (`status`/`diff`/`log`/`add`/`commit`/…) — using only the executables in Environment `detected_commands`. Read-only commands (ls/cat/wc/find/grep/rg/git status|diff|log …) auto-run; anything that writes, executes code, or mutates git asks first. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
-- Job for long builds/tests, dev servers, and watchers; poll/kill when done. Bash calls still running after 5 seconds automatically continue as jobs; use the returned job id and do not rerun the command.
+- Job for long builds/tests, dev servers, and watchers; poll/kill when done. Bash for quick commands.
 - Recall retrieves tr.N outputs; Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
 
 GUIDE:
