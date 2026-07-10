@@ -6414,8 +6414,8 @@ class UiPrinter:
         Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
     } if pygments is not None else {}
     # fmt: on
-    DIFF_ADDED_BG: ClassVar[str] = "bg:#10251a"
-    DIFF_REMOVED_BG: ClassVar[str] = "bg:#2b171b"
+    DIFF_ADDED_BG: ClassVar[str] = "bg:ansigreen"
+    DIFF_REMOVED_BG: ClassVar[str] = "bg:ansired"
 
     @classmethod
     def _diff_hl_style(cls, token_type: Any) -> str:
@@ -6512,6 +6512,10 @@ class UiPrinter:
 
         def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str, background: str = "") -> None:
             def with_background(value: str) -> str:
+                if background == self.DIFF_ADDED_BG and value.startswith("ansigreen"):
+                    value = "ansiwhite" + value[len("ansigreen"):]
+                elif background == self.DIFF_REMOVED_BG and value.startswith("ansired"):
+                    value = "ansiwhite" + value[len("ansired"):]
                 return (value + " " + background).strip()
 
             segments.append((with_background(prefix_style), prefix))
