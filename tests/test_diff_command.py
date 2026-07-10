@@ -107,6 +107,26 @@ def test_ui_segment_lines_keeps_styled_diff_lines_together():
     assert any("+return 42" in "".join(text for _style, text in line) for line in lines)
 
 
+def test_diff_counts_only_hunk_changes():
+    diff = "--- a.py\n+++ a.py\n@@ -1 +1,2 @@\n-old\n+++heading\n+new\n"
+
+    assert n.diff_counts(diff) == (2, 1)
+
+
+def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "unused", before="old\n", after="new\nextra\n", round=1)
+    lp = loop(s)
+    rendered = []
+    lp.run_input_app = lambda app: rendered.extend(app.layout.current_control.text())
+
+    lp.diff_viewer()
+
+    text = "".join(fragment for _style, fragment in rendered)
+    assert "+2 -1 a.py" in text
+    assert "Edit" not in text
+
+
 def test_tool_runner_captures_edit_turn_diff(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")

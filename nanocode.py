@@ -6989,6 +6989,19 @@ def bounded_diff(text: str) -> tuple[str, bool]:
     return "\n".join(clipped), True
 
 
+def diff_counts(text: str) -> tuple[int, int]:
+    added = removed = 0
+    in_hunk = False
+    for line in text.splitlines():
+        if line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("+"):
+            added += 1
+        elif in_hunk and line.startswith("-"):
+            removed += 1
+    return added, removed
+
+
 class QueuePlaceholder(Processor):
     def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
         self.empty_text = empty_text
@@ -8285,11 +8298,22 @@ Tools:
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
-            for index, (status, path, _) in enumerate(sections):
+            counts = [diff_counts(diff) for _status, _path, diff in sections]
+            added_width = max(len(str(added)) for added, _removed in counts)
+            removed_width = max(len(str(removed)) for _added, removed in counts)
+            for index, ((_status, path, _diff), (added, removed)) in enumerate(zip(sections, counts)):
                 selected = index == state["file"]
                 marker = "> " if selected else "  "
                 style = "ansicyan" if selected else "class:choice.disabled"
-                parts.append((style, f"{marker}{status.title():10} {path}\n"))
+                parts.extend(
+                    [
+                        (style, marker),
+                        ("ansigreen", f"+{added:>{added_width}}"),
+                        ("", " "),
+                        ("ansired", f"-{removed:>{removed_width}}"),
+                        (style, f" {path}\n"),
+                    ]
+                )
             parts.append(("", "\n"))
 
         def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
