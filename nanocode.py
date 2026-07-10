@@ -3706,22 +3706,75 @@ class LogLine:
     syntax: str = ""
 
     def text_prefix(self) -> str:
-        edge = "" if self.edge is LogEdge.NONE else "  " + self.edge.value + " "
+        edge = "" if self.edge is LogEdge.NONE else self.edge.value + " "
         separator = "  " if self.edge is LogEdge.NONE else " "
         return edge + self.label + (separator if self.label and self.text else "")
+
 
 @dataclass
 class LogBlock:
     INDENT: ClassVar[str] = "  "
-    lines: list[LogLine]
+    items: list[LogLine | LogBlock]
+
+    @classmethod
+    def hierarchy(cls, root: LogLine | None, children: list[LogLine]) -> LogBlock:
+        items: list[LogLine | LogBlock] = [root] if root else []
+        if children:
+            items.append(cls(children))
+        return cls(items)
+
+    @property
+    def root(self) -> LogLine | None:
+        return next((item for item in self.items if isinstance(item, LogLine)), None)
+
+    @property
+    def has_children(self) -> bool:
+        return any(isinstance(item, LogBlock) for item in self.items)
+
+    @classmethod
+    def margin(cls, level: int) -> str:
+        return cls.INDENT * level
+
+    @classmethod
+    def prefix(cls, level: int, edge: LogEdge = LogEdge.NONE) -> str:
+        return cls.margin(level) + ((edge.value + " ") if edge is not LogEdge.NONE else "")
+
+    def walk(self, parent_level: int = 0):
+        level = parent_level + 1
+        for item in self.items:
+            if isinstance(item, LogLine):
+                yield item, level
+            else:
+                yield from item.walk(level)
 
     def __str__(self) -> str:
         rows = []
-        for line in self.lines:
-            prefix = self.INDENT + line.text_prefix()
-            continuation = self.INDENT + " " * get_cwidth(line.text_prefix())
+        for line, level in self.walk():
+            prefix = self.margin(level) + line.text_prefix()
+            continuation = self.margin(level) + " " * get_cwidth(line.text_prefix())
             rows.extend(wrap_styled_line([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
         return "\n".join("".join(text for _style, text in row) for row in rows)
+
+
+@dataclass
+class TurnBox:
+    ROOT_LEVEL: ClassVar[int] = 0
+    CONTENT_LEVEL: ClassVar[int] = 1
+    SEPARATOR: ClassVar[str] = ""
+    messages: list[Json]
+
+    @classmethod
+    def group(cls, messages: list[Json]) -> list[TurnBox]:
+        boxes: list[TurnBox] = []
+        current: list[Json] = []
+        for message in messages:
+            current.append(message)
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                boxes.append(cls(current))
+                current = []
+        if current:
+            boxes.append(cls(current))
+        return boxes
 
 
 class ContextManager:
@@ -5495,7 +5548,7 @@ class ToolRunner:
                 # The "auto …" header duplicates the result line; only surface it when it carries a
                 # preview the result line won't repeat (e.g. an Edit diff). The auto-approval itself
                 # is recorded by the [auto] tag on the result line below.
-                if len(pre.lines) > 1:
+                if pre.has_children:
                     self.output_fn(pre)
                     nested_display = True
             elif needs_confirmation:
@@ -5509,7 +5562,7 @@ class ToolRunner:
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 if not nested_display:
-                    self.output_fn(LogBlock([self.log_root(display or self.short_call(call), batch_suffix=batch_suffix)]))
+                    self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix), []))
                     nested_display = True
                 self.live_start()
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
@@ -5564,7 +5617,7 @@ class ToolRunner:
     ) -> str:
         self.session.record_tool_error("-", call.name, call.args, output)
         self.output_fn(
-            LogBlock([LogLine("error", self.oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
+            LogBlock.hierarchy(None, [LogLine("error", self.oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
             if nested_display
             else self.reject_display(call, output, display=display, batch_suffix=batch_suffix)
         )
@@ -5575,7 +5628,7 @@ class ToolRunner:
         # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
         # the complete error so it can correct the call.
         reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
-        return LogBlock([self.log_root((display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, batch_suffix)])
+        return LogBlock.hierarchy(self.log_root((display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, batch_suffix), [])
 
     def finish(
         self,
@@ -5652,7 +5705,7 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
-        answer = self.input_fn(f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} [Y/n or reason] ").strip()
+        answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "[Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
@@ -5667,17 +5720,18 @@ class ToolRunner:
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
     ) -> LogBlock:
         role = LogRole.APPROVAL if status == "confirm" else LogRole.AUTO
-        lines = [self.log_root(self.short_call(call), role, batch_suffix)]
+        root = self.log_root(self.short_call(call), role, batch_suffix)
+        children = []
         if status == "confirm":
-            lines.append(LogLine("approval", "required", LogRole.META, LogEdge.BRANCH))
+            children.append(LogLine("approval", "required", LogRole.META, LogEdge.BRANCH))
         if tool.NAME != "Edit":
-            return LogBlock(lines)
+            return LogBlock.hierarchy(root, children)
         preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
         preview_lines = preview.rstrip().splitlines()
         if preview_lines:
-            lines.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
-            lines.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
-        return LogBlock(lines)
+            children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
+            children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
+        return LogBlock.hierarchy(root, children)
 
     def finish_display(
         self,
@@ -5699,26 +5753,26 @@ class ToolRunner:
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         tree = nested_display or call.name == "Bash"
         root = self.log_root(display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, batch_suffix)
-        lines = [] if nested_display else [root]
+        children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
-            lines.append(LogLine(label, self.oneline(output, 220), LogRole.ERROR, LogEdge.END))
+            children.append(LogLine(label, self.oneline(output, 220), LogRole.ERROR, LogEdge.END))
         elif call.name == "MCP":
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
-                lines.append(LogLine("", summary, LogRole.META, LogEdge.END))
+                children.append(LogLine("", summary, LogRole.META, LogEdge.END))
         elif call.name == "Bash" and not bash_live_preview_shown:
             preview = self.bash_result_preview(output)
             if preview:
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
-                lines.append(LogLine("output" + duration, role=LogRole.META, edge=LogEdge.BRANCH))
-                lines.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+                children.append(LogLine("output" + duration, role=LogRole.META, edge=LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         if tree and not failed:
-            lines.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
+            children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
             tail = ((" → " + key) if key else "") + tag
-            lines[0] = LogLine(root.label, root.text, root.role, meta=tail, syntax=root.syntax)
-        return LogBlock(lines)
+            root = LogLine(root.label, root.text, root.role, meta=tail, syntax=root.syntax)
+        return LogBlock.hierarchy(None if nested_display else root, children)
 
     def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "") -> LogLine:
         name, _, args = self.with_batch_suffix(display, batch_suffix).partition(" ")
@@ -6473,8 +6527,8 @@ class UiPrinter:
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
-        body = "\n".join(LogBlock.INDENT * indent + line for line in text.splitlines() or [""])
-        return f"{LogBlock.INDENT * indent}{role}:\n{body}" if role else body
+        body = "\n".join(LogBlock.margin(indent) + line for line in text.splitlines() or [""])
+        return f"{LogBlock.margin(indent)}{role}:\n{body}" if role else body
 
     def render_message(self, console: Console, text: str, role: str, rule: bool, indent: int) -> None:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
@@ -6482,9 +6536,9 @@ class UiPrinter:
             console.print(Rule(style="bright_black", characters="─"))
         if role:
             label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
-            console.print(Padding(label, (0, 0, 0, len(LogBlock.INDENT) * indent)))
+            console.print(Padding(label, (0, 0, 0, len(LogBlock.margin(indent)))))
         content = RichText(text, style="red") if error else Markdown(text)
-        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * indent)))
+        console.print(Padding(content, (0, 0, 0, len(LogBlock.margin(indent)))))
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
@@ -6538,23 +6592,25 @@ class UiPrinter:
     def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         width = max(1, shutil.get_terminal_size((120, 20)).columns - 1)
+        entries = list(block.walk())
         index = 0
-        while index < len(block.lines):
-            line = block.lines[index]
+        while index < len(entries):
+            line, level = entries[index]
             if line.role is LogRole.DIFF:
                 end = index + 1
-                while end < len(block.lines) and block.lines[end].role is LogRole.DIFF:
+                while end < len(entries) and entries[end][0].role is LogRole.DIFF and entries[end][1] == level:
                     end += 1
-                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in block.lines[index:end])))
-                for item, rendered in zip(block.lines[index:end], highlighted):
-                    prefix = [("", block.INDENT), *self.edge_segments(item.edge)]
+                diff_lines = [item for item, _level in entries[index:end]]
+                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in diff_lines)))
+                for item, rendered in zip(diff_lines, highlighted):
+                    prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
                     for row in wrap_styled_line(prefix, prefix, rendered, width):
                         segments.extend([*row, ("", "\n")])
                 index = end
                 continue
             label_style, text_style = self.LOG_STYLES[line.role]
-            prefix = [("", block.INDENT), *self.edge_segments(line.edge)]
+            prefix = [("", block.margin(level)), *self.edge_segments(line.edge)]
             if line.label:
                 prefix.append((label_style, line.label))
             content: list[tuple[str, str]] = []
@@ -6564,7 +6620,7 @@ class UiPrinter:
                 content.extend(self.syntax_segments(line.text, line.syntax, text_style))
             if line.meta:
                 content.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
-            continuation = [("", block.INDENT + " " * get_cwidth(line.text_prefix()))]
+            continuation = [("", block.margin(level) + " " * get_cwidth(line.text_prefix()))]
             for row in wrap_styled_line(prefix, continuation, content, width):
                 segments.extend([*row, ("", "\n")])
             index += 1
@@ -6572,7 +6628,7 @@ class UiPrinter:
 
     @staticmethod
     def edge_segments(edge: LogEdge) -> list[tuple[str, str]]:
-        return [] if edge is LogEdge.NONE else [("ansibrightblack", f"  {edge.value} ")]
+        return [] if edge is LogEdge.NONE else [("ansibrightblack", edge.value + " ")]
 
     @staticmethod
     def remove_line_ending(segments: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -6887,9 +6943,9 @@ class BashLivePreview:
 
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        branch = f"{LogBlock.INDENT}  {LogEdge.BRANCH.value} "
-        continuation = f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} "
-        return [branch + status, *(continuation + clip(line) for line in body)]
+        lines = [LogLine(status, role=LogRole.META, edge=LogEdge.BRANCH)]
+        lines.extend(LogLine("", clip(line), LogRole.OUTPUT, LogEdge.CONTINUE) for line in body)
+        return str(LogBlock.hierarchy(None, lines)).splitlines()
 
 
 class ModelRetryShortcut:
@@ -7747,8 +7803,11 @@ Tools:
             return
         self.emit(f"Restored session: {self.session.uid}")
         tool_record_index = 0
-        for message in messages:
-            tool_record_index = self.render_transcript_message(message, tool_record_index)
+        for index, turn in enumerate(TurnBox.group(messages)):
+            if index:
+                self.emit(TurnBox.SEPARATOR)
+            for message in turn.messages:
+                tool_record_index = self.render_transcript_message(message, tool_record_index)
         self.render_remaining_tool_records(tool_record_index)
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
@@ -7757,7 +7816,7 @@ Tools:
         raw_calls = message.get("tool_calls")
         has_tool_calls = isinstance(raw_calls, list) and bool(raw_calls)
         if role == "assistant" and content:
-            self.ui.emit_answer(content, role=role, rule=False, indent=1 if has_tool_calls else 0)
+            self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL if has_tool_calls else TurnBox.ROOT_LEVEL)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index)
         if role == "user" and content:
@@ -7909,7 +7968,7 @@ Tools:
         if prompt_style != "class:approval" or not prompt_text:
             return [(prompt_style, prompt_text)]
         frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
-        connector = f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} "
+        connector = LogBlock.prefix(2, LogEdge.CONTINUE)
         prompt = (
             [("ansibrightblack", connector), ("class:approval", prompt_text[len(connector) :])]
             if prompt_text.startswith(connector)
@@ -8057,12 +8116,12 @@ Tools:
             previous_capture = self.ui.capture_ansi
             self.ui.capture_ansi = previous_capture or capture
             try:
-                self.ui.emit_answer(text, rule=False, indent=1)
+                self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
             finally:
                 self.ui.capture_ansi = previous_capture
             self.emit()
             return
-        self.ui.emit_answer(text, rule=False, indent=1)
+        self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def tool_live_start(self) -> None:
         self.bash_live_preview_rendered = False

@@ -1013,7 +1013,7 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
     fragments = loop.input_prompt_fragments("[Y/n] ", "class:approval")
 
     assert fragments == [("class:approval", "[Y/n] "), ("class:approval.wait", "/ ")]
-    connector = f"{n.LogBlock.INDENT}  {n.LogEdge.CONTINUE.value} "
+    connector = n.LogBlock.prefix(2, n.LogEdge.CONTINUE)
     assert loop.input_prompt_fragments(connector + "[Y/n] ", "class:approval") == [
         ("ansibrightblack", connector),
         ("class:approval", "[Y/n] "),
@@ -1205,6 +1205,39 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     assert "assistant:\ncompacted answer\nfinal detail" in text
     assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
+
+
+def test_resumed_session_separates_turn_boxes(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+    )
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    assert "assistant:\none\n\nuser:\nsecond" in "\n".join(output)
+
+
+def test_turn_box_groups_followup_users_until_final_assistant():
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "working", "tool_calls": [{"id": "one"}]},
+        {"role": "user", "content": "follow-up"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+
+    boxes = n.TurnBox.group(messages)
+
+    assert [len(box.messages) for box in boxes] == [4, 1]
 
 
 def test_eof_exit_prints_resume_command(tmp_path):

@@ -185,19 +185,21 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
 
 def test_approval_segments_highlight_inline_edit_preview():
     preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"
-    block = n.LogBlock(
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
         [
-            n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
             n.LogLine("approval", "required", n.LogRole.META, n.LogEdge.BRANCH),
             n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
             *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
-        ]
+        ],
     )
     segments = n.UiPrinter().log_segments(block)
+    rendered = "".join(text for _style, text in segments)
 
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "ansiwhite bg:#520000" and "pass" in text for style, text in segments)
+    assert "\n\n" not in rendered
 
 
 def test_edit_stale_anchor_reports_current_line(tmp_path):
@@ -581,11 +583,9 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
 
 
 def test_log_block_aligns_multiline_tool_arguments():
-    block = n.LogBlock(
-        [
-            n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),
-            n.LogLine("done", role=n.LogRole.META, edge=n.LogEdge.END),
-        ]
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),
+        [n.LogLine("done", role=n.LogRole.META, edge=n.LogEdge.END)],
     )
     expected = '  Bash  git commit -m "title\n        body"\n    └ done'
 
@@ -624,14 +624,14 @@ def test_uiprinter_renders_note_memory_status_colors():
 
 def test_uiprinter_keeps_bash_preview_output_white():
     ui = n.UiPrinter(output_fn=lambda text: None)
-    block = n.LogBlock(
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Bash", "cmd", n.LogRole.TOOL),
         [
-            n.LogLine("Bash", "cmd", n.LogRole.TOOL),
             n.LogLine("", "stderr:", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
             n.LogLine("", "  Traceback", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
             n.LogLine("", "    File x", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
             n.LogLine("", "  AttributeError", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
-        ]
+        ],
     )
     segs = ui.log_segments(block)
 
@@ -643,11 +643,11 @@ def test_uiprinter_keeps_bash_preview_output_white():
 
 def test_uiprinter_renders_stored_result_dim():
     ui = n.UiPrinter(output_fn=lambda text: None)
-    block = n.LogBlock([n.LogLine("stored", "tr.50 [approved]", n.LogRole.META, n.LogEdge.END)])
+    block = n.LogBlock.hierarchy(None, [n.LogLine("stored", "tr.50 [approved]", n.LogRole.META, n.LogEdge.END)])
 
     assert ui.log_segments(block) == [
-        ("", "  "),
-        ("ansibrightblack", "  └ "),
+        ("", "    "),
+        ("ansibrightblack", "└ "),
         ("ansibrightblack", "stored"),
         ("ansibrightblack", " tr.50 [approved]"),
         ("", "\n"),
@@ -1790,6 +1790,6 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     runner.run([n.ToolCall("e0", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "hello\n"), "content": "NEW\n"}]])])
     assert len(out) == 2
     assert isinstance(out[0], n.LogBlock)
-    assert out[0].lines[0].role is n.LogRole.AUTO
+    assert out[0].root is not None and out[0].root.role is n.LogRole.AUTO
     assert "preview" in str(out[0])
     assert str(out[1]).rstrip().endswith("[auto]")
