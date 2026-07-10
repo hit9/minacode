@@ -46,6 +46,14 @@ def test_diff_clean_session(tmp_path):
     assert lp.diff_command("") == "No changes"
 
 
+def test_diff_round_with_no_net_changes_is_empty(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-old\n+mid\n", before="old\n", after="mid\n", round=1)
+    s.store_turn_diff("tr.2", 2, "a.py", "-mid\n+old\n", before="mid\n", after="old\n", round=1)
+
+    assert loop(s).diff_command("") == "No changes"
+
+
 def test_diff_shows_latest_round(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "old.py", "-old\n+older\n", round=1)
@@ -193,6 +201,24 @@ def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
     assert latest is not None
     assert latest[1] == [("edit", "large.py", "-old\n+new\n")]
     assert s.session_diff_sections() == []
+
+
+def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
+    s = session(tmp_path)
+    large = "x" * (n.TURN_DIFF_SNAPSHOT_CHAR_LIMIT + 1)
+    first = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-old\n+large\n"
+    second = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-large\n+new\n"
+    s.store_turn_diff("tr.1", 1, "a.py", first, before="old\n", after=large, round=1)
+    s.store_turn_diff("tr.2", 2, "a.py", second, before=large, after="new\n", round=1)
+
+    latest = s.latest_round_diff_sections()
+
+    assert latest is not None
+    assert len(latest[1]) == 1
+    assert latest[1][0][:2] == ("edit", "a.py")
+    assert first in latest[1][0][2]
+    assert second in latest[1][0][2]
+    assert n.diff_counts(latest[1][0][2]) == (2, 2)
 
 
 def test_session_latest_round_diffs_returns_newest_round(tmp_path):

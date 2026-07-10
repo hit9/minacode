@@ -1120,6 +1120,7 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: events.append(("display", text)))
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
+    runner.bash_live_preview_shown = lambda: True
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
@@ -1138,6 +1139,7 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", text)))
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
+    runner.bash_live_preview_shown = lambda: True
 
     runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
 
@@ -1175,6 +1177,41 @@ def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_pa
     display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False)
 
     assert display == "tool Bash printf live -> tr.1"
+
+
+def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner.bash_live_preview_shown = lambda: False
+    output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
+
+    display = runner.finish_display(
+        n.ToolCall("bash", "Bash", ["printf visible"]),
+        "tr.1",
+        output,
+        failed=False,
+        compact_result_display=True,
+    )
+
+    assert display.startswith("stored tr.1")
+    assert "stdout:" in display
+    assert "visible output" in display
+
+
+def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    output = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=output.append)
+    runner.live_start = lambda: None
+    runner.live_output = lambda _stream, _text: None
+    monkeypatch.setattr(n.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+
+    runner.run([n.ToolCall("bash", "Bash", ["printf duplicate"])])
+
+    assert output[0] == "tool Bash printf duplicate"
+    assert output[1].startswith("tool Bash [failed]\n")
+    assert "printf duplicate" not in output[1]
+    assert "spawn failed" in output[1]
 
 
 def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):

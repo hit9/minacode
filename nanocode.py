@@ -1555,19 +1555,29 @@ class Session:
     @classmethod
     def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, include_legacy: bool = True) -> list[tuple[str, str, str]]:
         states: dict[str, tuple[str, str]] = {}
-        legacy: list[tuple[str, str, str]] = []
+        legacy: dict[str, list[str]] = {}
+        paths: list[str] = []
         for diff in diffs:
+            if diff.path not in paths:
+                paths.append(diff.path)
             if not diff.before and not diff.after:
                 if include_legacy:
-                    legacy.append((status, diff.path, diff.diff))
+                    legacy.setdefault(diff.path, []).append(diff.diff)
                 continue
             if diff.path not in states:
                 states[diff.path] = (diff.before, diff.after)
             else:
                 before, _after = states[diff.path]
                 states[diff.path] = (before, diff.after)
-        sections = [section for path, (before, after) in states.items() if (section := cls.net_diff_section(status, path, before, after))]
-        return sections + legacy
+        sections = []
+        for path in paths:
+            chunks = []
+            if path in states and (section := cls.net_diff_section(status, path, *states[path])):
+                chunks.append(section[2])
+            chunks.extend(legacy.get(path, []))
+            if chunks:
+                sections.append((status, path, "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"))
+        return sections
 
     def latest_round_diff_sections(self) -> tuple[int, list[tuple[str, str, str]]] | None:
         latest = self.latest_round_diffs()
@@ -5459,9 +5469,10 @@ class ToolRunner:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
         bash_live_preview_shown = bool(call.name == "Bash" and self.bash_live_preview_shown and self.bash_live_preview_shown())
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
-        if compact_result_display and key:
-            return self.with_batch_suffix("stored " + key + tag, batch_suffix)
-        line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
+        if compact_result_display:
+            line = self.with_batch_suffix((("stored " + key) if key else "tool " + call.name) + tag, batch_suffix)
+        else:
+            line = self.with_batch_suffix("tool " + (display or self.short_call(call)) + ((" -> " + key) if key else "") + tag, batch_suffix)
         lines = [line]
         if failed:
             lines.append("  error " + self.oneline(output, 220))
@@ -6991,14 +7002,21 @@ def bounded_diff(text: str) -> tuple[str, bool]:
 
 def diff_counts(text: str) -> tuple[int, int]:
     added = removed = 0
-    in_hunk = False
+    old_remaining = new_remaining = 0
+    hunk_header = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
     for line in text.splitlines():
-        if line.startswith("@@"):
-            in_hunk = True
-        elif in_hunk and line.startswith("+"):
+        if match := hunk_header.match(line):
+            old_remaining = int(match.group(1) or 1)
+            new_remaining = int(match.group(2) or 1)
+        elif line.startswith("+") and new_remaining:
             added += 1
-        elif in_hunk and line.startswith("-"):
+            new_remaining -= 1
+        elif line.startswith("-") and old_remaining:
             removed += 1
+            old_remaining -= 1
+        elif line.startswith(" "):
+            old_remaining = max(0, old_remaining - 1)
+            new_remaining = max(0, new_remaining - 1)
     return added, removed
 
 
@@ -8255,7 +8273,7 @@ Tools:
         latest = self.agent.session.latest_round_diff_sections()
         session = self.agent.session.session_diff_sections()
         groups: list[tuple[str, list[tuple[str, str, str]]]] = []
-        if latest is not None:
+        if latest is not None and latest[1]:
             round, sections = latest
             groups.append((f"Latest · Round {round}", sections))
         if session:

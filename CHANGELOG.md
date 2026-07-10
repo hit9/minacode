@@ -16,7 +16,8 @@
 
 ### Fixed
 - Prioritize queued follow-ups when building the next model request.
-- Keep Bash preview colors consistent, preserve literal closing-tag text, and avoid duplicating output after an interactive live preview.
+- Keep Bash preview colors consistent, preserve literal closing-tag text, show bounded output when no live frame is available, and avoid repeating commands or output around live runs and failures.
+- Coalesce capped fallback edits into one `/diff` entry per file, count only real hunk changes, and report `No changes` when a round has no net effect.
 - Reject directory paths passed to `Edit` with a tool error instead of crashing during edit planning.
 
 ## 0.9.1 - 2026-07-09
