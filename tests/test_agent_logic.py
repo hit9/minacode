@@ -1344,9 +1344,9 @@ def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
 
     loop.emit_agent_output("First line.\nSecond line.")
-    loop.ui.emit_answer("Done.")
+    loop.ui.emit_answer("Done.\nFinal detail.")
 
-    assert output == ["  First line.\n  Second line.", "  Done."]
+    assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):

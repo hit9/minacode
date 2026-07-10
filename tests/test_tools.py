@@ -565,7 +565,7 @@ def test_uiprinter_renders_tool_root_without_generic_prefix():
     text = "".join(value for _style, value in segments)
 
     assert text == "  Read  nanocode.py 0:100 → tr.6 [auto]\n"
-    assert ("ansiwhite", "nanocode.py 0:100 → tr.6 [auto]") in segments
+    assert any(style == "ansiwhite" and "nanocode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
 
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
@@ -578,6 +578,36 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
     assert ("fg:#79c0ff", "printf") in segments
     assert ("fg:#a5d6ff", "'%s\\n'") in segments
     assert not any("bg:" in style for style, _text in segments)
+
+
+def test_log_block_aligns_multiline_tool_arguments():
+    block = n.LogBlock(
+        [
+            n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),
+            n.LogLine("done", role=n.LogRole.META, edge=n.LogEdge.END),
+        ]
+    )
+    expected = '  Bash  git commit -m "title\n        body"\n    └ done'
+
+    assert str(block) == expected
+    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+    assert rendered == expected + "\n"
+
+
+def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda fallback: n.os.terminal_size((40, 24)))
+    command = 'git commit -m "system prompt: enhance with attitude, updates, review mode, and tooling rules"'
+    block = n.LogBlock([n.LogLine("Bash", command, n.LogRole.TOOL, syntax="bash")])
+
+    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+
+    assert rendered.splitlines() == [
+        '  Bash  git commit -m "system prompt:',
+        "        enhance with attitude,",
+        "        updates, review mode, and",
+        '        tooling rules"',
+    ]
+    assert all(len(line) < 40 for line in rendered.splitlines())
 
 
 def test_uiprinter_renders_note_memory_status_colors():
@@ -619,8 +649,7 @@ def test_uiprinter_renders_stored_result_dim():
         ("", "  "),
         ("ansibrightblack", "  └ "),
         ("ansibrightblack", "stored"),
-        ("ansibrightblack", " "),
-        ("ansibrightblack", "tr.50 [approved]"),
+        ("ansibrightblack", " tr.50 [approved]"),
         ("", "\n"),
     ]
 

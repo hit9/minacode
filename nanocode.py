@@ -3648,6 +3648,54 @@ class LogRole(Enum):
     DIFF = auto()
 
 
+def wrap_styled_line(
+    prefix: list[tuple[str, str]],
+    continuation: list[tuple[str, str]],
+    content: list[tuple[str, str]],
+    width: int | None = None,
+) -> list[list[tuple[str, str]]]:
+    logical_lines: list[list[tuple[str, str, int]]] = [[]]
+    for style, text in content:
+        for char in text:
+            if char == "\n":
+                logical_lines.append([])
+            else:
+                logical_lines[-1].append((style, char, get_cwidth(char)))
+
+    def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
+        row = list(row_prefix)
+        for style, char, _char_width in cells:
+            if row and row[-1][0] == style:
+                row[-1] = (style, row[-1][1] + char)
+            else:
+                row.append((style, char))
+        return row
+
+    rows: list[list[tuple[str, str]]] = []
+    row_prefix = prefix
+    for logical in logical_lines:
+        remaining = logical
+        while True:
+            prefix_width = sum(get_cwidth(text) for _style, text in row_prefix)
+            available = max(1, width - prefix_width) if width else None
+            if available is None or sum(cell_width for _style, _char, cell_width in remaining) <= available:
+                rows.append(row_segments(row_prefix, remaining))
+                break
+            used = 0
+            fit = 0
+            while fit < len(remaining) and used + remaining[fit][2] <= available:
+                used += remaining[fit][2]
+                fit += 1
+            fit = max(1, fit)
+            whitespace = max((index for index in range(fit) if remaining[index][1].isspace()), default=-1)
+            cut = whitespace if whitespace > 0 else fit
+            rows.append(row_segments(row_prefix, remaining[:cut]))
+            remaining = remaining[cut + 1 :] if whitespace > 0 else remaining[cut:]
+            row_prefix = continuation
+        row_prefix = continuation
+    return rows
+
+
 @dataclass(frozen=True)
 class LogLine:
     label: str
@@ -3657,11 +3705,10 @@ class LogLine:
     meta: str = ""
     syntax: str = ""
 
-    def plain(self) -> str:
-        prefix = "" if self.edge is LogEdge.NONE else "  " + self.edge.value + " "
+    def text_prefix(self) -> str:
+        edge = "" if self.edge is LogEdge.NONE else "  " + self.edge.value + " "
         separator = "  " if self.edge is LogEdge.NONE else " "
-        return prefix + self.label + ((separator + self.text) if self.label and self.text else self.text) + self.meta
-
+        return edge + self.label + (separator if self.label and self.text else "")
 
 @dataclass
 class LogBlock:
@@ -3669,7 +3716,12 @@ class LogBlock:
     lines: list[LogLine]
 
     def __str__(self) -> str:
-        return "\n".join(self.INDENT + line.plain() for line in self.lines)
+        rows = []
+        for line in self.lines:
+            prefix = self.INDENT + line.text_prefix()
+            continuation = self.INDENT + " " * get_cwidth(line.text_prefix())
+            rows.extend(wrap_styled_line([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
+        return "\n".join("".join(text for _style, text in row) for row in rows)
 
 
 class ContextManager:
@@ -6405,34 +6457,35 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
-    def emit_answer(self, text: str, *, role: str = "", rule: bool = True) -> None:
+    def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
         if not self.color:
-            self.output_fn(self.indent_message(text, role))
+            self.output_fn(self.indent_message(text, role, indent))
             return
         console = self.console
         if self.capture_ansi:
             console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
             with console.capture() as capture:
-                self.render_message(console, text, role, rule)
+                self.render_message(console, text, role, rule, indent)
             print_formatted_text(ANSI(capture.get()), end="", flush=True)
             return
         assert console is not None
-        self.render_message(console, text, role, rule)
+        self.render_message(console, text, role, rule, indent)
 
     @staticmethod
-    def indent_message(text: str, role: str = "") -> str:
-        body_indent = LogBlock.INDENT * (2 if role else 1)
+    def indent_message(text: str, role: str = "", indent: int = 0) -> str:
+        body_indent = LogBlock.INDENT * (indent + bool(role))
         body = "\n".join(body_indent + line for line in text.splitlines() or [""])
-        return f"{LogBlock.INDENT}{role}:\n{body}" if role else body
+        return f"{LogBlock.INDENT * indent}{role}:\n{body}" if role else body
 
-    def render_message(self, console: Console, text: str, role: str, rule: bool) -> None:
+    def render_message(self, console: Console, text: str, role: str, rule: bool, indent: int) -> None:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
         if rule and not error:
             console.print(Rule(style="bright_black", characters="─"))
         if role:
-            console.print(Padding(RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black")), (0, 0, 0, len(LogBlock.INDENT))))
+            label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
+            console.print(Padding(label, (0, 0, 0, len(LogBlock.INDENT) * indent)))
         content = RichText(text, style="red") if error else Markdown(text)
-        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * (2 if role else 1))))
+        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * (indent + bool(role)))))
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
@@ -6485,6 +6538,7 @@ class UiPrinter:
 
     def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
+        width = max(1, shutil.get_terminal_size((120, 20)).columns - 1)
         index = 0
         while index < len(block.lines):
             line = block.lines[index]
@@ -6494,30 +6548,42 @@ class UiPrinter:
                     end += 1
                 highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in block.lines[index:end])))
                 for item, rendered in zip(block.lines[index:end], highlighted):
-                    segments.append(("", block.INDENT))
-                    segments.extend(self.edge_segments(item.edge))
-                    segments.extend(rendered)
-                    segments.append(("", "\n"))
+                    prefix = [("", block.INDENT), *self.edge_segments(item.edge)]
+                    rendered = self.remove_line_ending(rendered)
+                    for row in wrap_styled_line(prefix, prefix, rendered, width):
+                        segments.extend([*row, ("", "\n")])
                 index = end
                 continue
             label_style, text_style = self.LOG_STYLES[line.role]
-            segments.append(("", block.INDENT))
-            segments.extend(self.edge_segments(line.edge))
+            prefix = [("", block.INDENT), *self.edge_segments(line.edge)]
             if line.label:
-                segments.append((label_style, line.label))
+                prefix.append((label_style, line.label))
+            content: list[tuple[str, str]] = []
             if line.text:
                 separator = "  " if line.edge is LogEdge.NONE and line.label else " " if line.label else ""
-                segments.append((text_style, separator))
-                segments.extend(self.syntax_segments(line.text, line.syntax, text_style))
+                prefix.append((text_style, separator))
+                content.extend(self.syntax_segments(line.text, line.syntax, text_style))
             if line.meta:
-                segments.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
-            segments.append(("", "\n"))
+                content.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
+            continuation = [("", block.INDENT + " " * get_cwidth(line.text_prefix()))]
+            for row in wrap_styled_line(prefix, continuation, content, width):
+                segments.extend([*row, ("", "\n")])
             index += 1
         return segments
 
     @staticmethod
     def edge_segments(edge: LogEdge) -> list[tuple[str, str]]:
         return [] if edge is LogEdge.NONE else [("ansibrightblack", f"  {edge.value} ")]
+
+    @staticmethod
+    def remove_line_ending(segments: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        result = list(segments)
+        if result and result[-1][1].endswith("\n"):
+            style, text = result[-1]
+            result[-1] = (style, text[:-1])
+            if not result[-1][1]:
+                result.pop()
+        return result
 
     @classmethod
     def syntax_segments(cls, text: str, lexer_name: str, fallback_style: str) -> list[tuple[str, str]]:
@@ -7690,11 +7756,11 @@ Tools:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
         if role == "assistant" and content:
-            self.ui.emit_answer(content, role=role, rule=False)
+            self.ui.emit_answer(content, role=role, rule=False, indent=1)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index)
         if role == "user" and content:
-            self.ui.emit_answer(content, role=role, rule=False)
+            self.ui.emit_answer(content, role=role, rule=False, indent=1)
         return tool_record_index
 
     def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:
@@ -7990,12 +8056,12 @@ Tools:
             previous_capture = self.ui.capture_ansi
             self.ui.capture_ansi = previous_capture or capture
             try:
-                self.ui.emit_answer(text, rule=False)
+                self.ui.emit_answer(text, rule=False, indent=1)
             finally:
                 self.ui.capture_ansi = previous_capture
             self.emit()
             return
-        self.ui.emit_answer(text, rule=False)
+        self.ui.emit_answer(text, rule=False, indent=1)
 
     def tool_live_start(self) -> None:
         self.bash_live_preview_rendered = False
