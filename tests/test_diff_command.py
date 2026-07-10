@@ -181,6 +181,34 @@ def test_session_diff_sections_show_overall_file_effect(tmp_path):
     assert "mid" not in diff
 
 
+def test_diff_sections_follow_file_across_unambiguous_moves(tmp_path):
+    s = session(tmp_path)
+    created = "one\ntwo\nthree\n"
+    trimmed = "one\ntwo\n"
+    final = "one\nchanged\nextra\n"
+    s.store_turn_diff("tr.1", 1, "draft.md", "unused", before="", after=created, round=1)
+    s.store_turn_diff("tr.2", 2, "SKILL.md", "unused", before=created, after=trimmed, round=2)
+    s.store_turn_diff("tr.3", 3, "skill/SKILL.md", "unused", before=trimmed, after=final, round=2)
+
+    latest = s.latest_round_diff_sections()
+    session_sections = s.session_diff_sections()
+
+    assert latest is not None
+    assert [path for _status, path, _diff in latest[1]] == ["skill/SKILL.md"]
+    assert n.diff_counts(latest[1][0][2]) == (2, 2)
+    assert [path for _status, path, _diff in session_sections] == ["skill/SKILL.md"]
+    assert n.diff_counts(session_sections[0][2]) == (3, 0)
+
+
+def test_diff_sections_do_not_guess_ambiguous_moves(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "source.md", "unused", before="", after="same\n")
+    s.store_turn_diff("tr.2", 2, "first.md", "unused", before="same\n", after="first\n")
+    s.store_turn_diff("tr.3", 3, "second.md", "unused", before="same\n", after="second\n")
+
+    assert [path for _status, path, _diff in s.session_diff_sections()] == ["source.md", "first.md", "second.md"]
+
+
 def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n")

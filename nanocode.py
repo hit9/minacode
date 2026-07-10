@@ -1604,6 +1604,29 @@ class Session:
             else:
                 before, _after = states[diff.path]
                 states[diff.path] = (before, diff.after)
+
+        # Bash can move a file between Edit calls. Join an unambiguous content boundary so the
+        # logical history follows the file to its final path instead of reporting stale path entries.
+        while True:
+            candidates = [
+                (source, target)
+                for source, (_before, after) in states.items()
+                for target, (before, _after) in states.items()
+                if source != target and after and after == before and source not in legacy and target not in legacy
+            ]
+            match = next(
+                (
+                    (source, target)
+                    for source, target in candidates
+                    if sum(item[0] == source for item in candidates) == 1 and sum(item[1] == target for item in candidates) == 1
+                ),
+                None,
+            )
+            if match is None:
+                break
+            source, target = match
+            states[target] = (states[source][0], states[target][1])
+            del states[source]
         sections = []
         for path in paths:
             chunks = []

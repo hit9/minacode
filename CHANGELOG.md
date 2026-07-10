@@ -17,6 +17,7 @@
 - Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
 
 ### Fixed
+- Follow edited files across unambiguous Bash moves so `/diff` reports their final paths and logical net changes.
 - Prevent transient working dividers from leaking into CLI history during Bash previews and approval handoffs.
 - Prioritize queued follow-ups when building the next model request.
 - Keep Bash preview colors consistent, preserve literal closing-tag text, show bounded output when no live frame is available, and avoid repeating commands or output around live runs and failures.
