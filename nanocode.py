@@ -6473,8 +6473,7 @@ class UiPrinter:
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
-        body_indent = LogBlock.INDENT * (indent + bool(role))
-        body = "\n".join(body_indent + line for line in text.splitlines() or [""])
+        body = "\n".join(LogBlock.INDENT * indent + line for line in text.splitlines() or [""])
         return f"{LogBlock.INDENT * indent}{role}:\n{body}" if role else body
 
     def render_message(self, console: Console, text: str, role: str, rule: bool, indent: int) -> None:
@@ -6485,7 +6484,7 @@ class UiPrinter:
             label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
             console.print(Padding(label, (0, 0, 0, len(LogBlock.INDENT) * indent)))
         content = RichText(text, style="red") if error else Markdown(text)
-        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * (indent + bool(role)))))
+        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * indent)))
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
@@ -7755,12 +7754,14 @@ Tools:
     def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
+        raw_calls = message.get("tool_calls")
+        has_tool_calls = isinstance(raw_calls, list) and bool(raw_calls)
         if role == "assistant" and content:
-            self.ui.emit_answer(content, role=role, rule=False, indent=1)
+            self.ui.emit_answer(content, role=role, rule=False, indent=1 if has_tool_calls else 0)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index)
         if role == "user" and content:
-            self.ui.emit_answer(content, role=role, rule=False, indent=1)
+            self.ui.emit_answer(content, role=role, rule=False)
         return tool_record_index
 
     def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:

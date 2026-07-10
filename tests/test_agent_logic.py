@@ -1176,8 +1176,8 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     text = "\n".join(output)
     assert s.resumed is False
     assert f"Restored session: {s.uid}" in text
-    assert "  user:\n    hello" in text
-    assert "  assistant:\n    need tool" in text
+    assert "user:\nhello" in text
+    assert "  assistant:\n  need tool" in text
     assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
@@ -1189,7 +1189,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     s.messages.extend(
         [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "compacted answer"},
+            {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
     s.tool_records.append(
@@ -1202,7 +1202,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert "  assistant:\n    compacted answer" in text
+    assert "assistant:\ncompacted answer\nfinal detail" in text
     assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
 
