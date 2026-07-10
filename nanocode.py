@@ -66,11 +66,17 @@ from rich.rule import Rule
 
 try:
     import pygments
-    from pygments.lexers import get_lexer_for_filename
+    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+    from pygments.styles import get_style_by_name
     from pygments.token import Token
 except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
+
+try:
+    PYGMENTS_STYLE = get_style_by_name("github-dark") if pygments is not None else None
+except Exception:  # pragma: no cover - older optional Pygments releases
+    PYGMENTS_STYLE = None
 
 __version__ = "0.9.1"
 
@@ -1809,6 +1815,7 @@ class Tool:
     SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
     MUTATES: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
+    LOG_LEXER: ClassVar[str] = ""
 
     def __init__(self, session: Session, args: list[Any]):
         self.session = session
@@ -2829,6 +2836,7 @@ class EditTool(Tool):
 
 class BashTool(Tool):
     NAME = "Bash"
+    LOG_LEXER = "bash"
     DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
     # fmt: off
@@ -3645,6 +3653,7 @@ class LogLine:
     role: LogRole = LogRole.OUTPUT
     edge: LogEdge = LogEdge.NONE
     meta: str = ""
+    syntax: str = ""
 
     def plain(self) -> str:
         prefix = "" if self.edge is LogEdge.NONE else "  " + self.edge.value + " "
@@ -3654,10 +3663,11 @@ class LogLine:
 
 @dataclass
 class LogBlock:
+    INDENT: ClassVar[str] = "  "
     lines: list[LogLine]
 
     def __str__(self) -> str:
-        return "\n".join(line.plain() for line in self.lines)
+        return "\n".join(self.INDENT + line.plain() for line in self.lines)
 
 
 class ContextManager:
@@ -5588,7 +5598,7 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
-        answer = self.input_fn(f"  {LogEdge.CONTINUE.value} [Y/n or reason] ").strip()
+        answer = self.input_fn(f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} [Y/n or reason] ").strip()
         lower = answer.lower()
         if lower in {"", "y", "yes"}:
             return True, ""
@@ -5653,12 +5663,14 @@ class ToolRunner:
             lines.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
             tail = ((" → " + key) if key else "") + tag
-            lines[0] = LogLine(root.label, root.text, root.role, meta=tail)
+            lines[0] = LogLine(root.label, root.text, root.role, meta=tail, syntax=root.syntax)
         return LogBlock(lines)
 
     def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "") -> LogLine:
         name, _, args = self.with_batch_suffix(display, batch_suffix).partition(" ")
-        return LogLine(name, args, role)
+        tool_class = TOOL_REGISTRY.get(name)
+        syntax = tool_class.LOG_LEXER if tool_class is not None and role is not LogRole.MUTED else ""
+        return LogLine(name, args, role, syntax=syntax)
 
     def bash_result_preview(self, output: str) -> str:
         sections = []
@@ -6464,18 +6476,21 @@ class UiPrinter:
                     end += 1
                 highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in block.lines[index:end])))
                 for item, rendered in zip(block.lines[index:end], highlighted):
+                    segments.append(("", block.INDENT))
                     segments.extend(self.edge_segments(item.edge))
                     segments.extend(rendered)
                     segments.append(("", "\n"))
                 index = end
                 continue
             label_style, text_style = self.LOG_STYLES[line.role]
+            segments.append(("", block.INDENT))
             segments.extend(self.edge_segments(line.edge))
             if line.label:
                 segments.append((label_style, line.label))
             if line.text:
                 separator = "  " if line.edge is LogEdge.NONE and line.label else " " if line.label else ""
-                segments.append((text_style, separator + line.text))
+                segments.append((text_style, separator))
+                segments.extend(self.syntax_segments(line.text, line.syntax, text_style))
             if line.meta:
                 segments.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
             segments.append(("", "\n"))
@@ -6485,6 +6500,16 @@ class UiPrinter:
     @staticmethod
     def edge_segments(edge: LogEdge) -> list[tuple[str, str]]:
         return [] if edge is LogEdge.NONE else [("ansibrightblack", f"  {edge.value} ")]
+
+    @classmethod
+    def syntax_segments(cls, text: str, lexer_name: str, fallback_style: str) -> list[tuple[str, str]]:
+        if pygments is None or not lexer_name:
+            return [(fallback_style, text)]
+        try:
+            lexer = get_lexer_by_name(lexer_name, stripnl=False, ensurenl=False)
+            return [(cls.pygments_style(token_type), value) for token_type, value in lexer.get_tokens(text) if value]
+        except Exception:
+            return [(fallback_style, text)]
 
     def memory_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
@@ -6506,31 +6531,22 @@ class UiPrinter:
             segments.append(("", "\n"))
         return segments
 
-    # Map Pygments token types to prompt_toolkit style names.  Parent types are
-    # consulted if a specific type is not listed, so highlighting degrades
-    # gracefully for unanticipated tokens.  Empty when Pygments is unavailable
-    # (Token is None then, so the dict literal cannot be built).
-    # fmt: off
-    DIFF_HL_STYLES: ClassVar[dict[Any, str]] = {
-        Token.Comment: "ansibrightblack italic", Token.Keyword: "ansimagenta", Token.Keyword.Constant: "ansimagenta",
-        Token.Keyword.Type: "ansicyan", Token.Name: "ansiwhite", Token.Name.Builtin: "ansicyan", Token.Name.Builtin.Pseudo: "ansicyan",
-        Token.Name.Class: "ansicyan bold", Token.Name.Decorator: "ansiyellow", Token.Name.Function: "ansigreen",
-        Token.Name.Function.Magic: "ansigreen", Token.Name.Namespace: "ansicyan", Token.Number: "ansiyellow",
-        Token.Operator: "ansiwhite", Token.Operator.Word: "ansimagenta", Token.Punctuation: "ansiwhite",
-        Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
-    } if pygments is not None else {}
-    # fmt: on
     DIFF_ADDED_BG: ClassVar[str] = "bg:#003b00"
     DIFF_REMOVED_BG: ClassVar[str] = "bg:#520000"
 
     @classmethod
-    def _diff_hl_style(cls, token_type: Any) -> str:
-        t: Any = token_type
-        while t and t is not Token:
-            if t in cls.DIFF_HL_STYLES:
-                return cls.DIFF_HL_STYLES[t]
-            t = t.parent
-        return "ansiwhite"
+    def pygments_style(cls, token_type: Any) -> str:
+        if PYGMENTS_STYLE is None:
+            return "ansiwhite"
+        if token_type in Token.Text.Whitespace:
+            return "ansiwhite"
+        if token_type in Token.Name.Builtin:
+            return "fg:#79c0ff"
+        definition = PYGMENTS_STYLE.style_for_token(token_type)
+        color = definition.get("color")
+        parts = ["ansiwhite" if not color or color.lower() == "e6edf3" else f"fg:#{color}"]
+        parts.extend(attribute for attribute in ("bold", "italic", "underline") if definition.get(attribute))
+        return " ".join(parts)
 
     def _diff_tokenize_lines(self, code_text: str, path: str | None) -> list[list[tuple[str, str]]] | None:
         """Tokenize a whole block of code and return highlighted segments per line.
@@ -6553,7 +6569,7 @@ class UiPrinter:
 
         lines: list[list[tuple[str, str]]] = [[]]
         for token_type, value in tokens:
-            style = self._diff_hl_style(token_type)
+            style = self.pygments_style(token_type)
             parts = value.split("\n")
             for i, part in enumerate(parts):
                 if i > 0:
@@ -6788,8 +6804,8 @@ class BashLivePreview:
 
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        branch = f"  {LogEdge.BRANCH.value} "
-        continuation = f"  {LogEdge.CONTINUE.value} "
+        branch = f"{LogBlock.INDENT}  {LogEdge.BRANCH.value} "
+        continuation = f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} "
         return [branch + status, *(continuation + clip(line) for line in body)]
 
 
@@ -7810,7 +7826,13 @@ Tools:
         if prompt_style != "class:approval" or not prompt_text:
             return [(prompt_style, prompt_text)]
         frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
-        return [("class:approval", prompt_text), ("class:approval.wait", frame + " ")]
+        connector = f"{LogBlock.INDENT}  {LogEdge.CONTINUE.value} "
+        prompt = (
+            [("ansibrightblack", connector), ("class:approval", prompt_text[len(connector) :])]
+            if prompt_text.startswith(connector)
+            else [("class:approval", prompt_text)]
+        )
+        return [*prompt, ("class:approval.wait", frame + " ")]
 
     def read_input(
         self,

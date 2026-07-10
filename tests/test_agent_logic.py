@@ -1013,6 +1013,12 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
     fragments = loop.input_prompt_fragments("[Y/n] ", "class:approval")
 
     assert fragments == [("class:approval", "[Y/n] "), ("class:approval.wait", "/ ")]
+    connector = f"{n.LogBlock.INDENT}  {n.LogEdge.CONTINUE.value} "
+    assert loop.input_prompt_fragments(connector + "[Y/n] ", "class:approval") == [
+        ("ansibrightblack", connector),
+        ("class:approval", "[Y/n] "),
+        ("class:approval.wait", "/ "),
+    ]
     assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
 
 
@@ -1025,7 +1031,7 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
 
     runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert outputs[0].startswith("Edit  new.txt\n  ├ approval required\n  ├ preview")
+    assert outputs[0].startswith("  Edit  new.txt\n    ├ approval required\n    ├ preview")
     assert "+line 49" in outputs[0]
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
@@ -1197,7 +1203,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
     assert "compacted answer" in text
-    assert "Bash  wc -l nanocode.py\n  └ stored tr.1" in text
+    assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
 
 
@@ -1322,7 +1328,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     agent.model = TalkingModel()
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
-    assert any(isinstance(line, n.LogBlock) and str(line).startswith("Read  ") for line in output)
+    assert any(isinstance(line, n.LogBlock) and str(line).startswith("  Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."

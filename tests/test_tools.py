@@ -150,7 +150,7 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     segments = ui.diff_segments(diff)
 
     assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
-    assert any(t == "return" and s == "ansimagenta bg:#003b00" for s, t in segments)
+    assert any(t == "return" and s == "fg:#ff7b72 bg:#003b00" for s, t in segments)
 
     assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
     assert any("pass" in t and s == "ansiwhite bg:#520000" for s, t in segments)
@@ -195,7 +195,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     )
     segments = n.UiPrinter().log_segments(block)
 
-    assert any(style == "ansimagenta bg:#003b00" and "return" in text for style, text in segments)
+    assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "ansiwhite bg:#520000" and "pass" in text for style, text in segments)
 
@@ -561,9 +561,23 @@ def test_uiprinter_renders_rejected_line_dim():
 
 def test_uiprinter_renders_tool_root_without_generic_prefix():
     block = n.LogBlock([n.LogLine("Read", "nanocode.py 0:100 → tr.6 [auto]", n.LogRole.TOOL)])
-    text = "".join(value for _style, value in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(block)
+    text = "".join(value for _style, value in segments)
 
-    assert text == "Read  nanocode.py 0:100 → tr.6 [auto]\n"
+    assert text == "  Read  nanocode.py 0:100 → tr.6 [auto]\n"
+    assert ("ansiwhite", "nanocode.py 0:100 → tr.6 [auto]") in segments
+
+
+def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
+    s = session(tmp_path)
+    line = n.ToolRunner(s, n.ContextManager(s)).log_root("Bash cd /tmp && printf '%s\\n' value")
+
+    assert line.syntax == "bash"
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    assert ("fg:#79c0ff", "cd") in segments
+    assert ("fg:#79c0ff", "printf") in segments
+    assert ("fg:#a5d6ff", "'%s\\n'") in segments
+    assert not any("bg:" in style for style, _text in segments)
 
 
 def test_uiprinter_renders_note_memory_status_colors():
@@ -602,9 +616,11 @@ def test_uiprinter_renders_stored_result_dim():
     block = n.LogBlock([n.LogLine("stored", "tr.50 [approved]", n.LogRole.META, n.LogEdge.END)])
 
     assert ui.log_segments(block) == [
+        ("", "  "),
         ("ansibrightblack", "  └ "),
         ("ansibrightblack", "stored"),
-        ("ansibrightblack", " tr.50 [approved]"),
+        ("ansibrightblack", " "),
+        ("ansibrightblack", "tr.50 [approved]"),
         ("", "\n"),
     ]
 
@@ -1145,11 +1161,11 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
-    assert events[0] == ("display", "Bash  printf live")
+    assert events[0] == ("display", "  Bash  printf live")
     assert events[1] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1][0] == "display"
-    assert events[-1][1].startswith("  └ stored tr.")
+    assert events[-1][1].startswith("    └ stored tr.")
     assert sum("printf live" in text for kind, text in events if kind == "display") == 1
     assert sum("Bash" in text for kind, text in events if kind == "display") == 1
 
@@ -1165,10 +1181,10 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
 
     display = [text for kind, text in events if kind == "display"]
-    assert display[0].startswith("Bash  ")
-    assert display[-1].startswith("  └ stored tr.")
+    assert display[0].startswith("  Bash  ")
+    assert display[-1].startswith("    └ stored tr.")
     assert display[-1].endswith("[approved]")
-    assert sum(text.startswith("Bash  ") for text in display) == 1
+    assert sum(text.startswith("  Bash  ") for text in display) == 1
     assert sum("printf approved" in text for text in display) == 1
 
 
@@ -1180,15 +1196,15 @@ def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
 
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
-    assert display.startswith("Bash  printf lots\n")
-    assert "  ├ output" in display
-    assert "  │ stdout:" in display
-    assert "  │   out 0" in display
-    assert "  │   ... 8 lines omitted ..." in display
-    assert "  │   out 19" in display
-    assert "  │ stderr:" in display
-    assert "  │   err" in display
-    assert display.endswith("  └ stored tr.1")
+    assert display.startswith("  Bash  printf lots\n")
+    assert "    ├ output" in display
+    assert "    │ stdout:" in display
+    assert "    │   out 0" in display
+    assert "    │   ... 8 lines omitted ..." in display
+    assert "    │   out 19" in display
+    assert "    │ stderr:" in display
+    assert "    │   err" in display
+    assert display.endswith("    └ stored tr.1")
 
 
 def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_path):
@@ -1199,7 +1215,7 @@ def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_pa
 
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
-    assert display == "Bash  printf live\n  └ stored tr.1"
+    assert display == "  Bash  printf live\n    └ stored tr.1"
 
 
 def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):
@@ -1216,7 +1232,7 @@ def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_pa
         nested_display=True,
     ))
 
-    assert display.startswith("  ├ output")
+    assert display.startswith("    ├ output")
     assert "stdout:" in display
     assert "visible output" in display
 
@@ -1231,8 +1247,8 @@ def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypa
 
     runner.run([n.ToolCall("bash", "Bash", ["printf duplicate"])])
 
-    assert output[0] == "Bash  printf duplicate"
-    assert output[1].startswith("  └ error ")
+    assert output[0] == "  Bash  printf duplicate"
+    assert output[1].startswith("    └ error ")
     assert "printf duplicate" not in output[1]
     assert "spawn failed" in output[1]
 
@@ -1729,9 +1745,9 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(str(text)))
     runner.run([n.ToolCall("b0", "Bash", [":"])])
     assert len(out) == 1
-    assert out[0].startswith("Bash  ")
+    assert out[0].startswith("  Bash  ")
     assert out[0].rstrip().endswith("[auto]")
-    assert sum(line.startswith("Bash  ") for line in out) == 1
+    assert sum(line.startswith("  Bash  ") for line in out) == 1
 
 
 def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
