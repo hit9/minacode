@@ -315,7 +315,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
     outputs = []
     bad = session(tmp_path)
-    n.ToolRunner(bad, n.ContextManager(bad), output_fn=outputs.append).run([call("Bash", [])])
+    n.ToolRunner(bad, n.ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
     assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
@@ -778,7 +778,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert out == ["nano+ do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
 def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
@@ -1020,12 +1020,12 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     s = session(tmp_path)
     outputs = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=outputs.append)
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
     runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert outputs[0].startswith("approve Edit new.txt\n  preview")
+    assert outputs[0].startswith("Edit  new.txt\n  ├ approval required\n  ├ preview")
     assert "+line 49" in outputs[0]
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
@@ -1172,7 +1172,7 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert f"Restored session: {s.uid}" in text
     assert "hello" in text
     assert "need tool" in text
-    assert "tool Read a.py 0:1 -> tr.1" in text
+    assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
 
@@ -1197,7 +1197,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
     assert "compacted answer" in text
-    assert "tool Bash wc -l nanocode.py -> tr.1" in text
+    assert "Bash  wc -l nanocode.py\n  └ stored tr.1" in text
     assert "999 nanocode.py" not in text
 
 
@@ -1322,7 +1322,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     agent.model = TalkingModel()
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
-    assert any(line.startswith("tool Read") for line in output)
+    assert any(isinstance(line, n.LogBlock) and str(line).startswith("Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
