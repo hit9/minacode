@@ -5130,7 +5130,7 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
-        self.live_start: Callable[[str], None] | None = None
+        self.live_start: Callable[[], None] | None = None
         self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
 
@@ -5457,7 +5457,7 @@ class ToolRunner:
     ) -> str:
         if call.name == "Note" and not failed and display:
             return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
-        bash_live_preview_shown = call.name == "Bash" and self.consume_bash_live_preview_shown()
+        bash_live_preview_shown = bool(call.name == "Bash" and self.bash_live_preview_shown and self.bash_live_preview_shown())
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         if compact_result_display and key:
             return self.with_batch_suffix("stored " + key + tag, batch_suffix)
@@ -5474,9 +5474,6 @@ class ToolRunner:
             if preview:
                 lines.extend("  " + line for line in preview.splitlines())
         return "\n".join(lines)
-
-    def consume_bash_live_preview_shown(self) -> bool:
-        return bool(self.bash_live_preview_shown and self.bash_live_preview_shown())
 
     def bash_result_preview(self, output: str) -> str:
         sections = []
@@ -6580,7 +6577,6 @@ class BashLivePreview:
         self.rendered_lines = 0
         self.rendered_rows: list[list[tuple[str, str]]] = []
         self.text = ""
-        self.command = ""
         self.started_at = 0.0
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
@@ -6588,12 +6584,11 @@ class BashLivePreview:
         # the log and the running command stays put — the bottom UI does not look like it vanished.
         self.divider: list[tuple[str, str]] = []
 
-    def start(self, command: str = "") -> None:
+    def start(self) -> None:
         if not sys.stderr.isatty():
             return
         with self.lock:
             self.active, self.rendered_lines, self.rendered_rows, self.text = True, 0, [], ""
-            self.command = " ".join(command.split())
             self.started_at = time.monotonic()
             self.render()
         self.timer = threading.Thread(target=self.tick, daemon=True)
@@ -6675,11 +6670,9 @@ class BashLivePreview:
         def clip(line: str) -> str:
             return line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
 
-        # Always emit a header (the running command + a live elapsed timer) so the frame is visible
-        # even before any output arrives and the user can see what is executing.
+        # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        header = [clip("  $ " + self.command)] if self.command else []
-        return [*header, "  " + status, *("  " + clip(line) for line in body)]
+        return ["  " + status, *("  " + clip(line) for line in body)]
 
 
 class ModelRetryShortcut:
@@ -6982,26 +6975,19 @@ class CompactSpinner:
         return self.loop.sweep_divider_fragments("compacting context")
 
 
-class DiffText:
-    MAX_DIFF_BYTES = 50_000
-    MAX_DIFF_LINES = 1_200
+def bounded_diff(text: str) -> tuple[str, bool]:
+    if len(text.encode("utf-8")) <= 50_000 and text.count("\n") <= 1_200:
+        return text, False
+    clipped: list[str] = []
+    length = 0
+    for line in text.splitlines():
+        line_bytes = len(line.encode("utf-8")) + 1
+        if length + line_bytes > 50_000 or len(clipped) >= 1_200:
+            break
+        clipped.append(line)
+        length += line_bytes
+    return "\n".join(clipped), True
 
-    @classmethod
-    def bounded(cls, text: str, max_bytes: int | None = None, max_lines: int | None = None) -> tuple[str, bool]:
-        max_bytes = max_bytes or cls.MAX_DIFF_BYTES
-        max_lines = max_lines or cls.MAX_DIFF_LINES
-        if len(text.encode("utf-8")) <= max_bytes and text.count("\n") <= max_lines:
-            return text, False
-        lines = text.splitlines()
-        clipped: list[str] = []
-        length = 0
-        for line in lines:
-            line_bytes = len(line.encode("utf-8")) + 1
-            if length + line_bytes > max_bytes or len(clipped) >= max_lines:
-                break
-            clipped.append(line)
-            length += line_bytes
-        return "\n".join(clipped), True
 
 class QueuePlaceholder(Processor):
     def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
@@ -7289,7 +7275,7 @@ Tools:
         input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
         bindings = KeyBindings()
 
-        def record(event, texts: list[str]) -> None:
+        def record(texts: list[str]) -> None:
             texts = [Text.clean(text.strip()) for text in texts if text.strip()]
             if not texts:
                 return
@@ -7306,12 +7292,9 @@ Tools:
         @bindings.add("enter", eager=True)
         def _enter(event):
             if buffer.text.strip():
-                record(event, [buffer.text])
-                self.queue_input_text = ""
-                buffer.reset(Document(""))
-            else:
-                self.queue_input_text = ""
-                buffer.reset(Document(""))
+                record([buffer.text])
+            self.queue_input_text = ""
+            buffer.reset(Document(""))
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):
@@ -7342,7 +7325,7 @@ Tools:
             if len(parts) == 1:
                 buffer.insert_text(parts[0])
                 return
-            record(event, [buffer.text + parts[0], *parts[1:-1]])
+            record([buffer.text + parts[0], *parts[1:-1]])
             self.queue_input_text = parts[-1]
             buffer.reset(Document(self.queue_input_text))
 
@@ -7372,18 +7355,12 @@ Tools:
         def stop_when_needed() -> None:
             while not stop_event.is_set() and not self.queue_input_paused.is_set():
                 stop_event.wait(0.05)
-            # Retry the exit until the app has actually torn down. A single exit can be lost if it
-            # fires before app.run() has started its event loop, which would leave this app running
-            # concurrently with the next prompt and spam the animated divider into the scrollback.
-            deadline = time.monotonic() + 2.0
-            while self.queue_input_active.is_set() and time.monotonic() < deadline:
-                self.exit_app(app)
-                time.sleep(0.02)
+            self.exit_app(app)
 
         threading.Thread(target=stop_when_needed, daemon=True).start()
         try:
             with patch_stdout():
-                app.run()
+                app.run(pre_run=lambda: self.exit_app(app) if stop_event.is_set() or self.queue_input_paused.is_set() else None)
         except (EOFError, KeyboardInterrupt, ValueError, OSError):
             pass
         finally:
@@ -7412,13 +7389,10 @@ Tools:
 
     def pause_queue_input(self) -> None:
         self.queue_input_paused.set()
-        # Keep re-issuing the exit until the app is actually down: a single exit can be lost if it
-        # fires before app.run() has started its event loop, leaving the app running behind the next
-        # prompt. Retry until queue_input_active clears (the app's finally) or we time out.
+        if self.queue_input_app is not None:
+            self.exit_app(self.queue_input_app)
         deadline = time.monotonic() + 1.5
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
-            if self.queue_input_app is not None:
-                self.exit_app(self.queue_input_app)
             time.sleep(0.02)
 
     def take_entered_input(self) -> str:
@@ -7827,7 +7801,7 @@ Tools:
             return
         self.emit(text)
 
-    def tool_live_start(self, command: str = "") -> None:
+    def tool_live_start(self) -> None:
         self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
@@ -7838,7 +7812,7 @@ Tools:
         if self.live_status_paused:
             self.status_bar.stop()
         self.live_preview.divider = self.bash_divider_fragments()
-        self.live_preview.start(command)
+        self.live_preview.start()
         self.bash_live_preview_rendered = self.live_preview.active
 
     def tool_live_output(self, _stream: str, text: str) -> None:
@@ -8280,7 +8254,7 @@ Tools:
             lines.append("### " + title)
             for _status, path, diff in sections:
                 lines.append(f"#### {path}")
-                bounded, truncated = DiffText.bounded(diff)
+                bounded, truncated = bounded_diff(diff)
                 lines.append(f"```diff\n{bounded}\n```")
                 if truncated:
                     lines.append("\n*Diff truncated. Full edit output is stored in the session.*")

@@ -1,6 +1,3 @@
-import shutil
-import subprocess
-
 import pytest
 
 import nanocode as n
@@ -1107,7 +1104,7 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s.settings.yolo = True
     events = []
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
-    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
@@ -1121,7 +1118,7 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     s = session(tmp_path)
     events = []
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: events.append(("display", text)))
-    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
@@ -1139,7 +1136,7 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     s = session(tmp_path)
     events = []
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", text)))
-    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
     runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
@@ -1221,7 +1218,6 @@ def test_bash_live_preview_finish_erases_divider(monkeypatch):
     p.output = FakeOut()
     p.active = True
     p.divider = [("ansimagenta bold", "--- working ---")]
-    p.command = "echo hi"
     p.text = "hi\n"
     p.render()
     assert any("working" in line for line in printed)  # divider is drawn while the command runs
@@ -1252,7 +1248,6 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     p = n.BashLivePreview()
     p.output = FakeOut()
     p.active = True
-    p.command = "sleep 30"
     p.started_at = 100.0
 
     p.render()

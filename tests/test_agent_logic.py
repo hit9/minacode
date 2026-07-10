@@ -512,7 +512,9 @@ def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
         def __init__(self):
             self.loop = None
 
-        def run(self):
+        def run(self, pre_run=None):
+            if pre_run:
+                pre_run()
             raise ValueError("I/O operation on closed file")
 
         def exit(self, result=None):
@@ -636,10 +638,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
-def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
-    # A single app.exit() can be lost if it fires before app.run() starts its event loop, which used
-    # to leave the queue app running behind the next prompt and spam the animated divider. pause must
-    # keep re-issuing the exit until the app has actually torn down (queue_input_active clears).
+def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.queue_input_active.set()
@@ -648,8 +647,7 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
 
     def fake_exit(app):
         calls["n"] += 1
-        if calls["n"] >= 3:  # the first couple of exits are "lost"; a later one lands
-            loop.queue_input_active.clear()
+        loop.queue_input_active.clear()
 
     monkeypatch.setattr(loop, "exit_app", fake_exit)
     monkeypatch.setattr(n.time, "sleep", lambda *_: None)
@@ -657,7 +655,7 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
     loop.pause_queue_input()
 
     assert loop.queue_input_paused.is_set()
-    assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
+    assert calls["n"] == 1
     assert not loop.queue_input_active.is_set()
 
 
@@ -1119,7 +1117,7 @@ def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.interactive_input = True
-    loop.live_preview.start = lambda command="": setattr(loop.live_preview, "active", True)
+    loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
 
     loop.tool_live_start()
     assert loop.queue_input_paused.is_set()
