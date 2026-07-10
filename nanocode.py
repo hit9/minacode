@@ -62,7 +62,9 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.rule import Rule
+from rich.text import Text as RichText
 
 try:
     import pygments
@@ -6386,6 +6388,8 @@ class CommandCompleter(Completer):
 
 
 class UiPrinter:
+    MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
+
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
@@ -6401,20 +6405,34 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
-    def emit_answer(self, text: str) -> None:
-        if not self.color or text.startswith(("Error:", "ConfigError:", "Unknown command:")):
-            self.emit(text)
+    def emit_answer(self, text: str, *, role: str = "", rule: bool = True) -> None:
+        if not self.color:
+            self.output_fn(self.indent_message(text, role))
             return
-        assert self.console is not None
+        console = self.console
         if self.capture_ansi:
             console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
             with console.capture() as capture:
-                console.print(Rule(style="bright_black", characters="─"))
-                console.print(Markdown(text))
+                self.render_message(console, text, role, rule)
             print_formatted_text(ANSI(capture.get()), end="", flush=True)
             return
-        self.console.print(Rule(style="bright_black", characters="─"))
-        self.console.print(Markdown(text))
+        assert console is not None
+        self.render_message(console, text, role, rule)
+
+    @staticmethod
+    def indent_message(text: str, role: str = "") -> str:
+        body_indent = LogBlock.INDENT * (2 if role else 1)
+        body = "\n".join(body_indent + line for line in text.splitlines() or [""])
+        return f"{LogBlock.INDENT}{role}:\n{body}" if role else body
+
+    def render_message(self, console: Console, text: str, role: str, rule: bool) -> None:
+        error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
+        if rule and not error:
+            console.print(Rule(style="bright_black", characters="─"))
+        if role:
+            console.print(Padding(RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black")), (0, 0, 0, len(LogBlock.INDENT))))
+        content = RichText(text, style="red") if error else Markdown(text)
+        console.print(Padding(content, (0, 0, 0, len(LogBlock.INDENT) * (2 if role else 1))))
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
@@ -7672,13 +7690,11 @@ Tools:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
         if role == "assistant" and content:
-            self.emit("assistant:")
-            self.ui.emit_answer(content)
+            self.ui.emit_answer(content, role=role, rule=False)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index)
         if role == "user" and content:
-            self.emit("user:")
-            self.emit(content)
+            self.ui.emit_answer(content, role=role, rule=False)
         return tool_record_index
 
     def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:
@@ -7974,12 +7990,12 @@ Tools:
             previous_capture = self.ui.capture_ansi
             self.ui.capture_ansi = previous_capture or capture
             try:
-                self.ui.emit_answer(text)
+                self.ui.emit_answer(text, rule=False)
             finally:
                 self.ui.capture_ansi = previous_capture
             self.emit()
             return
-        self.emit(text)
+        self.ui.emit_answer(text, rule=False)
 
     def tool_live_start(self) -> None:
         self.bash_live_preview_rendered = False

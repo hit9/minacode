@@ -1176,8 +1176,8 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     text = "\n".join(output)
     assert s.resumed is False
     assert f"Restored session: {s.uid}" in text
-    assert "hello" in text
-    assert "need tool" in text
+    assert "  user:\n    hello" in text
+    assert "  assistant:\n    need tool" in text
     assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
@@ -1202,7 +1202,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert "compacted answer" in text
+    assert "  assistant:\n    compacted answer" in text
     assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
 
@@ -1337,6 +1337,16 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert "-> FILE STATE" not in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
+
+
+def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
+
+    loop.emit_agent_output("First line.\nSecond line.")
+    loop.ui.emit_answer("Done.")
+
+    assert output == ["  First line.\n  Second line.", "  Done."]
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
