@@ -6960,9 +6960,8 @@ class CompactSpinner:
         self.app: Application | None = None
 
     def start(self) -> None:
-        if self.thread is not None or not sys.stderr.isatty():
+        if not sys.stderr.isatty():
             return
-        self.stop_event.clear()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -6985,7 +6984,6 @@ class CompactSpinner:
         if self.app is not None:
             self.loop.exit_app(self.app)
         self.thread.join()
-        self.thread = None
 
     def fragments(self) -> list[tuple[str, str]]:
         return self.loop.sweep_divider_fragments("compacting context")
