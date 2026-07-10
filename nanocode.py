@@ -1597,12 +1597,6 @@ class Session:
             for item in self.pending_user_inputs:
                 item.inflight = False
 
-    def latest_round_diffs(self) -> tuple[int, list[TurnDiff]] | None:
-        if not self.turn_diffs:
-            return None
-        round = max(diff.round or diff.turn for diff in self.turn_diffs)
-        return round, [diff for diff in self.turn_diffs if (diff.round or diff.turn) == round]
-
     @staticmethod
     def net_diff_section(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
         if before == after:
@@ -1661,10 +1655,10 @@ class Session:
         return sections
 
     def latest_round_diff_sections(self) -> tuple[int, list[tuple[str, str, str]]] | None:
-        latest = self.latest_round_diffs()
-        if latest is None:
+        if not self.turn_diffs:
             return None
-        round, diffs = latest
+        round = max(diff.round or diff.turn for diff in self.turn_diffs)
+        diffs = [diff for diff in self.turn_diffs if (diff.round or diff.turn) == round]
         return round, self.net_diff_sections(diffs, "edit")
 
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
@@ -3724,10 +3718,6 @@ class LogBlock:
         return cls(items)
 
     @property
-    def root(self) -> LogLine | None:
-        return next((item for item in self.items if isinstance(item, LogLine)), None)
-
-    @property
     def has_children(self) -> bool:
         return any(isinstance(item, LogBlock) for item in self.items)
 
@@ -3879,9 +3869,6 @@ class ContextManager:
     def skills_context(self) -> str:
         return self.session.skills.index() if self.session.skills else ""
 
-    def has_skills(self) -> bool:
-        return bool(self.session.skills and self.session.skills.skills)
-
     def cache_prefix_regions(self, base_system: str, tools: list[Json] | None) -> list[tuple[str, str]]:
         return [
             ("system", base_system.strip()),
@@ -3891,17 +3878,12 @@ class ContextManager:
             ("tool-schemas", json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
         ]
 
-    def cache_prefix(self, base_system: str, tools: list[Json] | None) -> str:
-        # Canonical text of the bytes a provider can cache: the stable head of every request.
-        # Mirrors the leading blocks model_messages() emits (system + environment + mcp index)
-        # plus the tool schemas. Everything mutable (history and memory) sits after it.
-        return "\x00".join(text for _name, text in self.cache_prefix_regions(base_system, tools))
-
     def tool_schemas(self) -> list[Json]:
         strict = self.session.config.provider.resolved_strict_tools()
         # The Skill tool only appears when at least one skill is installed, so a skill-free session
         # keeps a byte-identical prefix to before skills existed.
-        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or self.has_skills()]
+        has_skills = bool(self.session.skills and self.session.skills.skills)
+        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
 
     def check_cache_prefix(self, base_system: str) -> None:
         regions: dict[str, Json] = {}
@@ -7479,11 +7461,6 @@ Tools:
         minutes, rest = divmod(elapsed, 60)
         return f"{minutes}m{rest:02d}s"
 
-    def divider_label(self, queued: int = 0) -> str:
-        # e.g. "working (4m02s) [ 2 queued ]" or just "working (4m02s)".
-        label = f"working ({self.turn_elapsed_label()})"
-        return f"{label} [ {queued} queued ]" if queued else label
-
     def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
@@ -7513,7 +7490,8 @@ Tools:
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        return self.sweep_divider_fragments(self.divider_label(queued))
+        label = f"working ({self.turn_elapsed_label()})"
+        return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         with self.session._queue_lock:
@@ -7703,21 +7681,14 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.02)
 
-    def take_entered_inputs(self) -> list[str]:
-        """Take Enter-committed queue items while preserving message boundaries."""
+    def take_queue_input(self) -> tuple[list[str], str]:
+        """Take committed queue items and clear any uncommitted text."""
         with self.session._queue_lock:
             texts = [item.text for item in self.session.pending_user_inputs if not item.inflight]
             self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
-        return texts
-
-    def take_typed_input(self) -> str:
-        """Un-entered text left in the +> box when the agent stopped, cleared."""
         typed = self.queue_input_text if self.queue_input_text.strip() else ""
         self.queue_input_text = ""
-        return typed
-
-    def echo_input_line(self, text: str) -> None:
-        print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", text)]), style=self.style())
+        return texts, typed
 
     def run(self) -> int:
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -7731,14 +7702,13 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                entered = self.take_entered_inputs()
-                typed = self.take_typed_input()
+                entered, typed = self.take_queue_input()
                 if entered and self.interactive_input:
                     # Input you already pressed Enter on in the +> queue auto-submits as the next turn —
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    self.echo_input_line(entered[0])
+                    print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", entered[0])]), style=self.style())
                     user_input = entered[0]
                     for text in entered[1:]:
                         self.session.enqueue_user_input(text)
@@ -7747,7 +7717,7 @@ Tools:
                     # text into the prompt for review/edit.
                     user_input = self.read_input(initial_text="\n".join([*entered, *([typed] if typed else [])]), pad=True)
             except EOFError:
-                self.emit("")
+                self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
                 return 0
             except KeyboardInterrupt:
@@ -7803,7 +7773,7 @@ Tools:
         tool_record_index = 0
         for index, turn in enumerate(TurnBox.group(messages)):
             if index:
-                self.emit(TurnBox.SEPARATOR)
+                self.emit("")
             for message in turn.messages:
                 tool_record_index = self.render_transcript_message(message, tool_record_index)
         self.render_remaining_tool_records(tool_record_index)
@@ -8556,9 +8526,6 @@ Tools:
         if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
             self.diff_viewer()
             return None
-        return self._diff_text()
-
-    def _diff_text(self) -> str:
         latest = self.agent.session.latest_round_diff_sections()
         session = self.agent.session.session_diff_sections()
         groups: list[tuple[str, list[tuple[str, str, str]]]] = []

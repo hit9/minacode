@@ -1790,6 +1790,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     runner.run([n.ToolCall("e0", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "hello\n"), "content": "NEW\n"}]])])
     assert len(out) == 2
     assert isinstance(out[0], n.LogBlock)
-    assert out[0].root is not None and out[0].root.role is n.LogRole.AUTO
+    root, _level = next(out[0].walk())
+    assert root.role is n.LogRole.AUTO
     assert "preview" in str(out[0])
     assert str(out[1]).rstrip().endswith("[auto]")

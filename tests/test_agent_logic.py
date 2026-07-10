@@ -1775,7 +1775,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     bare.session.skills = n.SkillLibrary({})
     assert bare.skills_context() == ""
     assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
-    assert "--- SKILLS ---" not in bare.cache_prefix(n.Agent.SYSTEM_PROMPT, bare.tool_schemas())
+    assert all("--- SKILLS ---" not in text for _name, text in bare.cache_prefix_regions(n.Agent.SYSTEM_PROMPT, bare.tool_schemas()))
 
 
 def test_skills_command_lists_builtin_and_installed(tmp_path):

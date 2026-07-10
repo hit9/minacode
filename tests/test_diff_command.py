@@ -249,20 +249,6 @@ def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     assert n.diff_counts(latest[1][0][2]) == (2, 2)
 
 
-def test_session_latest_round_diffs_returns_newest_round(tmp_path):
-    s = session(tmp_path)
-    s.store_turn_diff("tr.1", 1, "a.py", "-a\n+b\n", round=1)
-    s.store_turn_diff("tr.2", 3, "c.py", "-c\n+d\n", round=2)
-    s.store_turn_diff("tr.3", 2, "b.py", "-b\n+c\n", round=1)
-
-    latest = s.latest_round_diffs()
-
-    assert latest is not None
-    round, diffs = latest
-    assert round == 2
-    assert [diff.path for diff in diffs] == ["c.py"]
-
-
 def test_latest_round_diffs_include_all_steps_in_round(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+mid\n", before="old\n", after="mid\n", round=1)
