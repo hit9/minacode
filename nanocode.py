@@ -87,6 +87,14 @@ def create_prompt_output():
     return output
 
 
+def elapsed_since(started_at: float) -> str:
+    elapsed = int(max(0.0, time.monotonic() - started_at)) if started_at else 0
+    if elapsed < 60:
+        return f"{elapsed}s"
+    minutes, seconds = divmod(elapsed, 60)
+    return f"{minutes}m{seconds:02d}s"
+
+
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
@@ -529,7 +537,6 @@ class AgentState:
     turn_messages: int = 0
     round_count: int = 0
     current_model_call_started_at: float = 0.0
-    current_model_request_pending_inputs: list[str] = field(default_factory=list)
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
     compaction_count: int = 0
@@ -685,6 +692,7 @@ class MCPFileTokenStore:
             value = entry.get("value")
             return dict(value) if isinstance(value, dict) else None
 
+    # Called dynamically through the MCP OAuth token-storage protocol; static call graphs will not see it.
     async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
         collection = collection or self.DEFAULT_COLLECTION
         expires_at = time.time() + float(ttl) if ttl is not None else None
@@ -1574,6 +1582,7 @@ class Session:
             self.pending_user_inputs.append(QueuedInput(text))
 
     def claim_user_inputs(self) -> list[QueuedInput]:
+        # claim/ack/release is a transaction across model retries; keep this boundary even though each step is small.
         with self._queue_lock:
             for item in self.pending_user_inputs:
                 item.inflight = True
@@ -1614,7 +1623,8 @@ class Session:
                 states[diff.path] = (before, diff.after)
 
         # Bash can move a file between Edit calls. Join an unambiguous content boundary so the
-        # logical history follows the file to its final path instead of reporting stale path entries.
+        # logical history follows the file to its final path. turn_diffs is capped at 100, so this
+        # deliberately favors clear reconstruction over a more complex indexed graph.
         while True:
             candidates = [
                 (source, target)
@@ -1660,6 +1670,7 @@ class Session:
         self.tool_errors = self.tool_errors[-5:]
 
     def save_snapshot(self) -> str:
+        # Session owns the persistence boundary; callers should not depend on the snapshot store.
         return SessionSnapshotStore(self).save()
 
     @classmethod
@@ -6309,11 +6320,7 @@ FINAL:
                 while True:
                     try:
                         messages, pending = self.messages(turn_messages)
-                        self.session.state.current_model_request_pending_inputs = [item.text for item in pending]
-                        try:
-                            assistant, tool_calls, content = self.model.request(messages)
-                        finally:
-                            self.session.state.current_model_request_pending_inputs = []
+                        assistant, tool_calls, content = self.model.request(messages)
                         self.accept_pending_inputs(turn_messages, pending)
                         break
                     except ModelRequestRetry:
@@ -6761,14 +6768,6 @@ class UiPrinter:
         return segments
 
     @classmethod
-    def diff_added_bg(cls) -> str:
-        return Theme.style("diff.added.bg")
-
-    @classmethod
-    def diff_removed_bg(cls) -> str:
-        return Theme.style("diff.removed.bg")
-
-    @classmethod
     def pygments_style(cls, token_type: Any) -> str:
         style = Theme.pygments_style()
         if style is None:
@@ -6897,11 +6896,11 @@ class UiPrinter:
             elif line.startswith("+"):
                 number(None, new_line)
                 content_hl = hl_by_index.get(index) or [(Theme.style("diff.added.fg"), line[1:])]
-                append_hl("+", "ansigreen", content_hl, suffix, self.diff_added_bg())
+                append_hl("+", "ansigreen", content_hl, suffix, Theme.style("diff.added.bg"))
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
                 number(old_line, None)
-                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, self.diff_removed_bg())
+                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, Theme.style("diff.removed.bg"))
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
@@ -7007,17 +7006,10 @@ class BashLivePreview:
         self.rendered_lines = len(rows)
         self.rendered_rows = rows
 
-    def elapsed_label(self) -> str:
-        elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
-        if elapsed < 60:
-            return f"{int(elapsed)}s"
-        minutes, rest = divmod(int(elapsed), 60)
-        return f"{minutes}m{rest:02d}s"
-
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
-        label = self.elapsed_label()
+        label = elapsed_since(self.started_at)
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         limit = width - 5
@@ -7109,16 +7101,8 @@ class StatusBar:
     ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "runtime")
 
     @classmethod
-    def base_style(cls) -> str:
-        return Theme.style("status.base")
-
-    @classmethod
-    def sep_style(cls) -> str:
-        return Theme.style("status.sep")
-
-    @classmethod
     def role_style(cls, role: str) -> str:
-        return Theme.style("status." + role) if role in cls.ROLE_KEYS else cls.base_style()
+        return Theme.style("status." + role) if role in cls.ROLE_KEYS else Theme.style("status.base")
 
     def __init__(self, session: Session):
         self.session = session
@@ -7187,7 +7171,7 @@ class StatusBar:
         columns = shutil.get_terminal_size((120, 20)).columns
         if len(text) >= columns:
             text = text[: max(0, columns - 4)] + "..."
-            return self.sweep_fragments(text, elapsed) if sweep else [(self.base_style(), text)]
+            return self.sweep_fragments(text, elapsed) if sweep else [(Theme.style("status.base"), text)]
         return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
     def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
@@ -7231,7 +7215,7 @@ class StatusBar:
         fragments: list[tuple[str, str]] = []
         for index, (text, role) in enumerate(entries):
             if index:
-                fragments.append((self.sep_style(), " | "))
+                fragments.append((Theme.style("status.sep"), " | "))
             fragments.append((self.role_style(role), text))
         return fragments or [("", "")]
 
@@ -7670,13 +7654,6 @@ Tools:
         "class:divider.glow4",
     )
 
-    def turn_elapsed_label(self) -> str:
-        elapsed = int(max(0.0, time.monotonic() - self.status_bar.started_at)) if self.status_bar.started_at else 0
-        if elapsed < 60:
-            return f"{elapsed}s"
-        minutes, rest = divmod(elapsed, 60)
-        return f"{minutes}m{rest:02d}s"
-
     def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
@@ -7706,7 +7683,7 @@ Tools:
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        label = f"working ({self.turn_elapsed_label()})"
+        label = f"working ({elapsed_since(self.status_bar.started_at)})"
         return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
@@ -7757,6 +7734,7 @@ Tools:
             ],
         )
         input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
+        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 
         def record(text: str) -> None:
@@ -7979,6 +7957,7 @@ Tools:
             self.session.save_snapshot()
 
     def render_resumed_session(self) -> None:
+        # Transcript reconstruction owns historical call/result matching and ordering invariants.
         if not self.session.resumed:
             return
         self.session.resumed = False
@@ -8195,6 +8174,7 @@ Tools:
             preview_search=True,
         )
         input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
+        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 
         @bindings.add("c-c", eager=True)
@@ -8483,6 +8463,7 @@ Tools:
                 parts.append(("", "/" + state.query))
             return parts
 
+        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 
         @bindings.add("j", filter=~searching, eager=True)
@@ -8829,6 +8810,7 @@ Tools:
             state.reset()
             event.app.invalidate()
 
+        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 
         def _left(event):
@@ -8876,6 +8858,7 @@ Tools:
         Renders a static snapshot; the transcript continues below once closed."""
         width = max(20, shutil.get_terminal_size().columns - 2)
         pages = [self.render_markdown_lines(getattr(context, method)(), width) for _, method in self.CONTEXT_TABS]
+        # Kept as an observable test seam for interactive navigation; it is not persisted session state.
         state = self.context_tab_state = TabbedViewState(tuple(name for name, _method in self.CONTEXT_TABS))
 
         def viewport() -> int:
@@ -8907,6 +8890,7 @@ Tools:
             state.switch(delta)
             event.app.invalidate()
 
+        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
         bindings.add("right", eager=True)(lambda event: switch(event, 1))
         bindings.add("l", eager=True)(lambda event: switch(event, 1))

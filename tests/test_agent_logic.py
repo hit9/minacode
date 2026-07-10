@@ -447,11 +447,9 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     class FakeModel:
         def __init__(self):
             self.messages = []
-            self.pending_snapshots = []
 
         def request(self, messages):
             self.messages.append(messages)
-            self.pending_snapshots.append(list(s.state.current_model_request_pending_inputs))
             if len(self.messages) == 1:
                 s.enqueue_user_input("second instruction")
                 return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
@@ -474,8 +472,6 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
-    assert s.state.current_model_request_pending_inputs == []
-    assert agent.model.pending_snapshots == [["extra instruction"], ["second instruction"]]
 
 
 def test_startup_tip_respects_toggle_and_context(tmp_path):
@@ -1323,19 +1319,12 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     assert emitted[-1] == ""
 
 
-def test_turn_elapsed_label_uses_whole_seconds(tmp_path, monkeypatch):
-    loop = n.CommandLoop(
-        n.Agent(session(tmp_path), output_fn=lambda text: None),
-        input_fn=lambda prompt="": "",
-        output_fn=lambda text: None,
-    )
-    loop.status_bar.started_at = 100.0
-
+def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
-    assert loop.turn_elapsed_label() == "4s"
+    assert n.elapsed_since(100.0) == "4s"
 
     monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
-    assert loop.turn_elapsed_label() == "1m02s"
+    assert n.elapsed_since(100.0) == "1m02s"
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
