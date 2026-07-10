@@ -552,12 +552,6 @@ class AgentState:
         rows = [item.row(status=status, style=style) for item in cls.plan_items(items)]
         return rows or ["- (empty)"]
 
-    @classmethod
-    def focus_text(cls, items: list[Any]) -> str:
-        plan = cls.plan_items(items)
-        current = next((item for item in plan if item.status == "doing"), None) or next((item for item in plan if item.status != "done"), None)
-        return current.text if current else ""
-
     def apply(self, data: Json) -> None:
         for attr in ("goal", "summary", "check"):
             if isinstance(data.get(attr), str):
@@ -1598,7 +1592,7 @@ class Session:
                 item.inflight = False
 
     @staticmethod
-    def net_diff_section(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
+    def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
         if before == after:
             return None
         text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
@@ -1647,7 +1641,7 @@ class Session:
         sections = []
         for path in paths:
             chunks = []
-            if path in states and (section := cls.net_diff_section(status, path, *states[path])):
+            if path in states and (section := cls.net_diff_for_path(status, path, *states[path])):
                 chunks.append(section[2])
             chunks.extend(legacy.get(path, []))
             if chunks:
@@ -6820,19 +6814,6 @@ class UiPrinter:
         if lines and not lines[-1]:
             lines.pop()
         return lines
-
-    @staticmethod
-    def indent_segments(segments: list[tuple[str, str]], indent: str) -> list[tuple[str, str]]:
-        indented: list[tuple[str, str]] = []
-        at_start = True
-        for style, text in segments:
-            for part in text.splitlines(keepends=True):
-                if at_start:
-                    indented.append(("ansibrightblack", indent))
-                indented.append((style, part))
-                at_start = part.endswith("\n")
-        return indented
-
 
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
