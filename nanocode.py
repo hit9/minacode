@@ -1453,6 +1453,13 @@ class BackgroundJob:
 
 
 @dataclass
+class QueuedInput:
+    id: int
+    text: str
+    state: str = "queued"
+
+
+@dataclass
 class Session:
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
@@ -1463,7 +1470,7 @@ class Session:
     tool_results: dict[str, str] = field(default_factory=dict)
     tool_records: list[ToolResultRecord] = field(default_factory=list)
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
-    pending_user_inputs: list[str] = field(default_factory=list)
+    pending_user_inputs: list[QueuedInput] = field(default_factory=list)
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     jobs: dict[str, BackgroundJob] = field(default_factory=dict)
@@ -1478,6 +1485,8 @@ class Session:
     _snapshot_saved: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _cache_prefix_text: str | None = None
+    _queue_counter: int = 0
+    _queue_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
         if not self.uid:
@@ -1544,6 +1553,33 @@ class Session:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
         return key
+
+    def enqueue_user_input(self, text: str) -> QueuedInput | None:
+        text = Text.clean(text.strip())
+        if not text:
+            return None
+        with self._queue_lock:
+            self._queue_counter += 1
+            item = QueuedInput(self._queue_counter, text)
+            self.pending_user_inputs.append(item)
+            return item
+
+    def claim_user_inputs(self) -> list[QueuedInput]:
+        with self._queue_lock:
+            for item in self.pending_user_inputs:
+                if item.state == "queued":
+                    item.state = "inflight"
+            return [item for item in self.pending_user_inputs if item.state == "inflight"]
+
+    def acknowledge_user_inputs(self, ids: set[int]) -> None:
+        with self._queue_lock:
+            self.pending_user_inputs = [item for item in self.pending_user_inputs if item.id not in ids]
+
+    def release_user_inputs(self) -> None:
+        with self._queue_lock:
+            for item in self.pending_user_inputs:
+                if item.state == "inflight":
+                    item.state = "queued"
 
     def latest_round_diffs(self) -> tuple[int, list[TurnDiff]] | None:
         if not self.turn_diffs:
@@ -6109,7 +6145,7 @@ FINAL:
                 while True:
                     try:
                         messages, pending = self.messages(turn_messages)
-                        self.session.state.current_model_request_pending_inputs = pending
+                        self.session.state.current_model_request_pending_inputs = [item.text for item in pending]
                         try:
                             assistant, tool_calls, content = self.model.request(messages)
                         finally:
@@ -6135,6 +6171,7 @@ FINAL:
             self.finish_turn(turn_messages, stopped)
             return stopped
         except (Exception, KeyboardInterrupt):
+            self.session.release_user_inputs()
             self.session.messages.extend(self.session._active_turn_messages)
             self.session._active_turn_messages.clear()
             self.session.state.turn_messages = 0
@@ -6150,9 +6187,9 @@ FINAL:
         self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
 
-    def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[str]]:
-        pending = [text for text in self.session.pending_user_inputs if text.strip()]
-        request_turn = [*turn_messages, *({"role": "user", "content": text} for text in pending)]
+    def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[QueuedInput]]:
+        pending = self.session.claim_user_inputs()
+        request_turn = [*turn_messages, *({"role": "user", "content": item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, request_turn)
         messages = self.context.model_messages(self.SYSTEM_PROMPT, request_turn)
@@ -6160,19 +6197,14 @@ FINAL:
         self.context.update_percent(messages)
         return messages, pending
 
-    def accept_pending_inputs(self, turn_messages: list[Json], pending: list[str]) -> None:
+    def accept_pending_inputs(self, turn_messages: list[Json], pending: list[QueuedInput]) -> None:
         if not pending:
             return
-        turn_messages.extend({"role": "user", "content": text} for text in pending)
-        remaining = list(self.session.pending_user_inputs)
-        for text in pending:
-            for index, value in enumerate(remaining):
-                if value.strip() == text:
-                    del remaining[index]
-                    break
-        self.session.pending_user_inputs = remaining
+        texts = [item.text for item in pending]
+        turn_messages.extend({"role": "user", "content": text} for text in texts)
+        self.session.acknowledge_user_inputs({item.id for item in pending})
         if self.on_queue_flush:
-            self.on_queue_flush(pending)
+            self.on_queue_flush(texts)
 
     @staticmethod
     def assistant_turn_message(assistant: Json, tool_calls: list[ToolCall], content: str) -> Json:
@@ -7073,7 +7105,7 @@ class QueuePlaceholder(Processor):
 
 class CommandLoop:
     QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
-    QUEUE_PENDING_HINT: ClassVar[str] = "Ctrl-C sends queued now"
+    QUEUE_PENDING_HINT: ClassVar[str] = "↑ recalls queued · Ctrl-C sends now"
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
@@ -7292,20 +7324,24 @@ Tools:
     def bash_divider_fragments(self) -> list[tuple[str, str]]:
         # A static divider for the BashLivePreview, which renders raw colour names (no style dict).
         # Kept in sync with the divider.working style so it matches the prompt-toolkit dividers.
-        label = self.divider_label(len([t for t in self.session.pending_user_inputs if t.strip()]))
+        with self.session._queue_lock:
+            queued = len(self.session.pending_user_inputs)
+        label = self.divider_label(queued)
         width = max(20, min(52, shutil.get_terminal_size((80, 20)).columns - 2))
         lead, trail = 3, max(3, width - 3 - (len(label) + 2))
         return [("ansibrightblack", "-" * lead + " "), ("ansimagenta bold", label), ("ansibrightblack", " " + "-" * trail)]
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
-        pending = [text for text in self.session.pending_user_inputs if text.strip()]
+        with self.session._queue_lock:
+            pending = list(self.session.pending_user_inputs)
         # The divider is a standing boundary for the whole turn: flushed messages move up into the log
         # above it, so it stays put even once the queue empties rather than vanishing.
         fragments = self.queue_divider_fragments(len(pending))
-        for text in pending:
-            fragments.append(("", "\n"))
-            fragments.append(("class:prompt", "+ "))
-            fragments.append(("", Text.clean(text)))
+        for item in pending:
+            style = "class:choice.disabled" if item.state == "inflight" else ""
+            marker = "→ " if item.state == "inflight" else "+ "
+            for index, line in enumerate(Text.clean(item.text).splitlines() or [""]):
+                fragments.extend([(style, "\n"), ("class:prompt", marker if index == 0 else "  "), (style, line)])
         return fragments
 
     def retry_current_model_request(self) -> bool:
@@ -7317,14 +7353,16 @@ Tools:
         return True
 
     def run_queue_input_app(self, stop_event: threading.Event) -> None:
-        prompt = FormattedText([("class:prompt", "+> ")])
-
         def changed(buffer: Buffer) -> None:
             self.queue_input_text = buffer.text
 
+        def has_pending() -> bool:
+            with self.session._queue_lock:
+                return any(item.state == "queued" for item in self.session.pending_user_inputs)
+
         buffer = Buffer(
             document=Document(self.queue_input_text),
-            multiline=False,
+            multiline=True,
             on_text_changed=changed,
             completer=self.input_completer,
             complete_while_typing=False,
@@ -7332,30 +7370,46 @@ Tools:
         control = BufferControl(
             buffer=buffer,
             input_processors=[
-                BeforeInput(prompt),
+                BeforeInput(FormattedText([("class:prompt", "+> ")])),
                 QueuePlaceholder(
                     self.QUEUE_EMPTY_HINT,
                     self.QUEUE_PENDING_HINT,
-                    lambda: any(text.strip() for text in self.session.pending_user_inputs),
+                    has_pending,
                 ),
             ],
         )
-        input_window = Window(control, height=1, dont_extend_height=True, wrap_lines=False)
+        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
         bindings = KeyBindings()
 
         def record(texts: list[str]) -> None:
             texts = [Text.clean(text.strip()) for text in texts if text.strip()]
             if not texts:
                 return
-            queued = [text for text in texts if not text.startswith("/")]
-            commands = [text for text in texts if text.startswith("/")]
+            queued = [text for text in texts if "\n" in text or not text.startswith("/")]
+            commands = [text for text in texts if "\n" not in text and text.startswith("/")]
             # Queued messages live in the bottom region (below the sweep divider) until the turn
             # flushes them up into the log — they are not echoed to scrollback here.
-            self.session.pending_user_inputs.extend(queued)
+            for text in queued:
+                self.session.enqueue_user_input(text)
             if queued and self.queue_input_app is not None:
                 self.queue_input_app.invalidate()
             if commands:
                 run_in_terminal(lambda: [self.run_queued_command(text) for text in commands])
+
+        def recall_latest() -> None:
+            if buffer.text:
+                buffer.cursor_up()
+                return
+            with self.session._queue_lock:
+                item = next((item for item in reversed(self.session.pending_user_inputs) if item.state == "queued"), None)
+                if item is None:
+                    return
+                self.session.pending_user_inputs.remove(item)
+                text = item.text
+            self.queue_input_text = text
+            buffer.reset(Document(text, cursor_position=len(text)))
+            if self.queue_input_app is not None:
+                self.queue_input_app.invalidate()
 
         @bindings.add("enter", eager=True)
         def _enter(event):
@@ -7363,6 +7417,18 @@ Tools:
                 record([buffer.text])
             self.queue_input_text = ""
             buffer.reset(Document(""))
+
+        @bindings.add("escape", "enter", eager=True)
+        def _alt_enter(event):
+            buffer.insert_text("\n")
+
+        @bindings.add("up", eager=True)
+        def _up(event):
+            recall_latest()
+
+        @bindings.add("down", eager=True)
+        def _down(event):
+            buffer.cursor_down()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):
@@ -7389,13 +7455,7 @@ Tools:
 
         @bindings.add(Keys.BracketedPaste)
         def _paste(event):
-            parts = event.data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            if len(parts) == 1:
-                buffer.insert_text(parts[0])
-                return
-            record([buffer.text + parts[0], *parts[1:-1]])
-            self.queue_input_text = parts[-1]
-            buffer.reset(Document(self.queue_input_text))
+            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
         # Live region above the +> input: a sweep divider plus the still-pending queued messages.
@@ -7463,11 +7523,12 @@ Tools:
         while self.queue_input_active.is_set() and time.monotonic() < deadline:
             time.sleep(0.02)
 
-    def take_entered_input(self) -> str:
-        """Enter-committed queue input (pending_user_inputs), joined and cleared."""
-        texts = [text for text in self.session.pending_user_inputs if text.strip()]
-        self.session.pending_user_inputs.clear()
-        return "\n".join(texts)
+    def take_entered_inputs(self) -> list[str]:
+        """Take Enter-committed queue items while preserving message boundaries."""
+        with self.session._queue_lock:
+            texts = [item.text for item in self.session.pending_user_inputs if item.state == "queued" and item.text.strip()]
+            self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.state != "queued"]
+        return texts
 
     def take_typed_input(self) -> str:
         """Un-entered text left in the +> box when the agent stopped, cleared."""
@@ -7490,19 +7551,21 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                entered = self.take_entered_input()
+                entered = self.take_entered_inputs()
                 typed = self.take_typed_input()
                 if entered and self.interactive_input:
                     # Input you already pressed Enter on in the +> queue auto-submits as the next turn —
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    self.echo_input_line(entered)
-                    user_input = entered
+                    self.echo_input_line(entered[0])
+                    user_input = entered[0]
+                    for text in entered[1:]:
+                        self.session.enqueue_user_input(text)
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join(text for text in (entered, typed) if text), pad=True)
+                    user_input = self.read_input(initial_text="\n".join([*entered, *([typed] if typed else [])]), pad=True)
             except EOFError:
                 self.emit("")
                 self.save_and_emit_resume()

@@ -20,6 +20,15 @@ def call(name, args):
     return n.ToolCall(name + "-id", name, args)
 
 
+def queue(s, *texts):
+    for text in texts:
+        s.enqueue_user_input(text)
+
+
+def queued_texts(s):
+    return [item.text for item in s.pending_user_inputs]
+
+
 def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
     s.skills = n.SkillLibrary({})  # no skills: assert the base frame ordering
@@ -432,7 +441,7 @@ def test_agent_rejects_empty_final_response(tmp_path):
 
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
-    s.pending_user_inputs.append("extra instruction")
+    queue(s, "extra instruction")
     agent = n.Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
@@ -444,7 +453,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             self.messages.append(messages)
             self.pending_snapshots.append(list(s.state.current_model_request_pending_inputs))
             if len(self.messages) == 1:
-                s.pending_user_inputs.append("second instruction")
+                s.enqueue_user_input("second instruction")
                 return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -530,7 +539,7 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         deadline = time.monotonic() + 1
         while not s.pending_user_inputs and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert s.pending_user_inputs == ["later"]
+        assert queued_texts(s) == ["later"]
     finally:
         stop.set()
         writer.close()
@@ -559,6 +568,110 @@ def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
     assert not loop.queue_input_active.is_set()
 
 
+def drive_queue_app(loop, actions):
+    stop = threading.Event()
+
+    class App:
+        loop = None
+
+        def __init__(self, layout, bindings):
+            self.layout = layout
+            self.bindings = bindings
+
+        def invalidate(self):
+            pass
+
+        def exit(self, result=None):
+            stop.set()
+
+        def run(self, pre_run=None):
+            if pre_run:
+                pre_run()
+            event = SimpleNamespace(app=self, data="")
+            for action in actions:
+                if callable(action):
+                    action(self.layout.current_buffer)
+                    continue
+                key, event.data = action
+                keys = key if isinstance(key, tuple) else (key,)
+                self.bindings.get_bindings_for_keys(keys)[-1].handler(event)
+            stop.set()
+
+    loop._make_app = lambda layout, bindings, **kwargs: App(layout, bindings)
+    loop.run_queue_input_app(stop)
+
+
+def test_multiline_paste_queues_one_message_on_enter(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    def still_draft(_buffer):
+        assert s.pending_user_inputs == []
+
+    drive_queue_app(loop, [(n.Keys.BracketedPaste, "first\nsecond\nthird"), still_draft, (n.Keys.ControlM, "")])
+
+    assert queued_texts(s) == ["first\nsecond\nthird"]
+    rendered = "".join(text for _style, text in loop.queue_region_fragments())
+    assert "+ first\n  second\n  third" in rendered
+
+    drive_queue_app(
+        loop,
+        [lambda buffer: buffer.insert_text("typed"), ((n.Keys.Escape, n.Keys.ControlM), ""), lambda buffer: buffer.insert_text("line"), (n.Keys.ControlM, "")],
+    )
+    assert queued_texts(s)[-1] == "typed\nline"
+
+
+def test_up_recalls_latest_queued_message_for_editing(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "second")
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    drive_queue_app(loop, [(n.Keys.Up, "")])
+
+    assert queued_texts(s) == ["first"]
+    assert loop.queue_input_text == "second"
+
+    drive_queue_app(
+        loop,
+        [lambda buffer: buffer.reset(n.Document("second edited")), (n.Keys.ControlM, "")],
+    )
+    assert queued_texts(s) == ["first", "second edited"]
+    assert loop.queue_input_text == ""
+
+
+def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "delete me")
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    drive_queue_app(loop, [(n.Keys.Up, ""), lambda buffer: buffer.reset(n.Document(""))])
+
+    assert queued_texts(s) == ["first"]
+    assert loop.queue_input_text == ""
+
+
+def test_queue_acknowledges_duplicate_messages_by_id(tmp_path):
+    s = session(tmp_path)
+    queue(s, "same", "same")
+    claimed = s.claim_user_inputs()
+    s.enqueue_user_input("same")
+
+    s.acknowledge_user_inputs({item.id for item in claimed})
+
+    assert queued_texts(s) == ["same"]
+    assert s.pending_user_inputs[0].state == "queued"
+
+
+def test_queue_release_restores_interrupted_inputs(tmp_path):
+    s = session(tmp_path)
+    queued = s.enqueue_user_input("ready")
+    assert queued is not None
+
+    assert [item.id for item in s.claim_user_inputs()] == [queued.id]
+    s.release_user_inputs()
+
+    assert queued.state == "queued"
+
 
 def test_queued_text_auto_submits_at_round_end(tmp_path):
     """queue_input_text set during agent run is auto-submitted as next input."""
@@ -586,7 +699,7 @@ def test_queued_text_auto_submits_at_round_end(tmp_path):
 def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("leftover instruction")
+    queue(s, "leftover instruction")
 
     class FakeModel:
         def request(self, messages):
@@ -609,7 +722,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.pending_user_inputs = ["run tests", "then push"]
+    queue(s, "run tests", "then push")
 
     text = "".join(t for _, t in loop.queue_region_fragments())
     assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
@@ -713,7 +826,7 @@ def test_flush_sigint_still_interrupts_active_retry_request(tmp_path):
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
     """pending_user_inputs comes first, then queue_input_text."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("first pending")
+    queue(s, "first pending")
 
     class FakeModel:
         def request(self, messages):
@@ -769,7 +882,7 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
     """In interactive mode, Enter-committed queue input auto-submits as the next turn (no second
     Enter) and half-typed text is carried back to the box instead of blocking the submit."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("entered instruction")
+    queue(s, "entered instruction", "second instruction")
 
     class FakeModel:
         def request(self, messages):
@@ -793,6 +906,7 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
 
     # entered input was auto-submitted without ever going through the editable read prompt
     assert any("entered instruction" in msg.get("content", "") for msg in s.messages)
+    assert [msg.get("content") for msg in s.messages if msg.get("role") == "user"][:2] == ["entered instruction", "second instruction"]
     assert s.pending_user_inputs == []
     # the only read prompt was for the leftover half-typed text, pre-filled for review (not auto-sent)
     assert reads == ["half typed"]
